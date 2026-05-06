@@ -16,6 +16,12 @@ const els = {
   loginGo: $('#login-go'),
   app: $('#app'),
   channels: $('#channels'),
+  addChannel: $('#add-channel'),
+  ccModal: $('#create-channel-modal'),
+  ccName: $('#cc-name'),
+  ccTopic: $('#cc-topic'),
+  ccCreate: $('#cc-create'),
+  ccCancel: $('#cc-cancel'),
   people: $('#people'),
   channelName: $('#channel-name'),
   channelTopic: $('#channel-topic'),
@@ -56,6 +62,7 @@ const state = {
   // Streams whose role (camera vs screen) we don't yet know. Held briefly so
   // a late screen-announce can reclassify them before we render a tile.
   pendingStreams: new Map(), // streamId -> {stream, fromId, timer}
+  pendingNewChannelId: null,
 };
 
 const STREAM_DECISION_MS = 1500;
@@ -86,6 +93,7 @@ async function join() {
   mesh.addEventListener('screen-stop', (e) => onScreenStop(e.detail));
   mesh.addEventListener('remote-stream-ended', (e) => onScreenStop(e.detail));
   mesh.addEventListener('draw', (e) => onRemoteDraw(e.detail));
+  mesh.addEventListener('chat-channel-added', (e) => onChannelAdded(e.detail.channel));
   mesh.addEventListener('disconnected', () => alert('Disconnected from server.'));
 
   try {
@@ -139,18 +147,33 @@ function onWelcome({ peers, channels }) {
 }
 
 function renderChannels(channels) {
-  els.channels.innerHTML = '';
-  for (const c of channels) {
-    const li = document.createElement('li');
-    li.textContent = '# ' + c.name;
-    li.dataset.id = c.id;
-    if (c.id === 'general') li.classList.add('active');
-    li.onclick = () => {
-      [...els.channels.children].forEach((x) => x.classList.remove('active'));
-      li.classList.add('active');
-      state.chat.setChannel(c.id, c.topic);
-    };
-    els.channels.appendChild(li);
+  els.channels.replaceChildren();
+  for (const c of channels) appendChannelToSidebar(c, c.id === 'general');
+}
+
+function appendChannelToSidebar(channel, makeActive) {
+  if (els.channels.querySelector(`[data-id="${channel.id}"]`)) return;
+  state.channelMeta.set(channel.id, channel);
+  const li = document.createElement('li');
+  li.textContent = '# ' + channel.name;
+  li.dataset.id = channel.id;
+  if (makeActive) li.classList.add('active');
+  li.onclick = () => {
+    [...els.channels.children].forEach((x) => x.classList.remove('active'));
+    li.classList.add('active');
+    state.chat.setChannel(channel.id, channel.topic);
+  };
+  els.channels.appendChild(li);
+}
+
+function onChannelAdded(channel) {
+  const wasNew = !state.channelMeta.has(channel.id);
+  appendChannelToSidebar(channel, false);
+  // If this client just created the channel, switch into it.
+  if (wasNew && state.pendingNewChannelId === channel.id) {
+    state.pendingNewChannelId = null;
+    const li = els.channels.querySelector(`[data-id="${channel.id}"]`);
+    if (li) li.click();
   }
 }
 
@@ -358,6 +381,27 @@ function wireControls() {
   els.btnShare.onclick = openSourcePicker;
   els.btnLeave.onclick = leave;
   els.sourceCancel.onclick = () => els.sourcePicker.classList.add('hidden');
+
+  // Create-channel modal
+  const openCreate = () => {
+    els.ccName.value = '';
+    els.ccTopic.value = '';
+    els.ccModal.classList.remove('hidden');
+    els.ccName.focus();
+  };
+  const closeCreate = () => els.ccModal.classList.add('hidden');
+  els.addChannel.onclick = openCreate;
+  els.ccCancel.onclick = closeCreate;
+  els.ccCreate.onclick = () => {
+    const name = els.ccName.value.trim();
+    if (!name) return;
+    // Track which channel we're trying to create so we can auto-switch when
+    // the server's broadcast comes back.
+    state.pendingNewChannelId = name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+    state.mesh.send({ type: 'chat-create-channel', name, topic: els.ccTopic.value });
+    closeCreate();
+  };
+  els.ccName.addEventListener('keydown', (e) => { if (e.key === 'Enter') els.ccCreate.click(); });
 
   // Drawing toolbar
   els.drawToolbar.querySelectorAll('[data-tool]').forEach((b) => {

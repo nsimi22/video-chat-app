@@ -162,6 +162,7 @@ class MeshClient extends EventTarget {
           case 'chat-history':
           case 'chat-message':
           case 'chat-update':
+          case 'chat-channel-added':
           case 'typing':
             this.dispatchEvent(new CustomEvent(m.type, { detail: m }));
             break;

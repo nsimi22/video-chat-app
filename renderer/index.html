@@ -27,7 +27,10 @@
           <div class="workspace-name">Huddle</div>
           <div id="me" class="me"></div>
         </div>
-        <div class="section-header">Channels</div>
+        <div class="section-header section-header-row">
+          <span>Channels</span>
+          <button id="add-channel" class="ghost" title="Create a channel">＋</button>
+        </div>
         <ul id="channels" class="channel-list"></ul>
         <div class="section-header">People</div>
         <ul id="people" class="people-list"></ul>
@@ -82,6 +85,21 @@
         <!-- Emoji picker -->
         <div id="emoji-picker" class="emoji-picker hidden"></div>
       </section>
+    </div>
+
+    <!-- Create-channel modal -->
+    <div id="create-channel-modal" class="modal-backdrop hidden">
+      <div class="modal">
+        <h2>Create a channel</h2>
+        <label>Name</label>
+        <input id="cc-name" type="text" placeholder="e.g. design-reviews" maxlength="30" />
+        <label>Topic (optional)</label>
+        <input id="cc-topic" type="text" placeholder="What's this channel for?" maxlength="200" />
+        <div style="display:flex; gap:8px; margin-top:16px;">
+          <button id="cc-cancel" style="flex:1;">Cancel</button>
+          <button id="cc-create" class="primary" style="flex:1;">Create</button>
+        </div>
+      </div>
     </div>
 
     <!-- Screen-source picker modal -->

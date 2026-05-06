@@ -167,6 +167,20 @@ function startServer(port) {
             send(ws, { type: 'chat-update', message });
             break;
           }
+          case 'chat-create-channel': {
+            const id = slugifyChannelName(msg.name);
+            if (!id) return;
+            if (channels.has(id)) {
+              // Already exists — quietly resync this peer's sidebar by echoing it.
+              send(ws, { type: 'chat-channel-added', channel: channels.get(id).meta });
+              return;
+            }
+            const meta = { id, name: id, topic: String(msg.topic || '').slice(0, 200) };
+            channels.set(id, { meta, messages: [] });
+            // Broadcast to everyone including the creator so their sidebars sync.
+            for (const p of peers.values()) send(p.ws, { type: 'chat-channel-added', channel: meta });
+            break;
+          }
           case 'typing': {
             const me = peers.get(peerId);
             if (!me) return;
@@ -214,6 +228,17 @@ function startServer(port) {
 // Reject anything that isn't a short string of printable characters. We
 // deliberately don't try to validate "is this an emoji?" — the codepoint
 // space is huge — but we cap length and strip control chars.
+// Channel ids are used directly in object keys / DOM ids, so keep them safe.
+function slugifyChannelName(raw) {
+  if (typeof raw !== 'string') return null;
+  const id = raw.trim().toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 30);
+  if (id.length < 2) return null;
+  return id;
+}
+
 function sanitizeEmoji(raw) {
   if (typeof raw !== 'string') return null;
   if (raw.length === 0 || raw.length > 16) return null;
