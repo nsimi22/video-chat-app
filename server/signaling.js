@@ -127,7 +127,9 @@ function startServer(port) {
               authorColor: me.color,
               text: String(msg.text || '').slice(0, 4000),
               ts: Date.now(),
-              reactions: {},
+              // Null-prototype object so reaction keys can't reach
+              // Object.prototype slots (toString, __proto__, etc.).
+              reactions: Object.create(null),
             };
             ch.messages.push(message);
             broadcast({ type: 'chat-message', message });
@@ -150,11 +152,17 @@ function startServer(port) {
             if (!ch) return;
             const message = ch.messages.find((m) => m.id === msg.messageId);
             if (!message) return;
-            const list = (message.reactions[msg.emoji] = message.reactions[msg.emoji] || []);
+            const emoji = sanitizeEmoji(msg.emoji);
+            if (!emoji) return;
+            // Reactions are stored on a null-prototype object created above,
+            // but defend in depth: refuse keys that could reach prototype
+            // slots if this code is ever reused on a plain `{}`.
+            if (emoji === '__proto__' || emoji === 'constructor' || emoji === 'prototype') return;
+            const list = message.reactions[emoji] || (message.reactions[emoji] = []);
             const idx = list.indexOf(peerId);
             if (idx === -1) list.push(peerId);
             else list.splice(idx, 1);
-            if (list.length === 0) delete message.reactions[msg.emoji];
+            if (list.length === 0) delete message.reactions[emoji];
             broadcast({ type: 'chat-update', message });
             send(ws, { type: 'chat-update', message });
             break;
@@ -201,6 +209,16 @@ function startServer(port) {
       });
     });
   });
+}
+
+// Reject anything that isn't a short string of printable characters. We
+// deliberately don't try to validate "is this an emoji?" — the codepoint
+// space is huge — but we cap length and strip control chars.
+function sanitizeEmoji(raw) {
+  if (typeof raw !== 'string') return null;
+  if (raw.length === 0 || raw.length > 16) return null;
+  if (/[\x00-\x1F\x7F]/.test(raw)) return null;
+  return raw;
 }
 
 function findChannelByMessage(channels, messageId) {

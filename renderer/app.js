@@ -53,7 +53,12 @@ const state = {
   drawLayers: new Map(), // streamId -> DrawingLayer
   channelMeta: new Map(),
   activeAnnotation: null, // streamId currently being annotated
+  // Streams whose role (camera vs screen) we don't yet know. Held briefly so
+  // a late screen-announce can reclassify them before we render a tile.
+  pendingStreams: new Map(), // streamId -> {stream, fromId, timer}
 };
+
+const STREAM_DECISION_MS = 1500;
 
 // ---------------------------------------------------------------------------
 // Boot
@@ -105,6 +110,24 @@ async function join() {
 
   state.chat = new ChatView({ mesh, els });
   wireControls();
+  els.btnLeave.classList.remove('hidden');
+}
+
+function leave() {
+  if (!state.mesh) return;
+  state.mesh.disconnect();
+  state.mesh = null;
+  state.chat = null;
+  for (const tile of state.tilesByKey.values()) tile.remove();
+  state.tilesByKey.clear();
+  state.drawLayers.clear();
+  for (const p of state.pendingStreams.values()) clearTimeout(p.timer);
+  state.pendingStreams.clear();
+  closeAnnotate();
+  els.app.classList.add('hidden');
+  els.btnLeave.classList.add('hidden');
+  els.login.classList.remove('hidden');
+  els.loginName.focus();
 }
 
 function onWelcome({ peers, channels }) {
@@ -208,29 +231,59 @@ function addLocalScreenTile(stream, label) {
 }
 
 function onTrack({ stream, track, fromId }) {
-  // Heuristic: a stream that was announced as a screen lives in remoteScreenLabels.
+  // If we already know this stream is a screen (announce arrived first, the
+  // common case), render it as a screen tile right away.
   const screen = state.mesh.remoteScreenLabels.get(stream.id);
   if (screen) {
-    const key = `screen:${stream.id}`;
-    if (!state.tilesByKey.has(key)) {
-      const tile = makeTile({ key, label: `${screen.label} — ${screen.fromName}`, kind: 'screen' });
-      tile.dataset.streamId = stream.id;
-      tile.querySelector('video').srcObject = stream;
-      attachDrawingLayer(tile, stream.id, /*owner*/ false);
-    }
+    renderRemoteScreen(stream, screen);
     return;
   }
-  // Otherwise treat as the camera+mic stream from this peer.
-  const key = `peer:${fromId}`;
-  const peer = state.mesh.peerInfo.get(fromId);
+  // Otherwise the role is still ambiguous: it could be a camera, or a screen
+  // whose announce hasn't arrived yet. Buffer briefly; if announce arrives in
+  // STREAM_DECISION_MS we promote it to a screen tile, otherwise we commit
+  // to camera. This eliminates the previous race where a fast-delivered track
+  // event would mis-classify a screen as a camera.
+  if (state.pendingStreams.has(stream.id)) return;
+  const timer = setTimeout(() => commitStreamAsCamera(stream.id), STREAM_DECISION_MS);
+  state.pendingStreams.set(stream.id, { stream, fromId, timer });
+}
+
+function commitStreamAsCamera(streamId) {
+  const pending = state.pendingStreams.get(streamId);
+  if (!pending) return;
+  state.pendingStreams.delete(streamId);
+  clearTimeout(pending.timer);
+  const key = `peer:${pending.fromId}`;
+  const peer = state.mesh.peerInfo.get(pending.fromId);
   const tile = makeTile({ key, label: peer ? peer.name : 'guest', kind: 'remote' });
+  tile.querySelector('video').srcObject = pending.stream;
+}
+
+function renderRemoteScreen(stream, screen) {
+  const key = `screen:${stream.id}`;
+  if (state.tilesByKey.has(key)) {
+    state.tilesByKey.get(key).querySelector('.tile-label').textContent =
+      `${screen.label} — ${screen.fromName}`;
+    return;
+  }
+  const tile = makeTile({ key, label: `${screen.label} — ${screen.fromName}`, kind: 'screen' });
+  tile.dataset.streamId = stream.id;
   tile.querySelector('video').srcObject = stream;
+  attachDrawingLayer(tile, stream.id, /*owner*/ false);
 }
 
 function onScreenAnnounce(detail) {
-  // Tile may already exist if the track arrived first; relabel either way.
-  const key = `screen:${detail.streamId}`;
-  const tile = state.tilesByKey.get(key);
+  // Reconcile any pending stream that was waiting on this announce.
+  const pending = state.pendingStreams.get(detail.streamId);
+  if (pending) {
+    clearTimeout(pending.timer);
+    state.pendingStreams.delete(detail.streamId);
+    renderRemoteScreen(pending.stream, { label: detail.label, fromName: detail.fromName });
+    return;
+  }
+  // Otherwise, the track may have already been classified — relabel an
+  // existing screen tile if present.
+  const tile = state.tilesByKey.get(`screen:${detail.streamId}`);
   if (tile) {
     tile.querySelector('.tile-label').textContent = `${detail.label} — ${detail.fromName}`;
   }
@@ -303,6 +356,7 @@ function wireControls() {
     els.btnCam.textContent = on ? '📷' : '📵';
   };
   els.btnShare.onclick = openSourcePicker;
+  els.btnLeave.onclick = leave;
   els.sourceCancel.onclick = () => els.sourcePicker.classList.add('hidden');
 
   // Drawing toolbar

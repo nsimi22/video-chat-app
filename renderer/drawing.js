@@ -19,6 +19,7 @@ class DrawingLayer {
     this.drawing = false;
     this.last = null;
     this.history = []; // strokes (for re-rasterizing on resize)
+    this._cssSize = { w: 0, h: 0 }; // cached canvas CSS dimensions; updated on resize.
     this._bind();
   }
 
@@ -45,10 +46,14 @@ class DrawingLayer {
     this.canvas.style.width = r.width + 'px';
     this.canvas.style.height = r.height + 'px';
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this._cssSize.w = r.width;
+    this._cssSize.h = r.height;
     this._redraw();
   }
 
   _bind() {
+    // Pointer events fire frequently — read the bounding rect lazily and only
+    // when one actually arrives (not in inner draw loops).
     const toLocal = (e) => {
       const r = this.canvas.getBoundingClientRect();
       return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
@@ -108,8 +113,10 @@ class DrawingLayer {
       this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
       return;
     }
-    const r = this.canvas.getBoundingClientRect();
-    const x = s.x * r.width, y = s.y * r.height;
+    // Use cached CSS size — getBoundingClientRect() in this hot path causes
+    // a synchronous layout flush, which dominates cost on long histories.
+    const w = this._cssSize.w, h = this._cssSize.h;
+    const x = s.x * w, y = s.y * h;
     if (s.action === 'begin') {
       this._cursor = { x, y, color: s.color, size: s.size, tool: s.tool };
       if (s.tool === 'eraser') {

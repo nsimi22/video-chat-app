@@ -22,10 +22,17 @@ function createWindow() {
     },
   });
 
-  // Auto-allow microphone/camera/display capture from our own app.
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
-    const ok = ['media', 'display-capture', 'mediaKeySystem', 'notifications'].includes(permission);
-    cb(ok);
+  // Auto-allow only the permissions we need, and only for our own renderer
+  // (the BrowserWindow we created loading our local file://). Any other
+  // webContents — e.g. an opened external page — must go through the default
+  // deny path.
+  const isOurRenderer = (wc) => wc && mainWindow && wc.id === mainWindow.webContents.id;
+  const ALLOWED_PERMISSIONS = new Set(['media', 'display-capture', 'mediaKeySystem']);
+  session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => {
+    cb(isOurRenderer(wc) && ALLOWED_PERMISSIONS.has(permission));
+  });
+  session.defaultSession.setPermissionCheckHandler((wc, permission) => {
+    return isOurRenderer(wc) && ALLOWED_PERMISSIONS.has(permission);
   });
 
   // Provide on-demand display picker for screen-sharing requests.

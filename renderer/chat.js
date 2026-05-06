@@ -12,6 +12,7 @@ class ChatView {
     this.currentChannel = 'general';
     this.threadParentId = null; // null => channel view
     this.byChannel = new Map(); // channelId -> Message[]
+    this.nodeById = new Map(); // messageId -> rendered DOM node (current view only)
     this.typingUsers = new Map(); // peerId -> {name, until}
     this.typingClock = setInterval(() => this._refreshTyping(), 800);
     this._wireDom();
@@ -86,14 +87,14 @@ class ChatView {
       const arr = this.byChannel.get(m.channelId) || [];
       arr.push(m);
       this.byChannel.set(m.channelId, arr);
-      if (m.channelId === this.currentChannel) this._render(true);
+      if (m.channelId === this.currentChannel) this._appendIncremental(m);
     });
     this.mesh.addEventListener('chat-update', (e) => {
       const m = e.detail.message;
       const arr = this.byChannel.get(m.channelId) || [];
       const idx = arr.findIndex((x) => x.id === m.id);
       if (idx >= 0) arr[idx] = m;
-      if (m.channelId === this.currentChannel) this._render();
+      if (m.channelId === this.currentChannel) this._replaceNode(m);
     });
     this.mesh.addEventListener('typing', (e) => {
       const { from, fromName, channelId, parentId } = e.detail;
@@ -131,16 +132,63 @@ class ChatView {
 
   _messages() { return this.byChannel.get(this.currentChannel) || []; }
 
-  _render(scrollToBottom) {
+  // Full render — used only on view changes (channel switch, thread open/close,
+  // history load). Per-message updates use _appendIncremental / _replaceNode.
+  _render() {
     const all = this._messages();
     const container = this.els.messages;
-    container.innerHTML = '';
-    const list = this.threadParentId
-      ? [all.find((m) => m.id === this.threadParentId), ...all.filter((m) => m.parentId === this.threadParentId)]
-          .filter(Boolean)
-      : all.filter((m) => !m.parentId);
-    for (const m of list) container.appendChild(this._renderMessage(m, all));
-    if (scrollToBottom || true) container.scrollTop = container.scrollHeight;
+    container.replaceChildren();
+    this.nodeById.clear();
+    for (const m of this._visibleList(all)) {
+      const node = this._renderMessage(m, all);
+      this.nodeById.set(m.id, node);
+      container.appendChild(node);
+    }
+    container.scrollTop = container.scrollHeight;
+  }
+
+  _visibleList(all) {
+    if (this.threadParentId) {
+      const parent = all.find((m) => m.id === this.threadParentId);
+      const replies = all.filter((m) => m.parentId === this.threadParentId);
+      return parent ? [parent, ...replies] : replies;
+    }
+    return all.filter((m) => !m.parentId);
+  }
+
+  _isInCurrentView(m) {
+    if (this.threadParentId) {
+      return m.id === this.threadParentId || m.parentId === this.threadParentId;
+    }
+    return !m.parentId;
+  }
+
+  _appendIncremental(m) {
+    if (this._isInCurrentView(m)) {
+      const node = this._renderMessage(m, this._messages());
+      this.nodeById.set(m.id, node);
+      this.els.messages.appendChild(node);
+      this.els.messages.scrollTop = this.els.messages.scrollHeight;
+      return;
+    }
+    // A new reply may bump a parent's "N replies" count, even if the reply
+    // itself isn't visible (parent in channel view, reply elsewhere).
+    if (m.parentId && !this.threadParentId) this._replaceNodeById(m.parentId);
+  }
+
+  _replaceNode(m) {
+    if (this._isInCurrentView(m)) this._replaceNodeById(m.id);
+  }
+
+  _replaceNodeById(id) {
+    const old = this.nodeById.get(id);
+    if (!old) return;
+    const all = this._messages();
+    const target = all.find((x) => x.id === id);
+    if (!target) return;
+    const fresh = this._renderMessage(target, all);
+    this.nodeById.set(id, fresh);
+    old.replaceWith(fresh);
   }
 
   _renderMessage(m, all) {

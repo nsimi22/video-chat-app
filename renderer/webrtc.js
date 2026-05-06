@@ -110,7 +110,14 @@ class MeshClient extends EventTarget {
       this.ws.onerror = (e) => reject(e);
       this.ws.onclose = () => this.dispatchEvent(new CustomEvent('disconnected'));
       this.ws.onmessage = (ev) => {
-        const m = JSON.parse(ev.data);
+        let m;
+        try {
+          m = JSON.parse(ev.data);
+        } catch (err) {
+          console.warn('[mesh] dropped malformed signaling message', err);
+          return;
+        }
+        if (!m || typeof m !== 'object' || typeof m.type !== 'string') return;
         switch (m.type) {
           case 'welcome':
             this.peerId = m.peerId;
@@ -234,10 +241,20 @@ class MeshClient extends EventTarget {
       },
     });
     this.screenStreams.set(stream.id, { stream, label });
-    for (const conn of this.peers.values()) conn.addStream(stream);
+    // Announce BEFORE adding tracks so the metadata broadcast is enqueued on
+    // the WebSocket ahead of the renegotiation traffic. Receivers can then
+    // identify the inbound track as a screen share rather than a camera.
     this.send({ type: 'screen-announce', streamId: stream.id, label });
-    // When the user stops sharing via OS UI, clean up.
-    stream.getVideoTracks()[0].addEventListener('ended', () => this.removeScreen(stream.id));
+    for (const conn of this.peers.values()) conn.addStream(stream);
+    // When the user stops sharing via OS UI, clean up. Defensive guard in
+    // case the platform handed us a video-less stream.
+    const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) {
+      videoTrack.addEventListener('ended', () => this.removeScreen(stream.id));
+    } else {
+      console.warn('[mesh] screen stream has no video track; cleaning up');
+      this.removeScreen(stream.id);
+    }
     return stream;
   }
 
@@ -248,6 +265,20 @@ class MeshClient extends EventTarget {
     for (const conn of this.peers.values()) conn.removeStream(entry.stream);
     this.screenStreams.delete(streamId);
     this.send({ type: 'screen-stop', streamId });
+  }
+
+  // Clean teardown — used by the Leave button.
+  disconnect() {
+    for (const id of [...this.screenStreams.keys()]) this.removeScreen(id);
+    if (this.cameraStream) {
+      for (const t of this.cameraStream.getTracks()) t.stop();
+      this.cameraStream = null;
+    }
+    for (const conn of this.peers.values()) conn.close();
+    this.peers.clear();
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try { this.ws.close(); } catch {}
+    }
   }
 }
 
