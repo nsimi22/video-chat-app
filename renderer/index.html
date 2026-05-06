@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' ws: wss: http: https:;" />
+    <title>Huddle</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <!-- Login modal -->
+    <div id="login" class="modal-backdrop">
+      <div class="modal">
+        <h2>Join the huddle</h2>
+        <label>Display name</label>
+        <input id="login-name" type="text" placeholder="Your name" maxlength="32" />
+        <label>Server</label>
+        <input id="login-server" type="text" placeholder="ws://localhost:8787" />
+        <button id="login-go" class="primary">Connect</button>
+      </div>
+    </div>
+
+    <div id="app" class="app hidden">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="workspace">
+          <div class="workspace-name">Huddle</div>
+          <div id="me" class="me"></div>
+        </div>
+        <div class="section-header">Channels</div>
+        <ul id="channels" class="channel-list"></ul>
+        <div class="section-header">People</div>
+        <ul id="people" class="people-list"></ul>
+      </aside>
+
+      <!-- Call / screens area -->
+      <main class="stage">
+        <div class="stage-header">
+          <div class="stage-title">
+            <span id="channel-name">#general</span>
+            <span id="channel-topic" class="channel-topic"></span>
+          </div>
+          <div class="call-controls">
+            <button id="btn-mic" class="ctrl" title="Toggle microphone">🎤</button>
+            <button id="btn-cam" class="ctrl" title="Toggle camera">📷</button>
+            <button id="btn-share" class="ctrl primary" title="Share a screen">🖥️ Share screen</button>
+            <button id="btn-leave" class="ctrl danger hidden" title="Leave call">⏻</button>
+          </div>
+        </div>
+
+        <!-- Tile grid: cameras + every active screen share (local & remote). -->
+        <section id="tiles" class="tiles"></section>
+
+        <!-- Drawing toolbar appears when a screen tile is focused for annotation. -->
+        <div id="draw-toolbar" class="draw-toolbar hidden">
+          <span class="draw-target">Drawing on <b id="draw-target-name"></b></span>
+          <button data-tool="pen" class="tool active">✏️ Pen</button>
+          <button data-tool="arrow" class="tool">➤ Arrow</button>
+          <button data-tool="eraser" class="tool">🧽 Erase</button>
+          <input type="color" id="draw-color" value="#ff3b30" />
+          <input type="range" id="draw-size" min="1" max="20" value="4" />
+          <button id="draw-clear">Clear</button>
+          <button id="draw-close">Done</button>
+        </div>
+      </main>
+
+      <!-- Chat pane -->
+      <section class="chat">
+        <header class="chat-header">
+          <div id="chat-channel-name">#general</div>
+          <button id="chat-thread-back" class="hidden">← Back to channel</button>
+        </header>
+        <div id="messages" class="messages"></div>
+        <div id="typing-indicator" class="typing"></div>
+        <div class="composer">
+          <button id="emoji-btn" title="Emoji">😀</button>
+          <textarea id="composer-input" placeholder="Message #general"
+                    rows="1"></textarea>
+          <button id="send-btn" class="primary">Send</button>
+        </div>
+
+        <!-- Emoji picker -->
+        <div id="emoji-picker" class="emoji-picker hidden"></div>
+      </section>
+    </div>
+
+    <!-- Screen-source picker modal -->
+    <div id="source-picker" class="modal-backdrop hidden">
+      <div class="modal source-picker">
+        <h2>Choose a screen or window to share</h2>
+        <p class="hint">You can share more than one at a time — open this dialog again to share another.</p>
+        <div id="source-grid" class="source-grid"></div>
+        <button id="source-cancel">Cancel</button>
+      </div>
+    </div>
+
+    <script src="emojis.js"></script>
+    <script src="drawing.js"></script>
+    <script src="webrtc.js"></script>
+    <script src="chat.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

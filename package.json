@@ -1,0 +1,18 @@
+{
+  "name": "video-chat-app",
+  "version": "0.1.0",
+  "description": "Desktop video + multi-screen-share + Slack-style chat with drawing annotations",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "server": "node server/signaling.js"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0"
+  }
+}
