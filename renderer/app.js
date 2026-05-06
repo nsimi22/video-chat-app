@@ -16,12 +16,20 @@ const els = {
   loginGo: $('#login-go'),
   app: $('#app'),
   channels: $('#channels'),
+  dms: $('#dms'),
   addChannel: $('#add-channel'),
+  addDm: $('#add-dm'),
   ccModal: $('#create-channel-modal'),
   ccName: $('#cc-name'),
   ccTopic: $('#cc-topic'),
+  ccPrivate: $('#cc-private'),
+  ccMembersWrap: $('#cc-members-wrap'),
+  ccMembers: $('#cc-members'),
   ccCreate: $('#cc-create'),
   ccCancel: $('#cc-cancel'),
+  dmPicker: $('#dm-picker'),
+  dmPeople: $('#dm-people'),
+  dmCancel: $('#dm-cancel'),
   people: $('#people'),
   channelName: $('#channel-name'),
   channelTopic: $('#channel-topic'),
@@ -55,13 +63,12 @@ const els = {
 const state = {
   mesh: null,
   chat: null,
+  myName: '',
   tilesByKey: new Map(),
-  drawLayers: new Map(), // streamId -> DrawingLayer
+  drawLayers: new Map(),
   channelMeta: new Map(),
-  activeAnnotation: null, // streamId currently being annotated
-  // Streams whose role (camera vs screen) we don't yet know. Held briefly so
-  // a late screen-announce can reclassify them before we render a tile.
-  pendingStreams: new Map(), // streamId -> {stream, fromId, timer}
+  activeAnnotation: null,
+  pendingStreams: new Map(),
   pendingNewChannelId: null,
 };
 
@@ -81,6 +88,7 @@ const STREAM_DECISION_MS = 1500;
 
 async function join() {
   const name = els.loginName.value.trim() || 'guest';
+  state.myName = name;
   const url = els.loginServer.value.trim();
   const color = `hsl(${Math.floor(Math.random() * 360)} 70% 55%)`;
   const mesh = new MeshClient({ url, name, color });
@@ -94,21 +102,18 @@ async function join() {
   mesh.addEventListener('remote-stream-ended', (e) => onScreenStop(e.detail));
   mesh.addEventListener('draw', (e) => onRemoteDraw(e.detail));
   mesh.addEventListener('chat-channel-added', (e) => onChannelAdded(e.detail.channel));
+  mesh.addEventListener('chat-channel-removed', (e) => onChannelRemoved(e.detail.channelId));
+  mesh.addEventListener('chat-channel-focus', (e) => focusChannel(e.detail.channelId));
   mesh.addEventListener('disconnected', () => alert('Disconnected from server.'));
 
-  try {
-    await mesh.connect();
-  } catch (err) {
-    alert('Could not connect to ' + url);
-    return;
-  }
+  try { await mesh.connect(); }
+  catch (err) { alert('Could not connect to ' + url); return; }
   state.mesh = mesh;
 
   els.login.classList.add('hidden');
   els.app.classList.remove('hidden');
-  els.me.textContent = `${name}`;
+  els.me.textContent = name;
 
-  // Get camera+mic and add to mesh.
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, name);
@@ -126,6 +131,10 @@ function leave() {
   state.mesh.disconnect();
   state.mesh = null;
   state.chat = null;
+  state.channelMeta.clear();
+  els.channels.replaceChildren();
+  els.dms.replaceChildren();
+  els.people.replaceChildren();
   for (const tile of state.tilesByKey.values()) tile.remove();
   state.tilesByKey.clear();
   state.drawLayers.clear();
@@ -138,54 +147,133 @@ function leave() {
   els.loginName.focus();
 }
 
-function onWelcome({ peers, channels }) {
-  for (const c of channels) state.channelMeta.set(c.id, c);
-  renderChannels(channels);
-  els.people.innerHTML = '';
-  for (const p of peers) addPersonToSidebar(p);
-  state.chat?.setChannel('general', state.channelMeta.get('general')?.topic);
-}
+// ---------------------------------------------------------------------------
+// Channels & DMs
+// ---------------------------------------------------------------------------
 
-function renderChannels(channels) {
+function onWelcome({ peers, channels }) {
   els.channels.replaceChildren();
-  for (const c of channels) appendChannelToSidebar(c, c.id === 'general');
+  els.dms.replaceChildren();
+  state.channelMeta.clear();
+  for (const c of channels) appendChannelToSidebar(c, false);
+  els.people.replaceChildren();
+  for (const p of peers) addPersonToSidebar(p);
+  // Activate the general channel by default.
+  const generalLi = els.channels.querySelector('[data-id="general"]');
+  if (generalLi) generalLi.click();
+  else if (state.channelMeta.size > 0) {
+    // Fallback: pick the first available.
+    const first = [...state.channelMeta.keys()][0];
+    focusChannel(first);
+  }
 }
 
 function appendChannelToSidebar(channel, makeActive) {
-  if (els.channels.querySelector(`[data-id="${channel.id}"]`)) return;
   state.channelMeta.set(channel.id, channel);
+  const isDm = channel.type === 'dm';
+  const list = isDm ? els.dms : els.channels;
+  if (list.querySelector(`[data-id="${cssEscape(channel.id)}"]`)) return;
+
   const li = document.createElement('li');
-  li.textContent = '# ' + channel.name;
   li.dataset.id = channel.id;
+
+  const label = document.createElement('span');
+  label.className = 'ch-name';
+  label.textContent = displayLabelFor(channel);
+  li.appendChild(label);
+
+  if (canDelete(channel)) {
+    const del = document.createElement('button');
+    del.className = 'ch-delete';
+    del.title = isDm ? 'Close DM' : 'Delete channel';
+    del.textContent = '✕';
+    del.onclick = (e) => {
+      e.stopPropagation();
+      const verb = isDm ? 'Close' : 'Delete';
+      const target = isDm ? `your DM with ${displayLabelFor(channel).replace(/^@\s*/, '')}` : `#${channel.name}`;
+      if (!confirm(`${verb} ${target}? This is permanent.`)) return;
+      state.mesh.send({ type: 'chat-delete-channel', channelId: channel.id });
+    };
+    li.appendChild(del);
+  }
+
   if (makeActive) li.classList.add('active');
-  li.onclick = () => {
-    [...els.channels.children].forEach((x) => x.classList.remove('active'));
-    li.classList.add('active');
-    state.chat.setChannel(channel.id, channel.topic);
-  };
-  els.channels.appendChild(li);
+  li.onclick = () => focusChannel(channel.id);
+  list.appendChild(li);
+}
+
+function focusChannel(channelId) {
+  const channel = state.channelMeta.get(channelId);
+  if (!channel) return;
+  // Clear active across both lists, then mark this one.
+  for (const x of els.channels.children) x.classList.remove('active');
+  for (const x of els.dms.children) x.classList.remove('active');
+  const list = channel.type === 'dm' ? els.dms : els.channels;
+  const li = list.querySelector(`[data-id="${cssEscape(channel.id)}"]`);
+  if (li) li.classList.add('active');
+  state.chat.setChannel(channel.id, channel.topic, displayLabelFor(channel));
 }
 
 function onChannelAdded(channel) {
   const wasNew = !state.channelMeta.has(channel.id);
   appendChannelToSidebar(channel, false);
-  // If this client just created the channel, switch into it.
+  // If this client just created a regular channel, switch into it.
   if (wasNew && state.pendingNewChannelId === channel.id) {
     state.pendingNewChannelId = null;
-    const li = els.channels.querySelector(`[data-id="${channel.id}"]`);
-    if (li) li.click();
+    focusChannel(channel.id);
   }
 }
 
+function onChannelRemoved(channelId) {
+  state.channelMeta.delete(channelId);
+  const sel = `[data-id="${cssEscape(channelId)}"]`;
+  const li = els.channels.querySelector(sel) || els.dms.querySelector(sel);
+  if (li) li.remove();
+  // If we were viewing it, fall back to general.
+  if (state.chat && state.chat.currentChannel === channelId) {
+    state.chat.byChannel.delete(channelId);
+    const general = els.channels.querySelector('[data-id="general"]');
+    if (general) general.click();
+  }
+}
+
+function displayLabelFor(channel) {
+  if (channel.type === 'dm') {
+    const other = (channel.members || []).find((m) => m !== state.myName) || channel.name;
+    return `@ ${other}`;
+  }
+  if (channel.type === 'private') return `🔒 ${channel.name}`;
+  return `# ${channel.name}`;
+}
+
+function canDelete(channel) {
+  if (channel.protected) return false;
+  if (channel.type === 'dm') return (channel.members || []).includes(state.myName);
+  return channel.createdBy === state.myName;
+}
+
+// CSS.escape isn't available everywhere; tiny shim for our id alphabet.
+function cssEscape(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' + c); }
+
+// ---------------------------------------------------------------------------
+// People
+// ---------------------------------------------------------------------------
+
 function addPersonToSidebar(peer) {
-  const existing = els.people.querySelector(`[data-id="${peer.id}"]`);
-  if (existing) return;
+  if (els.people.querySelector(`[data-id="${peer.id}"]`)) return;
   const li = document.createElement('li');
   li.dataset.id = peer.id;
+  li.dataset.name = peer.name;
   const dot = document.createElement('span');
   dot.className = 'dot online';
   dot.style.background = peer.color || '';
   li.append(dot, document.createTextNode(peer.name));
+  // Click to open a DM with them.
+  li.onclick = () => {
+    if (peer.name === state.myName) return;
+    state.mesh.send({ type: 'chat-create-dm', with: peer.name });
+  };
+  li.title = peer.name === state.myName ? 'You' : `Direct message ${peer.name}`;
   els.people.appendChild(li);
 }
 
@@ -221,7 +309,7 @@ function makeTile({ key, label, kind }) {
     annotate.textContent = '✏️ Annotate';
     annotate.onclick = () => toggleAnnotate(tile.dataset.streamId);
     actions.appendChild(annotate);
-    if (kind === 'screen') tile.dataset.kind = 'screen';
+    tile.dataset.kind = 'screen';
     tile.appendChild(actions);
   }
   els.tiles.appendChild(tile);
@@ -246,7 +334,6 @@ function addLocalScreenTile(stream, label) {
   tile.dataset.streamId = stream.id;
   tile.querySelector('video').srcObject = stream;
   attachDrawingLayer(tile, stream.id, /*owner*/ true);
-  // Tile actions: stop sharing button.
   const stopBtn = document.createElement('button');
   stopBtn.textContent = '⏹ Stop';
   stopBtn.onclick = () => state.mesh.removeScreen(stream.id);
@@ -254,18 +341,8 @@ function addLocalScreenTile(stream, label) {
 }
 
 function onTrack({ stream, track, fromId }) {
-  // If we already know this stream is a screen (announce arrived first, the
-  // common case), render it as a screen tile right away.
   const screen = state.mesh.remoteScreenLabels.get(stream.id);
-  if (screen) {
-    renderRemoteScreen(stream, screen);
-    return;
-  }
-  // Otherwise the role is still ambiguous: it could be a camera, or a screen
-  // whose announce hasn't arrived yet. Buffer briefly; if announce arrives in
-  // STREAM_DECISION_MS we promote it to a screen tile, otherwise we commit
-  // to camera. This eliminates the previous race where a fast-delivered track
-  // event would mis-classify a screen as a camera.
+  if (screen) { renderRemoteScreen(stream, screen); return; }
   if (state.pendingStreams.has(stream.id)) return;
   const timer = setTimeout(() => commitStreamAsCamera(stream.id), STREAM_DECISION_MS);
   state.pendingStreams.set(stream.id, { stream, fromId, timer });
@@ -296,7 +373,6 @@ function renderRemoteScreen(stream, screen) {
 }
 
 function onScreenAnnounce(detail) {
-  // Reconcile any pending stream that was waiting on this announce.
   const pending = state.pendingStreams.get(detail.streamId);
   if (pending) {
     clearTimeout(pending.timer);
@@ -304,12 +380,8 @@ function onScreenAnnounce(detail) {
     renderRemoteScreen(pending.stream, { label: detail.label, fromName: detail.fromName });
     return;
   }
-  // Otherwise, the track may have already been classified — relabel an
-  // existing screen tile if present.
   const tile = state.tilesByKey.get(`screen:${detail.streamId}`);
-  if (tile) {
-    tile.querySelector('.tile-label').textContent = `${detail.label} — ${detail.fromName}`;
-  }
+  if (tile) tile.querySelector('.tile-label').textContent = `${detail.label} — ${detail.fromName}`;
 }
 
 function onScreenStop({ streamId }) {
@@ -338,10 +410,7 @@ function onRemoteDraw({ streamId, stroke }) {
 }
 
 function toggleAnnotate(streamId) {
-  if (state.activeAnnotation === streamId) {
-    closeAnnotate();
-    return;
-  }
+  if (state.activeAnnotation === streamId) { closeAnnotate(); return; }
   if (state.activeAnnotation) closeAnnotate();
   const layer = state.drawLayers.get(streamId);
   if (!layer) return;
@@ -353,10 +422,7 @@ function toggleAnnotate(streamId) {
 }
 
 function closeAnnotate() {
-  if (!state.activeAnnotation) {
-    els.drawToolbar.classList.add('hidden');
-    return;
-  }
+  if (!state.activeAnnotation) { els.drawToolbar.classList.add('hidden'); return; }
   const layer = state.drawLayers.get(state.activeAnnotation);
   if (layer) layer.setActive(false);
   state.activeAnnotation = null;
@@ -364,7 +430,7 @@ function closeAnnotate() {
 }
 
 // ---------------------------------------------------------------------------
-// Controls (mic/cam/share + drawing toolbar + source picker)
+// Controls (mic/cam/share + drawing toolbar + create channel + DM picker)
 // ---------------------------------------------------------------------------
 
 function wireControls() {
@@ -383,25 +449,18 @@ function wireControls() {
   els.sourceCancel.onclick = () => els.sourcePicker.classList.add('hidden');
 
   // Create-channel modal
-  const openCreate = () => {
-    els.ccName.value = '';
-    els.ccTopic.value = '';
-    els.ccModal.classList.remove('hidden');
-    els.ccName.focus();
+  els.addChannel.onclick = openCreateChannelModal;
+  els.ccCancel.onclick = () => els.ccModal.classList.add('hidden');
+  els.ccPrivate.onchange = () => {
+    els.ccMembersWrap.classList.toggle('hidden', !els.ccPrivate.checked);
+    if (els.ccPrivate.checked) renderMemberPicker(els.ccMembers);
   };
-  const closeCreate = () => els.ccModal.classList.add('hidden');
-  els.addChannel.onclick = openCreate;
-  els.ccCancel.onclick = closeCreate;
-  els.ccCreate.onclick = () => {
-    const name = els.ccName.value.trim();
-    if (!name) return;
-    // Track which channel we're trying to create so we can auto-switch when
-    // the server's broadcast comes back.
-    state.pendingNewChannelId = name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
-    state.mesh.send({ type: 'chat-create-channel', name, topic: els.ccTopic.value });
-    closeCreate();
-  };
-  els.ccName.addEventListener('keydown', (e) => { if (e.key === 'Enter') els.ccCreate.click(); });
+  els.ccCreate.onclick = submitCreateChannel;
+  els.ccName.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !els.ccPrivate.checked) submitCreateChannel(); });
+
+  // DM picker
+  els.addDm.onclick = openDmPicker;
+  els.dmCancel.onclick = () => els.dmPicker.classList.add('hidden');
 
   // Drawing toolbar
   els.drawToolbar.querySelectorAll('[data-tool]').forEach((b) => {
@@ -412,24 +471,104 @@ function wireControls() {
       if (layer) layer.setTool(b.dataset.tool);
     };
   });
-  els.drawColor.oninput = () => {
-    const layer = state.drawLayers.get(state.activeAnnotation);
-    if (layer) layer.setColor(els.drawColor.value);
-  };
-  els.drawSize.oninput = () => {
-    const layer = state.drawLayers.get(state.activeAnnotation);
-    if (layer) layer.setSize(parseInt(els.drawSize.value, 10));
-  };
-  els.drawClear.onclick = () => {
-    const layer = state.drawLayers.get(state.activeAnnotation);
-    if (layer) layer.clearAll(true);
-  };
+  els.drawColor.oninput = () => state.drawLayers.get(state.activeAnnotation)?.setColor(els.drawColor.value);
+  els.drawSize.oninput = () => state.drawLayers.get(state.activeAnnotation)?.setSize(parseInt(els.drawSize.value, 10));
+  els.drawClear.onclick = () => state.drawLayers.get(state.activeAnnotation)?.clearAll(true);
   els.drawClose.onclick = closeAnnotate;
+}
+
+function openCreateChannelModal() {
+  els.ccName.value = '';
+  els.ccTopic.value = '';
+  els.ccPrivate.checked = false;
+  els.ccMembersWrap.classList.add('hidden');
+  els.ccMembers.replaceChildren();
+  els.ccModal.classList.remove('hidden');
+  els.ccName.focus();
+}
+
+function submitCreateChannel() {
+  const name = els.ccName.value.trim();
+  if (!name) return;
+  const slug = name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!slug || slug.length < 2) { alert('Channel name must be at least 2 characters.'); return; }
+  state.pendingNewChannelId = slug;
+  const isPrivate = els.ccPrivate.checked;
+  const members = isPrivate
+    ? [...els.ccMembers.querySelectorAll('.row.selected')].map((r) => r.dataset.name)
+    : undefined;
+  state.mesh.send({
+    type: 'chat-create-channel',
+    name,
+    topic: els.ccTopic.value,
+    private: isPrivate,
+    members,
+  });
+  els.ccModal.classList.add('hidden');
+}
+
+// Render a multi-select list of online peers (excluding self) for member invitation.
+function renderMemberPicker(container) {
+  container.replaceChildren();
+  const peers = [...state.mesh.peerInfo.values()].filter((p) => p.name !== state.myName);
+  if (peers.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = 'No other people are online right now.';
+    container.appendChild(empty);
+    return;
+  }
+  for (const p of peers) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.dataset.name = p.name;
+    const dot = document.createElement('span');
+    dot.className = 'dot online';
+    dot.style.background = p.color || '';
+    const check = document.createElement('span');
+    check.className = 'check';
+    const lbl = document.createElement('span');
+    lbl.textContent = p.name;
+    row.append(dot, lbl, check);
+    row.onclick = () => {
+      const selected = row.classList.toggle('selected');
+      check.textContent = selected ? '✓' : '';
+    };
+    container.appendChild(row);
+  }
+}
+
+function openDmPicker() {
+  els.dmPeople.replaceChildren();
+  const peers = [...state.mesh.peerInfo.values()].filter((p) => p.name !== state.myName);
+  if (peers.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = 'No other people are online right now.';
+    els.dmPeople.appendChild(empty);
+  } else {
+    for (const p of peers) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const dot = document.createElement('span');
+      dot.className = 'dot online';
+      dot.style.background = p.color || '';
+      const lbl = document.createElement('span');
+      lbl.textContent = p.name;
+      row.append(dot, lbl);
+      row.onclick = () => {
+        state.mesh.send({ type: 'chat-create-dm', with: p.name });
+        els.dmPicker.classList.add('hidden');
+      };
+      els.dmPeople.appendChild(row);
+    }
+  }
+  els.dmPicker.classList.remove('hidden');
 }
 
 async function openSourcePicker() {
   const sources = await window.huddle.getScreenSources();
-  els.sourceGrid.innerHTML = '';
+  els.sourceGrid.replaceChildren();
   for (const s of sources) {
     const card = document.createElement('div');
     card.className = 'src';
@@ -444,9 +583,7 @@ async function openSourcePicker() {
       try {
         const stream = await state.mesh.addScreen(s.id, s.name);
         addLocalScreenTile(stream, s.name);
-      } catch (err) {
-        alert('Failed to share screen: ' + err.message);
-      }
+      } catch (err) { alert('Failed to share screen: ' + err.message); }
     };
     els.sourceGrid.appendChild(card);
   }

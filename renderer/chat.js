@@ -20,13 +20,15 @@ class ChatView {
     this._initEmojiPicker();
   }
 
-  setChannel(channelId, topic) {
+  setChannel(channelId, topic, displayLabel) {
     this.currentChannel = channelId;
     this.threadParentId = null;
-    this.els.chatChannelName.textContent = '#' + channelId;
-    this.els.channelName.textContent = '#' + channelId;
+    const label = displayLabel || ('#' + channelId);
+    this._currentLabel = label;
+    this.els.chatChannelName.textContent = label;
+    this.els.channelName.textContent = label;
     this.els.channelTopic.textContent = topic || '';
-    this.els.composer.placeholder = 'Message #' + channelId;
+    this.els.composer.placeholder = `Message ${label}`;
     this.els.threadBack.classList.add('hidden');
     this._render();
     this.mesh.send({ type: 'chat-history', channelId });
@@ -44,8 +46,9 @@ class ChatView {
   closeThread() {
     this.threadParentId = null;
     this.els.threadBack.classList.add('hidden');
-    this.els.chatChannelName.textContent = '#' + this.currentChannel;
-    this.els.composer.placeholder = 'Message #' + this.currentChannel;
+    const label = this._currentLabel || ('#' + this.currentChannel);
+    this.els.chatChannelName.textContent = label;
+    this.els.composer.placeholder = `Message ${label}`;
     this._render();
   }
 

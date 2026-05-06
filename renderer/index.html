@@ -32,6 +32,11 @@
           <button id="add-channel" class="ghost" title="Create a channel">＋</button>
         </div>
         <ul id="channels" class="channel-list"></ul>
+        <div class="section-header section-header-row">
+          <span>Direct Messages</span>
+          <button id="add-dm" class="ghost" title="New direct message">＋</button>
+        </div>
+        <ul id="dms" class="channel-list"></ul>
         <div class="section-header">People</div>
         <ul id="people" class="people-list"></ul>
       </aside>
@@ -95,10 +100,28 @@
         <input id="cc-name" type="text" placeholder="e.g. design-reviews" maxlength="30" />
         <label>Topic (optional)</label>
         <input id="cc-topic" type="text" placeholder="What's this channel for?" maxlength="200" />
+        <label class="cc-private-row">
+          <input id="cc-private" type="checkbox" />
+          <span>Private — only invited members can see this channel</span>
+        </label>
+        <div id="cc-members-wrap" class="hidden">
+          <label>Invite members</label>
+          <div id="cc-members" class="member-picker"></div>
+        </div>
         <div style="display:flex; gap:8px; margin-top:16px;">
           <button id="cc-cancel" style="flex:1;">Cancel</button>
           <button id="cc-create" class="primary" style="flex:1;">Create</button>
         </div>
+      </div>
+    </div>
+
+    <!-- DM picker modal -->
+    <div id="dm-picker" class="modal-backdrop hidden">
+      <div class="modal">
+        <h2>Start a direct message</h2>
+        <p class="hint">Pick someone to message privately.</p>
+        <div id="dm-people" class="member-picker"></div>
+        <button id="dm-cancel" style="margin-top:12px;">Cancel</button>
       </div>
     </div>
 
