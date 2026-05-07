@@ -27,16 +27,18 @@ button {
   line-height: 1.2; min-height: 32px;
   transition: background 80ms ease, border-color 80ms ease, color 80ms ease;
 }
-button:hover { background: #34373c; }
+button:not([disabled]):hover { background: #34373c; }
 button:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 1px; }
+/* Inside tiles (overflow: hidden) the outside ring would be clipped — pull it inside. */
+.tile button:focus-visible { outline-offset: -2px; }
 button.primary { background: var(--accent); border-color: var(--accent); }
-button.primary:hover { background: #1573b8; }
+button.primary:not([disabled]):hover { background: #1573b8; }
 button.danger { background: var(--bad); border-color: var(--bad); }
-button.danger:hover { background: #c0184d; }
+button.danger:not([disabled]):hover { background: #c0184d; }
 button.subtle {
   background: transparent; border-color: transparent; color: var(--text-dim);
 }
-button.subtle:hover { background: rgba(255,255,255,.06); color: var(--text); }
+button.subtle:not([disabled]):hover { background: rgba(255,255,255,.06); color: var(--text); }
 button[disabled] { opacity: .5; cursor: not-allowed; }
 .btn-row { display: flex; gap: 8px; margin-top: 14px; }
 .btn-row > button { flex: 1; }
