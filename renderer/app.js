@@ -699,12 +699,17 @@ function appendChannelToSidebar(channel, makeActive) {
     del.className = 'ch-delete';
     del.title = isDm ? 'Close DM' : 'Delete channel';
     del.textContent = '✕';
-    del.onclick = (e) => {
+    del.onclick = async (e) => {
       e.stopPropagation();
       const verb = isDm ? 'Close' : 'Delete';
       const target = isDm ? `your DM with ${displayLabelFor(channel).replace(/^@\s*/, '')}` : `#${channel.name}`;
       if (!confirm(`${verb} ${target}? This is permanent.`)) return;
-      state.huddle.deleteChannel(channel.id);
+      try {
+        await state.huddle.deleteChannel(channel.id);
+      } catch (err) {
+        console.warn('deleteChannel failed', err);
+        showCallError(`Could not ${verb.toLowerCase()} ${target}: ${err?.message || err}`);
+      }
     };
     li.appendChild(del);
   }
@@ -836,16 +841,50 @@ function onChannelRemoved(channelId) {
 
 function displayLabelFor(channel) {
   if (channel.type === 'dm') {
-    const other = (channel.members || []).find((m) => m !== state.myName) || channel.name;
-    return `@ ${other}`;
+    return `@ ${dmCounterpartName(channel)}`;
   }
   if (channel.type === 'private') return `🔒 ${channel.name}`;
   return `# ${channel.name}`;
 }
 
+// Resolve the "other party" name for a DM. The previous logic
+// (find a name in channel.members that wasn't state.myName) broke
+// after Edit-profile renames: channel.members is a snapshot of
+// display names taken at DM creation, state.myName is the user's
+// current name, and after a rename the find() could pick the
+// stale OLD self-name and label the DM with your own old name.
+//
+// Parse the uuids out of the channel id (dm:<uuid_a>::<uuid_b>)
+// and look up the counterpart's CURRENT name from live presence.
+// channel.name (set to the counterpart's display name at
+// creation) is the last-resort fallback for offline counterparts.
+function dmCounterpartName(channel) {
+  const m = /^dm:([0-9a-f-]+)::([0-9a-f-]+)$/.exec(channel.id);
+  const me = state.huddle?.peerId;
+  if (m && me) {
+    const otherId = m[1] === me ? m[2] : (m[2] === me ? m[1] : null);
+    if (otherId) {
+      const live = state.huddle.peerInfo.get(otherId)?.name;
+      if (live) return live;
+    }
+  }
+  return channel.name || 'unknown';
+}
+
 function canDelete(channel) {
   if (channel.protected) return false;
-  if (channel.type === 'dm') return (channel.members || []).includes(state.myName);
+  if (channel.type === 'dm') {
+    // Parse membership from the channel id (`dm:<uuid_a>::<uuid_b>`)
+    // rather than channel.members. The members array is a snapshot
+    // of display names taken at DM creation / channel-load time;
+    // after Edit-profile renames it can drift away from
+    // state.myName, which silently strips the ✕ delete button from
+    // DMs the user actually owns. The id is stable.
+    const m = /^dm:([0-9a-f-]+)::([0-9a-f-]+)$/.exec(channel.id);
+    if (!m) return false;
+    const me = state.huddle?.peerId;
+    return !!me && (m[1] === me || m[2] === me);
+  }
   // createdBy is a user uuid; compare against the authenticated user's id,
   // not the display name.
   return channel.createdBy && channel.createdBy === state.huddle?.peerId;
