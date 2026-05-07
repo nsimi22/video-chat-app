@@ -429,20 +429,33 @@ class ChatView {
 
     const initials = (m.authorName || '?').slice(0, 1).toUpperCase();
     const avatar = document.createElement('div');
-    avatar.className = 'avatar';
-    avatar.style.background = m.authorColor || '#666';
-    avatar.textContent = initials;
+    avatar.className = 'avatar' + (m.aiGenerated ? ' avatar-ai' : '');
+    if (m.aiGenerated) {
+      // Robot icon avatar; same size as the human ones so the grid stays aligned.
+      avatar.style.background = '#3a3f47';
+      avatar.textContent = '🤖';
+    } else {
+      avatar.style.background = m.authorColor || '#666';
+      avatar.textContent = initials;
+    }
 
     const right = document.createElement('div');
+    if (m.aiGenerated) wrap.classList.add('msg-ai');
     const head = document.createElement('div');
     head.className = 'msg-head';
     const author = document.createElement('span');
     author.className = 'msg-author';
-    author.textContent = m.authorName;
+    author.textContent = m.aiGenerated ? `AI · ${m.aiModel || 'unknown model'}` : m.authorName;
     const time = document.createElement('span');
     time.className = 'msg-time';
     time.textContent = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     head.append(author, time);
+    if (m.aiGenerated) {
+      const via = document.createElement('span');
+      via.className = 'msg-edited';
+      via.textContent = `via ${m.authorName}`;
+      head.append(via);
+    }
     if (m.editedTs) {
       const edited = document.createElement('span');
       edited.className = 'msg-edited';
@@ -544,13 +557,15 @@ class ChatView {
       actions.append(edit, del);
     }
 
-    // Jira unfurl: scan the message text for issue keys/URLs and render
-    // a card per match. Each card resolves async via the cached lookup.
+    // Jira + GitHub unfurls: scan the message text and render a card per
+    // match. Each card resolves async via its respective cached lookup.
     const jiraEls = this._renderJiraUnfurls(m.text || '');
+    const ghEls = this._renderGitHubUnfurls(m.text || '');
 
     const children = [head, body];
     if (attachmentsEl) children.push(attachmentsEl);
     if (jiraEls.length) children.push(...jiraEls);
+    if (ghEls.length) children.push(...ghEls);
     children.push(reactions, actions);
     if (!m.parentId && this.threadParentId === null) {
       const replies = (all || []).filter((x) => x.parentId === m.id);
@@ -699,6 +714,9 @@ class ChatView {
     if (!m) return false;
     const cmd = m[1].toLowerCase();
     const arg = (m[2] || '').trim();
+    if (cmd === 'ai') return this._runSlashAi(arg);
+    if (cmd === 'summarize' || cmd === 'summary') return this._runSlashSummarize();
+    if (cmd === 'gh' || cmd === 'github') return this._runSlashGh(arg);
     if (cmd === 'jira') {
       // /jira create [summary]    -> open the create-ticket modal
       // /jira <KEY>               -> post a message containing the URL,
@@ -726,6 +744,193 @@ class ChatView {
       return true;
     }
     return false;
+  }
+
+  // --- AI slash commands --------------------------------------------------
+
+  async _runSlashAi(prompt) {
+    const ai = this.hooks.getAi?.();
+    if (!ai || !ai.isConfigured()) {
+      alert('No AI provider is configured. Open Settings (⚙) to add an Anthropic or OpenRouter API key.');
+      return true;
+    }
+    if (!prompt) {
+      alert('Usage: /ai <your question>');
+      return true;
+    }
+    // Wrap the response so the team has context: include the human's question
+    // at the top and the AI response below. Single message, single bubble.
+    let result;
+    try {
+      result = await ai.chat({ messages: [{ role: 'user', content: prompt }] });
+    } catch (err) {
+      alert('AI request failed: ' + (err.message || err));
+      return true;
+    }
+    const body = `> ${prompt.replace(/\n/g, '\n> ')}\n\n${result.text || '(no response)'}`;
+    await this.mesh.sendAiMessage({
+      channelId: this.currentChannel,
+      parentId: this.threadParentId,
+      text: body,
+      model: result.model,
+    });
+    return true;
+  }
+
+  async _runSlashSummarize() {
+    const ai = this.hooks.getAi?.();
+    if (!ai || !ai.isConfigured()) {
+      alert('No AI provider is configured. Open Settings (⚙) to add an Anthropic or OpenRouter API key.');
+      return true;
+    }
+    // Summarize the last 100 visible messages of the current channel/thread.
+    // We use the in-memory cache (already paginated) rather than re-fetching.
+    const all = this._messages();
+    const list = (this.threadParentId
+      ? all.filter((m) => m.id === this.threadParentId || m.parentId === this.threadParentId)
+      : all.filter((m) => !m.parentId)
+    ).slice(-100);
+    if (list.length === 0) {
+      alert('Nothing to summarize yet.');
+      return true;
+    }
+    let result;
+    try { result = await ai.summarize(list); }
+    catch (err) { alert('Summarize failed: ' + (err.message || err)); return true; }
+    const body = `🧠 **Summary of recent messages**\n\n${result.text || '(no summary)'}`;
+    await this.mesh.sendAiMessage({
+      channelId: this.currentChannel,
+      parentId: this.threadParentId,
+      text: body,
+      model: result.model,
+    });
+    return true;
+  }
+
+  async _runSlashGh(arg) {
+    const gh = this.hooks.getGitHub?.();
+    if (!gh || !gh.isConfigured()) {
+      alert('GitHub is not configured. Open Settings (⚙) to add a Personal Access Token.');
+      return true;
+    }
+    if (!arg) {
+      alert('Usage: /gh <owner>/<repo>#<number> | /gh issue <owner>/<repo> <title> [-- body…]');
+      return true;
+    }
+    // /gh <owner>/<repo>#<num> — quick lookup, post URL so it auto-unfurls
+    const ref = window.githubParseRef(arg);
+    if (ref) {
+      const url = gh.htmlUrl(ref.owner, ref.repo, ref.number);
+      await this.mesh.sendMessage({
+        channelId: this.currentChannel,
+        parentId: this.threadParentId,
+        text: url,
+      });
+      return true;
+    }
+    // /gh issue <owner>/<repo> <title> [-- body…]
+    const m = /^(issue|pr)\s+([a-zA-Z0-9._-]+)\/([a-zA-Z0-9._-]+)\s+([\s\S]+)$/.exec(arg);
+    if (!m) {
+      alert('Usage: /gh <owner>/<repo>#<number>  OR  /gh issue <owner>/<repo> <title> [-- body…]');
+      return true;
+    }
+    const [, kind, owner, repo, rest] = m;
+    if (kind !== 'issue') {
+      alert('Only /gh issue is supported for creation right now (PRs need a branch — use the GitHub UI).');
+      return true;
+    }
+    let title = rest, body = '';
+    const sep = rest.indexOf('--');
+    if (sep > 0) { title = rest.slice(0, sep).trim(); body = rest.slice(sep + 2).trim(); }
+    let issue;
+    try { issue = await gh.createIssue(owner, repo, { title, body }); }
+    catch (err) { alert('GitHub create failed: ' + (err.message || err)); return true; }
+    await this.mesh.sendMessage({
+      channelId: this.currentChannel,
+      parentId: this.threadParentId,
+      text: `Created GitHub issue: ${issue.html_url}`,
+    });
+    return true;
+  }
+
+  // --- GitHub unfurl ------------------------------------------------------
+
+  _renderGitHubUnfurls(text) {
+    const gh = this.hooks.getGitHub?.();
+    if (!gh || !gh.isConfigured()) return [];
+    const refs = window.githubExtractRefs(text);
+    if (!refs.length) return [];
+    const out = [];
+    for (const ref of refs) {
+      const el = document.createElement('div');
+      el.className = 'gh-unfurl';
+      const loading = document.createElement('div');
+      loading.className = 'gh-loading';
+      loading.textContent = `Loading ${ref.owner}/${ref.repo}#${ref.number}…`;
+      el.appendChild(loading);
+      out.push(el);
+      this._lookupGhAndPaint(ref, el, gh);
+    }
+    return out;
+  }
+
+  async _lookupGhAndPaint(ref, el, gh) {
+    const cacheKey = `${ref.owner}/${ref.repo}#${ref.number}`;
+    if (!this._ghCache) { this._ghCache = new Map(); this._ghInflight = new Map(); }
+    const cached = this._ghCache.get(cacheKey);
+    let issue = cached;
+    if (issue === undefined) {
+      let p = this._ghInflight.get(cacheKey);
+      if (!p) {
+        p = gh.getIssueOrPull(ref.owner, ref.repo, ref.number)
+          .then((data) => { this._ghCache.set(cacheKey, data); return data; })
+          .catch((err) => { this._ghCache.set(cacheKey, null); throw err; })
+          .finally(() => this._ghInflight.delete(cacheKey));
+        this._ghInflight.set(cacheKey, p);
+      }
+      try { issue = await p; }
+      catch (err) {
+        el.classList.add('error');
+        el.replaceChildren();
+        const e = document.createElement('div');
+        e.className = 'gh-loading';
+        e.textContent = `${cacheKey}: ${err.message || 'lookup failed'}`;
+        el.appendChild(e);
+        return;
+      }
+    }
+    if (!issue) {
+      el.classList.add('error');
+      el.replaceChildren();
+      const e = document.createElement('div');
+      e.className = 'gh-loading';
+      e.textContent = `${cacheKey}: not found or no access`;
+      el.appendChild(e);
+      return;
+    }
+    el.replaceChildren();
+    const isPr = !!issue.pull_request;
+    const top = document.createElement('div');
+    top.className = 'gh-row';
+    const link = document.createElement('a');
+    link.href = issue.html_url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+    link.className = 'gh-key';
+    link.textContent = `${isPr ? 'PR' : 'Issue'} · ${cacheKey}`;
+    const stat = document.createElement('span');
+    const state = (issue.state || '').toLowerCase();
+    const statusKind = state === 'closed' ? (issue.merged ? 'merged' : 'closed') : 'open';
+    stat.className = `gh-status ${statusKind}`;
+    stat.textContent = statusKind;
+    top.append(link, stat);
+    const sumRow = document.createElement('div');
+    sumRow.className = 'gh-summary';
+    sumRow.textContent = issue.title || '';
+    const meta = document.createElement('div');
+    meta.className = 'gh-row';
+    meta.style.color = 'var(--text-dim)';
+    const assignee = issue.assignee?.login || (issue.assignees?.[0]?.login) || 'Unassigned';
+    meta.textContent = `Author: ${issue.user?.login || '?'}  ·  Assignee: ${assignee}  ·  Comments: ${issue.comments ?? 0}`;
+    el.append(top, sumRow, meta);
   }
 
   // --- Jira unfurl --------------------------------------------------------

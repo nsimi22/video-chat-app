@@ -277,6 +277,38 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
 .jira-unfurl .jira-loading { color: var(--text-dim); font-size: 12px; font-style: italic; }
 .jira-unfurl.error { border-left-color: var(--bad); }
 
+/* GitHub unfurls — same shape as Jira, different accent. */
+.gh-unfurl {
+  display: flex; flex-direction: column; gap: 4px;
+  background: var(--bg-3); border: 1px solid var(--line); border-left: 3px solid #8957e5;
+  padding: 8px 10px; border-radius: 4px; margin-top: 4px; max-width: 480px;
+}
+.gh-unfurl .gh-row { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+.gh-unfurl .gh-key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-dim); }
+.gh-unfurl .gh-summary { font-weight: 600; }
+.gh-unfurl a { color: var(--accent-2); text-decoration: none; }
+.gh-unfurl a:hover { text-decoration: underline; }
+.gh-unfurl .gh-status {
+  display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px;
+  background: var(--bg-2); border: 1px solid var(--line);
+}
+.gh-unfurl .gh-status.open    { background: rgba(46, 182, 125, .2); color: #7fe3b8; }
+.gh-unfurl .gh-status.closed  { background: rgba(224, 30, 90, .15); color: #ff9bb6; }
+.gh-unfurl .gh-status.merged  { background: rgba(137, 87, 229, .2); color: #c8a4ff; }
+.gh-unfurl .gh-loading { color: var(--text-dim); font-size: 12px; font-style: italic; }
+.gh-unfurl.error { border-left-color: var(--bad); }
+
+/* AI-generated chat messages: subtle highlight + distinct avatar. */
+.msg.msg-ai {
+  background: rgba(54, 197, 240, .04);
+  border-left: 3px solid var(--accent-2);
+  padding-left: 5px;
+}
+.msg .avatar-ai {
+  background: #3a3f47 !important;
+  font-size: 18px;
+}
+
 /* GIF picker — sits above the composer like the emoji picker. */
 .gif-picker {
   position: absolute; bottom: 60px; right: 16px; left: 16px;

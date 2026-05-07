@@ -364,6 +364,21 @@
       if (error) console.warn('sendMessage failed', error);
     }
 
+    // Same shape as sendMessage but flags the row as AI-generated. The
+    // human author still owns the row (RLS-wise) so they can edit/delete;
+    // the renderer styles it with a robot avatar + model badge.
+    async sendAiMessage({ channelId, parentId, text, model, attachments }) {
+      const knownNames = [...this.peerInfo.values()].map((p) => p.name).concat(this.name);
+      const mentions = extractMentions(text, knownNames);
+      const { error } = await this.supabase.from('messages').insert({
+        team_id: this.team.id, channel_id: channelId, parent_id: parentId || null,
+        author_id: this.peerId, author_name: this.name, author_color: this.color,
+        body: text || '', attachments: attachments || [], reactions: {}, mentions,
+        ai_generated: true, ai_model: model || null,
+      });
+      if (error) console.warn('sendAiMessage failed', error);
+    }
+
     async editMessage(messageId, text) {
       const knownNames = [...this.peerInfo.values()].map((p) => p.name).concat(this.name);
       const mentions = extractMentions(text, knownNames);
@@ -586,6 +601,8 @@
         mentions: row.mentions || [],
         ts: new Date(row.ts).getTime(),
         editedTs: row.edited_ts ? new Date(row.edited_ts).getTime() : null,
+        aiGenerated: !!row.ai_generated,
+        aiModel: row.ai_model || null,
       };
     }
     _marshalChannel(row) {

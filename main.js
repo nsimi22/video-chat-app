@@ -81,7 +81,12 @@ ipcMain.handle('get-tenor-key', () => process.env.TENOR_API_KEY || '');
 // the renderer hit them with stored credentials. We only proxy https URLs
 // to vetted hosts (currently Atlassian) and explicitly reject private /
 // loopback addresses to defend against SSRF if the allow-list ever grows.
-const ALLOWED_PROXY_HOSTS = [/^[a-z0-9-]+\.atlassian\.net$/i];
+const ALLOWED_PROXY_HOSTS = [
+  /^[a-z0-9-]+\.atlassian\.net$/i, // Jira Cloud
+  /^api\.anthropic\.com$/i,        // Claude API
+  /^openrouter\.ai$/i,             // OpenRouter
+  /^api\.github\.com$/i,           // GitHub REST
+];
 const PRIVATE_IP_LITERAL_RE = /^(127\.|10\.|192\.168\.|169\.254\.|0\.)/;
 function isLoopbackOrPrivate(hostname) {
   const h = hostname.toLowerCase();

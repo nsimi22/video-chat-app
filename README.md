@@ -66,6 +66,28 @@ shared with teammates.
     call controls opens a Create-ticket modal you can fire mid-meeting.
     Picks project, issue type, summary, description; optionally posts
     the new ticket back to the channel.
+- **AI assistant** (Claude or OpenRouter)
+  - **`/ai <prompt>`** posts an answer from your chosen provider (default
+    model: `claude-opus-4-7` for Anthropic direct,
+    `anthropic/claude-opus-4-7` via OpenRouter — both overridable in
+    Settings). The team sees a single message containing your question
+    above the AI's response, rendered with a robot avatar and a *via
+    @you* footer.
+  - **`/summarize`** asks the AI to summarize the last 100 messages of
+    the current channel or thread.
+  - Anthropic calls use **adaptive thinking** (the model decides how
+    much to think per request).
+  - All AI traffic is routed through the Electron main process so the
+    renderer never touches third-party origins directly.
+- **GitHub** (Personal Access Token)
+  - **Auto-unfurl** for `<owner>/<repo>#<number>` references and
+    `https://github.com/<owner>/<repo>/(issues|pull)/<n>` URLs. Card
+    shows title, state (open/closed/merged), author, and assignee.
+  - **`/gh <owner>/<repo>#<n>`** posts the URL for an instant unfurl.
+  - **`/gh issue <owner>/<repo> <title> [-- body…]`** files an issue
+    from chat and posts the new URL.
+  - Each viewer's PAT is used for their own unfurls, so visibility
+    matches their actual GitHub access.
 - **Tenor** (GIF picker) — same panel.
 
 ## Download

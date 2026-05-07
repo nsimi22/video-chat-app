@@ -134,6 +134,7 @@ class MeshClient extends EventTarget {
 
   // --- Chat passthroughs --------------------------------------------------
   sendMessage(args)        { return this.huddle.sendMessage(args); }
+  sendAiMessage(args)      { return this.huddle.sendAiMessage(args); }
   editMessage(id, text)    { return this.huddle.editMessage(id, text); }
   deleteMessage(id)        { return this.huddle.deleteMessage(id); }
   toggleReaction(id, e)    { return this.huddle.toggleReaction(id, e); }

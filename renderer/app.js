@@ -98,6 +98,12 @@ const els = {
   setJiraHost: $('#set-jira-host'),
   setJiraEmail: $('#set-jira-email'),
   setJiraToken: $('#set-jira-token'),
+  setAiProvider: $('#set-ai-provider'),
+  setAnthropicKey: $('#set-anthropic-key'),
+  setAnthropicModel: $('#set-anthropic-model'),
+  setOpenrouterKey: $('#set-openrouter-key'),
+  setOpenrouterModel: $('#set-openrouter-model'),
+  setGithubToken: $('#set-github-token'),
   setTenorKey: $('#set-tenor-key'),
   settingsStatus: $('#settings-status'),
   settingsCancel: $('#settings-cancel'),
@@ -131,6 +137,8 @@ const state = {
   _email: null,
   settings: {},      // user_integrations.settings; loaded post-auth
   jira: null,        // JiraClient — rebuilt whenever settings change
+  ai: null,          // AiClient — rebuilt whenever settings change
+  github: null,      // GitHubClient — rebuilt whenever settings change
   whiteboardSessions: new Map(), // whiteboardId -> WhiteboardSession
 };
 
@@ -315,6 +323,8 @@ async function joinTeamAndStart(teamId) {
       getTenorKey,
       getJira: () => state.jira,
       openTicketModal: (preset) => openTicketModal(preset),
+      getAi: () => state.ai,
+      getGitHub: () => state.github,
     },
   });
   wireControls();
@@ -1056,14 +1066,32 @@ async function refreshSettings() {
   try { state.settings = await window.huddleApi.loadSettings(); }
   catch (err) { console.warn('settings load failed', err); state.settings = {}; }
   rebuildJiraClient();
+  rebuildAiClient();
+  rebuildGitHubClient();
 }
 
 function rebuildJiraClient() {
   const j = state.settings?.jira || {};
   state.jira = new window.JiraClient(j);
-  // Reflect Jira availability in the call controls / chat header.
   const enabled = state.jira.isConfigured();
   els.btnJira?.classList.toggle('disabled', !enabled);
+}
+
+function rebuildAiClient() {
+  const a = state.settings?.ai || {};
+  const provider = a.provider || 'anthropic';
+  const defaultModel = provider === 'anthropic' ? (a.anthropicModel || '') : (a.openrouterModel || '');
+  state.ai = new window.AiClient({
+    provider,
+    anthropicKey: a.anthropicKey || '',
+    openrouterKey: a.openrouterKey || '',
+    defaultModel,
+  });
+}
+
+function rebuildGitHubClient() {
+  const g = state.settings?.github || {};
+  state.github = new window.GitHubClient({ token: g.token || '' });
 }
 
 function openSettings() {
@@ -1071,6 +1099,12 @@ function openSettings() {
   els.setJiraHost.value = s.jira?.host || '';
   els.setJiraEmail.value = s.jira?.email || '';
   els.setJiraToken.value = s.jira?.token || '';
+  els.setAiProvider.value = s.ai?.provider || 'anthropic';
+  els.setAnthropicKey.value = s.ai?.anthropicKey || '';
+  els.setAnthropicModel.value = s.ai?.anthropicModel || '';
+  els.setOpenrouterKey.value = s.ai?.openrouterKey || '';
+  els.setOpenrouterModel.value = s.ai?.openrouterModel || '';
+  els.setGithubToken.value = s.github?.token || '';
   els.setTenorKey.value = s.tenor?.key || '';
   els.settingsStatus.classList.add('hidden');
   els.settingsModal.classList.remove('hidden');
@@ -1085,12 +1119,22 @@ async function saveSettings() {
       email: els.setJiraEmail.value.trim(),
       token: els.setJiraToken.value,
     },
+    ai: {
+      provider: els.setAiProvider.value,
+      anthropicKey: els.setAnthropicKey.value,
+      anthropicModel: els.setAnthropicModel.value.trim(),
+      openrouterKey: els.setOpenrouterKey.value,
+      openrouterModel: els.setOpenrouterModel.value.trim(),
+    },
+    github: { token: els.setGithubToken.value },
     tenor: { key: els.setTenorKey.value.trim() },
   };
   try {
     await window.huddleApi.saveSettings(next);
     state.settings = next;
     rebuildJiraClient();
+    rebuildAiClient();
+    rebuildGitHubClient();
     els.settingsStatus.textContent = 'Saved.';
     els.settingsStatus.className = 'settings-status success';
     setTimeout(() => els.settingsModal.classList.add('hidden'), 600);
