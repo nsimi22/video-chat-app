@@ -39,7 +39,29 @@ Everything is persisted in **Supabase Postgres**; uploads land in
 on **Supabase Realtime** broadcast channels. There's no local server to
 run.
 
-## Run it
+## Download
+
+Pre-built installers are produced for every tagged release and attached
+to the [latest GitHub Release](../../releases/latest):
+
+| OS | Direct link |
+| --- | --- |
+| macOS (Apple silicon) | [Huddle-mac-arm64.dmg](../../releases/latest/download/Huddle-mac-arm64.dmg) |
+| macOS (Intel) | [Huddle-mac-x64.dmg](../../releases/latest/download/Huddle-mac-x64.dmg) |
+| Windows | [Huddle-win-x64.exe](../../releases/latest/download/Huddle-win-x64.exe) |
+| Linux (AppImage) | [Huddle-linux-x64.AppImage](../../releases/latest/download/Huddle-linux-x64.AppImage) |
+| Linux (.deb) | [Huddle-linux-x64.deb](../../releases/latest/download/Huddle-linux-x64.deb) |
+
+Builds are **unsigned**. On first launch you'll see a Gatekeeper
+warning on macOS ("Huddle can't be opened because it is from an
+unidentified developer" — right-click the app and pick *Open* to
+override) or SmartScreen on Windows (*More info → Run anyway*).
+Signing requires an Apple Developer ID (~$99/yr) and a Windows
+code-signing cert; once you have those, set the secrets called out in
+`.github/workflows/release.yml` and electron-builder will sign +
+notarize automatically.
+
+## Run from source
 
 ```bash
 npm install
@@ -118,3 +140,18 @@ renderer/
 - **Storage** is public-read so attachment URLs are easy to embed in
   chat. Writes are restricted by RLS to `<uid>/...` paths so users
   can't overwrite each other's files.
+
+## Cutting a release
+
+The `release` workflow at `.github/workflows/release.yml` builds Mac /
+Windows / Linux installers in parallel and attaches them to a GitHub
+Release whose tag matches the one you pushed.
+
+```bash
+# Bump version in package.json, commit, then:
+git tag v0.3.0
+git push --tags
+```
+
+You can also trigger it manually from the Actions tab. Without
+signing secrets the artifacts are unsigned (see warning above).
