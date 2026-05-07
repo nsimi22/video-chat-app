@@ -656,6 +656,16 @@ async function teardownTeam() {
   try { await state.huddle?.stop(); } catch {}
   state.huddle = null;
   state.chat = null;
+  // Drop the profile-card popover and its document-level mousedown
+  // / keydown listeners. Without destroy() the old instance lingers
+  // across team rejoins and stacks N copies of the dismissal logic
+  // per mousedown.
+  state.profileCard?.destroy();
+  state.profileCard = null;
+  // Drop a redemption hop that never finished (e.g. user signed out
+  // mid-load). Otherwise the next sign-in's onWelcome would jump
+  // somebody else's session into a stale channel.
+  state.pendingInviteHop = null;
   state.channelMeta.clear();
   state.unread.clear();
   state.inCallChannelId = null;
@@ -664,6 +674,9 @@ async function teardownTeam() {
   els.channels.replaceChildren();
   els.dms.replaceChildren();
   els.people.replaceChildren();
+  // Clear any leftover toasts so they don't bleed into the login
+  // screen of the next session.
+  els.toasts?.replaceChildren();
   els.reconnectBanner?.classList.add('hidden');
   for (const tile of state.tilesByKey.values()) tile.remove();
   state.tilesByKey.clear();

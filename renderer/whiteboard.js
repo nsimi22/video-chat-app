@@ -324,6 +324,11 @@ class WhiteboardSession {
   setSize(s) { this.layer?.setSize(s); }
 
   stop() {
+    // Flush any pending debounced note text saves before tearing
+    // down the channel — otherwise the timers fire async after the
+    // session is gone and either succeed silently into a closed
+    // tab or fail with no error UI to show.
+    for (const id of [...this._noteSaveTimers.keys()]) this._flushNoteSave(id);
     this.huddle.closeWhiteboardChannel(this.whiteboardId);
     if (this.tile?.parentElement) this.tile.remove();
   }
