@@ -876,11 +876,13 @@
     }
 
     async uploadAvatar(file) {
-      // Storage policy gates writes to `<auth.uid()>/...` — keep the
-      // path predictable so re-uploading replaces the previous one
-      // (upsert: true) instead of leaking a new file per upload.
-      const ext = (file.name || 'avatar').split('.').pop().toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 4) || 'png';
-      const objectPath = `${this.peerId}/avatar.${ext}`;
+      // Storage policy gates writes to `<auth.uid()>/...`. The path
+      // is fixed (no extension) so a second upload always replaces
+      // the first via upsert; if we kept the original extension a
+      // user switching from avatar.jpg to avatar.png would leak the
+      // old file. The Content-Type header carries the real format
+      // for the browser, so the extension on disk is unnecessary.
+      const objectPath = `${this.peerId}/avatar`;
       const { error } = await this.supabase.storage.from('avatars').upload(objectPath, file, {
         contentType: file.type || 'image/png',
         upsert: true,
