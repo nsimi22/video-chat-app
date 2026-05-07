@@ -15,7 +15,7 @@
 
         <!-- Step 1: email -->
         <div id="auth-email-step">
-          <p class="hint">We'll email you a 6-digit code to sign you in.</p>
+          <p class="hint">We'll email you a verification code to sign you in.</p>
           <label>Email</label>
           <input id="auth-email" type="email" autocomplete="email" placeholder="you@team.com" />
           <button id="auth-send-otp" class="primary" style="margin-top:14px; width:100%;">Send code</button>
@@ -23,11 +23,11 @@
 
         <!-- Step 2: OTP -->
         <div id="auth-otp-step" class="hidden">
-          <p class="hint">Check your email — the message has a 6-digit code near the top.
+          <p class="hint">Check your email — the message has a verification code near the top.
             Type it below. (Don't click the magic link; it can't redirect into the desktop app.)</p>
           <label>Code</label>
           <input id="auth-otp" type="text" inputmode="numeric" autocomplete="one-time-code"
-                 placeholder="123456" maxlength="6" />
+                 placeholder="••••••" maxlength="10" />
           <div style="display:flex; gap:8px; margin-top:14px;">
             <button id="auth-back" style="flex:1;">← Use different email</button>
             <button id="auth-verify" class="primary" style="flex:1;">Verify</button>
