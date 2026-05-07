@@ -282,7 +282,6 @@ function showToast(message, { kind = 'info', duration = 2400 } = {}) {
   els.toasts.appendChild(t);
   setTimeout(() => {
     t.style.opacity = '0';
-    t.style.transition = 'opacity 200ms ease';
     setTimeout(() => t.remove(), 220);
   }, duration);
 }
@@ -341,7 +340,13 @@ async function copyToClipboard(text) {
     ta.value = text;
     ta.style.position = 'fixed';
     ta.style.opacity = '0';
+    // readOnly suppresses the on-screen keyboard on mobile webviews;
+    // focus() before select() is required for execCommand('copy') to
+    // succeed on a couple of environments that don't honour an
+    // unfocused selection.
+    ta.readOnly = true;
     document.body.appendChild(ta);
+    ta.focus();
     ta.select();
     document.execCommand('copy');
     ta.remove();

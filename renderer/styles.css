@@ -685,6 +685,10 @@ button.ctrl.muted.icon-only::after {
   padding: 8px 14px; border-radius: 999px;
   box-shadow: 0 6px 20px rgba(0,0,0,.5);
   animation: toast-in 160ms ease-out;
+  /* Exit transition declared up-front so the JS that flips opacity
+     to 0 doesn't have to set the transition property in the same
+     frame (which some browsers skip). */
+  transition: opacity 200ms ease;
 }
 .toast.error { border-color: var(--bad); color: #ff9bb6; }
 @keyframes toast-in {
