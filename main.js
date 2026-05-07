@@ -79,13 +79,34 @@ ipcMain.handle('get-tenor-key', () => process.env.TENOR_API_KEY || '');
 // Generic fetch proxy. Some third-party APIs (notably Atlassian Cloud)
 // don't permit browser-origin requests via CORS; routing through main lets
 // the renderer hit them with stored credentials. We only proxy https URLs
-// to avoid being repurposed for internal-network scans.
+// to vetted hosts (currently Atlassian) and explicitly reject private /
+// loopback addresses to defend against SSRF if the allow-list ever grows.
+const ALLOWED_PROXY_HOSTS = [/^[a-z0-9-]+\.atlassian\.net$/i];
+const PRIVATE_IP_LITERAL_RE = /^(127\.|10\.|192\.168\.|169\.254\.|0\.)/;
+function isLoopbackOrPrivate(hostname) {
+  const h = hostname.toLowerCase();
+  if (h === 'localhost' || h === '::1' || h === '0.0.0.0') return true;
+  if (PRIVATE_IP_LITERAL_RE.test(h)) return true;
+  // 172.16.0.0/12 — second octet between 16 and 31 inclusive.
+  const m = /^172\.(\d+)\./.exec(h);
+  if (m) { const o2 = parseInt(m[1], 10); if (o2 >= 16 && o2 <= 31) return true; }
+  return false;
+}
+
 ipcMain.handle('fetch-proxy', async (_event, { url, method = 'GET', headers = {}, body = null }) => {
-  if (typeof url !== 'string' || !/^https:\/\//i.test(url)) {
+  let parsed;
+  try { parsed = new URL(url); } catch { return { ok: false, status: 0, error: 'invalid url' }; }
+  if (parsed.protocol !== 'https:') {
     return { ok: false, status: 0, error: 'only https urls are allowed' };
   }
+  if (!ALLOWED_PROXY_HOSTS.some((re) => re.test(parsed.hostname))) {
+    return { ok: false, status: 0, error: `host not allowed: ${parsed.hostname}` };
+  }
+  if (isLoopbackOrPrivate(parsed.hostname)) {
+    return { ok: false, status: 0, error: 'private/loopback hosts blocked' };
+  }
   try {
-    const res = await fetch(url, { method, headers, body });
+    const res = await fetch(parsed.toString(), { method, headers, body });
     const text = await res.text();
     return {
       ok: res.ok, status: res.status,

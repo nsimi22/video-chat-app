@@ -26,6 +26,15 @@ class ChatView {
     // null = lookup failed but completed (don't retry within session).
     this._jiraCache = new Map();
     this._jiraInflight = new Map();
+    // GIF picker state: monotonic sequence to drop stale Tenor responses.
+    this._gifFetchSeq = 0;
+    this._gifSearchTimer = null;
+    this._tenorKey = null;
+    // Single AbortController so destroy() can yank every DOM and mesh
+    // listener this view installed in one go. ChatView is rebuilt on each
+    // join/leave cycle, so without this the host elements (composer,
+    // document, etc.) accumulate stale handlers.
+    this._listenerCtrl = new AbortController();
 
     this.typingClock = setInterval(() => this._refreshTyping(), 800);
     this._wireDom();
@@ -92,10 +101,18 @@ class ChatView {
 
   // --- Wiring -------------------------------------------------------------
 
+  // Bind a DOM/event-target listener that auto-removes when destroy() is
+  // called. Using AbortController.signal is supported by every modern
+  // EventTarget (DOM nodes and our mesh client which extends EventTarget).
+  _on(target, event, handler) {
+    target.addEventListener(event, handler, { signal: this._listenerCtrl.signal });
+  }
+
   _wireDom() {
-    this.els.threadBack.addEventListener('click', () => this.closeThread());
-    this.els.send.addEventListener('click', () => this._submit());
-    this.els.composer.addEventListener('keydown', (e) => {
+    const sig = { signal: this._listenerCtrl.signal };
+    this._on(this.els.threadBack, 'click', () => this.closeThread());
+    this._on(this.els.send, 'click', () => this._submit());
+    this._on(this.els.composer, 'keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this._submit();
@@ -103,36 +120,35 @@ class ChatView {
         this.mesh.sendTyping(this.currentChannel, this.threadParentId);
       }
     });
-    this.els.composer.addEventListener('input', () => {
+    this._on(this.els.composer, 'input', () => {
       this.els.composer.style.height = 'auto';
       this.els.composer.style.height = Math.min(160, this.els.composer.scrollHeight) + 'px';
     });
-    this.els.composer.addEventListener('paste', (e) => this._onPaste(e));
-    this.els.emojiBtn.addEventListener('click', (e) => {
+    this._on(this.els.composer, 'paste', (e) => this._onPaste(e));
+    this._on(this.els.emojiBtn, 'click', (e) => {
       e.stopPropagation();
       this.els.emojiPicker.classList.toggle('hidden');
       this._emojiPickerMode = 'compose';
     });
-    document.addEventListener('click', (e) => {
+    this._on(document, 'click', (e) => {
       if (!this.els.emojiPicker.contains(e.target) && e.target !== this.els.emojiBtn) {
         this.els.emojiPicker.classList.add('hidden');
       }
     });
     if (this.els.attachBtn) {
-      this.els.attachBtn.addEventListener('click', () => this.els.fileInput?.click());
+      this._on(this.els.attachBtn, 'click', () => this.els.fileInput?.click());
     }
     if (this.els.fileInput) {
-      this.els.fileInput.addEventListener('change', (e) => {
+      this._on(this.els.fileInput, 'change', (e) => {
         for (const f of e.target.files) this._beginUpload(f);
         e.target.value = '';
       });
     }
-    // Drag-and-drop onto the chat pane.
     const drop = this.els.messages.parentElement;
     if (drop) {
-      drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('drag-over'); });
-      drop.addEventListener('dragleave', () => drop.classList.remove('drag-over'));
-      drop.addEventListener('drop', (e) => {
+      this._on(drop, 'dragover', (e) => { e.preventDefault(); drop.classList.add('drag-over'); });
+      this._on(drop, 'dragleave', () => drop.classList.remove('drag-over'));
+      this._on(drop, 'drop', (e) => {
         e.preventDefault();
         drop.classList.remove('drag-over');
         for (const f of e.dataTransfer.files || []) this._beginUpload(f);
@@ -141,7 +157,8 @@ class ChatView {
   }
 
   _wireMesh() {
-    this.mesh.addEventListener('chat-message', (e) => {
+    const on = (event, fn) => this._on(this.mesh, event, fn);
+    on('chat-message', (e) => {
       const m = e.detail.message;
       const arr = this.byChannel.get(m.channelId) || [];
       // Postgres realtime can deliver our own insert before the local fetch
@@ -151,14 +168,14 @@ class ChatView {
       if (m.channelId === this.currentChannel) this._appendIncremental(m);
       this.hooks.onMessage?.(m);
     });
-    this.mesh.addEventListener('chat-update', (e) => {
+    on('chat-update', (e) => {
       const m = e.detail.message;
       const arr = this.byChannel.get(m.channelId) || [];
       const idx = arr.findIndex((x) => x.id === m.id);
       if (idx >= 0) arr[idx] = m;
       if (m.channelId === this.currentChannel) this._replaceNode(m);
     });
-    this.mesh.addEventListener('chat-message-deleted', (e) => {
+    on('chat-message-deleted', (e) => {
       const { channelId, messageId } = e.detail;
       const arr = this.byChannel.get(channelId) || [];
       const idx = arr.findIndex((x) => x.id === messageId);
@@ -169,13 +186,25 @@ class ChatView {
         this.nodeById.delete(messageId);
       }
     });
-    this.mesh.addEventListener('typing', (e) => {
+    on('typing', (e) => {
       const { from, fromName, channelId, parentId } = e.detail;
       if (channelId !== this.currentChannel) return;
       if ((parentId || null) !== (this.threadParentId || null)) return;
       this.typingUsers.set(from, { name: fromName, until: Date.now() + 2500 });
       this._refreshTyping();
     });
+  }
+
+  // Tear down: stop the typing indicator clock and yank every DOM/mesh
+  // event listener installed via `_on()`. Called from teardownMesh() so
+  // listeners don't accumulate across join/leave cycles.
+  destroy() {
+    if (this.typingClock) clearInterval(this.typingClock);
+    this.typingClock = null;
+    if (this._gifSearchTimer) clearTimeout(this._gifSearchTimer);
+    this._gifSearchTimer = null;
+    this._listenerCtrl?.abort();
+    this._listenerCtrl = null;
   }
 
   // --- Submit / edit ------------------------------------------------------
@@ -575,14 +604,14 @@ class ChatView {
 
   _initGifPicker() {
     if (!this.els.gifBtn) return;
-    this.els.gifBtn.addEventListener('click', (e) => {
+    this._on(this.els.gifBtn, 'click', (e) => {
       e.stopPropagation();
       const hidden = this.els.gifPicker.classList.toggle('hidden');
       if (!hidden) this._openGifPicker();
     });
-    this.els.gifClose?.addEventListener('click', () => this.els.gifPicker.classList.add('hidden'));
-    this.els.gifSearch?.addEventListener('input', () => this._scheduleGifSearch());
-    document.addEventListener('click', (e) => {
+    if (this.els.gifClose) this._on(this.els.gifClose, 'click', () => this.els.gifPicker.classList.add('hidden'));
+    if (this.els.gifSearch) this._on(this.els.gifSearch, 'input', () => this._scheduleGifSearch());
+    this._on(document, 'click', (e) => {
       if (this.els.gifPicker?.classList.contains('hidden')) return;
       if (this.els.gifPicker.contains(e.target) || e.target === this.els.gifBtn) return;
       this.els.gifPicker.classList.add('hidden');

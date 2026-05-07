@@ -328,6 +328,9 @@ function teardownMesh() {
   if (!state.mesh) return;
   for (const session of state.whiteboardSessions.values()) session.stop();
   state.whiteboardSessions.clear();
+  // Detach the chat view's interval + every listener it installed before
+  // dropping the reference, otherwise rejoining accumulates handlers.
+  state.chat?.destroy();
   state.mesh.disconnect();
   state.mesh = null;
   state.chat = null;
@@ -544,7 +547,9 @@ function displayLabelFor(channel) {
 function canDelete(channel) {
   if (channel.protected) return false;
   if (channel.type === 'dm') return (channel.members || []).includes(state.myName);
-  return channel.createdBy === state.myName;
+  // createdBy is a user uuid; compare against the authenticated user's id,
+  // not the display name.
+  return channel.createdBy && channel.createdBy === state.mesh?.peerId;
 }
 
 // CSS.escape isn't available everywhere; tiny shim for our id alphabet.
@@ -720,9 +725,20 @@ function toggleAnnotate(streamId) {
   if (!layer) return;
   layer.setActive(true);
   state.activeAnnotation = streamId;
-  const tile = state.tilesByKey.get(`screen:${streamId}`);
+  // Drawable surfaces live under either `screen:<id>` (shared screens) or
+  // `whiteboard:<id>` (collaborative canvases) — look both up.
+  const tile = state.tilesByKey.get(`screen:${streamId}`)
+    || state.tilesByKey.get(`whiteboard:${streamId}`);
   els.drawToolbar.classList.remove('hidden');
   els.drawTargetName.textContent = tile?.querySelector('.tile-label')?.textContent || 'screen';
+}
+
+// Make the toolbar/active-annotation state target `streamId`, but never
+// toggle off if it's already focused. Used by openWhiteboard so a re-click
+// on 🎨 doesn't deactivate an already-open whiteboard.
+function focusAnnotation(streamId) {
+  if (state.activeAnnotation === streamId) return;
+  toggleAnnotate(streamId);
 }
 
 function closeAnnotate() {
@@ -980,10 +996,10 @@ async function openWhiteboard() {
   try { wb = await state.mesh.huddle.getOrCreateWhiteboard(channelId); }
   catch (err) { alert('Could not open whiteboard: ' + (err.message || err)); return; }
 
-  // If already open as a tile, just refocus it.
+  // If already open as a tile, just refocus it (don't toggle off).
   const key = `whiteboard:${wb.id}`;
   if (state.tilesByKey.has(key)) {
-    toggleAnnotate(wb.id);
+    focusAnnotation(wb.id);
     return;
   }
 

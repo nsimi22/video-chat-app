@@ -103,8 +103,13 @@
     stop() {
       try { this._teamChannel?.unsubscribe(); } catch {}
       try { this._dbChannel?.unsubscribe(); } catch {}
-      for (const ch of this._screenChannels.values()) try { ch.unsubscribe(); } catch {}
-      for (const ch of this._whiteboardChannels.values()) try { ch.unsubscribe(); } catch {}
+      // Channel maps now store readiness promises — resolve before unsubscribing.
+      for (const p of this._screenChannels.values()) {
+        Promise.resolve(p).then((ch) => { try { ch.unsubscribe(); } catch {} }).catch(() => {});
+      }
+      for (const p of this._whiteboardChannels.values()) {
+        Promise.resolve(p).then((ch) => { try { ch.unsubscribe(); } catch {} }).catch(() => {});
+      }
       this._screenChannels.clear();
       this._whiteboardChannels.clear();
     }
@@ -160,9 +165,9 @@
       ch.on('broadcast', { event: 'screen-stop' }, ({ payload }) => {
         this.activeScreens.delete(payload.streamId);
         this.remoteScreenLabels.delete(payload.streamId);
-        const screenCh = this._screenChannels.get(payload.streamId);
-        if (screenCh) {
-          try { screenCh.unsubscribe(); } catch {}
+        const cached = this._screenChannels.get(payload.streamId);
+        if (cached) {
+          Promise.resolve(cached).then((c) => { try { c.unsubscribe(); } catch {} }).catch(() => {});
           this._screenChannels.delete(payload.streamId);
         }
         this.dispatchEvent(new CustomEvent('screen-stop', { detail: payload }));
@@ -284,9 +289,9 @@
     sendScreenStop(streamId) {
       this._teamChannel?.send({ type: 'broadcast', event: 'screen-stop', payload: { from: this.peerId, streamId } });
       this.activeScreens.delete(streamId);
-      const screenCh = this._screenChannels.get(streamId);
-      if (screenCh) {
-        try { screenCh.unsubscribe(); } catch {}
+      const cached = this._screenChannels.get(streamId);
+      if (cached) {
+        Promise.resolve(cached).then((c) => { try { c.unsubscribe(); } catch {} }).catch(() => {});
         this._screenChannels.delete(streamId);
       }
     }
@@ -302,18 +307,29 @@
     sendDraw(streamId, stroke) {
       this._ensureScreenChannel(streamId).then((ch) => {
         ch.send({ type: 'broadcast', event: 'draw', payload: { from: this.peerId, streamId, stroke } });
-      });
+      }).catch((err) => console.warn('[draw] channel not ready', err));
     }
-    async _ensureScreenChannel(streamId) {
-      let ch = this._screenChannels.get(streamId);
-      if (ch) return ch;
-      ch = this.supabase.channel(`screen:${streamId}`, { config: { broadcast: { self: false }, private: true } });
+    // Returns a promise that resolves to a fully-subscribed RealtimeChannel.
+    // Caching the *promise* (not the channel) is important: a second caller
+    // arriving during subscription waits on the same handshake instead of
+    // grabbing an unsubscribed handle and sending into the void.
+    _ensureScreenChannel(streamId) {
+      const cached = this._screenChannels.get(streamId);
+      if (cached) return Promise.resolve(cached);
+      const ch = this.supabase.channel(`screen:${streamId}`, { config: { broadcast: { self: false }, private: true } });
       ch.on('broadcast', { event: 'draw' }, ({ payload }) => {
         this.dispatchEvent(new CustomEvent('draw', { detail: payload }));
       });
-      this._screenChannels.set(streamId, ch);
-      await new Promise((res, rej) => ch.subscribe((s, e) => s === 'SUBSCRIBED' ? res() : (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') ? rej(e) : null));
-      return ch;
+      const ready = new Promise((res, rej) => {
+        ch.subscribe((s, e) => {
+          if (s === 'SUBSCRIBED') res(ch);
+          else if (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') rej(e);
+        });
+      });
+      this._screenChannels.set(streamId, ready);
+      // If the subscribe ever fails, drop the cache so the next caller can retry.
+      ready.catch(() => this._screenChannels.delete(streamId));
+      return ready;
     }
 
     // --- Chat operations (DB-backed) ------------------------------------
@@ -476,11 +492,11 @@
       return data || [];
     }
 
-    async persistWhiteboardStroke(whiteboardId, channelId, polyline) {
+    async persistWhiteboardStroke(whiteboardId, polyline) {
+      // team_id/channel_id are derived server-side from the whiteboard_id
+      // FK + RLS join — passing them client-side could be spoofed.
       await this.supabase.from('whiteboard_strokes').insert({
         whiteboard_id: whiteboardId,
-        team_id: this.team.id,
-        channel_id: channelId,
         author_id: this.peerId,
         data: polyline,
       });
@@ -494,35 +510,44 @@
     }
 
     // Subscribe to live strokes on a whiteboard. Idempotent — repeated calls
-    // for the same whiteboardId hit the cached channel. The most recent
-    // onStroke replaces the previous handler.
+    // for the same whiteboardId await the cached subscription. The latest
+    // onStroke replaces the previous handler. Topic is `team:<id>:wb:<uuid>`
+    // so the realtime broadcast policy can gate by team membership instead
+    // of relying on the UUID being secret.
     async ensureWhiteboardChannel(whiteboardId, onStroke) {
-      let ch = this._whiteboardChannels.get(whiteboardId);
-      if (ch) {
+      const cached = this._whiteboardChannels.get(whiteboardId);
+      if (cached) {
+        const ch = await Promise.resolve(cached);
         ch._onStroke = onStroke;
         return ch;
       }
-      ch = this.supabase.channel(`whiteboard:${whiteboardId}`, { config: { broadcast: { self: false }, private: true } });
+      const topic = `team:${this.team.id}:wb:${whiteboardId}`;
+      const ch = this.supabase.channel(topic, { config: { broadcast: { self: false }, private: true } });
       ch._onStroke = onStroke;
       ch.on('broadcast', { event: 'stroke' }, ({ payload }) => ch._onStroke?.(payload));
-      await new Promise((res, rej) => ch.subscribe((s, e) =>
-        s === 'SUBSCRIBED' ? res()
-        : (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') ? rej(e)
-        : null
-      ));
-      this._whiteboardChannels.set(whiteboardId, ch);
-      return ch;
+      const ready = new Promise((res, rej) => {
+        ch.subscribe((s, e) => {
+          if (s === 'SUBSCRIBED') res(ch);
+          else if (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') rej(e);
+        });
+      });
+      this._whiteboardChannels.set(whiteboardId, ready);
+      ready.catch(() => this._whiteboardChannels.delete(whiteboardId));
+      return ready;
     }
 
     sendWhiteboardStroke(whiteboardId, stroke) {
-      const ch = this._whiteboardChannels.get(whiteboardId);
-      if (ch) ch.send({ type: 'broadcast', event: 'stroke', payload: { from: this.peerId, stroke } });
+      const cached = this._whiteboardChannels.get(whiteboardId);
+      if (!cached) return;
+      Promise.resolve(cached).then((ch) =>
+        ch.send({ type: 'broadcast', event: 'stroke', payload: { from: this.peerId, stroke } })
+      ).catch((err) => console.warn('[whiteboard] send before subscribe', err));
     }
 
     closeWhiteboardChannel(whiteboardId) {
-      const ch = this._whiteboardChannels.get(whiteboardId);
-      if (ch) {
-        try { ch.unsubscribe(); } catch {}
+      const cached = this._whiteboardChannels.get(whiteboardId);
+      if (cached) {
+        Promise.resolve(cached).then((ch) => { try { ch.unsubscribe(); } catch {} }).catch(() => {});
         this._whiteboardChannels.delete(whiteboardId);
       }
     }

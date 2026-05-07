@@ -6,13 +6,20 @@
 // pen/arrow/eraser/color/size controls all behave identically.
 //
 // Wire shape:
-//   - LIVE      strokes (begin/move/end) broadcast over `whiteboard:<id>`
+//   - LIVE      strokes (begin/move/end) broadcast over a team-scoped topic
 //                so connected peers see drawing as it happens.
 //   - PERSIST   completed strokes are accumulated client-side and saved as
 //                a single polyline row on stroke `end`. Cuts DB writes by
 //                ~50x vs. one row per pointer event.
 //   - REPLAY    on open, fetch all rows ordered by id and replay each
 //                polyline through the DrawingLayer.
+//   - DEDUP     each stroke gets a client-generated uuid that travels with
+//                both the live broadcast and the persisted polyline. The
+//                receiver records uuids it has already painted live; when
+//                history replay produces the same uuid it's skipped. This
+//                handles the unavoidable race between subscribing to the
+//                broadcast and fetching history (a stroke can complete in
+//                between and otherwise be painted twice).
 //   - CLEAR     local: layer.clearAll(); broadcast: a {action:'clear'}
 //                stroke; persistent: delete every row for this whiteboard.
 
@@ -23,7 +30,8 @@ class WhiteboardSession {
     this.whiteboardId = whiteboard.id;
     this.tile = tile;
     this.layer = null;
-    this._currentStroke = null;
+    this._currentStroke = null;     // local in-progress stroke + its uuid
+    this._paintedUuids = new Set(); // strokes painted live; replay skips matches
   }
 
   async start() {
@@ -31,8 +39,6 @@ class WhiteboardSession {
     // attached to a tile that has no underlying <video>.
     this.layer = new DrawingLayer({
       streamId: this.whiteboardId,
-      // The DrawingLayer currently disables pointer events unless `active`
-      // is set; whiteboards are always active.
       isOwner: true,
       send: (stroke) => this._onLocalStroke(stroke),
     });
@@ -40,18 +46,25 @@ class WhiteboardSession {
     this.layer.setActive(true);
 
     // Subscribe to live broadcast first so we don't miss strokes drawn
-    // between the DB fetch and the subscribe.
+    // between the DB fetch and the subscribe. The dedup Set below catches
+    // any overlap with replayed history.
     await this.huddle.ensureWhiteboardChannel(this.whiteboardId, (payload) => {
-      // Don't double-paint our own strokes — broadcasts use {self:false}
-      // but defensive check anyway.
-      if (payload.from === this.huddle.peerId) return;
-      this.layer.applyRemote(payload.stroke);
+      if (payload.from === this.huddle.peerId) return; // ignore self echoes
+      const stroke = payload.stroke;
+      this.layer.applyRemote(stroke);
+      // Record completed strokes so a later history replay doesn't paint them again.
+      if (stroke.action === 'end' && stroke.uuid) this._paintedUuids.add(stroke.uuid);
     });
 
     // Replay history.
     try {
       const rows = await this.huddle.fetchWhiteboardStrokes(this.whiteboardId);
-      for (const row of rows) replayPolyline(this.layer, row.data);
+      for (const row of rows) {
+        const polyline = row.data;
+        if (polyline?.uuid && this._paintedUuids.has(polyline.uuid)) continue;
+        if (polyline?.uuid) this._paintedUuids.add(polyline.uuid);
+        replayPolyline(this.layer, polyline);
+      }
     } catch (err) {
       console.warn('[whiteboard] history fetch failed', err);
     }
@@ -59,22 +72,30 @@ class WhiteboardSession {
 
   // Live stroke from the local user — broadcast immediately, accumulate for
   // persistence, and rely on the DrawingLayer to have already painted it.
+  // Each stroke gets a uuid generated at `begin` and propagated through
+  // `move`/`end` plus the persisted polyline so receivers can dedup.
   _onLocalStroke(stroke) {
-    this.huddle.sendWhiteboardStroke(this.whiteboardId, stroke);
     if (stroke.action === 'begin') {
+      const uuid = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       this._currentStroke = {
+        uuid,
         tool: stroke.tool, color: stroke.color, size: stroke.size,
         points: [[stroke.x, stroke.y]],
       };
+      this.huddle.sendWhiteboardStroke(this.whiteboardId, { ...stroke, uuid });
     } else if (stroke.action === 'move' && this._currentStroke) {
       this._currentStroke.points.push([stroke.x, stroke.y]);
+      this.huddle.sendWhiteboardStroke(this.whiteboardId, { ...stroke, uuid: this._currentStroke.uuid });
     } else if (stroke.action === 'end' && this._currentStroke) {
       const polyline = this._currentStroke;
       this._currentStroke = null;
-      // Single-tap (no movement) leaves a single point; still useful for
-      // arrow heads, so persist as long as there's any point at all.
+      this.huddle.sendWhiteboardStroke(this.whiteboardId, { ...stroke, uuid: polyline.uuid });
+      // Remember our own stroke so we don't double-paint it on reload.
+      this._paintedUuids.add(polyline.uuid);
       if (polyline.points.length >= 1) {
-        this.huddle.persistWhiteboardStroke(this.whiteboardId, this.channelId, polyline)
+        this.huddle.persistWhiteboardStroke(this.whiteboardId, polyline)
           .catch((err) => console.warn('[whiteboard] persist failed', err));
       }
     }
@@ -83,6 +104,7 @@ class WhiteboardSession {
   async clear() {
     this.layer.clearAll(/*broadcast*/ false);
     this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'clear' });
+    this._paintedUuids.clear();
     try { await this.huddle.clearWhiteboard(this.whiteboardId); }
     catch (err) { console.warn('[whiteboard] clear failed', err); }
   }
