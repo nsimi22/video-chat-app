@@ -445,7 +445,13 @@
           const idByName = new Map((members || []).map((m) => [m.profiles.name, m.user_id]));
           const rows = memberNames.map((n) => idByName.get(n)).filter(Boolean)
             .map((uid) => ({ team_id: this.team.id, channel_id: id, user_id: uid }));
-          if (rows.length) await this.supabase.from('channel_members').insert(rows);
+          if (rows.length) {
+            const { error: memErr } = await this.supabase.from('channel_members').insert(rows);
+            // Surface the failure: silently swallowing it would leave the
+            // channel in the DB without the invited members, reproducing
+            // the same "exists but invisible" symptom this PR fixes.
+            if (memErr) throw memErr;
+          }
         }
         meta.members = invited;
       }
@@ -483,11 +489,14 @@
       });
       if (error) throw error;
       // Trigger added the creator (a). Add the other side explicitly so
-      // both participants can see the DM.
-      await this.supabase.from('channel_members').upsert([
+      // both participants can see the DM. Surface failures: silently
+      // swallowing leaves the DM in the DB with only one member, which
+      // makes it disappear for both sides on reload.
+      const { error: memErr } = await this.supabase.from('channel_members').upsert([
         { team_id: this.team.id, channel_id: id, user_id: a },
         { team_id: this.team.id, channel_id: id, user_id: b },
       ]);
+      if (memErr) throw memErr;
       return {
         id, name: otherUserName, topic: '', type: 'dm', protected: false,
         createdBy: this.peerId, members: [this.name, otherUserName],
