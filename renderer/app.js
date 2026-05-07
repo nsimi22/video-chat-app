@@ -27,6 +27,11 @@ const els = {
   teamMine: $('#team-mine'),
   teamCreate: $('#team-create'),
   teamGo: $('#team-go'),
+  teamJoinLink: $('#team-join-link'),
+  teamJoinLinkGo: $('#team-join-link-go'),
+  copyTeamLink: $('#copy-team-link'),
+  copyCallLink: $('#copy-call-link'),
+  toasts: $('#toasts'),
   loginError: $('#login-error'),
   signOutBtn: $('#sign-out'),
   meSignout: $('#me-signout'),
@@ -159,6 +164,10 @@ const state = {
   ai: null,          // AiClient — rebuilt whenever settings change
   github: null,      // GitHubClient — rebuilt whenever settings change
   whiteboardSessions: new Map(), // whiteboardId -> WhiteboardSession
+  // Invite-link redemption hop. When stepJoinViaLink redeems a link
+  // that includes a channel/call, we stash the target here; onWelcome
+  // (which fires after the team subscription is up) consumes it.
+  pendingInviteHop: null,
 };
 
 // Whether the OS window is currently focused. Used to gate desktop
@@ -184,6 +193,8 @@ const STREAM_DECISION_MS = 1500;
   els.profileName.addEventListener('keydown', (e) => { if (e.key === 'Enter') stepSaveProfile(); });
   els.teamGo.addEventListener('click', stepJoinTeam);
   els.teamCreate.addEventListener('keydown', (e) => { if (e.key === 'Enter') stepJoinTeam(); });
+  els.teamJoinLinkGo.addEventListener('click', stepJoinViaLink);
+  els.teamJoinLink.addEventListener('keydown', (e) => { if (e.key === 'Enter') stepJoinViaLink(); });
   els.signOutBtn?.addEventListener('click', signOutFully);
   els.meSignout?.addEventListener('click', signOutFully);
 
@@ -258,6 +269,90 @@ function showError(msg) {
 // proper toast/banner later if it becomes annoying.
 function showCallError(msg) {
   alert(msg);
+}
+
+// ---------------------------------------------------------------------------
+// Toasts (transient bottom-center confirmations).
+// ---------------------------------------------------------------------------
+function showToast(message, { kind = 'info', duration = 2400 } = {}) {
+  if (!els.toasts) return;
+  const t = document.createElement('div');
+  t.className = 'toast' + (kind === 'error' ? ' error' : '');
+  t.textContent = message;
+  els.toasts.appendChild(t);
+  setTimeout(() => {
+    t.style.opacity = '0';
+    t.style.transition = 'opacity 200ms ease';
+    setTimeout(() => t.remove(), 220);
+  }, duration);
+}
+
+// ---------------------------------------------------------------------------
+// Invite links: shareable URLs that open Huddle and join a team or
+// call. Shape: `huddle://team/<team_id>` for plain team invites,
+// `huddle://team/<team_id>/channel/<channel_id>?call=1` for join-a-
+// call links. Uses the `huddle://` custom scheme so the link is
+// unambiguous; until the Electron protocol handler is registered
+// (separate PR), recipients paste the link into the team picker's
+// "Join via link" input.
+// ---------------------------------------------------------------------------
+function buildTeamInviteLink(teamId) {
+  return `huddle://team/${encodeURIComponent(teamId)}`;
+}
+
+function buildCallInviteLink(teamId, channelId) {
+  return `huddle://team/${encodeURIComponent(teamId)}/channel/${encodeURIComponent(channelId)}?call=1`;
+}
+
+// Parse a `huddle://...` URL into { teamId, channelId, joinCall }
+// or null. Lenient about whitespace and accepts URLs that the user
+// might have copied with a trailing newline.
+function parseInviteLink(raw) {
+  if (!raw) return null;
+  const cleaned = String(raw).trim();
+  if (!cleaned) return null;
+  let url;
+  try { url = new URL(cleaned); } catch { return null; }
+  if (url.protocol !== 'huddle:') return null;
+  // Custom-scheme parsing: WHATWG puts the host part of `huddle://X`
+  // into `pathname` because the scheme isn't on the special list.
+  // Treat `host + pathname` together and split on '/'.
+  const path = (url.host + url.pathname).replace(/^\/+|\/+$/g, '');
+  const parts = path.split('/').filter(Boolean);
+  if (parts[0] !== 'team' || !parts[1]) return null;
+  const teamId = decodeURIComponent(parts[1]);
+  let channelId = null, joinCall = false;
+  if (parts[2] === 'channel' && parts[3]) {
+    channelId = decodeURIComponent(parts[3]);
+    joinCall = url.searchParams.get('call') === '1';
+  }
+  return { teamId, channelId, joinCall };
+}
+
+async function copyToClipboard(text) {
+  // Electron renderer + modern browsers expose navigator.clipboard;
+  // fall back to a hidden textarea + execCommand for older webviews.
+  if (navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch { /* fall through to legacy */ }
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+    return true;
+  } catch { return false; }
+}
+
+async function copyAndToast(text, label) {
+  const ok = await copyToClipboard(text);
+  if (ok) showToast(`${label} copied to clipboard`);
+  else showToast(`Couldn't copy ${label.toLowerCase()}`, { kind: 'error' });
 }
 
 async function stepSendOtp() {
@@ -342,6 +437,29 @@ async function stepJoinTeam() {
     await joinTeamAndStart(t.id);
   } catch (err) {
     showError(err.message || 'Could not join team.');
+  }
+}
+
+// Paste-to-redeem path for invite links. Same end state as
+// stepJoinTeam (joinOrCreateTeam + joinTeamAndStart) plus an
+// optional pending channel/call hop that runs after the workspace
+// boots — see state.pendingInviteHop / consumePendingInviteHop.
+async function stepJoinViaLink() {
+  els.loginError.classList.add('hidden');
+  const raw = els.teamJoinLink.value.trim();
+  const parsed = parseInviteLink(raw);
+  if (!parsed) {
+    showError('That doesn’t look like a Huddle invite link.');
+    return;
+  }
+  try {
+    const t = await window.huddleApi.joinOrCreateTeam(parsed.teamId);
+    if (parsed.channelId) {
+      state.pendingInviteHop = { channelId: parsed.channelId, joinCall: parsed.joinCall };
+    }
+    await joinTeamAndStart(t.id);
+  } catch (err) {
+    showError(err.message || 'Could not redeem invite.');
   }
 }
 
@@ -665,14 +783,39 @@ function onWelcome({ peers, channels }) {
   // welcome dispatched, so render the full list here. Online status
   // is overlaid from peerInfo (which `peers` is the snapshot of).
   renderRoster();
+  // If we just redeemed an invite link with a channel/call hop,
+  // jump straight there instead of landing on #general. Falls back
+  // to the normal default-channel logic if the target isn't visible
+  // (e.g. the link pointed at a private channel the user wasn't
+  // explicitly invited to).
+  if (consumePendingInviteHop()) return;
   // Activate the general channel by default.
   const generalLi = els.channels.querySelector('[data-id="general"]');
   if (generalLi) generalLi.click();
   else if (state.channelMeta.size > 0) {
-    // Fallback: pick the first available.
     const first = [...state.channelMeta.keys()][0];
     focusChannel(first);
   }
+}
+
+function consumePendingInviteHop() {
+  const hop = state.pendingInviteHop;
+  if (!hop) return false;
+  state.pendingInviteHop = null;
+  const target = state.channelMeta.get(hop.channelId);
+  if (!target) {
+    showToast(`Channel #${hop.channelId} isn’t available on this team.`, { kind: 'error' });
+    return false;
+  }
+  focusChannel(hop.channelId);
+  if (hop.joinCall) {
+    // startCall depends on huddle being constructed AND
+    // currentChannel being set — focusChannel did the latter.
+    // Defer to a microtask so the call header has rendered before
+    // we blow it away with the in-call layout.
+    setTimeout(() => startCall(hop.channelId), 0);
+  }
+  return true;
 }
 
 function appendChannelToSidebar(channel, makeActive) {
@@ -1240,6 +1383,19 @@ function wireControls() {
   // team" is in the sidebar's sign-out menu.
   els.btnLeave.onclick = leaveCall;
   els.sourceCancel.onclick = () => els.sourcePicker.classList.add('hidden');
+
+  // Invite links — workspace header (team) + channel header (call).
+  els.copyTeamLink.onclick = () => {
+    const teamId = state.huddle?.team?.id;
+    if (!teamId) return;
+    copyAndToast(buildTeamInviteLink(teamId), 'Team invite link');
+  };
+  els.copyCallLink.onclick = () => {
+    const teamId = state.huddle?.team?.id;
+    const channelId = state.chat?.currentChannel;
+    if (!teamId || !channelId) return;
+    copyAndToast(buildCallInviteLink(teamId, channelId), 'Call link');
+  };
 
   // Settings
   els.openSettings.onclick = openSettings;

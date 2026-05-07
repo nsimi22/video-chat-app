@@ -88,7 +88,9 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
   display: flex; flex-direction: column; overflow: hidden;
 }
 .workspace { padding: 12px 14px; border-bottom: 1px solid var(--line); }
-.workspace-name { font-weight: 700; }
+.workspace-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.workspace-name { font-weight: 700; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#copy-team-link { padding: 0 4px; min-height: auto; }
 .me-row { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; }
 .me { font-size: 12px; color: var(--text-dim); }
 .me-row .ghost {
@@ -668,3 +670,24 @@ button.ctrl.muted.icon-only::after {
 .profile-edit-avatar-pick { cursor: pointer; padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; font-size: 12px; }
 .profile-edit-fields { flex: 1; min-width: 0; }
 .profile-edit-fields textarea { width: 100%; resize: vertical; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 8px; font-family: inherit; font-size: 13px; }
+
+/* Toast container — pinned bottom-center; toasts fade in then auto-
+   dismiss after a few seconds. Used for "Link copied" / "Joining …"
+   feedback so the user gets a visible confirmation without a modal. */
+.toasts {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+  display: flex; flex-direction: column; gap: 6px; align-items: center;
+  z-index: 1100; pointer-events: none;
+}
+.toast {
+  background: var(--bg-2); border: 1px solid var(--line);
+  color: var(--text); font-size: 13px;
+  padding: 8px 14px; border-radius: 999px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.5);
+  animation: toast-in 160ms ease-out;
+}
+.toast.error { border-color: var(--bad); color: #ff9bb6; }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
