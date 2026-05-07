@@ -658,19 +658,25 @@
     const id = slugifyTeamName(rawName);
     if (!id) throw new Error('invalid team name');
     const { data: { user } } = await sb.auth.getUser();
-    // If team exists, just insert the membership row.
-    const { data: existing } = await sb.from('teams').select('id, name').eq('id', id).maybeSingle();
-    if (existing) {
-      await sb.from('team_members').upsert({ team_id: id, user_id: user.id });
-      return existing;
-    }
-    // Otherwise create — RLS lets any authenticated user create a team, and
-    // the team_after_insert trigger seeds defaults + adds creator as member.
-    const { data: created, error } = await sb.from('teams').insert({
+    // We can't probe existence with `select * from teams where id=X`:
+    // teams_read_member RLS only lets members + creator see the row, so
+    // a non-member trying to join an existing team would see "missing"
+    // and the subsequent insert would crash on the PK conflict.
+    // Instead, optimistically try the insert. If it succeeds, the
+    // team_after_insert trigger added us as a member. If it conflicts
+    // on the PK (23505), the team already exists — we just need to
+    // upsert ourselves into team_members. Don't chain .select() on the
+    // insert: at RETURNING time the AFTER trigger hasn't run yet, so
+    // is_team_member(id) would reject the row.
+    const { error: insertErr } = await sb.from('teams').insert({
       id, name: id, created_by: user.id,
-    }).select('id, name').single();
-    if (error) throw error;
-    return created;
+    });
+    if (insertErr && insertErr.code !== '23505') throw insertErr;
+    // Either we just created the team (trigger added the membership
+    // row) or it already existed and we still need to join. Upsert is
+    // a no-op in the first case and the actual join in the second.
+    await sb.from('team_members').upsert({ team_id: id, user_id: user.id });
+    return { id, name: id };
   }
 
   async function startHuddle(team) {
