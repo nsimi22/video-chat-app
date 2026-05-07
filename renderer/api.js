@@ -689,7 +689,14 @@
       const a = this.peerId, b = otherUserId;
       if (a === b) throw new Error("can't DM yourself");
       const id = 'dm:' + (a < b ? `${a}::${b}` : `${b}::${a}`);
-      const displayName = otherUserName || (await this._fetchDisplayName(otherUserId)) || 'unknown';
+      // Prefer the caller-supplied name, then the live presence
+      // cache (fresher than profiles.name when a teammate has
+      // renamed since the caller cached its copy), then a DB fetch
+      // as a last resort.
+      const displayName = otherUserName
+        || this.peerInfo.get(otherUserId)?.name
+        || (await this._fetchDisplayName(otherUserId))
+        || 'unknown';
       const { data: existing } = await this.supabase.from('channels').select('*').eq('team_id', this.team.id).eq('id', id).maybeSingle();
       if (existing) {
         const meta = this._marshalChannel(existing);
