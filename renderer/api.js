@@ -80,6 +80,11 @@
       this.color = profile.color;
       // Mirrors the MeshClient's API for the rest of the renderer:
       this.peerInfo = new Map(); // user_id -> { id, name, color }
+      // Full team roster, populated on start() and read by the
+      // sidebar + DM picker + member picker so offline teammates
+      // are visible. Keyed by user_id, value: { id, name, color,
+      // avatar_url }.
+      this.roster = new Map();
       this.remoteScreenLabels = new Map();
       this.activeScreens = new Map(); // streamId -> { from, label, owner: bool }
       this.url = _config.url;
@@ -108,7 +113,45 @@
       await this._joinTeamChannel();
       await this._subscribeToMessages();
       await this._loadInitialChannels();
+      await this._loadRoster();
       this._dispatchWelcome();
+    }
+
+    // Pull the full team roster (including offline members). Presence
+    // only carries currently-online users, which is fine for the
+    // call/typing UX but useless for the DM picker and "people"
+    // list — you can't DM someone who isn't sitting in the app right
+    // now if those surfaces only iterate presence. Stash the roster
+    // in a Map keyed by user_id; sidebar + pickers render from this
+    // and overlay online status from peerInfo.
+    async _loadRoster() {
+      this.roster = new Map();
+      // Two queries instead of `select('user_id, profiles!inner(...)')`:
+      // there's no direct FK between team_members and profiles
+      // (both reference auth.users), so PostgREST can't infer the
+      // embed reliably. Fetch user_ids first, then resolve them
+      // against profiles in one round-trip — same shape that
+      // _loadInitialChannels already uses.
+      const { data: members, error: memErr } = await this.supabase
+        .from('team_members')
+        .select('user_id')
+        .eq('team_id', this.team.id);
+      if (memErr) throw memErr;
+      const ids = (members || []).map((m) => m.user_id);
+      if (!ids.length) return;
+      const { data: profs, error: profErr } = await this.supabase
+        .from('profiles')
+        .select('user_id, name, color, avatar_url')
+        .in('user_id', ids);
+      if (profErr) throw profErr;
+      for (const p of (profs || [])) {
+        this.roster.set(p.user_id, {
+          id: p.user_id,
+          name: p.name,
+          color: p.color,
+          avatar_url: p.avatar_url || null,
+        });
+      }
     }
 
     async stop() {
@@ -131,6 +174,7 @@
       this._whiteboardChannels.clear();
       this._lurkers.clear();
       this._lurkerCounts.clear();
+      this.roster.clear();
     }
 
     // --- Call channel: per-channel presence + signaling + screen events --
