@@ -46,6 +46,10 @@
         <div id="team-step" class="hidden">
           <h3 style="margin:8px 0 4px;">Your teams</h3>
           <div id="team-mine" class="team-mine"></div>
+          <h3 style="margin:14px 0 4px;">Join via invite link</h3>
+          <p class="hint">Paste a Huddle invite link from a teammate.</p>
+          <input id="team-join-link" type="text" placeholder="huddle://team/acme" />
+          <button id="team-join-link-go" class="subtle btn-block">Join</button>
           <h3 style="margin:14px 0 4px;">Join or create another</h3>
           <p class="hint">Type a team name; if it doesn't exist, it'll be created.</p>
           <input id="team-create" type="text" maxlength="30" placeholder="acme" />
@@ -63,7 +67,12 @@
       <!-- Sidebar -->
       <aside class="sidebar">
         <div class="workspace">
-          <div class="workspace-name">Huddle</div>
+          <div class="workspace-row">
+            <div class="workspace-name">Huddle</div>
+            <button id="copy-team-link" class="ghost icon-only" title="Copy team invite link" aria-label="Copy team invite link">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            </button>
+          </div>
           <div class="me-row">
             <div id="me" class="me"></div>
             <button id="open-settings" class="ghost" title="Settings" aria-label="Settings">
@@ -112,6 +121,9 @@
             </button>
             <button id="chat-thread-back" class="hidden">← Back to channel</button>
             <span class="header-spacer"></span>
+            <button id="copy-call-link" class="icon-only ghost" title="Copy a join-call link" aria-label="Copy a join-call link">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            </button>
             <!-- Pre-call entry: visible when no call is live in this channel
                  OR when a call is live but the user hasn't joined yet. -->
             <button id="btn-start-call" class="ctrl primary" title="Start a call in this channel">
@@ -341,6 +353,9 @@
         <button id="source-cancel">Cancel</button>
       </div>
     </div>
+
+    <!-- Toast container — used for "Link copied" / "Joined …" feedback. -->
+    <div id="toasts" class="toasts" aria-live="polite"></div>
 
     <script src="vendor/supabase.js"></script>
     <script src="emojis.js"></script>
