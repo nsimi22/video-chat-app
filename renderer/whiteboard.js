@@ -244,13 +244,17 @@ class WhiteboardSession {
     this._noteSaveTimers.set(id, timer);
   }
 
+  // Returns the persist-update promise so callers (specifically
+  // stop()) can await all flushes finishing before tearing down
+  // the realtime channel + auth context.
   _flushNoteSave(id) {
     const t = this._noteSaveTimers.get(id);
-    if (!t) return;
+    if (!t) return Promise.resolve();
     clearTimeout(t);
     this._noteSaveTimers.delete(id);
     const entry = this.notes.get(id);
-    if (entry) this._persistUpdate(id, { text: entry.data.text });
+    if (!entry) return Promise.resolve();
+    return this._persistUpdate(id, { text: entry.data.text });
   }
 
   async _persistUpdate(id, patch) {
@@ -323,12 +327,15 @@ class WhiteboardSession {
   setColor(c) { this.layer?.setColor(c); }
   setSize(s) { this.layer?.setSize(s); }
 
-  stop() {
-    // Flush any pending debounced note text saves before tearing
-    // down the channel — otherwise the timers fire async after the
-    // session is gone and either succeed silently into a closed
-    // tab or fail with no error UI to show.
-    for (const id of [...this._noteSaveTimers.keys()]) this._flushNoteSave(id);
+  async stop() {
+    // Flush + AWAIT any pending debounced note text saves before
+    // tearing down the channel. Without the await, the persist
+    // promises raced closeWhiteboardChannel + the higher-level
+    // huddle.stop() in teardownTeam, and a slow network could
+    // close the realtime socket / drop auth before the writes
+    // landed — losing the user's last keystrokes.
+    const pending = [...this._noteSaveTimers.keys()].map((id) => this._flushNoteSave(id));
+    if (pending.length) await Promise.allSettled(pending);
     this.huddle.closeWhiteboardChannel(this.whiteboardId);
     if (this.tile?.parentElement) this.tile.remove();
   }

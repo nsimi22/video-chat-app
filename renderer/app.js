@@ -616,7 +616,9 @@ async function startCall(channelId) {
 // into the team. The HuddleClient keeps chat realtime running.
 async function leaveCall() {
   if (!state.mesh) return;
-  for (const session of state.whiteboardSessions.values()) session.stop();
+  // stop() is async (flushes pending note-save timers); await all
+  // sessions in parallel so a slow DB write doesn't block the rest.
+  await Promise.allSettled([...state.whiteboardSessions.values()].map((s) => s.stop()));
   state.whiteboardSessions.clear();
   state.mesh.disconnect();
   state.mesh = null;
@@ -643,7 +645,7 @@ async function leaveCall() {
 
 async function teardownTeam() {
   if (state.mesh) {
-    for (const session of state.whiteboardSessions.values()) session.stop();
+    await Promise.allSettled([...state.whiteboardSessions.values()].map((s) => s.stop()));
     state.whiteboardSessions.clear();
     state.mesh.disconnect();
     state.mesh = null;
@@ -1726,10 +1728,13 @@ async function openWhiteboard() {
   toggleAnnotate(wb.id);
 }
 
-function closeWhiteboard(whiteboardId) {
+async function closeWhiteboard(whiteboardId) {
   const session = state.whiteboardSessions.get(whiteboardId);
-  if (session) session.stop();
+  // Drop the session-map entry up front so concurrent close calls
+  // don't double-fire the async stop(). Awaited stop() flushes
+  // pending note-save timers before the realtime channel goes away.
   state.whiteboardSessions.delete(whiteboardId);
+  if (session) await session.stop();
   state.drawLayers.delete(whiteboardId);
   state.tilesByKey.delete(`whiteboard:${whiteboardId}`);
   syncTilesVisibility();
