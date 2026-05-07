@@ -63,6 +63,7 @@ const els = {
   channelTopic: $('#channel-topic'),
   me: $('#me'),
   tiles: $('#tiles'),
+  sidebarToggle: $('#sidebar-toggle'),
   btnStartCall: $('#btn-start-call'),
   btnJoinCall: $('#btn-join-call'),
   btnMic: $('#btn-mic'),
@@ -76,7 +77,11 @@ const els = {
   drawClear: $('#draw-clear'),
   drawClose: $('#draw-close'),
   // chat
-  chatChannelName: $('#chat-channel-name'),
+  // Canonical channel-name label is now in the stage header. The old
+  // #chat-channel-name was removed when stage and chat merged into a
+  // single column; ChatView.setChannel still writes to chatChannelName,
+  // so we alias it to the same DOM node.
+  chatChannelName: $('#channel-name'),
   threadBack: $('#chat-thread-back'),
   messages: $('#messages'),
   typing: $('#typing-indicator'),
@@ -327,6 +332,11 @@ async function stepJoinTeam() {
 // longer auto-grabs camera/mic or constructs MeshClient.
 async function joinTeamAndStart(teamId) {
   els.loginError.classList.add('hidden');
+  // startHuddle returns an *un-started* HuddleClient so we can attach
+  // listeners before its `start()` synchronously dispatches `welcome`.
+  // Without that ordering, welcome fires into the void and onWelcome
+  // never runs — channels render in the DB but never make it to the
+  // sidebar (the symptom that hid created channels between sessions).
   let huddle;
   try { huddle = await window.huddleApi.startHuddle({ id: teamId, name: teamId }); }
   catch (err) { showError(err.message || 'Could not start huddle.'); return; }
@@ -348,6 +358,12 @@ async function joinTeamAndStart(teamId) {
   huddle.addEventListener('chat-channel-removed', (e) => onChannelRemoved(e.detail.channelId));
   huddle.addEventListener('call-presence', (e) => onCallPresence(e.detail));
 
+  // Construct ChatView + assign state BEFORE huddle.start(), because
+  // start() dispatches `welcome` synchronously at the end of its
+  // handshake. onWelcome auto-focuses #general via focusChannel, which
+  // calls state.chat.setChannel() — that throws silently if state.chat
+  // isn't constructed yet, and the auto-focus is lost. (Channels still
+  // render in the sidebar, but the chat panel never binds to one.)
   state.huddle = huddle;
   state.mesh = null;
   state.myName = huddle.name;
@@ -373,6 +389,12 @@ async function joinTeamAndStart(teamId) {
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission().catch(() => {});
   }
+
+  // Now kick off the realtime handshake. welcome will fire inside
+  // start() and flow into onWelcome — which can safely auto-focus
+  // #general now that state.chat is wired up.
+  try { await huddle.start(); }
+  catch (err) { showError(err.message || 'Could not start huddle.'); return; }
 }
 
 // User clicked "Start call" or "Join call". Construct MeshClient first
@@ -384,6 +406,11 @@ async function startCall(channelId) {
   state.callStarting = true;
   els.btnStartCall.disabled = true;
   els.btnJoinCall.disabled = true;
+  // Each call starts with mic/cam enabled (fresh getUserMedia). Clear
+  // any leftover .muted styling from a previous call we left while
+  // muted; otherwise the UI can lie about the live track state.
+  els.btnMic.classList.remove('muted');
+  els.btnCam.classList.remove('muted');
   // Wire MeshClient before joinCall — joinCall's await resolves AFTER
   // the realtime channel's initial presence sync, so peer-joined
   // events for existing participants would otherwise fire into the
@@ -526,7 +553,17 @@ function renderCallHeader() {
   els.btnStartCall.classList.toggle('hidden', !!inCallHere || !!others);
   els.btnJoinCall.classList.toggle('hidden', !!inCallHere || !others);
   if (others) {
-    els.btnJoinCall.innerHTML = `📞 Join call <span class="count">${lurkerCount}</span>`;
+    // Update the text span inside the button (which sits next to the
+    // SVG icon) instead of replacing innerHTML, so we keep the icon.
+    const span = els.btnJoinCall.querySelector('span:not(.count)');
+    if (span) span.textContent = `Join call`;
+    let count = els.btnJoinCall.querySelector('.count');
+    if (!count) {
+      count = document.createElement('span');
+      count.className = 'count';
+      els.btnJoinCall.appendChild(count);
+    }
+    count.textContent = String(lurkerCount);
   }
   els.btnMic.classList.toggle('hidden', !inCallHere);
   els.btnCam.classList.toggle('hidden', !inCallHere);
@@ -965,6 +1002,17 @@ function closeAnnotate() {
 // ---------------------------------------------------------------------------
 
 function wireControls() {
+  // Sidebar collapse — persisted across launches so the user's choice
+  // sticks. The CSS handles the column-grid swap; we just toggle the
+  // attribute on `.app`.
+  const initialCollapsed = (() => { try { return localStorage.getItem('huddle.sidebarCollapsed') === '1'; } catch { return false; } })();
+  els.app.dataset.sidebarCollapsed = initialCollapsed ? 'true' : 'false';
+  els.sidebarToggle.onclick = () => {
+    const next = els.app.dataset.sidebarCollapsed !== 'true';
+    els.app.dataset.sidebarCollapsed = next ? 'true' : 'false';
+    try { localStorage.setItem('huddle.sidebarCollapsed', next ? '1' : '0'); } catch {}
+  };
+
   // Pre-call entry: starts (or joins) a call in the active channel.
   els.btnStartCall.onclick = () => {
     const ch = state.chat?.currentChannel;
@@ -977,14 +1025,17 @@ function wireControls() {
   els.btnMic.onclick = () => {
     if (!state.mesh) return;
     const on = state.mesh.toggleMic();
-    els.btnMic.textContent = on ? '🎤' : '🔇';
+    // The SVG icon stays the same; we add a `.muted` class so CSS can
+    // overlay a strikethrough and dim the button color, no need to
+    // swap DOM content.
+    els.btnMic.classList.toggle('muted', !on);
     const tile = state.tilesByKey.get('self-cam');
     if (tile) tile.classList.toggle('muted', !on);
   };
   els.btnCam.onclick = () => {
     if (!state.mesh) return;
     const on = state.mesh.toggleCam();
-    els.btnCam.textContent = on ? '📷' : '📵';
+    els.btnCam.classList.toggle('muted', !on);
   };
   els.btnShare.onclick = openSourcePicker;
   // Leave the call (drop media + tile grid, keep chat). Held-down "Leave
