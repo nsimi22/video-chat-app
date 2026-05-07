@@ -111,13 +111,16 @@
     // messages and ask the model to summarize. The shape lives here (rather
     // than in chat.js) so the prompt stays close to the API surface.
     // Caller passes the marshalled message shape from chat.js (`{text, ts,
-    // authorName}`) — see HuddleClient._marshalMessage.
+    // authorName}`) — see HuddleClient._marshalMessage. The `m.ts` fallback
+    // to `Date.now()` is purely defensive: `new Date(undefined).toISOString()`
+    // throws RangeError, and this loop is too far from the API boundary to
+    // want to crash on a malformed row.
     async summarize(channelMessages, { topicHint } = {}) {
       const system = `You are a meeting / chat summarizer. Produce a tight, scannable summary of recent messages in a team chat. Use bullet points. Capture decisions, open questions, and any action items (with owners if you can infer them). Keep it under 250 words.`;
       const lines = (channelMessages || [])
         .filter((m) => m.text)
         .map((m) => {
-          const ts = new Date(m.ts).toISOString().slice(11, 16);
+          const ts = new Date(m.ts || Date.now()).toISOString().slice(11, 16);
           const who = m.authorName || 'someone';
           const txt = m.text.replace(/\n+/g, ' ');
           return `[${ts}] ${who}: ${txt}`;

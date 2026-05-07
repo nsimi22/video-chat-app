@@ -226,17 +226,15 @@ class ChatView {
     if (!text && attachments.length === 0) return;
 
     // Slash commands run client-side and either consume the input (no chat
-    // message sent) or fall through to the normal path. Right now we ship
-    // /jira; more can join the same shape.
+    // message sent) or fall through to the normal path. The slow-API
+    // handlers (/ai, /summarize) clear the composer themselves once they've
+    // validated input, so unrecognized /commands fall back through to
+    // sendMessage with the user's text intact.
     if (text.startsWith('/')) {
-      // Clear the composer up front so the UI feels responsive even if the
-      // slash handler awaits a slow API call (`/ai`, `/summarize` can take
-      // 5-30s on Opus). If the command isn't recognized we still send the
-      // original text via the normal sendMessage path below.
-      this.els.composer.value = '';
-      this.els.composer.style.height = 'auto';
       const handled = await this._maybeRunSlash(text);
       if (handled) {
+        this.els.composer.value = '';
+        this.els.composer.style.height = 'auto';
         this.composerAttachments = [];
         this._renderAttachmentChips();
         return;
@@ -764,9 +762,12 @@ class ChatView {
       alert('Usage: /ai <your question>');
       return true;
     }
-    // Show "🤖 AI is thinking…" in the typing-indicator slot so the user
-    // (and only the user — this is a local-only state, not broadcast) knows
-    // the request is in flight.
+    // Once validated, clear the composer + show "🤖 AI is thinking…" in
+    // the typing-indicator slot so the user knows the (slow) request is
+    // in flight. Only the local user sees the thinking indicator —
+    // it's not broadcast.
+    this.els.composer.value = '';
+    this.els.composer.style.height = 'auto';
     this._aiThinking = true;
     this._refreshTyping();
     let result;
@@ -809,6 +810,9 @@ class ChatView {
       alert('Nothing to summarize yet.');
       return true;
     }
+    // Clear composer + flag thinking before the slow API call.
+    this.els.composer.value = '';
+    this.els.composer.style.height = 'auto';
     this._aiThinking = true;
     this._refreshTyping();
     let result;
