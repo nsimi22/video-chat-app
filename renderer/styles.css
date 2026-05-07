@@ -480,7 +480,7 @@ button.ctrl.muted.icon-only::after {
   margin: 8px auto;
   background: var(--bg-2); border: 1px solid var(--line);
   padding: 6px 10px; border-radius: 999px;
-  display: flex; gap: 6px; align-items: center;
+  display: flex; gap: 6px; align-items: center; justify-content: center;
   box-shadow: 0 6px 20px rgba(0,0,0,.5);
   width: fit-content; max-width: calc(100% - 16px);
   flex-wrap: wrap;
