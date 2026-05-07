@@ -13,9 +13,21 @@ const els = {
   login: $('#login'),
   loginName: $('#login-name'),
   loginTeam: $('#login-team'),
+  loginPassword: $('#login-password'),
   loginServer: $('#login-server'),
+  loginError: $('#login-error'),
   loginGo: $('#login-go'),
   workspaceName: $('.workspace-name'),
+  reconnectBanner: $('#reconnect-banner'),
+  searchBtn: $('#search-btn'),
+  searchModal: $('#search-modal'),
+  searchInput: $('#search-input'),
+  searchScopeCurrent: $('#search-scope-current'),
+  searchResults: $('#search-results'),
+  searchCancel: $('#search-cancel'),
+  attachBtn: $('#attach-btn'),
+  fileInput: $('#file-input'),
+  attachmentChips: $('#attachment-chips'),
   app: $('#app'),
   channels: $('#channels'),
   dms: $('#dms'),
@@ -72,7 +84,14 @@ const state = {
   activeAnnotation: null,
   pendingStreams: new Map(),
   pendingNewChannelId: null,
+  unread: new Map(), // channelId -> { count, mentions } both ints
 };
+
+// Whether the OS window is currently focused. Used to gate desktop
+// notifications + auto-clearing of unread on focus.
+let windowFocused = document.hasFocus();
+window.addEventListener('focus', () => { windowFocused = true; clearUnreadIfActive(); });
+window.addEventListener('blur', () => { windowFocused = false; });
 
 const STREAM_DECISION_MS = 1500;
 
@@ -84,7 +103,9 @@ const STREAM_DECISION_MS = 1500;
   const port = await window.huddle.getSignalingPort();
   els.loginServer.value = `ws://localhost:${port}`;
   els.loginGo.addEventListener('click', join);
-  els.loginName.addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+  for (const el of [els.loginName, els.loginTeam, els.loginPassword, els.loginServer]) {
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+  }
   els.loginName.focus();
 })();
 
@@ -93,8 +114,10 @@ async function join() {
   state.myName = name;
   const url = els.loginServer.value.trim();
   const team = els.loginTeam.value.trim();
+  const password = els.loginPassword.value;
   const color = `hsl(${Math.floor(Math.random() * 360)} 70% 55%)`;
-  const mesh = new MeshClient({ url, name, color, team });
+  const mesh = new MeshClient({ url, name, color, team, password });
+  els.loginError.classList.add('hidden');
 
   mesh.addEventListener('welcome', (e) => onWelcome(e.detail));
   mesh.addEventListener('peer-joined', (e) => addPersonToSidebar(e.detail));
@@ -107,30 +130,54 @@ async function join() {
   mesh.addEventListener('chat-channel-added', (e) => onChannelAdded(e.detail.channel));
   mesh.addEventListener('chat-channel-removed', (e) => onChannelRemoved(e.detail.channelId));
   mesh.addEventListener('chat-channel-focus', (e) => focusChannel(e.detail.channelId));
-  mesh.addEventListener('disconnected', () => alert('Disconnected from server.'));
+  mesh.addEventListener('chat-search-results', (e) => renderSearchResults(e.detail));
+  mesh.addEventListener('reconnecting', (e) => {
+    els.reconnectBanner.textContent = `Connection lost — retrying (attempt ${e.detail.attempt})…`;
+    els.reconnectBanner.classList.remove('hidden');
+  });
+  mesh.addEventListener('connected', (e) => {
+    if (!e.detail.isFirst) {
+      els.reconnectBanner.textContent = 'Reconnected.';
+      setTimeout(() => els.reconnectBanner.classList.add('hidden'), 1500);
+    }
+  });
+  mesh.addEventListener('auth-failed', () => {
+    els.loginError.textContent = "That team password didn't match. Ask a teammate.";
+    els.loginError.classList.remove('hidden');
+  });
 
   try { await mesh.connect(); }
-  catch (err) { alert('Could not connect to ' + url); return; }
+  catch (err) {
+    if (mesh._authFailed) {
+      // login-error is already populated by the auth-failed listener
+    } else {
+      els.loginError.textContent = 'Could not connect to ' + url;
+      els.loginError.classList.remove('hidden');
+    }
+    return;
+  }
   state.mesh = mesh;
 
   els.login.classList.add('hidden');
   els.app.classList.remove('hidden');
   els.me.textContent = name;
-  // Reflect the team name (server may have slugified it).
-  if (mesh.teamMeta?.name) {
-    els.workspaceName.textContent = mesh.teamMeta.name;
-  }
+  if (mesh.teamMeta?.name) els.workspaceName.textContent = mesh.teamMeta.name;
 
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, name);
-  } catch (err) {
-    console.warn('No camera/mic available', err);
-  }
+  } catch (err) { console.warn('No camera/mic available', err); }
 
-  state.chat = new ChatView({ mesh, els });
+  state.chat = new ChatView({
+    mesh, els,
+    hooks: { onMessage: (m) => onChatMessage(m) },
+  });
   wireControls();
   els.btnLeave.classList.remove('hidden');
+  // Ask for desktop notification permission once on join.
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => {});
+  }
 }
 
 function leave() {
@@ -139,9 +186,11 @@ function leave() {
   state.mesh = null;
   state.chat = null;
   state.channelMeta.clear();
+  state.unread.clear();
   els.channels.replaceChildren();
   els.dms.replaceChildren();
   els.people.replaceChildren();
+  els.reconnectBanner.classList.add('hidden');
   for (const tile of state.tilesByKey.values()) tile.remove();
   state.tilesByKey.clear();
   state.drawLayers.clear();
@@ -189,6 +238,12 @@ function appendChannelToSidebar(channel, makeActive) {
   label.textContent = displayLabelFor(channel);
   li.appendChild(label);
 
+  // Unread badge slot — populated by updateUnreadBadge().
+  const badge = document.createElement('span');
+  badge.className = 'ch-badge';
+  badge.style.display = 'none';
+  li.appendChild(badge);
+
   if (canDelete(channel)) {
     const del = document.createElement('button');
     del.className = 'ch-delete';
@@ -212,13 +267,89 @@ function appendChannelToSidebar(channel, makeActive) {
 function focusChannel(channelId) {
   const channel = state.channelMeta.get(channelId);
   if (!channel) return;
-  // Clear active across both lists, then mark this one.
   for (const x of els.channels.children) x.classList.remove('active');
   for (const x of els.dms.children) x.classList.remove('active');
   const list = channel.type === 'dm' ? els.dms : els.channels;
   const li = list.querySelector(`[data-id="${cssEscape(channel.id)}"]`);
   if (li) li.classList.add('active');
   state.chat.setChannel(channel.id, channel.topic, displayLabelFor(channel));
+  // Visiting a channel clears its unread.
+  state.unread.delete(channelId);
+  updateUnreadBadge(channelId);
+}
+
+// On window focus, clear unread for the channel we're already viewing.
+function clearUnreadIfActive() {
+  if (!state.chat || !state.mesh) return;
+  const id = state.chat.currentChannel;
+  if (state.unread.has(id)) {
+    state.unread.delete(id);
+    updateUnreadBadge(id);
+  }
+}
+
+// Bump unread for a channel when an incoming message lands there but isn't
+// already visible. Mentions count separately so the badge can highlight them.
+function bumpUnread(channelId, mentionsMe) {
+  const cur = state.unread.get(channelId) || { count: 0, mentions: 0 };
+  cur.count += 1;
+  if (mentionsMe) cur.mentions += 1;
+  state.unread.set(channelId, cur);
+  updateUnreadBadge(channelId);
+}
+
+function updateUnreadBadge(channelId) {
+  const sel = `[data-id="${cssEscape(channelId)}"]`;
+  const li = els.channels.querySelector(sel) || els.dms.querySelector(sel);
+  if (!li) return;
+  const badge = li.querySelector('.ch-badge');
+  if (!badge) return;
+  const u = state.unread.get(channelId);
+  if (!u || u.count === 0) {
+    badge.style.display = 'none';
+    badge.textContent = '';
+    badge.classList.remove('muted');
+    return;
+  }
+  badge.style.display = 'inline-block';
+  badge.textContent = String(u.count);
+  // Mentions / DMs render as the loud red badge; plain channel chatter is muted.
+  const channel = state.channelMeta.get(channelId);
+  const loud = u.mentions > 0 || channel?.type === 'dm';
+  badge.classList.toggle('muted', !loud);
+}
+
+// Called by ChatView via the onMessage hook for every inbound chat message
+// (including our own echo). Decides whether to bump unread and notify.
+function onChatMessage(m) {
+  if (!state.mesh) return;
+  if (m.authorName === state.myName) return; // ignore our own messages
+  const channel = state.channelMeta.get(m.channelId);
+  const mentionsMe = Array.isArray(m.mentions) && m.mentions.includes(state.myName);
+  const isDm = channel?.type === 'dm';
+  const isActive = state.chat?.currentChannel === m.channelId && windowFocused;
+  if (!isActive) bumpUnread(m.channelId, mentionsMe);
+  // Notification triggers: mentions, DMs, or a reply in a thread you're in.
+  const shouldNotify = !isActive && (mentionsMe || isDm);
+  if (shouldNotify) sendDesktopNotification(m, channel);
+}
+
+function sendDesktopNotification(m, channel) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const where = channel?.type === 'dm' ? `DM from ${m.authorName}`
+    : `${m.authorName} in #${channel?.name || m.channelId}`;
+  try {
+    const n = new Notification(where, {
+      body: (m.text || '').slice(0, 200),
+      tag: m.channelId, // collapse repeated alerts per channel
+      silent: false,
+    });
+    n.onclick = () => {
+      window.focus();
+      focusChannel(m.channelId);
+      n.close();
+    };
+  } catch (err) { console.warn('notification failed', err); }
 }
 
 function onChannelAdded(channel) {
@@ -455,6 +586,14 @@ function wireControls() {
   els.btnLeave.onclick = leave;
   els.sourceCancel.onclick = () => els.sourcePicker.classList.add('hidden');
 
+  // Search
+  els.searchBtn.onclick = openSearchModal;
+  els.searchCancel.onclick = () => els.searchModal.classList.add('hidden');
+  els.searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') runSearch();
+    if (e.key === 'Escape') els.searchModal.classList.add('hidden');
+  });
+
   // Create-channel modal
   els.addChannel.onclick = openCreateChannelModal;
   els.ccCancel.onclick = () => els.ccModal.classList.add('hidden');
@@ -571,6 +710,57 @@ function openDmPicker() {
     }
   }
   els.dmPicker.classList.remove('hidden');
+}
+
+function openSearchModal() {
+  els.searchInput.value = '';
+  els.searchResults.replaceChildren();
+  els.searchScopeCurrent.checked = false;
+  els.searchModal.classList.remove('hidden');
+  els.searchInput.focus();
+}
+
+function runSearch() {
+  const q = els.searchInput.value.trim();
+  if (!q) return;
+  const channelId = els.searchScopeCurrent.checked ? state.chat.currentChannel : undefined;
+  state.mesh.send({ type: 'chat-search', query: q, channelId });
+  els.searchResults.replaceChildren();
+  const loading = document.createElement('div');
+  loading.className = 'empty';
+  loading.textContent = 'Searching…';
+  els.searchResults.appendChild(loading);
+}
+
+function renderSearchResults({ query, results }) {
+  els.searchResults.replaceChildren();
+  if (!results || results.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = `No matches for "${query}".`;
+    els.searchResults.appendChild(empty);
+    return;
+  }
+  for (const m of results) {
+    const ch = state.channelMeta.get(m.channelId);
+    const hit = document.createElement('div');
+    hit.className = 'hit';
+    const meta = document.createElement('div');
+    meta.className = 'hit-meta';
+    const when = new Date(m.ts).toLocaleString();
+    meta.textContent = `${m.authorName} · ${ch ? displayLabelFor(ch) : '#' + m.channelId} · ${when}`;
+    const text = document.createElement('div');
+    text.className = 'hit-text';
+    text.textContent = (m.text || '').slice(0, 240);
+    hit.append(meta, text);
+    hit.onclick = () => {
+      els.searchModal.classList.add('hidden');
+      focusChannel(m.channelId);
+      // If the hit is a thread reply, open the thread on the parent.
+      if (m.parentId) state.chat.openThread(m.parentId);
+    };
+    els.searchResults.appendChild(hit);
+  }
 }
 
 async function openSourcePicker() {

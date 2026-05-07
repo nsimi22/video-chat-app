@@ -87,35 +87,54 @@ class PeerConn {
 }
 
 class MeshClient extends EventTarget {
-  constructor({ url, name, color, team }) {
+  constructor({ url, name, color, team, password }) {
     super();
     this.url = url;
     this.name = name;
     this.color = color;
-    this.team = team || ''; // server falls back to a default team if blank
+    this.team = team || '';
+    this.password = password || '';
     this.peerId = null;
-    this.teamMeta = null; // {id, name} after welcome
-    this.peers = new Map(); // remoteId -> PeerConn
-    this.peerInfo = new Map(); // remoteId -> {name, color}
+    this.teamMeta = null;
+    this.peers = new Map();
+    this.peerInfo = new Map();
     this.cameraStream = null;
-    this.screenStreams = new Map(); // streamId -> {stream, label}
-    this.remoteScreenLabels = new Map(); // streamId -> label/name
+    this.screenStreams = new Map();
+    this.remoteScreenLabels = new Map();
     this.ws = null;
+    // Reconnect bookkeeping. `_intentionalClose` flips to true when the user
+    // explicitly leaves so `disconnect()` doesn't fight the reconnect loop.
+    this._intentionalClose = false;
+    this._reconnectAttempt = 0;
+    this._authFailed = false;
   }
 
+  // Construct the underlying WebSocket. Returns a promise that resolves on the
+  // first successful welcome (initial connect) or rejects on permanent failure
+  // (e.g. auth-failed). Subsequent disconnects trigger background reconnect
+  // attempts and emit `connected` / `disconnected` events instead of resolving.
   connect() {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(this.url);
-      this.ws.onopen = () => {
-        this.ws.send(JSON.stringify({
-          type: 'hello',
-          name: this.name,
-          color: this.color,
-          team: this.team,
-        }));
-      };
-      this.ws.onerror = (e) => reject(e);
-      this.ws.onclose = () => this.dispatchEvent(new CustomEvent('disconnected'));
+      const open = (isFirst) => {
+        let resolvedOrRejected = false;
+        this.ws = new WebSocket(this.url);
+        this.ws.onopen = () => {
+          this.ws.send(JSON.stringify({
+            type: 'hello', name: this.name, color: this.color,
+            team: this.team, password: this.password,
+          }));
+        };
+        this.ws.onerror = (e) => {
+          if (isFirst && !resolvedOrRejected) { resolvedOrRejected = true; reject(e); }
+        };
+        this.ws.onclose = () => {
+          this.dispatchEvent(new CustomEvent('disconnected', { detail: { authFailed: this._authFailed } }));
+          if (this._intentionalClose || this._authFailed) return;
+          // Reconnect with exponential backoff, capped at 30s.
+          const delay = Math.min(30000, 1000 * Math.pow(2, this._reconnectAttempt++));
+          this.dispatchEvent(new CustomEvent('reconnecting', { detail: { attempt: this._reconnectAttempt, delayMs: delay } }));
+          setTimeout(() => open(false), delay);
+        };
       this.ws.onmessage = (ev) => {
         let m;
         try {
@@ -126,16 +145,29 @@ class MeshClient extends EventTarget {
         }
         if (!m || typeof m !== 'object' || typeof m.type !== 'string') return;
         switch (m.type) {
+          case 'auth-failed':
+            this._authFailed = true;
+            this.dispatchEvent(new CustomEvent('auth-failed', { detail: m }));
+            if (isFirst && !resolvedOrRejected) {
+              resolvedOrRejected = true;
+              reject(new Error(m.reason || 'auth_failed'));
+            }
+            return;
           case 'welcome':
             this.peerId = m.peerId;
             this.teamMeta = m.team || null;
+            this._reconnectAttempt = 0;
+            // After a reconnect, `peerInfo` is stale (peerIds reset on the
+            // server). Clear and repopulate from the fresh roster.
+            this.peerInfo.clear();
+            this.remoteScreenLabels.clear();
             for (const p of m.peers) this.peerInfo.set(p.id, p);
-            // Seed labels for screens that were already being shared before we joined.
             for (const s of m.activeScreens || []) {
               this.remoteScreenLabels.set(s.streamId, { label: s.label, fromName: s.fromName, from: s.from });
             }
             this.dispatchEvent(new CustomEvent('welcome', { detail: m }));
-            resolve();
+            this.dispatchEvent(new CustomEvent('connected', { detail: { isFirst } }));
+            if (isFirst && !resolvedOrRejected) { resolvedOrRejected = true; resolve(); }
             break;
           case 'peer-joined':
             this.peerInfo.set(m.peer.id, m.peer);
@@ -169,19 +201,30 @@ class MeshClient extends EventTarget {
             break;
           case 'chat-history':
           case 'chat-message':
+          case 'chat-message-deleted':
           case 'chat-update':
           case 'chat-channel-added':
           case 'chat-channel-removed':
           case 'chat-channel-focus':
+          case 'chat-search-results':
+          case 'upload-token':
           case 'typing':
             this.dispatchEvent(new CustomEvent(m.type, { detail: m }));
             break;
         }
       };
+      };
+      open(true);
     });
   }
 
-  send(obj) { this.ws.send(JSON.stringify(obj)); }
+  send(obj) {
+    // During a reconnect the socket may be CLOSING/CONNECTING; drop rather
+    // than throw. Most callers are best-effort signaling messages; the
+    // server resends authoritative state via the next welcome.
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify(obj));
+  }
 
   async _ensurePeer(remoteId, polite) {
     let conn = this.peers.get(remoteId);
@@ -278,8 +321,10 @@ class MeshClient extends EventTarget {
     this.send({ type: 'screen-stop', streamId });
   }
 
-  // Clean teardown — used by the Leave button.
+  // Clean teardown — used by the Leave button. Stops the reconnect loop so
+  // closing the WebSocket here doesn't trigger a backoff retry.
   disconnect() {
+    this._intentionalClose = true;
     for (const id of [...this.screenStreams.keys()]) this.removeScreen(id);
     if (this.cameraStream) {
       for (const t of this.cameraStream.getTracks()) t.stop();

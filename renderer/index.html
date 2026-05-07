@@ -17,8 +17,11 @@
         <p class="hint">Joining a team that doesn't exist yet creates it. People in different teams can't see each other.</p>
         <label>Display name</label>
         <input id="login-name" type="text" placeholder="Your name" maxlength="32" />
+        <label>Team password (sets one on first join)</label>
+        <input id="login-password" type="password" placeholder="optional" maxlength="128" />
         <label>Server</label>
         <input id="login-server" type="text" placeholder="ws://localhost:8787" />
+        <div id="login-error" class="login-error hidden"></div>
         <button id="login-go" class="primary">Connect</button>
       </div>
     </div>
@@ -79,11 +82,18 @@
       <section class="chat">
         <header class="chat-header">
           <div id="chat-channel-name">#general</div>
-          <button id="chat-thread-back" class="hidden">← Back to channel</button>
+          <div class="chat-header-actions">
+            <button id="search-btn" title="Search messages">🔍</button>
+            <button id="chat-thread-back" class="hidden">← Back to channel</button>
+          </div>
         </header>
         <div id="messages" class="messages"></div>
         <div id="typing-indicator" class="typing"></div>
+        <div id="reconnect-banner" class="reconnect-banner hidden"></div>
+        <div id="attachment-chips" class="attachment-chips hidden"></div>
         <div class="composer">
+          <button id="attach-btn" title="Attach file">📎</button>
+          <input id="file-input" type="file" multiple class="hidden" />
           <button id="emoji-btn" title="Emoji">😀</button>
           <textarea id="composer-input" placeholder="Message #general"
                     rows="1"></textarea>
@@ -128,6 +138,19 @@
       </div>
     </div>
 
+    <!-- Search modal -->
+    <div id="search-modal" class="modal-backdrop hidden">
+      <div class="modal search-modal">
+        <h2>Search messages</h2>
+        <input id="search-input" type="text" placeholder="Search in this team…" />
+        <div class="search-scope">
+          <label><input id="search-scope-current" type="checkbox" /> Limit to current channel</label>
+        </div>
+        <div id="search-results" class="search-results"></div>
+        <button id="search-cancel" style="margin-top:8px;">Close</button>
+      </div>
+    </div>
+
     <!-- Screen-source picker modal -->
     <div id="source-picker" class="modal-backdrop hidden">
       <div class="modal source-picker">
@@ -139,6 +162,7 @@
     </div>
 
     <script src="emojis.js"></script>
+    <script src="markdown.js"></script>
     <script src="drawing.js"></script>
     <script src="webrtc.js"></script>
     <script src="chat.js"></script>

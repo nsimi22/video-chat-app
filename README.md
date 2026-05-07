@@ -13,8 +13,28 @@ A self-contained Electron desktop app that combines:
   resolution-independent so they line up for every viewer.
 - **Slack-style chat** — public + private channels, direct messages,
   threaded replies, emoji reactions, an emoji picker (with
-  `:shortcode:` autoreplace on send), and a typing indicator. Everything
-  is persisted to disk and survives server restarts.
+  `:shortcode:` autoreplace on send), and a typing indicator.
+  - Markdown: **bold**, *italic*, `inline code`, ```fenced blocks```,
+    autolinked URLs.
+  - **@mentions** highlight in messages and trigger a desktop
+    notification when the mentioned user isn't actively viewing the
+    channel.
+  - **Edit / delete** your own messages.
+  - **Unread badges** per channel + DM (DMs and `@you` mentions get a
+    loud red badge; plain channel chatter gets a muted one).
+  - **File uploads** — drag-drop, paste, or click 📎. Images preview
+    inline; everything else lands as a download chip. Capped at 50 MB.
+  - **History pagination** — channels load 50 messages at a time with
+    a "Load older" button.
+  - **Search** — 🔍 in the chat header, optionally scoped to the
+    current channel.
+  - Everything is persisted to disk and survives server restarts.
+- **Per-team password auth** — first join sets the password; subsequent
+  joins must match. Stored as a scrypt hash + per-team salt.
+- **Reconnect with exponential backoff** — if the WebSocket drops, the
+  client retries (1s, 2s, 4s, … capped at 30s) and re-syncs presence,
+  channels, and roster on the next welcome. A banner warns the user
+  while reconnecting.
 
 The app ships a built-in signaling/chat server (WebSocket) so you can launch it
 on one machine and have other peers on the same LAN point at
@@ -81,6 +101,19 @@ counts.
 
 ## Notes / limitations
 
-- Mesh topology — fine for ~6 people; for larger calls you'd want an SFU.
-- Chat history is in-memory only; persistence is left as a follow-up.
-- The bundled signaling server has no auth — meant for trusted LAN use.
+- **Mesh topology** — every peer holds a direct WebRTC connection to
+  every other peer. This works well up to roughly six concurrent
+  cameras + screens; beyond that, upstream bandwidth (each sender
+  encodes once per receiver) and CPU (each peer decodes N streams)
+  start to bite. The fix is an SFU (Selective Forwarding Unit) such as
+  mediasoup, where the server terminates each peer's WebRTC connection
+  and forwards their media to the others. That's a substantial
+  architectural change — server-side WebRTC negotiation, simulcast
+  layers, native deps for the SFU library, bandwidth estimation —
+  deferred as a follow-up.
+- **Auth model** is intentionally lightweight (per-team password,
+  trust-on-first-use). For a public-internet deployment you'd want
+  per-user accounts, TLS termination in front of the signaling server,
+  and rate limits on the upload endpoint.
+- **Storage** for chat + uploads is the local filesystem under `data/`.
+  Move that to a database / object store for anything multi-host.

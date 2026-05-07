@@ -109,6 +109,119 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
   font-size: 13px; color: var(--text);
 }
 
+/* Login error */
+.login-error {
+  margin-top: 10px; padding: 8px 10px; border-radius: 6px;
+  background: rgba(224, 30, 90, .15); color: #ff9bb6; font-size: 12px;
+}
+
+/* Unread badges in sidebar */
+.channel-list li .ch-badge {
+  background: var(--bad); color: white; font-size: 11px; font-weight: 700;
+  padding: 1px 6px; border-radius: 10px; min-width: 16px; text-align: center;
+}
+.channel-list li .ch-badge.muted { background: var(--bg-3); color: var(--text-dim); }
+
+/* Markdown / chat content */
+.msg-body code {
+  background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 12.5px;
+}
+.msg-body pre {
+  background: rgba(0,0,0,.4); border: 1px solid var(--line); border-radius: 6px;
+  padding: 8px 10px; margin: 4px 0; overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 12.5px;
+}
+.msg-body pre code { background: transparent; padding: 0; }
+.msg-body a { color: var(--accent-2); text-decoration: none; }
+.msg-body a:hover { text-decoration: underline; }
+.mention {
+  background: rgba(54, 197, 240, .15); color: var(--accent-2);
+  padding: 0 3px; border-radius: 3px; font-weight: 600;
+}
+.mention-self { background: rgba(236, 178, 46, .25); color: var(--warn); }
+.msg-mentions-me { background: rgba(236, 178, 46, .08); border-left: 3px solid var(--warn); padding-left: 5px; }
+.msg-edited { font-size: 11px; color: var(--text-dim); }
+
+.msg-body.editing textarea {
+  width: 100%; min-height: 60px; resize: vertical;
+}
+.msg-body.editing .edit-actions { display: flex; gap: 6px; margin-top: 6px; }
+
+/* Attachments inline in messages */
+.msg-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.msg-image {
+  max-width: 320px; max-height: 240px; border-radius: 6px; cursor: zoom-in;
+  background: #000;
+}
+.attachment-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg-3); border: 1px solid var(--line); padding: 4px 10px;
+  border-radius: 14px; color: var(--text); text-decoration: none; font-size: 12px;
+}
+.attachment-chip:hover { background: #34373c; }
+
+/* Composer attachment chips (pending uploads) */
+.attachment-chips {
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px;
+  border-top: 1px solid var(--line); background: var(--bg-3);
+}
+.attachment-chips .chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg-2); border: 1px solid var(--line);
+  padding: 2px 8px; border-radius: 12px; font-size: 12px;
+}
+.attachment-chips .chip.uploading .chip-status { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
+.attachment-chips .chip.done .chip-status { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+.attachment-chips .chip.failed .chip-status { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); }
+.attachment-chips .chip button {
+  background: transparent; border: none; color: var(--text-dim); cursor: pointer;
+  font-size: 12px; padding: 0;
+}
+
+/* Drag-over feedback on chat pane */
+.chat.drag-over::after {
+  content: "Drop to upload"; position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(18, 100, 163, .2); border: 2px dashed var(--accent-2);
+  pointer-events: none; font-weight: 700; color: var(--accent-2); z-index: 5;
+}
+
+/* Reconnect banner */
+.reconnect-banner {
+  background: var(--warn); color: #1a1d21; font-weight: 600;
+  padding: 6px 14px; font-size: 12px; text-align: center;
+}
+
+/* Load-more button at top of message list */
+.load-more {
+  align-self: center; margin: 4px auto; background: var(--bg-3);
+  font-size: 12px; padding: 6px 12px;
+}
+
+/* Header actions (search button) */
+.chat-header-actions { display: flex; gap: 6px; align-items: center; }
+.chat-header-actions button { padding: 4px 8px; }
+
+/* Search modal */
+.search-modal { width: 560px; max-width: 90vw; }
+.search-modal input[type=text] { width: 100%; }
+.search-scope { padding: 6px 0; font-size: 12px; color: var(--text-dim); }
+.search-results {
+  max-height: 50vh; overflow-y: auto; border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px; background: var(--bg-3);
+}
+.search-results .hit {
+  padding: 8px; border-bottom: 1px solid var(--line); cursor: pointer;
+}
+.search-results .hit:hover { background: rgba(255,255,255,.05); }
+.search-results .hit-meta { font-size: 11px; color: var(--text-dim); margin-bottom: 2px; }
+.search-results .hit-text { white-space: pre-wrap; }
+.search-results .empty { color: var(--text-dim); text-align: center; padding: 16px; }
+
+/* Make `.chat` a positioning ancestor for the drag overlay. */
+.chat { position: relative; }
+
 /* Stage (call + screens) */
 .stage {
   display: flex; flex-direction: column; min-width: 0;

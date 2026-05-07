@@ -1,27 +1,31 @@
-// Signaling + chat server.
+// Signaling + chat server (HTTP + WebSocket on the same port).
 //
-// Multi-team server. Each peer connection joins exactly one team, identified
-// by a slugified team id sent in the `hello` message. A team is the workspace
-// boundary: peers in different teams cannot see each other's chat, presence,
-// screen shares, or signaling traffic. Joining an unknown team auto-creates
-// it (Slack-workspace style — no separate provisioning step).
-//
-// Identity: a peer's display name is the persistent identity within a team.
-// peerIds are per-connection. Private/DM membership is keyed by name so a
-// user keeps access across reconnects.
+// Responsibilities:
+//   - WebRTC signaling for a "huddle" (room): join/leave, offer/answer/ICE relay
+//   - Drawing-stroke broadcast for annotations on shared screens
+//   - Slack-style chat: public/private channels, DMs, threads, reactions,
+//     edit/delete, history pagination, search
+//   - Per-team password auth (set on team creation, required on subsequent
+//     joins to that team)
+//   - File uploads via short-lived single-use tokens + raw-body POSTs
 //
 // Persistence: all teams (channels + messages) are written to a JSON file
-// behind a small debounced saver; reloaded on startup.
-const { WebSocketServer } = require('ws');
-const { randomUUID } = require('crypto');
-const fs = require('fs');
+// behind a small debounced saver.
+const http = require('http');
 const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const { WebSocketServer } = require('ws');
+const { randomUUID } = crypto;
 
 const DATA_FILE = process.env.HUDDLE_DATA_FILE
   || path.join(__dirname, '..', 'data', 'state.json');
+const UPLOAD_DIR = process.env.HUDDLE_UPLOAD_DIR
+  || path.join(__dirname, '..', 'data', 'uploads');
+const UPLOAD_TOKEN_TTL_MS = 5 * 60 * 1000;
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 const DEFAULT_TEAM_ID = 'huddle';
-
 const DEFAULT_CHANNELS = [
   { id: 'general', name: 'general', topic: 'Company-wide announcements and chatter.', type: 'public', protected: true },
   { id: 'random', name: 'random', topic: 'Non-work banter and water-cooler talk.', type: 'public', protected: true },
@@ -44,9 +48,7 @@ function loadState() {
 }
 
 function makePersister() {
-  let pending = false;
-  let serializer = () => null;
-  let timer = null;
+  let pending = false, serializer = () => null, timer = null;
   const flush = () => {
     timer = null;
     if (!pending) return;
@@ -58,9 +60,7 @@ function makePersister() {
       const tmp = DATA_FILE + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(snapshot));
       fs.renameSync(tmp, DATA_FILE);
-    } catch (err) {
-      console.warn('[state] save failed:', err.message);
-    }
+    } catch (err) { console.warn('[state] save failed:', err.message); }
   };
   return {
     bind: (fn) => { serializer = fn; },
@@ -70,7 +70,7 @@ function makePersister() {
 }
 
 // ---------------------------------------------------------------------------
-// Slugs / sanitizers
+// Helpers
 // ---------------------------------------------------------------------------
 
 function slugify(raw, { min = 2, max = 30, allowDmPrefix = false } = {}) {
@@ -83,16 +83,11 @@ function slugify(raw, { min = 2, max = 30, allowDmPrefix = false } = {}) {
   if (!allowDmPrefix && id.startsWith('dm:')) return null;
   return id;
 }
+const slugifyTeamName = (raw) => slugify(raw, { min: 2, max: 30 });
+const slugifyChannelName = (raw) => slugify(raw, { min: 2, max: 30 });
 
-function slugifyTeamName(raw) {
-  return slugify(raw, { min: 2, max: 30 }) || null;
-}
-function slugifyChannelName(raw) {
-  return slugify(raw, { min: 2, max: 30 });
-}
 function sanitizeEmoji(raw) {
-  if (typeof raw !== 'string') return null;
-  if (raw.length === 0 || raw.length > 16) return null;
+  if (typeof raw !== 'string' || !raw.length || raw.length > 16) return null;
   if (/[\x00-\x1F\x7F]/.test(raw)) return null;
   return raw;
 }
@@ -103,14 +98,110 @@ function dmIdFor(a, b) {
   return `dm:${x}::${y}`;
 }
 
-// ---------------------------------------------------------------------------
-// Visibility helpers
-// ---------------------------------------------------------------------------
-
 function visibleTo(meta, name) {
   if (!meta) return false;
   if (meta.type === 'public' || !meta.type) return true;
   return Array.isArray(meta.members) && meta.members.includes(name);
+}
+
+function hashPassword(pw, salt) {
+  return crypto.scryptSync(pw, salt, 32).toString('hex');
+}
+
+// Extract `@name` mentions from text. Names are bounded by non-word chars.
+function extractMentions(text, candidateNames) {
+  if (!text || !candidateNames || candidateNames.length === 0) return [];
+  const set = new Set();
+  const lookup = new Map(candidateNames.map((n) => [n.toLowerCase(), n]));
+  const re = /(^|[^a-zA-Z0-9_])@([a-zA-Z0-9_][a-zA-Z0-9_.-]{0,31})/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const hit = lookup.get(m[2].toLowerCase());
+    if (hit) set.add(hit);
+  }
+  return [...set];
+}
+
+// ---------------------------------------------------------------------------
+// HTTP handler (file uploads + static download)
+// ---------------------------------------------------------------------------
+
+function safeFilename(name) {
+  return String(name || 'file').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80) || 'file';
+}
+
+function serveUpload(req, res, uploadTokens) {
+  // POST /upload?token=...   raw body, type from Content-Type, name from X-Filename header.
+  const url = new URL(req.url, 'http://localhost');
+  const token = url.searchParams.get('token');
+  const entry = uploadTokens.get(token);
+  if (!entry || entry.expires < Date.now()) {
+    res.writeHead(403, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'invalid_token' }));
+    return;
+  }
+  uploadTokens.delete(token); // single-use
+  const filename = safeFilename(req.headers['x-filename']);
+  const contentType = String(req.headers['content-type'] || 'application/octet-stream').slice(0, 200);
+  const declaredSize = parseInt(req.headers['content-length'] || '0', 10);
+  if (declaredSize > MAX_UPLOAD_BYTES) {
+    res.writeHead(413, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'too_large' }));
+    return;
+  }
+  const id = randomUUID();
+  const dir = path.join(UPLOAD_DIR, id);
+  fs.mkdirSync(dir, { recursive: true });
+  const target = path.join(dir, filename);
+  const stream = fs.createWriteStream(target);
+  let received = 0;
+  let aborted = false;
+  req.on('data', (chunk) => {
+    received += chunk.length;
+    if (received > MAX_UPLOAD_BYTES) {
+      aborted = true;
+      req.destroy();
+      stream.destroy();
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+      res.writeHead(413, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'too_large' }));
+    }
+  });
+  req.pipe(stream);
+  stream.on('finish', () => {
+    if (aborted) return;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      url: `/uploads/${id}/${encodeURIComponent(filename)}`,
+      name: filename,
+      contentType,
+      size: received,
+    }));
+  });
+  stream.on('error', () => {
+    if (aborted) return;
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'write_failed' }));
+  });
+}
+
+function serveDownload(req, res) {
+  // GET /uploads/<id>/<filename> — naive static handler scoped under UPLOAD_DIR.
+  const parsed = decodeURIComponent(req.url.split('?')[0]);
+  const rel = parsed.replace(/^\/uploads\//, '');
+  // Prevent path traversal.
+  const target = path.normalize(path.join(UPLOAD_DIR, rel));
+  if (!target.startsWith(UPLOAD_DIR + path.sep)) {
+    res.writeHead(400); res.end('bad path'); return;
+  }
+  fs.stat(target, (err, st) => {
+    if (err || !st.isFile()) { res.writeHead(404); res.end('not found'); return; }
+    res.writeHead(200, {
+      'content-length': st.size,
+      'cache-control': 'public, max-age=31536000',
+    });
+    fs.createReadStream(target).pipe(res);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -119,17 +210,25 @@ function visibleTo(meta, name) {
 
 function startServer(port) {
   return new Promise((resolve) => {
-    const wss = new WebSocketServer({ port });
     const persister = makePersister();
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-    /** Map<peerId, {ws, name, color, team}>  team is the Team object. */
+    /** Map<peerId, {ws, name, color, team}> */
     const peers = new Map();
-    /** Map<teamId, Team>  Team = {meta, channels: Map<id, {meta, messages}>, activeScreens: Map<streamId, {fromId, label}>} */
+    /** Map<teamId, Team> */
     const teams = new Map();
+    /** Map<token, {peerId, expires}> */
+    const uploadTokens = new Map();
+    setInterval(() => {
+      const now = Date.now();
+      for (const [t, e] of uploadTokens) if (e.expires < now) uploadTokens.delete(t);
+    }, 60_000).unref?.();
 
     function makeTeam(id) {
       const team = {
         meta: { id, name: id },
+        passwordHash: null,
+        passwordSalt: null,
         channels: new Map(),
         activeScreens: new Map(),
       };
@@ -138,49 +237,37 @@ function startServer(port) {
       return team;
     }
 
-    function getOrCreateTeam(id) {
-      return teams.get(id) || makeTeam(id);
-    }
-
-    // Bootstrap team state from persisted file. Supports both v1 (flat
-    // `channels` field, single implicit "huddle" team) and v2 (`teams` map).
+    // Migrate / load persisted state ---------------------------------------
     const persisted = loadState();
-    if (persisted && Array.isArray(persisted.channels)) {
-      // v1 -> v2 migration: drop everything into the default team.
-      const team = makeTeam(DEFAULT_TEAM_ID);
-      for (const entry of persisted.channels) {
-        if (!entry || !entry.meta || typeof entry.meta.id !== 'string') continue;
-        const existing = team.channels.get(entry.meta.id);
-        if (existing && existing.meta.protected) {
-          existing.messages = Array.isArray(entry.messages) ? entry.messages : [];
-        } else {
-          team.channels.set(entry.meta.id, {
-            meta: entry.meta,
-            messages: Array.isArray(entry.messages) ? entry.messages : [],
-          });
+    function ingestTeamPayload(team, tval) {
+      if (tval && tval.meta && typeof tval.meta === 'object') {
+        team.meta = { id: team.meta.id, name: tval.meta.name || team.meta.id };
+      }
+      if (tval && typeof tval.passwordHash === 'string') team.passwordHash = tval.passwordHash;
+      if (tval && typeof tval.passwordSalt === 'string') team.passwordSalt = tval.passwordSalt;
+      if (Array.isArray(tval?.channels)) {
+        for (const entry of tval.channels) {
+          if (!entry || !entry.meta || typeof entry.meta.id !== 'string') continue;
+          const existing = team.channels.get(entry.meta.id);
+          if (existing && existing.meta.protected) {
+            existing.messages = Array.isArray(entry.messages) ? entry.messages : [];
+          } else {
+            team.channels.set(entry.meta.id, {
+              meta: entry.meta,
+              messages: Array.isArray(entry.messages) ? entry.messages : [],
+            });
+          }
         }
       }
+    }
+    if (persisted && Array.isArray(persisted.channels)) {
+      // v1 -> v2 migration
+      const team = makeTeam(DEFAULT_TEAM_ID);
+      ingestTeamPayload(team, { channels: persisted.channels });
     } else if (persisted && persisted.teams && typeof persisted.teams === 'object') {
       for (const [tid, tval] of Object.entries(persisted.teams)) {
         if (typeof tid !== 'string') continue;
-        const team = makeTeam(tid);
-        if (tval && tval.meta && typeof tval.meta === 'object') {
-          team.meta = { id: tid, name: tval.meta.name || tid };
-        }
-        if (Array.isArray(tval?.channels)) {
-          for (const entry of tval.channels) {
-            if (!entry || !entry.meta || typeof entry.meta.id !== 'string') continue;
-            const existing = team.channels.get(entry.meta.id);
-            if (existing && existing.meta.protected) {
-              existing.messages = Array.isArray(entry.messages) ? entry.messages : [];
-            } else {
-              team.channels.set(entry.meta.id, {
-                meta: entry.meta,
-                messages: Array.isArray(entry.messages) ? entry.messages : [],
-              });
-            }
-          }
-        }
+        ingestTeamPayload(makeTeam(tid), tval);
       }
     }
 
@@ -189,33 +276,25 @@ function startServer(port) {
       teams: Object.fromEntries(
         Array.from(teams.entries()).map(([id, t]) => [id, {
           meta: t.meta,
+          passwordHash: t.passwordHash,
+          passwordSalt: t.passwordSalt,
           channels: Array.from(t.channels.values()).map((c) => ({ meta: c.meta, messages: c.messages })),
         }]),
       ),
     }));
     const persist = () => persister.schedule();
 
-    // Helpers --------------------------------------------------------------
+    // Send / broadcast / relay --------------------------------------------
 
-    const send = (ws, obj) => {
-      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
-    };
-    // Broadcast to every peer in the given team, optionally except one peerId.
+    const send = (ws, obj) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj)); };
     const broadcastTeam = (team, obj, exceptId) => {
-      for (const [pid, p] of peers) {
-        if (p.team === team && pid !== exceptId) send(p.ws, obj);
-      }
+      for (const [pid, p] of peers) if (p.team === team && pid !== exceptId) send(p.ws, obj);
     };
-    // Same, but additionally restrict to peers who can see `meta`.
     const broadcastVisibleInTeam = (team, meta, obj) => {
-      for (const p of peers.values()) {
-        if (p.team === team && visibleTo(meta, p.name)) send(p.ws, obj);
-      }
+      for (const p of peers.values()) if (p.team === team && visibleTo(meta, p.name)) send(p.ws, obj);
     };
-    // Relay a signaling message between two peers — only if they share a team.
     const relay = (fromId, toId, obj) => {
-      const from = peers.get(fromId);
-      const target = peers.get(toId);
+      const from = peers.get(fromId), target = peers.get(toId);
       if (from && target && from.team === target.team) send(target.ws, obj);
     };
     const presence = (team) =>
@@ -230,8 +309,25 @@ function startServer(port) {
       }
       return null;
     };
+    const memberNames = (team) => {
+      const set = new Set();
+      for (const p of peers.values()) if (p.team === team) set.add(p.name);
+      return [...set];
+    };
 
-    // Connection handler ---------------------------------------------------
+    // ---- WS handler -----------------------------------------------------
+
+    const httpServer = http.createServer((req, res) => {
+      // Light CORS so a browser tab on another port can hit /upload during dev.
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Filename');
+      if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+      if (req.method === 'POST' && req.url.startsWith('/upload')) return serveUpload(req, res, uploadTokens);
+      if (req.method === 'GET' && req.url.startsWith('/uploads/')) return serveDownload(req, res);
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('huddle signaling/chat server');
+    });
+    const wss = new WebSocketServer({ server: httpServer });
 
     wss.on('connection', (ws) => {
       const peerId = randomUUID();
@@ -241,8 +337,6 @@ function startServer(port) {
         let msg;
         try { msg = JSON.parse(raw.toString()); } catch { return; }
         if (!msg || typeof msg !== 'object' || typeof msg.type !== 'string') return;
-
-        // For everything except `hello`, the peer must already be in a team.
         const me = peers.get(peerId);
         if (msg.type !== 'hello' && !me) return;
         const team = me?.team;
@@ -250,7 +344,22 @@ function startServer(port) {
         switch (msg.type) {
           case 'hello': {
             const teamId = slugifyTeamName(msg.team) || DEFAULT_TEAM_ID;
-            const t = getOrCreateTeam(teamId);
+            const existing = teams.get(teamId);
+            const password = typeof msg.password === 'string' ? msg.password : '';
+            // First join sets the team password (if any). Subsequent joins must match.
+            if (existing && existing.passwordHash) {
+              if (!password || hashPassword(password, existing.passwordSalt) !== existing.passwordHash) {
+                send(ws, { type: 'auth-failed', reason: 'bad_team_password' });
+                ws.close();
+                return;
+              }
+            }
+            const t = existing || makeTeam(teamId);
+            if (!existing && password) {
+              t.passwordSalt = crypto.randomBytes(16).toString('hex');
+              t.passwordHash = hashPassword(password, t.passwordSalt);
+              persist();
+            }
             const name = String(msg.name || 'guest').slice(0, 32);
             const color = msg.color || randomColor();
             peers.set(peerId, { ws, name, color, team: t });
@@ -258,12 +367,11 @@ function startServer(port) {
               type: 'welcome',
               peerId,
               you: { id: peerId, name, color },
-              team: { id: t.meta.id, name: t.meta.name },
+              team: { id: t.meta.id, name: t.meta.name, hasPassword: !!t.passwordHash },
               channels: visibleChannels(t, name),
               peers: presence(t),
               activeScreens: Array.from(t.activeScreens.entries()).map(([streamId, info]) => ({
-                streamId,
-                from: info.fromId,
+                streamId, from: info.fromId,
                 fromName: peers.get(info.fromId)?.name || 'someone',
                 label: info.label,
               })),
@@ -272,10 +380,9 @@ function startServer(port) {
             break;
           }
 
-          case 'signal': {
+          case 'signal':
             relay(peerId, msg.to, { type: 'signal', from: peerId, payload: msg.payload });
             break;
-          }
 
           case 'screen-announce': {
             team.activeScreens.set(msg.streamId, { fromId: peerId, label: msg.label });
@@ -285,21 +392,20 @@ function startServer(port) {
             }, peerId);
             break;
           }
-          case 'screen-stop': {
+          case 'screen-stop':
             team.activeScreens.delete(msg.streamId);
             broadcastTeam(team, { type: 'screen-stop', from: peerId, streamId: msg.streamId }, peerId);
             break;
-          }
-          case 'draw': {
-            broadcastTeam(team, {
-              type: 'draw', from: peerId, streamId: msg.streamId, stroke: msg.stroke,
-            }, peerId);
+          case 'draw':
+            broadcastTeam(team, { type: 'draw', from: peerId, streamId: msg.streamId, stroke: msg.stroke }, peerId);
             break;
-          }
 
           case 'chat-send': {
             const ch = team.channels.get(msg.channelId);
             if (!ch || !visibleTo(ch.meta, me.name)) return;
+            const text = String(msg.text || '').slice(0, 4000);
+            const attachments = sanitizeAttachments(msg.attachments);
+            if (!text && attachments.length === 0) return;
             const message = {
               id: randomUUID(),
               channelId: msg.channelId,
@@ -307,9 +413,12 @@ function startServer(port) {
               authorId: peerId,
               authorName: me.name,
               authorColor: me.color,
-              text: String(msg.text || '').slice(0, 4000),
+              text,
+              attachments,
               ts: Date.now(),
+              editedTs: null,
               reactions: Object.create(null),
+              mentions: extractMentions(text, memberNames(team)),
             };
             ch.messages.push(message);
             persist();
@@ -317,10 +426,63 @@ function startServer(port) {
             break;
           }
 
+          case 'chat-edit': {
+            const ch = findChannelByMessageInTeam(team, msg.messageId);
+            if (!ch || !visibleTo(ch.meta, me.name)) return;
+            const message = ch.messages.find((m) => m.id === msg.messageId);
+            if (!message || message.authorName !== me.name) return; // author-only
+            message.text = String(msg.text || '').slice(0, 4000);
+            message.editedTs = Date.now();
+            message.mentions = extractMentions(message.text, memberNames(team));
+            persist();
+            broadcastVisibleInTeam(team, ch.meta, { type: 'chat-update', message });
+            break;
+          }
+
+          case 'chat-delete-message': {
+            const ch = findChannelByMessageInTeam(team, msg.messageId);
+            if (!ch || !visibleTo(ch.meta, me.name)) return;
+            const idx = ch.messages.findIndex((m) => m.id === msg.messageId);
+            if (idx === -1) return;
+            const message = ch.messages[idx];
+            if (message.authorName !== me.name) return;
+            ch.messages.splice(idx, 1);
+            persist();
+            broadcastVisibleInTeam(team, ch.meta, { type: 'chat-message-deleted', channelId: ch.meta.id, messageId: msg.messageId });
+            break;
+          }
+
           case 'chat-history': {
             const ch = team.channels.get(msg.channelId);
             if (!ch || !visibleTo(ch.meta, me.name)) return;
-            send(ws, { type: 'chat-history', channelId: msg.channelId, messages: ch.messages });
+            const limit = Math.max(1, Math.min(parseInt(msg.limit, 10) || 50, 200));
+            const before = typeof msg.before === 'number' ? msg.before : Infinity;
+            // Take messages strictly older than `before`, newest-last, capped to limit.
+            const list = ch.messages.filter((m) => m.ts < before).slice(-limit);
+            send(ws, {
+              type: 'chat-history',
+              channelId: msg.channelId,
+              messages: list,
+              hasMore: list.length > 0 && ch.messages.length > list.length && ch.messages[0].ts < list[0].ts,
+            });
+            break;
+          }
+
+          case 'chat-search': {
+            const q = String(msg.query || '').trim().toLowerCase();
+            if (!q) return;
+            const channelFilter = msg.channelId ? team.channels.get(msg.channelId) : null;
+            const channelsToScan = channelFilter ? [channelFilter] : [...team.channels.values()];
+            const hits = [];
+            for (const ch of channelsToScan) {
+              if (!visibleTo(ch.meta, me.name)) continue;
+              for (const m of ch.messages) {
+                if (m.text && m.text.toLowerCase().includes(q)) hits.push(m);
+                if (hits.length >= 200) break;
+              }
+              if (hits.length >= 200) break;
+            }
+            send(ws, { type: 'chat-search-results', query: msg.query, results: hits });
             break;
           }
 
@@ -346,21 +508,16 @@ function startServer(port) {
             if (!id) return;
             if (team.channels.has(id)) {
               const existing = team.channels.get(id).meta;
-              if (visibleTo(existing, me.name)) {
-                send(ws, { type: 'chat-channel-added', channel: existing });
-              }
+              if (visibleTo(existing, me.name)) send(ws, { type: 'chat-channel-added', channel: existing });
               return;
             }
             const isPrivate = !!msg.private;
             const requested = Array.isArray(msg.members)
               ? msg.members.filter((x) => typeof x === 'string').map((s) => s.slice(0, 32)).slice(0, 50)
               : [];
-            const members = isPrivate
-              ? Array.from(new Set([me.name, ...requested]))
-              : undefined;
+            const members = isPrivate ? Array.from(new Set([me.name, ...requested])) : undefined;
             const meta = {
-              id, name: id,
-              topic: String(msg.topic || '').slice(0, 200),
+              id, name: id, topic: String(msg.topic || '').slice(0, 200),
               type: isPrivate ? 'private' : 'public',
               createdBy: me.name,
               ...(members ? { members } : {}),
@@ -413,6 +570,17 @@ function startServer(port) {
             break;
           }
 
+          case 'request-upload-token': {
+            // Hand out a single-use, time-boxed token to upload one file. The
+            // peer must currently be authenticated and visible to the channel.
+            const ch = team.channels.get(msg.channelId);
+            if (!ch || !visibleTo(ch.meta, me.name)) return;
+            const token = randomUUID();
+            uploadTokens.set(token, { peerId, expires: Date.now() + UPLOAD_TOKEN_TTL_MS });
+            send(ws, { type: 'upload-token', token, expiresAt: Date.now() + UPLOAD_TOKEN_TTL_MS });
+            break;
+          }
+
           default: break;
         }
       });
@@ -421,7 +589,6 @@ function startServer(port) {
         const me = peers.get(peerId);
         peers.delete(peerId);
         if (!me) return;
-        // Tear down any screens this peer was hosting in their team.
         for (const [streamId, info] of me.team.activeScreens) {
           if (info.fromId === peerId) {
             me.team.activeScreens.delete(streamId);
@@ -432,18 +599,28 @@ function startServer(port) {
       });
     });
 
-    wss.on('listening', () => {
-      console.log(`[signaling] listening on ws://0.0.0.0:${port}`);
+    httpServer.listen(port, () => {
+      console.log(`[signaling] listening on http+ws://0.0.0.0:${port}`);
       resolve({
         close: () =>
           new Promise((res) => {
             persister.flushSync();
             for (const { ws } of peers.values()) { try { ws.close(); } catch {} }
-            wss.close(() => res());
+            wss.close(() => httpServer.close(() => res()));
           }),
       });
     });
   });
+}
+
+function sanitizeAttachments(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 10).map((a) => ({
+    url: typeof a?.url === 'string' ? a.url.slice(0, 500) : '',
+    name: typeof a?.name === 'string' ? a.name.slice(0, 200) : '',
+    contentType: typeof a?.contentType === 'string' ? a.contentType.slice(0, 100) : '',
+    size: typeof a?.size === 'number' ? a.size : 0,
+  })).filter((a) => a.url);
 }
 
 function randomColor() {
