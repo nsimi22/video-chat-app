@@ -76,6 +76,7 @@ const els = {
   drawSize: $('#draw-size'),
   drawClear: $('#draw-clear'),
   drawClose: $('#draw-close'),
+  drawAddNote: $('#draw-add-note'),
   // chat
   // Canonical channel-name label is now in the stage header. The old
   // #chat-channel-name was removed when stage and chat merged into a
@@ -1171,6 +1172,11 @@ function toggleAnnotate(streamId) {
     || state.tilesByKey.get(`whiteboard:${streamId}`);
   els.drawToolbar.classList.remove('hidden');
   els.drawTargetName.textContent = tile?.querySelector('.tile-label')?.textContent || 'screen';
+  // The 📝 Note button only applies to whiteboards (notes are
+  // persisted per-whiteboard); screen-share annotations don't have
+  // a place to store them. Toggle visibility per-surface.
+  const isWhiteboard = state.whiteboardSessions.has(streamId);
+  els.drawAddNote.classList.toggle('hidden', !isWhiteboard);
 }
 
 // Make the toolbar/active-annotation state target `streamId`, but never
@@ -1318,6 +1324,14 @@ function wireControls() {
       return;
     }
     state.drawLayers.get(state.activeAnnotation)?.clearAll(true);
+  };
+  // Sticky note button — only meaningful for whiteboards (the toolbar
+  // is also used for screen-share annotations, which don't support
+  // notes). The button visibility toggles from openAnnotate based on
+  // whether the active surface is a whiteboard.
+  els.drawAddNote.onclick = () => {
+    const session = state.whiteboardSessions.get(state.activeAnnotation);
+    if (session) session.addNote();
   };
   els.drawClose.onclick = () => {
     if (state.whiteboardSessions.has(state.activeAnnotation)) {

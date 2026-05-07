@@ -905,8 +905,61 @@
     async clearWhiteboard(whiteboardId) {
       // Live viewers get a "clear" stroke via broadcast; persistent state is
       // wiped by deleting every stroke row. New viewers fetch zero rows on
-      // open and start blank.
+      // open and start blank. Notes are wiped alongside strokes — Clear
+      // is a "reset to blank canvas" gesture.
       await this.supabase.from('whiteboard_strokes').delete().eq('whiteboard_id', whiteboardId);
+      await this.supabase.from('whiteboard_notes').delete().eq('whiteboard_id', whiteboardId);
+    }
+
+    // --- Whiteboard sticky notes ---------------------------------------
+
+    async fetchWhiteboardNotes(whiteboardId) {
+      const { data, error } = await this.supabase
+        .from('whiteboard_notes')
+        .select('id, x, y, w, h, text, color, author_id, updated_at')
+        .eq('whiteboard_id', whiteboardId)
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+      return data || [];
+    }
+
+    async createWhiteboardNote(whiteboardId, channelId, note) {
+      const row = {
+        id: note.id,
+        whiteboard_id: whiteboardId,
+        team_id: this.team.id,
+        channel_id: channelId,
+        author_id: this.peerId,
+        x: note.x, y: note.y,
+        w: note.w, h: note.h,
+        text: note.text || '',
+        color: note.color || '#ffd866',
+      };
+      const { error } = await this.supabase.from('whiteboard_notes').insert(row);
+      if (error) throw error;
+    }
+
+    async updateWhiteboardNote(noteId, patch) {
+      const next = { ...patch, updated_at: new Date().toISOString() };
+      const { error } = await this.supabase.from('whiteboard_notes').update(next).eq('id', noteId);
+      if (error) throw error;
+    }
+
+    async deleteWhiteboardNote(noteId) {
+      const { error } = await this.supabase.from('whiteboard_notes').delete().eq('id', noteId);
+      if (error) throw error;
+    }
+
+    // Live note edit broadcasts. Same channel as strokes so a single
+    // subscribe covers both. The ensureWhiteboardChannel handler now
+    // dispatches `stroke` and `note` payloads through the same callback
+    // — see below for the WhiteboardSession wiring.
+    sendWhiteboardNote(whiteboardId, payload) {
+      const cached = this._whiteboardChannels.get(whiteboardId);
+      if (!cached) return;
+      Promise.resolve(cached).then((ch) =>
+        ch.send({ type: 'broadcast', event: 'note', payload: { from: this.peerId, ...payload } })
+      ).catch((err) => console.warn('[whiteboard] note send before subscribe', err));
     }
 
     // Subscribe to live strokes on a whiteboard. Idempotent — repeated calls
@@ -914,17 +967,20 @@
     // onStroke replaces the previous handler. Topic is `team:<id>:wb:<uuid>`
     // so the realtime broadcast policy can gate by team membership instead
     // of relying on the UUID being secret.
-    async ensureWhiteboardChannel(whiteboardId, onStroke) {
+    async ensureWhiteboardChannel(whiteboardId, onStroke, onNote) {
       const cached = this._whiteboardChannels.get(whiteboardId);
       if (cached) {
         const ch = await Promise.resolve(cached);
         ch._onStroke = onStroke;
+        ch._onNote = onNote;
         return ch;
       }
       const topic = `team:${this.team.id}:wb:${whiteboardId}`;
       const ch = this.supabase.channel(topic, { config: { broadcast: { self: false }, private: true } });
       ch._onStroke = onStroke;
+      ch._onNote = onNote;
       ch.on('broadcast', { event: 'stroke' }, ({ payload }) => ch._onStroke?.(payload));
+      ch.on('broadcast', { event: 'note' }, ({ payload }) => ch._onNote?.(payload));
       const ready = new Promise((res, rej) => {
         ch.subscribe((s, e) => {
           if (s === 'SUBSCRIBED') res(ch);
