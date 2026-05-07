@@ -897,32 +897,43 @@ function attachProfileTrigger(el, userId) {
   });
 }
 
-// Render the People sidebar from the full team roster. Online
-// teammates (those in peerInfo) get a coloured dot, offline ones
-// get a grey dot but stay visible — otherwise you can't DM someone
-// who hasn't opened the app today, which is the regression report.
-// Sort: online first, alphabetical within each group.
-function renderRoster() {
-  els.people.replaceChildren();
-  const members = [...state.huddle.roster.values()];
-  members.sort((a, b) => {
+// Roster sort: online first, alphabetical within each group.
+// Mutates the array in place and returns it for chaining.
+function sortRosterMembers(members) {
+  return members.sort((a, b) => {
     const aOn = state.huddle.peerInfo.has(a.id) ? 0 : 1;
     const bOn = state.huddle.peerInfo.has(b.id) ? 0 : 1;
     if (aOn !== bOn) return aOn - bOn;
     return (a.name || '').localeCompare(b.name || '');
   });
+}
+
+// Resolve a member's display attributes for rendering. Live presence
+// (peerInfo) is preferred over the roster snapshot — it carries the
+// most recent name/color the member has broadcast — and offline
+// members fall through to the roster row. Color is suppressed
+// entirely when offline so the grey dot reads correctly.
+function resolveMemberDisplay(member) {
+  const online = state.huddle.peerInfo.has(member.id);
+  const live = state.huddle.peerInfo.get(member.id);
+  return {
+    online,
+    name: live?.name || member.name,
+    color: online ? (live?.color || member.color || '') : '',
+  };
+}
+
+// Render the People sidebar from the full team roster. Online
+// teammates get a coloured dot, offline ones get a grey dot + dimmed
+// text but stay visible so they remain DMable.
+function renderRoster() {
+  els.people.replaceChildren();
+  const members = sortRosterMembers([...state.huddle.roster.values()]);
   for (const m of members) renderRosterRow(m);
 }
 
 function renderRosterRow(member) {
-  if (els.people.querySelector(`[data-id="${cssEscape(member.id)}"]`)) return;
-  const online = state.huddle.peerInfo.has(member.id);
-  // Prefer the live presence-broadcast name/color (peerInfo) over
-  // the roster row, which is a snapshot from start(). For offline
-  // members peerInfo is empty, so fall through to roster.
-  const live = state.huddle.peerInfo.get(member.id);
-  const name = live?.name || member.name;
-  const color = online ? (live?.color || member.color || '') : '';
+  const { online, name, color } = resolveMemberDisplay(member);
   const li = document.createElement('li');
   li.dataset.id = member.id;
   li.dataset.name = name;
@@ -1297,16 +1308,10 @@ async function submitCreateChannel() {
 function renderMemberPicker(container) {
   container.replaceChildren();
   // Roster (all teammates), not peerInfo (online only) — channel
-  // invites should reach offline teammates too. Sort online first
-  // so they're easy to find.
-  const members = [...state.huddle.roster.values()]
-    .filter((m) => m.id !== state.huddle.peerId)
-    .sort((a, b) => {
-      const aOn = state.huddle.peerInfo.has(a.id) ? 0 : 1;
-      const bOn = state.huddle.peerInfo.has(b.id) ? 0 : 1;
-      if (aOn !== bOn) return aOn - bOn;
-      return (a.name || '').localeCompare(b.name || '');
-    });
+  // invites should reach offline teammates too.
+  const members = sortRosterMembers(
+    [...state.huddle.roster.values()].filter((m) => m.id !== state.huddle.peerId),
+  );
   if (members.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty';
@@ -1315,15 +1320,13 @@ function renderMemberPicker(container) {
     return;
   }
   for (const m of members) {
-    const online = state.huddle.peerInfo.has(m.id);
-    const live = state.huddle.peerInfo.get(m.id);
-    const name = live?.name || m.name;
+    const { online, name, color } = resolveMemberDisplay(m);
     const row = document.createElement('div');
     row.className = 'row' + (online ? '' : ' offline');
     row.dataset.name = name;
     const dot = document.createElement('span');
     dot.className = online ? 'dot online' : 'dot';
-    dot.style.background = online ? (live?.color || m.color || '') : '';
+    dot.style.background = color;
     const check = document.createElement('span');
     check.className = 'check';
     const lbl = document.createElement('span');
@@ -1341,15 +1344,10 @@ function renderMemberPicker(container) {
 function openDmPicker() {
   els.dmPeople.replaceChildren();
   // Iterate the full team roster — DMing offline teammates is the
-  // whole point. Sort online first so they're at the top.
-  const members = [...state.huddle.roster.values()]
-    .filter((m) => m.id !== state.huddle.peerId)
-    .sort((a, b) => {
-      const aOn = state.huddle.peerInfo.has(a.id) ? 0 : 1;
-      const bOn = state.huddle.peerInfo.has(b.id) ? 0 : 1;
-      if (aOn !== bOn) return aOn - bOn;
-      return (a.name || '').localeCompare(b.name || '');
-    });
+  // whole point.
+  const members = sortRosterMembers(
+    [...state.huddle.roster.values()].filter((m) => m.id !== state.huddle.peerId),
+  );
   if (members.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty';
@@ -1357,14 +1355,12 @@ function openDmPicker() {
     els.dmPeople.appendChild(empty);
   } else {
     for (const m of members) {
-      const online = state.huddle.peerInfo.has(m.id);
-      const live = state.huddle.peerInfo.get(m.id);
-      const name = live?.name || m.name;
+      const { online, name, color } = resolveMemberDisplay(m);
       const row = document.createElement('div');
       row.className = 'row' + (online ? '' : ' offline');
       const dot = document.createElement('span');
       dot.className = online ? 'dot online' : 'dot';
-      dot.style.background = online ? (live?.color || m.color || '') : '';
+      dot.style.background = color;
       const lbl = document.createElement('span');
       lbl.textContent = name;
       row.append(dot, lbl);

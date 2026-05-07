@@ -125,7 +125,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
 /* Offline rows in the People sidebar + DM/member pickers — dim the
    text so online teammates pop, but keep them clickable so you can
    DM someone who isn't in the app right now. */
-.people li.offline,
+.people-list li.offline,
 .member-picker .row.offline,
 .dm-picker .row.offline { color: var(--text-dim); }
 .member-picker {
