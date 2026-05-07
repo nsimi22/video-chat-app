@@ -144,6 +144,15 @@
     async joinCall(channelId) {
       if (this._callChannelId === channelId) return; // already in this call
       if (this._callChannel) await this.leaveCall();
+      // Drop any lurker subscription on this same channel BEFORE
+      // creating the call channel object. supabase.channel(topic)
+      // is cached by topic — if a lurker is already subscribed
+      // we'd get its (already-SUBSCRIBED) instance back, and
+      // ch.on('presence', ...) below would throw "cannot add
+      // presence callbacks after subscribe()". Awaiting the
+      // unsubscribe ensures supabase-js drops the topic from its
+      // internal registry before we ask for a fresh channel.
+      await this._dropLurker(channelId);
       const topic = `call:${this.team.id}:${channelId}`;
       const ch = this.supabase.channel(topic, {
         config: {
@@ -243,14 +252,8 @@
 
       this._callChannel = ch;
       this._callChannelId = channelId;
-      // If we were lurking on this channel, drop the lurker — we're a
-      // full participant now.
-      const lurker = this._lurkers.get(channelId);
-      if (lurker) {
-        Promise.resolve(lurker).then((l) => { try { l.unsubscribe(); } catch {} }).catch(() => {});
-        this._lurkers.delete(channelId);
-        this._lurkerCounts.delete(channelId);
-      }
+      // (Lurker for this channel was already dropped at the top of
+      // joinCall — see _dropLurker.)
     }
 
     async leaveCall() {
@@ -323,6 +326,24 @@
       Promise.resolve(cached).then((c) => { try { c.unsubscribe(); } catch {} }).catch(() => {});
       this._lurkers.delete(channelId);
       this._lurkerCounts.delete(channelId);
+    }
+
+    // Same as unwatchCallPresence but waits for the unsubscribe to
+    // resolve before returning. joinCall needs this synchronous
+    // teardown — supabase.channel(topic) is cached by topic, so
+    // creating a new channel object while a lurker is still
+    // subscribed would hand back the lurker's already-SUBSCRIBED
+    // instance, and ch.on('presence', ...) would throw "cannot add
+    // presence callbacks after subscribe()".
+    async _dropLurker(channelId) {
+      const cached = this._lurkers.get(channelId);
+      if (!cached) return;
+      this._lurkers.delete(channelId);
+      this._lurkerCounts.delete(channelId);
+      try {
+        const c = await Promise.resolve(cached);
+        await c.unsubscribe();
+      } catch {}
     }
 
     // Last-known participant count for a watched channel, or 0 if not
