@@ -73,7 +73,29 @@ ipcMain.handle('get-screen-sources', async () => {
 });
 
 ipcMain.handle('get-supabase-config', () => ({ url: SUPABASE_URL, anonKey: SUPABASE_KEY }));
+// Tenor key fallback for users who haven't set it in the in-app settings.
 ipcMain.handle('get-tenor-key', () => process.env.TENOR_API_KEY || '');
+
+// Generic fetch proxy. Some third-party APIs (notably Atlassian Cloud)
+// don't permit browser-origin requests via CORS; routing through main lets
+// the renderer hit them with stored credentials. We only proxy https URLs
+// to avoid being repurposed for internal-network scans.
+ipcMain.handle('fetch-proxy', async (_event, { url, method = 'GET', headers = {}, body = null }) => {
+  if (typeof url !== 'string' || !/^https:\/\//i.test(url)) {
+    return { ok: false, status: 0, error: 'only https urls are allowed' };
+  }
+  try {
+    const res = await fetch(url, { method, headers, body });
+    const text = await res.text();
+    return {
+      ok: res.ok, status: res.status,
+      headers: Object.fromEntries(res.headers.entries()),
+      body: text,
+    };
+  } catch (err) {
+    return { ok: false, status: 0, error: String(err && err.message || err) };
+  }
+});
 
 app.whenReady().then(() => {
   createWindow();

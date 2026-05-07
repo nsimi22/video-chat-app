@@ -238,6 +238,45 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
 /* Make `.chat` a positioning ancestor for the drag overlay. */
 .chat { position: relative; }
 
+/* Settings + ticket modals */
+.settings-modal { width: 480px; max-width: 92vw; max-height: 86vh; overflow-y: auto; }
+.ticket-modal { width: 480px; max-width: 92vw; }
+.modal h3 { margin: 14px 0 4px; }
+.hint-inline { color: var(--text-dim); font-weight: 400; font-size: 11px; }
+.modal code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+.settings-status {
+  margin-top: 10px; padding: 8px 10px; border-radius: 6px; font-size: 12px;
+}
+.settings-status.success { background: rgba(46, 182, 125, .2); color: #7fe3b8; }
+.settings-status.error { background: rgba(224, 30, 90, .15); color: #ff9bb6; }
+.modal select {
+  width: 100%; background: var(--bg-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; padding: 8px;
+  font-size: 13px;
+}
+.modal textarea { width: 100%; resize: vertical; }
+
+/* Jira unfurl cards rendered under chat messages. */
+.jira-unfurl {
+  display: flex; flex-direction: column; gap: 4px;
+  background: var(--bg-3); border: 1px solid var(--line); border-left: 3px solid #2684ff;
+  padding: 8px 10px; border-radius: 4px; margin-top: 4px; max-width: 480px;
+}
+.jira-unfurl .jira-row { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+.jira-unfurl .jira-key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-dim); }
+.jira-unfurl .jira-summary { font-weight: 600; }
+.jira-unfurl a { color: var(--accent-2); text-decoration: none; }
+.jira-unfurl a:hover { text-decoration: underline; }
+.jira-unfurl .jira-status {
+  display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px;
+  background: var(--bg-2); border: 1px solid var(--line);
+}
+.jira-unfurl .jira-status.todo { background: rgba(157, 162, 170, .2); }
+.jira-unfurl .jira-status.inprogress { background: rgba(38, 132, 255, .2); color: #79b8ff; }
+.jira-unfurl .jira-status.done { background: rgba(46, 182, 125, .2); color: #7fe3b8; }
+.jira-unfurl .jira-loading { color: var(--text-dim); font-size: 12px; font-style: italic; }
+.jira-unfurl.error { border-left-color: var(--bad); }
+
 /* GIF picker — sits above the composer like the emoji picker. */
 .gif-picker {
   position: absolute; bottom: 60px; right: 16px; left: 16px;

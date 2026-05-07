@@ -91,6 +91,30 @@ const els = {
   sourcePicker: $('#source-picker'),
   sourceGrid: $('#source-grid'),
   sourceCancel: $('#source-cancel'),
+  // Settings
+  openSettings: $('#open-settings'),
+  settingsModal: $('#settings-modal'),
+  setJiraHost: $('#set-jira-host'),
+  setJiraEmail: $('#set-jira-email'),
+  setJiraToken: $('#set-jira-token'),
+  setTenorKey: $('#set-tenor-key'),
+  settingsStatus: $('#settings-status'),
+  settingsCancel: $('#settings-cancel'),
+  settingsSave: $('#settings-save'),
+  // Ticket
+  btnJira: $('#btn-jira'),
+  ticketModal: $('#ticket-modal'),
+  ticketConfigNeeded: $('#ticket-config-needed'),
+  ticketGoSettings: $('#ticket-go-settings'),
+  ticketForm: $('#ticket-form'),
+  ticketProject: $('#ticket-project'),
+  ticketIssuetype: $('#ticket-issuetype'),
+  ticketSummary: $('#ticket-summary'),
+  ticketDescription: $('#ticket-description'),
+  ticketPostToChannel: $('#ticket-post-to-channel'),
+  ticketStatus: $('#ticket-status'),
+  ticketCancel: $('#ticket-cancel'),
+  ticketCreate: $('#ticket-create'),
 };
 
 const state = {
@@ -104,6 +128,8 @@ const state = {
   pendingStreams: new Map(),
   unread: new Map(), // channelId -> { count, mentions } both ints
   _email: null,
+  settings: {},      // user_integrations.settings; loaded post-auth
+  jira: null,        // JiraClient — rebuilt whenever settings change
 };
 
 // Whether the OS window is currently focused. Used to gate desktop
@@ -253,6 +279,10 @@ async function joinTeamAndStart(teamId) {
   catch (err) { showError(err.message || 'Could not start huddle.'); return; }
   const mesh = new MeshClient(huddle);
 
+  // Per-user integration settings — drives the Jira client + Tenor key
+  // override. Reload after the user saves new ones in the Settings modal.
+  await refreshSettings();
+
   mesh.addEventListener('welcome', (e) => onWelcome(e.detail));
   mesh.addEventListener('peer-joined', (e) => addPersonToSidebar(e.detail));
   mesh.addEventListener('peer-left', (e) => onPeerLeft(e.detail));
@@ -278,7 +308,12 @@ async function joinTeamAndStart(teamId) {
 
   state.chat = new ChatView({
     mesh, els,
-    hooks: { onMessage: (m) => onChatMessage(m) },
+    hooks: {
+      onMessage: (m) => onChatMessage(m),
+      getTenorKey,
+      getJira: () => state.jira,
+      openTicketModal: (preset) => openTicketModal(preset),
+    },
   });
   wireControls();
   els.btnLeave.classList.remove('hidden');
@@ -708,6 +743,21 @@ function wireControls() {
   els.btnLeave.onclick = leave;
   els.sourceCancel.onclick = () => els.sourcePicker.classList.add('hidden');
 
+  // Settings
+  els.openSettings.onclick = openSettings;
+  els.settingsCancel.onclick = () => els.settingsModal.classList.add('hidden');
+  els.settingsSave.onclick = saveSettings;
+
+  // Jira create-ticket modal
+  els.btnJira.onclick = () => openTicketModal();
+  els.ticketCancel.onclick = () => els.ticketModal.classList.add('hidden');
+  els.ticketCreate.onclick = submitTicket;
+  els.ticketGoSettings.onclick = (e) => {
+    e.preventDefault();
+    els.ticketModal.classList.add('hidden');
+    openSettings();
+  };
+
   // Search
   els.searchBtn.onclick = openSearchModal;
   els.searchCancel.onclick = () => els.searchModal.classList.add('hidden');
@@ -889,6 +939,161 @@ function renderSearchResults({ query, results }) {
     };
     els.searchResults.appendChild(hit);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Settings (per-user integration credentials)
+// ---------------------------------------------------------------------------
+
+async function refreshSettings() {
+  try { state.settings = await window.huddleApi.loadSettings(); }
+  catch (err) { console.warn('settings load failed', err); state.settings = {}; }
+  rebuildJiraClient();
+}
+
+function rebuildJiraClient() {
+  const j = state.settings?.jira || {};
+  state.jira = new window.JiraClient(j);
+  // Reflect Jira availability in the call controls / chat header.
+  const enabled = state.jira.isConfigured();
+  els.btnJira?.classList.toggle('disabled', !enabled);
+}
+
+function openSettings() {
+  const s = state.settings || {};
+  els.setJiraHost.value = s.jira?.host || '';
+  els.setJiraEmail.value = s.jira?.email || '';
+  els.setJiraToken.value = s.jira?.token || '';
+  els.setTenorKey.value = s.tenor?.key || '';
+  els.settingsStatus.classList.add('hidden');
+  els.settingsModal.classList.remove('hidden');
+  els.setJiraHost.focus();
+}
+
+async function saveSettings() {
+  const next = {
+    ...state.settings,
+    jira: {
+      host: els.setJiraHost.value.trim().replace(/^https?:\/\//, '').replace(/\/$/, ''),
+      email: els.setJiraEmail.value.trim(),
+      token: els.setJiraToken.value,
+    },
+    tenor: { key: els.setTenorKey.value.trim() },
+  };
+  try {
+    await window.huddleApi.saveSettings(next);
+    state.settings = next;
+    rebuildJiraClient();
+    els.settingsStatus.textContent = 'Saved.';
+    els.settingsStatus.className = 'settings-status success';
+    setTimeout(() => els.settingsModal.classList.add('hidden'), 600);
+  } catch (err) {
+    els.settingsStatus.textContent = 'Could not save: ' + (err.message || err);
+    els.settingsStatus.className = 'settings-status error';
+  }
+}
+
+// Tenor key resolver: prefer in-app settings, fall back to env-var (so
+// existing setups keep working).
+async function getTenorKey() {
+  if (state.settings?.tenor?.key) return state.settings.tenor.key;
+  try { return (await window.huddle.getTenorKey()) || ''; } catch { return ''; }
+}
+
+// ---------------------------------------------------------------------------
+// Jira: create-ticket modal
+// ---------------------------------------------------------------------------
+
+async function openTicketModal({ summary = '', description = '' } = {}) {
+  els.ticketStatus.classList.add('hidden');
+  if (!state.jira?.isConfigured()) {
+    els.ticketConfigNeeded.classList.remove('hidden');
+    els.ticketForm.classList.add('hidden');
+    els.ticketCreate.disabled = true;
+    els.ticketModal.classList.remove('hidden');
+    return;
+  }
+  els.ticketConfigNeeded.classList.add('hidden');
+  els.ticketForm.classList.remove('hidden');
+  els.ticketCreate.disabled = false;
+
+  const channel = state.channelMeta.get(state.chat?.currentChannel);
+  els.ticketSummary.value = summary;
+  els.ticketDescription.value = description
+    || (channel ? `From a discussion in #${channel.name}.\n\n` : '');
+  els.ticketModal.classList.remove('hidden');
+  els.ticketSummary.focus();
+
+  // Lazy-load projects + issue types.
+  els.ticketProject.replaceChildren(new Option('Loading…', ''));
+  els.ticketIssuetype.replaceChildren(new Option('Loading…', ''));
+  try {
+    const projects = await state.jira.listProjects();
+    els.ticketProject.replaceChildren();
+    for (const p of projects) {
+      const opt = new Option(`${p.key} — ${p.name}`, p.key);
+      els.ticketProject.add(opt);
+    }
+    els.ticketProject.onchange = () => loadIssueTypes(els.ticketProject.value);
+    if (projects.length) await loadIssueTypes(projects[0].key);
+  } catch (err) {
+    showTicketStatus('Could not load projects: ' + err.message, 'error');
+    els.ticketCreate.disabled = true;
+  }
+}
+
+async function loadIssueTypes(projectKey) {
+  if (!projectKey) return;
+  els.ticketIssuetype.replaceChildren(new Option('Loading…', ''));
+  try {
+    const types = await state.jira.listIssueTypes(projectKey);
+    const usable = types.filter((t) => !t.subtask);
+    els.ticketIssuetype.replaceChildren();
+    for (const t of usable) els.ticketIssuetype.add(new Option(t.name, t.name));
+    // Default to "Task" if present.
+    const defaultType = [...els.ticketIssuetype.options].find((o) => o.value === 'Task');
+    if (defaultType) els.ticketIssuetype.value = 'Task';
+  } catch (err) {
+    showTicketStatus('Could not load issue types: ' + err.message, 'error');
+  }
+}
+
+async function submitTicket() {
+  const projectKey = els.ticketProject.value;
+  const issueType = els.ticketIssuetype.value;
+  const summary = els.ticketSummary.value.trim();
+  const description = els.ticketDescription.value.trim();
+  if (!projectKey || !summary) {
+    showTicketStatus('Project and summary are required.', 'error');
+    return;
+  }
+  els.ticketCreate.disabled = true;
+  showTicketStatus('Creating…', 'success');
+  try {
+    const issue = await state.jira.createIssue({ projectKey, summary, description, issueType });
+    const url = state.jira.issueUrl(issue.key);
+    showTicketStatus(`Created ${issue.key}.`, 'success');
+    if (els.ticketPostToChannel.checked && state.chat) {
+      // Posting the URL triggers the auto-unfurl on every viewer.
+      state.mesh.sendMessage({
+        channelId: state.chat.currentChannel,
+        parentId: state.chat.threadParentId,
+        text: `Created Jira ticket: ${url}`,
+        attachments: [],
+      });
+    }
+    setTimeout(() => els.ticketModal.classList.add('hidden'), 700);
+  } catch (err) {
+    showTicketStatus('Failed: ' + (err.message || err), 'error');
+  } finally {
+    els.ticketCreate.disabled = false;
+  }
+}
+
+function showTicketStatus(msg, kind) {
+  els.ticketStatus.textContent = msg;
+  els.ticketStatus.className = 'settings-status ' + kind;
+  els.ticketStatus.classList.remove('hidden');
 }
 
 async function openSourcePicker() {

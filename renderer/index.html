@@ -66,6 +66,7 @@
           <div class="workspace-name">Huddle</div>
           <div class="me-row">
             <div id="me" class="me"></div>
+            <button id="open-settings" class="ghost" title="Settings">⚙</button>
             <button id="me-signout" class="ghost" title="Sign out">⎋</button>
           </div>
         </div>
@@ -94,6 +95,7 @@
             <button id="btn-mic" class="ctrl" title="Toggle microphone">🎤</button>
             <button id="btn-cam" class="ctrl" title="Toggle camera">📷</button>
             <button id="btn-share" class="ctrl primary" title="Share a screen">🖥️ Share screen</button>
+            <button id="btn-jira" class="ctrl" title="Create a Jira ticket">🎫 Ticket</button>
             <button id="btn-leave" class="ctrl danger hidden" title="Leave call">⏻</button>
           </div>
         </div>
@@ -185,6 +187,61 @@
       </div>
     </div>
 
+    <!-- Settings modal -->
+    <div id="settings-modal" class="modal-backdrop hidden">
+      <div class="modal settings-modal">
+        <h2>Settings</h2>
+        <p class="hint">Drop in API keys for the integrations you want to use. Keys are stored in your private Supabase row and never shared with teammates.</p>
+
+        <h3>Jira</h3>
+        <label>Atlassian site (e.g. <code>acme.atlassian.net</code>)</label>
+        <input id="set-jira-host" type="text" placeholder="acme.atlassian.net" />
+        <label>Email</label>
+        <input id="set-jira-email" type="email" placeholder="you@team.com" />
+        <label>API token <span class="hint-inline">(create one at <code>id.atlassian.com/manage-profile/security/api-tokens</code>)</span></label>
+        <input id="set-jira-token" type="password" autocomplete="off" />
+
+        <h3>Tenor (GIF picker)</h3>
+        <label>API key <span class="hint-inline">(<code>tenor.com/developer/dashboard</code>)</span></label>
+        <input id="set-tenor-key" type="password" autocomplete="off" />
+
+        <div id="settings-status" class="settings-status hidden"></div>
+        <div style="display:flex; gap:8px; margin-top:16px;">
+          <button id="settings-cancel" style="flex:1;">Cancel</button>
+          <button id="settings-save" class="primary" style="flex:1;">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create Jira ticket modal -->
+    <div id="ticket-modal" class="modal-backdrop hidden">
+      <div class="modal ticket-modal">
+        <h2>Create Jira ticket</h2>
+        <div id="ticket-config-needed" class="hint hidden">
+          Add your Atlassian credentials in <a href="#" id="ticket-go-settings">Settings</a> first.
+        </div>
+        <div id="ticket-form">
+          <label>Project</label>
+          <select id="ticket-project"></select>
+          <label>Issue type</label>
+          <select id="ticket-issuetype"></select>
+          <label>Summary</label>
+          <input id="ticket-summary" type="text" placeholder="One-line title" maxlength="240" />
+          <label>Description</label>
+          <textarea id="ticket-description" rows="5" placeholder="What needs to happen?"></textarea>
+          <label class="cc-private-row">
+            <input id="ticket-post-to-channel" type="checkbox" checked />
+            <span>Also post the new ticket to this channel</span>
+          </label>
+        </div>
+        <div id="ticket-status" class="settings-status hidden"></div>
+        <div style="display:flex; gap:8px; margin-top:16px;">
+          <button id="ticket-cancel" style="flex:1;">Cancel</button>
+          <button id="ticket-create" class="primary" style="flex:1;">Create</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Search modal -->
     <div id="search-modal" class="modal-backdrop hidden">
       <div class="modal search-modal">
@@ -213,6 +270,7 @@
     <script src="markdown.js"></script>
     <script src="drawing.js"></script>
     <script src="api.js"></script>
+    <script src="jira.js"></script>
     <script src="webrtc.js"></script>
     <script src="chat.js"></script>
     <script src="app.js"></script>

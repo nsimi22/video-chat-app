@@ -28,8 +28,9 @@ A self-contained Electron desktop app that combines:
   - **File uploads** — drag-drop, paste, or click 📎. Images preview
     inline; everything else lands as a download chip.
   - **GIF picker** powered by Tenor — click `GIF`, search, click a
-    result to post. Requires `TENOR_API_KEY` (free at
-    <https://tenor.com/developer/dashboard>).
+    result to post. Get a free key at
+    <https://tenor.com/developer/dashboard> and drop it into the
+    in-app **Settings** panel.
   - **History pagination** — channels load 50 messages at a time.
   - **Search** — 🔍 in the chat header, scoped to all visible channels
     or just the current one.
@@ -38,6 +39,27 @@ Everything is persisted in **Supabase Postgres**; uploads land in
 **Supabase Storage**; signaling, presence, drawing, and typing all ride
 on **Supabase Realtime** broadcast channels. There's no local server to
 run.
+
+### Settings + integrations
+
+The **⚙ Settings** panel (top-left of the sidebar) is the one place to
+drop in API keys. Keys live in your private Supabase row
+(`user_integrations`, RLS-gated to your own user_id) — they are never
+shared with teammates.
+
+- **Jira** (Atlassian Cloud)
+  - Add your site (`acme.atlassian.net`), email, and an
+    [API token](https://id.atlassian.com/manage-profile/security/api-tokens).
+  - **Auto-unfurl**: any `PROJ-123` key or `*.atlassian.net/browse/…`
+    URL pasted in chat shows a card with title, type, status, and
+    assignee. Each viewer's unfurl uses their own credentials, so
+    visibility matches their actual Jira access.
+  - **`/jira PROJ-123`** posts a quick lookup.
+  - **`/jira create [summary]`** or the **🎫 Ticket** button in the
+    call controls opens a Create-ticket modal you can fire mid-meeting.
+    Picks project, issue type, summary, description; optionally posts
+    the new ticket back to the channel.
+- **Tenor** (GIF picker) — same panel.
 
 ## Download
 

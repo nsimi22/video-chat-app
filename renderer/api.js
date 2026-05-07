@@ -564,6 +564,27 @@
     await sb.auth.signOut();
   }
 
+  // --- Per-user integration settings (Jira host/email/token, Tenor key, …) -
+  // Stored in Supabase under public.user_integrations, RLS-gated to the
+  // signed-in user's row.
+  async function loadSettings() {
+    const sb = await getSupabase();
+    const { data: { user } } = await sb.auth.getUser();
+    if (!user) return {};
+    const { data } = await sb.from('user_integrations').select('settings').eq('user_id', user.id).maybeSingle();
+    return data?.settings || {};
+  }
+
+  async function saveSettings(settings) {
+    const sb = await getSupabase();
+    const { data: { user } } = await sb.auth.getUser();
+    if (!user) throw new Error('not authenticated');
+    const { error } = await sb.from('user_integrations').upsert({
+      user_id: user.id, settings,
+    });
+    if (error) throw error;
+  }
+
   async function getActiveSession() {
     const sb = await getSupabase();
     const { data } = await sb.auth.getSession();
@@ -575,6 +596,7 @@
     sendOtp, verifyOtp, ensureProfile,
     listMyTeams, joinOrCreateTeam, startHuddle,
     signOut, getActiveSession,
+    loadSettings, saveSettings,
     HuddleClient,
   };
 })();

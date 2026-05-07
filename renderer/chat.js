@@ -22,6 +22,10 @@ class ChatView {
     this.typingUsers = new Map();
     this.editingMessageId = null;
     this.composerAttachments = []; // [{file, status, info?}] where info = {url, name, contentType, size}
+    // Session cache for Jira lookups: key -> { issue | null, error?, host? }.
+    // null = lookup failed but completed (don't retry within session).
+    this._jiraCache = new Map();
+    this._jiraInflight = new Map();
 
     this.typingClock = setInterval(() => this._refreshTyping(), 800);
     this._wireDom();
@@ -191,6 +195,20 @@ class ChatView {
     const text = this.els.composer.value.trim();
     const attachments = this.composerAttachments.filter((a) => a.status === 'done').map((a) => a.info);
     if (!text && attachments.length === 0) return;
+
+    // Slash commands run client-side and either consume the input (no chat
+    // message sent) or fall through to the normal path. Right now we ship
+    // /jira; more can join the same shape.
+    if (text.startsWith('/')) {
+      const handled = await this._maybeRunSlash(text);
+      if (handled) {
+        this.els.composer.value = '';
+        this.els.composer.style.height = 'auto';
+        this.composerAttachments = [];
+        this._renderAttachmentChips();
+        return;
+      }
+    }
 
     await this.mesh.sendMessage({
       channelId: this.currentChannel,
@@ -497,8 +515,13 @@ class ChatView {
       actions.append(edit, del);
     }
 
+    // Jira unfurl: scan the message text for issue keys/URLs and render
+    // a card per match. Each card resolves async via the cached lookup.
+    const jiraEls = this._renderJiraUnfurls(m.text || '');
+
     const children = [head, body];
     if (attachmentsEl) children.push(attachmentsEl);
+    if (jiraEls.length) children.push(...jiraEls);
     children.push(reactions, actions);
     if (!m.parentId && this.threadParentId === null) {
       const replies = (all || []).filter((x) => x.parentId === m.id);
@@ -567,10 +590,13 @@ class ChatView {
   }
 
   async _openGifPicker() {
-    if (!this._tenorKey) {
-      try { this._tenorKey = await window.huddle.getTenorKey(); }
-      catch { this._tenorKey = ''; }
-    }
+    // The orchestrator owns settings, including the Tenor key. We always
+    // re-read so a freshly-saved key takes effect immediately.
+    try {
+      this._tenorKey = this.hooks.getTenorKey
+        ? await this.hooks.getTenorKey()
+        : (await window.huddle.getTenorKey()) || '';
+    } catch { this._tenorKey = ''; }
     this.els.gifSearch.value = '';
     this.els.gifSearch.focus();
     this.els.gifAttribution?.classList.toggle('hidden', !this._tenorKey);
@@ -634,6 +660,139 @@ class ChatView {
       img.onclick = () => this._postGif(full, r);
       this.els.gifGrid.appendChild(img);
     }
+  }
+
+  // --- Slash commands -----------------------------------------------------
+  // Returns `true` if the command was consumed (no chat message should go
+  // out); `false` if the input should be sent verbatim.
+  async _maybeRunSlash(text) {
+    const m = /^\/(\w+)(?:\s+([\s\S]+))?$/.exec(text);
+    if (!m) return false;
+    const cmd = m[1].toLowerCase();
+    const arg = (m[2] || '').trim();
+    if (cmd === 'jira') {
+      // /jira create [summary]    -> open the create-ticket modal
+      // /jira <KEY>               -> post a message containing the URL,
+      //                              which auto-unfurls for everyone
+      // /jira (no arg)            -> open create-ticket modal (most common)
+      if (!arg || /^create\b/i.test(arg)) {
+        const summary = arg.replace(/^create\s*/i, '');
+        this.hooks.openTicketModal?.({ summary });
+        return true;
+      }
+      const jira = this.hooks.getJira?.();
+      if (!jira?.isConfigured()) {
+        alert('Jira is not configured. Open settings (⚙) to add your Atlassian credentials.');
+        return true;
+      }
+      // Treat the rest as an issue key.
+      const key = arg.toUpperCase();
+      const url = jira.issueUrl(key);
+      await this.mesh.sendMessage({
+        channelId: this.currentChannel,
+        parentId: this.threadParentId,
+        text: url,
+        attachments: [],
+      });
+      return true;
+    }
+    return false;
+  }
+
+  // --- Jira unfurl --------------------------------------------------------
+
+  // Returns an array of <div class="jira-unfurl"> elements (possibly empty)
+  // for the message text. Cards start in a "loading" state; the lookup is
+  // fired off async and the DOM mutated in place when it returns.
+  _renderJiraUnfurls(text) {
+    const jira = this.hooks.getJira?.();
+    if (!jira || !jira.isConfigured()) return [];
+    const matches = window.jiraExtractKeys(text, jira.host);
+    if (!matches.length) return [];
+    const out = [];
+    for (const { key } of matches) {
+      const el = document.createElement('div');
+      el.className = 'jira-unfurl';
+      const loading = document.createElement('div');
+      loading.className = 'jira-loading';
+      loading.textContent = `Loading ${key}…`;
+      el.appendChild(loading);
+      out.push(el);
+      this._lookupAndPaint(key, el, jira);
+    }
+    return out;
+  }
+
+  async _lookupAndPaint(key, el, jira) {
+    try {
+      const issue = await this._lookupJira(key, jira);
+      if (!issue) {
+        el.classList.add('error');
+        el.replaceChildren();
+        const err = document.createElement('div');
+        err.className = 'jira-loading';
+        err.textContent = `${key}: not found or no access`;
+        el.appendChild(err);
+        return;
+      }
+      const fields = issue.fields || {};
+      const status = fields.status?.name || '';
+      const statusKind = (fields.status?.statusCategory?.key || '').toLowerCase(); // 'new'|'indeterminate'|'done'
+      const statusClass = statusKind === 'done' ? 'done'
+        : statusKind === 'indeterminate' ? 'inprogress' : 'todo';
+      const assignee = fields.assignee?.displayName || 'Unassigned';
+      const issueType = fields.issuetype?.name || '';
+      const url = jira.issueUrl(issue.key);
+
+      el.replaceChildren();
+      const top = document.createElement('div');
+      top.className = 'jira-row';
+      const link = document.createElement('a');
+      link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+      link.className = 'jira-key';
+      link.textContent = `${issueType ? issueType + ' · ' : ''}${issue.key}`;
+      const stat = document.createElement('span');
+      stat.className = `jira-status ${statusClass}`;
+      stat.textContent = status;
+      top.append(link, stat);
+
+      const sumRow = document.createElement('div');
+      sumRow.className = 'jira-summary';
+      sumRow.textContent = fields.summary || '';
+
+      const meta = document.createElement('div');
+      meta.className = 'jira-row';
+      meta.style.color = 'var(--text-dim)';
+      meta.textContent = `Assignee: ${assignee}`;
+
+      el.append(top, sumRow, meta);
+    } catch (err) {
+      el.classList.add('error');
+      el.replaceChildren();
+      const errEl = document.createElement('div');
+      errEl.className = 'jira-loading';
+      errEl.textContent = `${key}: ${err.message || 'lookup failed'}`;
+      el.appendChild(errEl);
+    }
+  }
+
+  async _lookupJira(key, jira) {
+    if (this._jiraCache.has(key)) return this._jiraCache.get(key);
+    if (this._jiraInflight.has(key)) return this._jiraInflight.get(key);
+    const p = (async () => {
+      try {
+        const issue = await jira.getIssue(key);
+        this._jiraCache.set(key, issue);
+        return issue;
+      } catch (err) {
+        this._jiraCache.set(key, null);
+        throw err;
+      } finally {
+        this._jiraInflight.delete(key);
+      }
+    })();
+    this._jiraInflight.set(key, p);
+    return p;
   }
 
   _postGif(url, result) {
