@@ -10,8 +10,16 @@
 // (`{hasMore, oldestTs}`). View-only state (`nodeById`, `_currentLabel`) is
 // reset on channel/thread switches.
 class ChatView {
-  constructor({ mesh, els, hooks }) {
-    this.mesh = mesh;
+  constructor({ huddle, els, hooks }) {
+    // ChatView used to take a MeshClient (`mesh`); the MeshClient was
+    // a passthrough to HuddleClient for chat ops + an event forwarder
+    // for chat-* events. Now that calls are on-demand and Mesh isn't
+    // always alive, ChatView talks to HuddleClient directly. The
+    // accessor name `this.mesh` is kept on the instance for backwards
+    // compatibility with internal call sites; both names point at the
+    // same HuddleClient.
+    this.huddle = huddle;
+    this.mesh = huddle;
     this.els = els;
     this.hooks = hooks || {};
     this.currentChannel = 'general';

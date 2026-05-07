@@ -371,6 +371,13 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
   white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 .call-controls { display: flex; gap: 6px; align-items: center; }
 .ctrl { padding: 8px 10px; }
+.ctrl .count {
+  display: inline-block; margin-left: 4px;
+  background: rgba(255,255,255,.12); color: var(--text);
+  padding: 0 6px; border-radius: 8px; font-size: 11px;
+}
+/* When the tile grid is hidden the chat takes the full stage height. */
+.tiles.hidden { display: none !important; }
 
 .tiles {
   flex: 1; padding: 12px; overflow: auto;

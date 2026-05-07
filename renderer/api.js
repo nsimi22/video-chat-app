@@ -87,6 +87,17 @@
       this._screenChannels = new Map();     // streamId -> RealtimeChannel
       this._whiteboardChannels = new Map(); // whiteboardId -> RealtimeChannel
       this._dbChannel = null;               // postgres_changes subscription
+      // Per-channel call topic (call:<team>:<channel>). Only one active
+      // call at a time. Presence on this channel drives WebRTC
+      // peer-joined/peer-left events.
+      this._callChannel = null;
+      this._callChannelId = null;     // channel.id of the active call, if any
+      this._callPeerInfo = new Map(); // user_id -> { id, name, color }
+      // Lurker subscriptions used by the chat header to render
+      // "Start call" / "Join call · N". Keyed by channel.id; values are
+      // ready-promises wrapping the RealtimeChannel.
+      this._lurkers = new Map();
+      this._lurkerCounts = new Map(); // channel.id -> last seen count
     }
 
     async start() {
@@ -100,19 +111,201 @@
       this._dispatchWelcome();
     }
 
-    stop() {
-      try { this._teamChannel?.unsubscribe(); } catch {}
-      try { this._dbChannel?.unsubscribe(); } catch {}
-      // Channel maps now store readiness promises — resolve before unsubscribing.
-      for (const p of this._screenChannels.values()) {
-        Promise.resolve(p).then((ch) => { try { ch.unsubscribe(); } catch {} }).catch(() => {});
-      }
-      for (const p of this._whiteboardChannels.values()) {
-        Promise.resolve(p).then((ch) => { try { ch.unsubscribe(); } catch {} }).catch(() => {});
-      }
+    async stop() {
+      // Channel maps store readiness promises — resolve them and await
+      // the unsubscribes before clearing the maps so the page isn't
+      // unloaded mid-handshake (which leaks subscriptions server-side).
+      const direct = [this._teamChannel, this._dbChannel, this._callChannel];
+      const indirect = [...this._screenChannels.values(), ...this._whiteboardChannels.values(), ...this._lurkers.values()];
+      const work = direct
+        .map((ch) => ch ? Promise.resolve().then(() => ch.unsubscribe()).catch(() => {}) : null)
+        .filter(Boolean)
+        .concat(indirect.map((p) => Promise.resolve(p).then((ch) => ch.unsubscribe()).catch(() => {})));
+      await Promise.allSettled(work);
+      this._teamChannel = null;
+      this._dbChannel = null;
+      this._callChannel = null;
+      this._callChannelId = null;
+      this._callPeerInfo.clear();
       this._screenChannels.clear();
       this._whiteboardChannels.clear();
+      this._lurkers.clear();
+      this._lurkerCounts.clear();
     }
+
+    // --- Call channel: per-channel presence + signaling + screen events --
+    //
+    // Subscribed lazily when the user clicks "Start call" / "Join call".
+    // Topic: call:<team_id>:<channel_id>. Presence drives WebRTC
+    // peer-joined / peer-left events. Signaling, screen-announce, and
+    // screen-stop broadcasts ride this channel too — only call
+    // participants pay the bandwidth cost; teammates merely lurking on
+    // a channel see counts but no media traffic.
+    async joinCall(channelId) {
+      if (this._callChannelId === channelId) return; // already in this call
+      if (this._callChannel) await this.leaveCall();
+      const topic = `call:${this.team.id}:${channelId}`;
+      const ch = this.supabase.channel(topic, {
+        config: {
+          presence: { key: this.peerId },
+          broadcast: { self: false, ack: false },
+          private: true,
+        },
+      });
+
+      ch.on('presence', { event: 'sync' }, () => {
+        const newState = ch.presenceState();
+        const seen = new Set();
+        for (const key of Object.keys(newState)) {
+          const meta = newState[key][0];
+          if (!meta) continue;
+          seen.add(key);
+          if (key === this.peerId) continue;
+          if (!this._callPeerInfo.has(key)) {
+            const peer = { id: key, name: meta.name, color: meta.color };
+            this._callPeerInfo.set(key, peer);
+            this.dispatchEvent(new CustomEvent('peer-joined', { detail: peer }));
+          }
+        }
+        for (const id of [...this._callPeerInfo.keys()]) {
+          if (!seen.has(id)) {
+            this._callPeerInfo.delete(id);
+            this.dispatchEvent(new CustomEvent('peer-left', { detail: id }));
+          }
+        }
+      });
+
+      ch.on('broadcast', { event: 'signal' }, ({ payload }) => {
+        if (payload.to !== this.peerId) return;
+        this.dispatchEvent(new CustomEvent('signal', { detail: { from: payload.from, payload: payload.payload } }));
+      });
+      ch.on('broadcast', { event: 'screen-announce' }, ({ payload }) => {
+        this.activeScreens.set(payload.streamId, { fromId: payload.from, label: payload.label });
+        this.remoteScreenLabels.set(payload.streamId, { label: payload.label, fromName: payload.fromName, from: payload.from });
+        // Receivers also need to join the per-screen broadcast channel,
+        // otherwise drawing strokes from other peers never reach them.
+        this._ensureScreenChannel(payload.streamId).catch(() => {});
+        this.dispatchEvent(new CustomEvent('screen-announce', { detail: payload }));
+      });
+      ch.on('broadcast', { event: 'screen-stop' }, ({ payload }) => {
+        this.activeScreens.delete(payload.streamId);
+        this.remoteScreenLabels.delete(payload.streamId);
+        const cached = this._screenChannels.get(payload.streamId);
+        if (cached) {
+          Promise.resolve(cached).then((c) => { try { c.unsubscribe(); } catch {} }).catch(() => {});
+          this._screenChannels.delete(payload.streamId);
+        }
+        this.dispatchEvent(new CustomEvent('screen-stop', { detail: payload }));
+      });
+
+      await new Promise((resolve, reject) => {
+        ch.subscribe(async (status, err) => {
+          if (status === 'SUBSCRIBED') {
+            await ch.track({ name: this.name, color: this.color, online_at: new Date().toISOString() });
+            resolve();
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            reject(err || new Error('realtime call ' + status));
+          }
+        });
+      });
+
+      this._callChannel = ch;
+      this._callChannelId = channelId;
+      // If we were lurking on this channel, drop the lurker — we're a
+      // full participant now.
+      const lurker = this._lurkers.get(channelId);
+      if (lurker) {
+        Promise.resolve(lurker).then((l) => { try { l.unsubscribe(); } catch {} }).catch(() => {});
+        this._lurkers.delete(channelId);
+        this._lurkerCounts.delete(channelId);
+      }
+    }
+
+    async leaveCall() {
+      if (!this._callChannel) return;
+      const ch = this._callChannel;
+      const wasIn = this._callChannelId;
+      // Emit synthetic peer-left for everyone we were connected to so
+      // the renderer (MeshClient + tile grid) drops them cleanly.
+      for (const id of [...this._callPeerInfo.keys()]) {
+        this.dispatchEvent(new CustomEvent('peer-left', { detail: id }));
+      }
+      this._callPeerInfo.clear();
+      this._callChannel = null;
+      this._callChannelId = null;
+      // Await the call channel + every per-screen channel before clearing
+      // their maps, otherwise we can drop the references mid-handshake
+      // and leave subscriptions hanging server-side.
+      const screenUnsubs = [...this._screenChannels.values()].map(
+        (p) => Promise.resolve(p).then((c) => c.unsubscribe()).catch(() => {})
+      );
+      await Promise.allSettled([
+        Promise.resolve().then(() => ch.unsubscribe()).catch(() => {}),
+        ...screenUnsubs,
+      ]);
+      this._screenChannels.clear();
+      this.activeScreens.clear();
+      this.remoteScreenLabels.clear();
+      this.dispatchEvent(new CustomEvent('call-left', { detail: { channelId: wasIn } }));
+    }
+
+    // Subscribe to a call:* topic in lurker mode (presence read, no
+    // own-presence track) so the chat header can render
+    // "Join call · N" without committing the user to the call. Idempotent
+    // per channel id. Returns the latest known participant count.
+    async watchCallPresence(channelId) {
+      if (this._callChannelId === channelId) {
+        // We're a participant — own presence already reports the count.
+        return this._callPeerInfo.size + 1;
+      }
+      const cached = this._lurkers.get(channelId);
+      if (cached) {
+        await Promise.resolve(cached);
+        return this._lurkerCounts.get(channelId) || 0;
+      }
+      const topic = `call:${this.team.id}:${channelId}`;
+      const ch = this.supabase.channel(topic, {
+        config: { presence: { key: this.peerId }, broadcast: { self: false, ack: false }, private: true },
+      });
+      ch.on('presence', { event: 'sync' }, () => {
+        const state = ch.presenceState();
+        const count = Object.keys(state).length;
+        this._lurkerCounts.set(channelId, count);
+        this.dispatchEvent(new CustomEvent('call-presence', { detail: { channelId, count } }));
+      });
+      const ready = new Promise((res, rej) => {
+        ch.subscribe((s, e) => {
+          if (s === 'SUBSCRIBED') res(ch);
+          else if (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') rej(e);
+        });
+      });
+      this._lurkers.set(channelId, ready);
+      ready.catch(() => this._lurkers.delete(channelId));
+      await ready;
+      return this._lurkerCounts.get(channelId) || 0;
+    }
+
+    unwatchCallPresence(channelId) {
+      const cached = this._lurkers.get(channelId);
+      if (!cached) return;
+      Promise.resolve(cached).then((c) => { try { c.unsubscribe(); } catch {} }).catch(() => {});
+      this._lurkers.delete(channelId);
+      this._lurkerCounts.delete(channelId);
+    }
+
+    // Last-known participant count for a watched channel, or 0 if not
+    // currently watched. The renderer reads this synchronously while
+    // rendering the channel header; it's kept fresh by the lurker's
+    // presence-sync handler.
+    getCallParticipantCount(channelId) {
+      if (this._callChannelId === channelId) return this._callPeerInfo.size + 1;
+      return this._lurkerCounts.get(channelId) || 0;
+    }
+
+    // Live mirror of the current call membership for the renderer's
+    // imperative reads (welcome payload + tile grid bootstrapping).
+    get callPeerInfo() { return this._callPeerInfo; }
+    get inCallChannelId() { return this._callChannelId; }
 
     // --- Team channel: presence + signaling + typing + announcements -----
 
@@ -127,7 +320,9 @@
       });
       this._teamChannel = ch;
 
-      // Presence drives the peer roster.
+      // Team presence drives the People sidebar's online dot only — it
+      // does NOT drive WebRTC peer creation. WebRTC peer events come from
+      // the per-channel call:* topic that joinCall() subscribes to.
       ch.on('presence', { event: 'sync' }, () => {
         const newState = ch.presenceState();
         const seen = new Set();
@@ -139,39 +334,17 @@
           if (!this.peerInfo.has(key)) {
             const peer = { id: key, name: meta.name, color: meta.color };
             this.peerInfo.set(key, peer);
-            this.dispatchEvent(new CustomEvent('peer-joined', { detail: peer }));
+            this.dispatchEvent(new CustomEvent('member-online', { detail: peer }));
           }
         }
         for (const id of [...this.peerInfo.keys()]) {
           if (!seen.has(id)) {
             this.peerInfo.delete(id);
-            this.dispatchEvent(new CustomEvent('peer-left', { detail: id }));
+            this.dispatchEvent(new CustomEvent('member-offline', { detail: id }));
           }
         }
       });
 
-      ch.on('broadcast', { event: 'signal' }, ({ payload }) => {
-        if (payload.to !== this.peerId) return;
-        this.dispatchEvent(new CustomEvent('signal', { detail: { from: payload.from, payload: payload.payload } }));
-      });
-      ch.on('broadcast', { event: 'screen-announce' }, ({ payload }) => {
-        this.activeScreens.set(payload.streamId, { fromId: payload.from, label: payload.label });
-        this.remoteScreenLabels.set(payload.streamId, { label: payload.label, fromName: payload.fromName, from: payload.from });
-        // Receivers also need to join the per-screen broadcast channel, otherwise
-        // drawing strokes from other peers never reach this client.
-        this._ensureScreenChannel(payload.streamId).catch(() => {});
-        this.dispatchEvent(new CustomEvent('screen-announce', { detail: payload }));
-      });
-      ch.on('broadcast', { event: 'screen-stop' }, ({ payload }) => {
-        this.activeScreens.delete(payload.streamId);
-        this.remoteScreenLabels.delete(payload.streamId);
-        const cached = this._screenChannels.get(payload.streamId);
-        if (cached) {
-          Promise.resolve(cached).then((c) => { try { c.unsubscribe(); } catch {} }).catch(() => {});
-          this._screenChannels.delete(payload.streamId);
-        }
-        this.dispatchEvent(new CustomEvent('screen-stop', { detail: payload }));
-      });
       ch.on('broadcast', { event: 'typing' }, ({ payload }) => {
         this.dispatchEvent(new CustomEvent('typing', { detail: payload }));
       });
@@ -278,26 +451,30 @@
     // --- Outgoing operations --------------------------------------------
 
     sendSignal(to, payload) {
-      this._teamChannel?.send({ type: 'broadcast', event: 'signal', payload: { from: this.peerId, to, payload } });
+      // Signal/screen events ride the call channel — only call
+      // participants receive them, so a teammate lurking on chat in
+      // a different channel pays no media bandwidth.
+      this._callChannel?.send({ type: 'broadcast', event: 'signal', payload: { from: this.peerId, to, payload } });
     }
     sendScreenAnnounce(streamId, label) {
-      this._teamChannel?.send({ type: 'broadcast', event: 'screen-announce', payload: { from: this.peerId, fromName: this.name, streamId, label } });
+      this._callChannel?.send({ type: 'broadcast', event: 'screen-announce', payload: { from: this.peerId, fromName: this.name, streamId, label } });
       this.activeScreens.set(streamId, { fromId: this.peerId, label });
       // Owner also subscribes so they receive strokes drawn by other peers.
       this._ensureScreenChannel(streamId).catch(() => {});
     }
     sendScreenStop(streamId) {
-      this._teamChannel?.send({ type: 'broadcast', event: 'screen-stop', payload: { from: this.peerId, streamId } });
+      this._callChannel?.send({ type: 'broadcast', event: 'screen-stop', payload: { from: this.peerId, streamId } });
       this.activeScreens.delete(streamId);
       const cached = this._screenChannels.get(streamId);
       if (cached) {
         Promise.resolve(cached).then((c) => { try { c.unsubscribe(); } catch {} }).catch(() => {});
         this._screenChannels.delete(streamId);
       }
-      // The team channel is configured `broadcast: { self: false }`, so the
-      // 'screen-stop' broadcast above doesn't echo back to us — without a
-      // local dispatch the renderer never tears down our own screen tile
-      // when we stop sharing. Mirror what a remote peer would receive.
+      // The call channel is configured `broadcast: { self: false }`, so
+      // the 'screen-stop' broadcast above doesn't echo back to us —
+      // without a local dispatch the renderer never tears down our own
+      // screen tile when we stop sharing. Mirror what a remote peer
+      // would receive.
       this.dispatchEvent(new CustomEvent('screen-stop', { detail: { from: this.peerId, streamId } }));
     }
     sendTyping(channelId, parentId) {
