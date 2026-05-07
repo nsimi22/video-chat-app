@@ -53,6 +53,29 @@ function renderMarkdown(text, { mentionNames, myName } = {}) {
     });
   }
 
+  // Blockquotes: collapse runs of consecutive lines starting with `> ` into
+  // a single <blockquote>. Done before the \n -> <br/> pass so we can split
+  // on real newlines; inside the blockquote, internal line breaks become
+  // <br/> manually so the later pass doesn't re-process them.
+  // We're operating on already-escaped text, so the literal `>` shows up as
+  // the entity `&gt;`.
+  {
+    const lines = s.split('\n');
+    const out = [];
+    let buf = null;
+    for (const line of lines) {
+      const m = /^&gt;\s?(.*)$/.exec(line);
+      if (m) {
+        (buf ||= []).push(m[1]);
+      } else {
+        if (buf) { out.push('<blockquote>' + buf.join('<br/>') + '</blockquote>'); buf = null; }
+        out.push(line);
+      }
+    }
+    if (buf) out.push('<blockquote>' + buf.join('<br/>') + '</blockquote>');
+    s = out.join('\n');
+  }
+
   // Newlines -> <br/> (outside code, which used sentinel placeholders).
   s = s.replace(/\n/g, '<br/>');
 

@@ -91,9 +91,10 @@
         headers: {
           'Authorization': `Bearer ${this.openrouterKey}`,
           'content-type': 'application/json',
-          // Optional but conventional — helps OpenRouter attribute usage and
-          // surfaces the app name in their dashboard.
-          'HTTP-Referer': 'https://github.com/nsimi22/video-chat-app',
+          // X-Title surfaces the app name on OpenRouter's dashboard. We
+          // intentionally don't send HTTP-Referer — it's optional, and
+          // hardcoding any URL here would either leak a fork's source repo
+          // or misrepresent the deployment.
           'X-Title': 'Huddle',
         },
         body: JSON.stringify(body),
@@ -109,14 +110,16 @@
     // Convenience: build a system+user prompt from a list of recent chat
     // messages and ask the model to summarize. The shape lives here (rather
     // than in chat.js) so the prompt stays close to the API surface.
+    // Caller passes the marshalled message shape from chat.js (`{text, ts,
+    // authorName}`) — see HuddleClient._marshalMessage.
     async summarize(channelMessages, { topicHint } = {}) {
       const system = `You are a meeting / chat summarizer. Produce a tight, scannable summary of recent messages in a team chat. Use bullet points. Capture decisions, open questions, and any action items (with owners if you can infer them). Keep it under 250 words.`;
       const lines = (channelMessages || [])
-        .filter((m) => m.text || m.body)
+        .filter((m) => m.text)
         .map((m) => {
-          const ts = new Date(m.ts || m.created_at || Date.now()).toISOString().slice(11, 16);
-          const who = m.authorName || m.author_name || 'someone';
-          const txt = (m.text ?? m.body ?? '').replace(/\n+/g, ' ');
+          const ts = new Date(m.ts).toISOString().slice(11, 16);
+          const who = m.authorName || 'someone';
+          const txt = m.text.replace(/\n+/g, ' ');
           return `[${ts}] ${who}: ${txt}`;
         })
         .join('\n');

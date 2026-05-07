@@ -229,10 +229,14 @@ class ChatView {
     // message sent) or fall through to the normal path. Right now we ship
     // /jira; more can join the same shape.
     if (text.startsWith('/')) {
+      // Clear the composer up front so the UI feels responsive even if the
+      // slash handler awaits a slow API call (`/ai`, `/summarize` can take
+      // 5-30s on Opus). If the command isn't recognized we still send the
+      // original text via the normal sendMessage path below.
+      this.els.composer.value = '';
+      this.els.composer.style.height = 'auto';
       const handled = await this._maybeRunSlash(text);
       if (handled) {
-        this.els.composer.value = '';
-        this.els.composer.style.height = 'auto';
         this.composerAttachments = [];
         this._renderAttachmentChips();
         return;
@@ -335,9 +339,11 @@ class ChatView {
       if (info.until > now) live.push(info.name);
       else this.typingUsers.delete(id);
     }
-    this.els.typing.textContent = live.length === 0 ? ''
+    let text = live.length === 0 ? ''
       : live.length === 1 ? `${live[0]} is typing…`
       : `${live.slice(0, -1).join(', ')} and ${live.at(-1)} are typing…`;
+    if (this._aiThinking) text = (text ? text + ' · ' : '') + '🤖 AI is thinking…';
+    this.els.typing.textContent = text;
   }
 
   _messages() { return this.byChannel.get(this.currentChannel) || []; }
@@ -758,15 +764,24 @@ class ChatView {
       alert('Usage: /ai <your question>');
       return true;
     }
-    // Wrap the response so the team has context: include the human's question
-    // at the top and the AI response below. Single message, single bubble.
+    // Show "🤖 AI is thinking…" in the typing-indicator slot so the user
+    // (and only the user — this is a local-only state, not broadcast) knows
+    // the request is in flight.
+    this._aiThinking = true;
+    this._refreshTyping();
     let result;
     try {
       result = await ai.chat({ messages: [{ role: 'user', content: prompt }] });
     } catch (err) {
       alert('AI request failed: ' + (err.message || err));
       return true;
+    } finally {
+      this._aiThinking = false;
+      this._refreshTyping();
     }
+    // Wrap the response so the team has context: include the human's question
+    // as a markdown blockquote at the top and the AI response below. Single
+    // message, single bubble.
     const body = `> ${prompt.replace(/\n/g, '\n> ')}\n\n${result.text || '(no response)'}`;
     await this.mesh.sendAiMessage({
       channelId: this.currentChannel,
@@ -794,9 +809,12 @@ class ChatView {
       alert('Nothing to summarize yet.');
       return true;
     }
+    this._aiThinking = true;
+    this._refreshTyping();
     let result;
     try { result = await ai.summarize(list); }
     catch (err) { alert('Summarize failed: ' + (err.message || err)); return true; }
+    finally { this._aiThinking = false; this._refreshTyping(); }
     const body = `🧠 **Summary of recent messages**\n\n${result.text || '(no summary)'}`;
     await this.mesh.sendAiMessage({
       channelId: this.currentChannel,
