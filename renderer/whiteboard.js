@@ -119,7 +119,13 @@ class WhiteboardSession {
     const entry = this.notes.get(patch.id);
     if (!entry) return;
     Object.assign(entry.data, patch);
-    if (patch.text !== undefined && entry.textarea) entry.textarea.value = patch.text;
+    // Don't overwrite the textarea while the local user is typing in
+    // it — that yanks the cursor to the end and wipes any in-progress
+    // edit. The remote text is already in entry.data; the textarea
+    // re-syncs from data on next blur or full re-render.
+    if (patch.text !== undefined && entry.textarea && document.activeElement !== entry.textarea) {
+      entry.textarea.value = patch.text;
+    }
     if (patch.x !== undefined || patch.y !== undefined || patch.w !== undefined || patch.h !== undefined) {
       this._positionNote(entry);
     }
@@ -167,10 +173,30 @@ class WhiteboardSession {
   _wireNoteHandlers(entry) {
     const { el, textarea, handle, data } = entry;
 
-    // Drag from the handle (top strip) to reposition. Body scrolling +
-    // text editing stay alive because the textarea sits below the
-    // handle and isn't part of the drag surface.
+    // Drag from the handle (top strip) to reposition. window-level
+    // mousemove / mouseup are attached on mousedown and removed on
+    // mouseup so we don't leak N listeners into the global firehose
+    // for every note created in the session. Body scrolling + text
+    // editing stay alive because the textarea sits below the handle
+    // and isn't part of the drag surface.
     let dragStart = null;
+    const onMouseMove = (e) => {
+      if (!dragStart) return;
+      const dx = (e.clientX - dragStart.x) / dragStart.rectW;
+      const dy = (e.clientY - dragStart.y) / dragStart.rectH;
+      data.x = Math.max(0, Math.min(1 - data.w, dragStart.origX + dx));
+      data.y = Math.max(0, Math.min(1 - data.h, dragStart.origY + dy));
+      this._positionNote(entry);
+    };
+    const onMouseUp = () => {
+      if (!dragStart) return;
+      dragStart = null;
+      el.classList.remove('dragging');
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      this._broadcastUpdate(data.id, { x: data.x, y: data.y });
+      this._persistUpdate(data.id, { x: data.x, y: data.y });
+    };
     handle.addEventListener('mousedown', (e) => {
       if (e.target.classList.contains('wb-note-close')) return;
       e.preventDefault();
@@ -181,25 +207,8 @@ class WhiteboardSession {
         rectW: rect.width, rectH: rect.height,
       };
       el.classList.add('dragging');
-    });
-    window.addEventListener('mousemove', (e) => {
-      if (!dragStart) return;
-      const dx = (e.clientX - dragStart.x) / dragStart.rectW;
-      const dy = (e.clientY - dragStart.y) / dragStart.rectH;
-      data.x = Math.max(0, Math.min(1 - data.w, dragStart.origX + dx));
-      data.y = Math.max(0, Math.min(1 - data.h, dragStart.origY + dy));
-      this._positionNote(entry);
-    });
-    window.addEventListener('mouseup', () => {
-      if (!dragStart) return;
-      dragStart = null;
-      el.classList.remove('dragging');
-      // Persist + broadcast the final position. Drag-while-typing on
-      // remote viewers' textareas was already handled by
-      // _applyRemoteUpdate not touching textarea.value when only x/y
-      // changed.
-      this._broadcastUpdate(data.id, { x: data.x, y: data.y });
-      this._persistUpdate(data.id, { x: data.x, y: data.y });
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('mouseup', onMouseUp);
     });
 
     // Text edits: broadcast immediately for liveness, debounce the DB
