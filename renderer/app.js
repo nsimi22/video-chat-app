@@ -438,10 +438,10 @@ async function startCall(channelId) {
     await state.huddle.joinCall(channelId);
   } catch (err) {
     console.warn('joinCall failed', err);
-    // Surface the failure as a banner instead of swallowing into
-    // console.warn — otherwise the user sees the button greyed out
-    // and nothing else (the regression that "Start call doesn't
-    // start a call" reported on v0.2.5).
+    // Surface the failure to the user (see showCallError) instead
+    // of swallowing into console.warn — otherwise they see the
+    // button greyed out and nothing else (the regression that
+    // "Start call doesn't start a call" reported on v0.2.5).
     showCallError('Could not start the call: ' + (err?.message || err));
     mesh.disconnect();
     state.callStarting = false;
@@ -1353,6 +1353,7 @@ function closeWhiteboard(whiteboardId) {
   state.whiteboardSessions.delete(whiteboardId);
   state.drawLayers.delete(whiteboardId);
   state.tilesByKey.delete(`whiteboard:${whiteboardId}`);
+  syncTilesVisibility();
   if (state.activeAnnotation === whiteboardId) {
     state.activeAnnotation = null;
     els.drawToolbar.classList.add('hidden');

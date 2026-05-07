@@ -199,18 +199,20 @@
       });
 
       await new Promise((resolve, reject) => {
+        // Every failure path must unsubscribe before rejecting,
+        // otherwise the channel sits subscribed in supabase-js with
+        // dangling handlers, and on a slow network we can ghost into
+        // call presence after the local UI has already given up.
+        const failClean = (err) => {
+          try { ch.unsubscribe(); } catch {}
+          reject(err);
+        };
         // Hard timeout in case Realtime never resolves the subscribe
         // (RLS denial that doesn't surface as CHANNEL_ERROR, network
         // hiccup mid-handshake, etc.). Without this the await hangs
         // forever and the Start-call button stays disabled — the
         // user sees "nothing happens" with no signal in the UI.
-        // Also explicitly unsubscribe on timeout: the realtime backend
-        // may otherwise treat us as a ghost participant once the
-        // handshake belatedly resolves.
-        const timer = setTimeout(() => {
-          try { ch.unsubscribe(); } catch {}
-          reject(new Error('realtime call subscribe timed out'));
-        }, 8000);
+        const timer = setTimeout(() => failClean(new Error('realtime call subscribe timed out')), 8000);
         ch.subscribe(async (status, err) => {
           if (status === 'SUBSCRIBED') {
             try {
@@ -222,19 +224,19 @@
               const trackResult = await ch.track({ name: this.name, color: this.color, online_at: new Date().toISOString() });
               if (trackResult !== 'ok') {
                 clearTimeout(timer);
-                reject(new Error('realtime call presence track ' + trackResult));
+                failClean(new Error('realtime call presence track ' + trackResult));
                 return;
               }
             } catch (e) {
               clearTimeout(timer);
-              reject(e);
+              failClean(e);
               return;
             }
             clearTimeout(timer);
             resolve();
           } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
             clearTimeout(timer);
-            reject(err || new Error('realtime call ' + status));
+            failClean(err || new Error('realtime call ' + status));
           }
         });
       });
