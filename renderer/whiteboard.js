@@ -32,6 +32,14 @@ class WhiteboardSession {
     this.layer = null;
     this._currentStroke = null;     // local in-progress stroke + its uuid
     this._paintedUuids = new Set(); // strokes painted live; replay skips matches
+    // Sticky notes: id -> { el, textarea, handle, data } where data is
+    // { id, x, y, w, h, text, color }. el is the .wb-note container,
+    // textarea + handle are kept for direct event/style access without
+    // re-querying the DOM. Positions are fractional (0..1) of the tile
+    // bounding rect — same scheme strokes use for points — so notes
+    // render consistently across viewers with different tile sizes.
+    this.notes = new Map();
+    this._noteSaveTimers = new Map(); // id -> setTimeout, debounce text saves
   }
 
   async start() {
@@ -45,18 +53,24 @@ class WhiteboardSession {
     this.layer.attach(this.tile);
     this.layer.setActive(true);
 
-    // Subscribe to live broadcast first so we don't miss strokes drawn
-    // between the DB fetch and the subscribe. The dedup Set below catches
-    // any overlap with replayed history.
-    await this.huddle.ensureWhiteboardChannel(this.whiteboardId, (payload) => {
-      if (payload.from === this.huddle.peerId) return; // ignore self echoes
-      const stroke = payload.stroke;
-      this.layer.applyRemote(stroke);
-      // Record completed strokes so a later history replay doesn't paint them again.
-      if (stroke.action === 'end' && stroke.uuid) this._paintedUuids.add(stroke.uuid);
-    });
+    // Subscribe to live broadcast first so we don't miss strokes / notes
+    // drawn between the DB fetch and the subscribe. The dedup Set below
+    // catches any overlap with replayed history.
+    await this.huddle.ensureWhiteboardChannel(
+      this.whiteboardId,
+      (payload) => {
+        if (payload.from === this.huddle.peerId) return; // ignore self echoes
+        const stroke = payload.stroke;
+        this.layer.applyRemote(stroke);
+        if (stroke.action === 'end' && stroke.uuid) this._paintedUuids.add(stroke.uuid);
+      },
+      (payload) => {
+        if (payload.from === this.huddle.peerId) return;
+        this._applyRemoteNote(payload);
+      },
+    );
 
-    // Replay history.
+    // Replay strokes.
     try {
       const rows = await this.huddle.fetchWhiteboardStrokes(this.whiteboardId);
       for (const row of rows) {
@@ -68,6 +82,195 @@ class WhiteboardSession {
     } catch (err) {
       console.warn('[whiteboard] history fetch failed', err);
     }
+
+    // Replay notes.
+    try {
+      const noteRows = await this.huddle.fetchWhiteboardNotes(this.whiteboardId);
+      for (const row of noteRows) this._renderNote(row);
+    } catch (err) {
+      console.warn('[whiteboard] notes fetch failed', err);
+    }
+  }
+
+  // -- Sticky notes ---------------------------------------------------
+
+  // Add a note at the given fractional (0..1) tile-relative coords.
+  // Renders, persists, and broadcasts so other peers see it live.
+  // Default placement is the visible center.
+  async addNote({ x = 0.4, y = 0.4 } = {}) {
+    // whiteboard_notes.id is a uuid column, so we need a real UUID
+    // here — the previous Date+Math.random fallback would fail at
+    // insert time. Modern Electron / Chromium ships crypto.randomUUID;
+    // bail loudly if it's missing rather than silently producing
+    // bad ids.
+    if (typeof crypto === 'undefined' || !crypto.randomUUID) {
+      throw new Error('crypto.randomUUID unavailable; cannot create note');
+    }
+    const id = crypto.randomUUID();
+    const note = { id, x, y, w: 0.18, h: 0.18, text: '', color: '#ffd866' };
+    this._renderNote(note, { focus: true });
+    this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note });
+    try {
+      await this.huddle.createWhiteboardNote(this.whiteboardId, note);
+    } catch (err) {
+      console.warn('[whiteboard] note create failed', err);
+    }
+  }
+
+  _applyRemoteNote(payload) {
+    if (payload.action === 'create' && payload.note) this._renderNote(payload.note);
+    else if (payload.action === 'update' && payload.note) this._applyRemoteUpdate(payload.note);
+    else if (payload.action === 'delete' && payload.id) this._removeNoteEl(payload.id);
+  }
+
+  _applyRemoteUpdate(patch) {
+    const entry = this.notes.get(patch.id);
+    if (!entry) return;
+    Object.assign(entry.data, patch);
+    // Don't overwrite the textarea while the local user is typing in
+    // it — that yanks the cursor to the end and wipes any in-progress
+    // edit. The remote text is already in entry.data; the textarea
+    // re-syncs from data on next blur or full re-render.
+    if (patch.text !== undefined && entry.textarea && document.activeElement !== entry.textarea) {
+      entry.textarea.value = patch.text;
+    }
+    if (patch.x !== undefined || patch.y !== undefined || patch.w !== undefined || patch.h !== undefined) {
+      this._positionNote(entry);
+    }
+  }
+
+  _renderNote(note, { focus = false } = {}) {
+    if (this.notes.has(note.id)) {
+      this._applyRemoteUpdate(note);
+      return;
+    }
+    const el = document.createElement('div');
+    el.className = 'wb-note';
+    el.dataset.noteId = note.id;
+    el.style.background = note.color || '#ffd866';
+    const handle = document.createElement('div');
+    handle.className = 'wb-note-handle';
+    handle.title = 'Drag to move';
+    const close = document.createElement('button');
+    close.className = 'wb-note-close';
+    close.title = 'Delete note';
+    close.textContent = '×';
+    handle.appendChild(close);
+    const ta = document.createElement('textarea');
+    ta.className = 'wb-note-text';
+    ta.placeholder = 'Type a note…';
+    ta.value = note.text || '';
+    el.append(handle, ta);
+    this.tile.appendChild(el);
+
+    const entry = { el, textarea: ta, handle, data: { ...note } };
+    this.notes.set(note.id, entry);
+    this._positionNote(entry);
+    this._wireNoteHandlers(entry);
+    if (focus) setTimeout(() => ta.focus(), 0);
+  }
+
+  _positionNote(entry) {
+    const { el, data } = entry;
+    el.style.left = `${data.x * 100}%`;
+    el.style.top = `${data.y * 100}%`;
+    el.style.width = `${data.w * 100}%`;
+    el.style.height = `${data.h * 100}%`;
+  }
+
+  _wireNoteHandlers(entry) {
+    const { el, textarea, handle, data } = entry;
+
+    // Drag from the handle (top strip) to reposition. window-level
+    // mousemove / mouseup are attached on mousedown and removed on
+    // mouseup so we don't leak N listeners into the global firehose
+    // for every note created in the session. Body scrolling + text
+    // editing stay alive because the textarea sits below the handle
+    // and isn't part of the drag surface.
+    let dragStart = null;
+    const onMouseMove = (e) => {
+      if (!dragStart) return;
+      const dx = (e.clientX - dragStart.x) / dragStart.rectW;
+      const dy = (e.clientY - dragStart.y) / dragStart.rectH;
+      data.x = Math.max(0, Math.min(1 - data.w, dragStart.origX + dx));
+      data.y = Math.max(0, Math.min(1 - data.h, dragStart.origY + dy));
+      this._positionNote(entry);
+    };
+    const onMouseUp = () => {
+      if (!dragStart) return;
+      dragStart = null;
+      el.classList.remove('dragging');
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      this._broadcastUpdate(data.id, { x: data.x, y: data.y });
+      this._persistUpdate(data.id, { x: data.x, y: data.y });
+    };
+    handle.addEventListener('mousedown', (e) => {
+      if (e.target.classList.contains('wb-note-close')) return;
+      e.preventDefault();
+      const rect = this.tile.getBoundingClientRect();
+      dragStart = {
+        x: e.clientX, y: e.clientY,
+        origX: data.x, origY: data.y,
+        rectW: rect.width, rectH: rect.height,
+      };
+      el.classList.add('dragging');
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('mouseup', onMouseUp);
+    });
+
+    // Text edits: broadcast immediately for liveness, debounce the DB
+    // write so we're not POSTing on every keystroke.
+    textarea.addEventListener('input', () => {
+      data.text = textarea.value;
+      this._broadcastUpdate(data.id, { text: data.text });
+      this._scheduleNoteSave(data.id, { text: data.text });
+    });
+    textarea.addEventListener('blur', () => this._flushNoteSave(data.id));
+
+    // Close (×) — broadcast + delete row + remove el.
+    handle.querySelector('.wb-note-close').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      this._removeNoteEl(data.id);
+      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'delete', id: data.id });
+      try { await this.huddle.deleteWhiteboardNote(data.id); }
+      catch (err) { console.warn('[whiteboard] note delete failed', err); }
+    });
+  }
+
+  _scheduleNoteSave(id, patch) {
+    clearTimeout(this._noteSaveTimers.get(id));
+    const timer = setTimeout(() => this._persistUpdate(id, patch), 500);
+    this._noteSaveTimers.set(id, timer);
+  }
+
+  _flushNoteSave(id) {
+    const t = this._noteSaveTimers.get(id);
+    if (!t) return;
+    clearTimeout(t);
+    this._noteSaveTimers.delete(id);
+    const entry = this.notes.get(id);
+    if (entry) this._persistUpdate(id, { text: entry.data.text });
+  }
+
+  async _persistUpdate(id, patch) {
+    try { await this.huddle.updateWhiteboardNote(id, patch); }
+    catch (err) { console.warn('[whiteboard] note update failed', err); }
+  }
+
+  _broadcastUpdate(id, patch) {
+    this.huddle.sendWhiteboardNote(this.whiteboardId, {
+      action: 'update', note: { id, ...patch },
+    });
+  }
+
+  _removeNoteEl(id) {
+    const entry = this.notes.get(id);
+    if (!entry) return;
+    entry.el.remove();
+    this.notes.delete(id);
+    clearTimeout(this._noteSaveTimers.get(id));
+    this._noteSaveTimers.delete(id);
   }
 
   // Live stroke from the local user — broadcast immediately, accumulate for
@@ -105,6 +308,13 @@ class WhiteboardSession {
     this.layer.clearAll(/*broadcast*/ false);
     this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'clear' });
     this._paintedUuids.clear();
+    // Sticky notes are part of the canvas state — clearing should
+    // wipe both. Tell remote viewers explicitly so they drop their
+    // local DOM nodes; clearWhiteboard() in api.js drops the rows.
+    for (const id of [...this.notes.keys()]) {
+      this._removeNoteEl(id);
+      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'delete', id });
+    }
     try { await this.huddle.clearWhiteboard(this.whiteboardId); }
     catch (err) { console.warn('[whiteboard] clear failed', err); }
   }
