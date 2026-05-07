@@ -294,6 +294,11 @@
         Promise.resolve(cached).then((c) => { try { c.unsubscribe(); } catch {} }).catch(() => {});
         this._screenChannels.delete(streamId);
       }
+      // The team channel is configured `broadcast: { self: false }`, so the
+      // 'screen-stop' broadcast above doesn't echo back to us — without a
+      // local dispatch the renderer never tears down our own screen tile
+      // when we stop sharing. Mirror what a remote peer would receive.
+      this.dispatchEvent(new CustomEvent('screen-stop', { detail: { from: this.peerId, streamId } }));
     }
     sendTyping(channelId, parentId) {
       this._teamChannel?.send({
