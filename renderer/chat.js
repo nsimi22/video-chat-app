@@ -28,6 +28,7 @@ class ChatView {
     this._wireDom();
     this._wireMesh();
     this._initEmojiPicker();
+    this._initGifPicker();
   }
 
   // --- Public API ---------------------------------------------------------
@@ -567,6 +568,112 @@ class ChatView {
     this._emojiPickerMode = 'react';
     this._emojiPickerTarget = messageId;
     this.els.emojiPicker.classList.remove('hidden');
+  }
+
+  // --- GIF picker (Tenor) -------------------------------------------------
+
+  _initGifPicker() {
+    if (!this.els.gifBtn) return;
+    this.els.gifBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const hidden = this.els.gifPicker.classList.toggle('hidden');
+      if (!hidden) this._openGifPicker();
+    });
+    this.els.gifClose?.addEventListener('click', () => this.els.gifPicker.classList.add('hidden'));
+    this.els.gifSearch?.addEventListener('input', () => this._scheduleGifSearch());
+    document.addEventListener('click', (e) => {
+      if (this.els.gifPicker?.classList.contains('hidden')) return;
+      if (this.els.gifPicker.contains(e.target) || e.target === this.els.gifBtn) return;
+      this.els.gifPicker.classList.add('hidden');
+    });
+  }
+
+  async _openGifPicker() {
+    if (!this._tenorKey) {
+      try { this._tenorKey = await window.huddle.getTenorKey(); }
+      catch { this._tenorKey = ''; }
+    }
+    this.els.gifSearch.value = '';
+    this.els.gifSearch.focus();
+    this.els.gifAttribution?.classList.toggle('hidden', !this._tenorKey);
+    if (!this._tenorKey) {
+      this._renderGifEmpty('Set TENOR_API_KEY in your environment to enable the GIF picker. (https://tenor.com/developer/dashboard)');
+      return;
+    }
+    // Show featured/trending GIFs as the default state.
+    this._fetchGifs('');
+  }
+
+  _scheduleGifSearch() {
+    clearTimeout(this._gifSearchTimer);
+    this._gifSearchTimer = setTimeout(() => this._fetchGifs(this.els.gifSearch.value.trim()), 250);
+  }
+
+  async _fetchGifs(query) {
+    if (!this._tenorKey) return;
+    const seq = ++this._gifFetchSeq;
+    const base = 'https://tenor.googleapis.com/v2';
+    const url = query
+      ? `${base}/search?q=${encodeURIComponent(query)}&key=${encodeURIComponent(this._tenorKey)}&limit=24&media_filter=gif,tinygif&contentfilter=high`
+      : `${base}/featured?key=${encodeURIComponent(this._tenorKey)}&limit=24&media_filter=gif,tinygif&contentfilter=high`;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('tenor ' + res.status);
+      const json = await res.json();
+      // A newer query may have superseded this one mid-flight.
+      if (seq !== this._gifFetchSeq) return;
+      this._renderGifResults(json.results || []);
+    } catch (err) {
+      if (seq !== this._gifFetchSeq) return;
+      console.warn('tenor failed', err);
+      this._renderGifEmpty('Could not reach Tenor. Check your key and network.');
+    }
+  }
+
+  _renderGifEmpty(msg) {
+    this.els.gifGrid.replaceChildren();
+    const el = document.createElement('div');
+    el.className = 'empty';
+    el.textContent = msg;
+    this.els.gifGrid.appendChild(el);
+  }
+
+  _renderGifResults(results) {
+    this.els.gifGrid.replaceChildren();
+    if (!results.length) {
+      this._renderGifEmpty('No matches.');
+      return;
+    }
+    for (const r of results) {
+      const formats = r.media_formats || {};
+      const preview = formats.tinygif?.url || formats.nanogif?.url || formats.gif?.url;
+      const full = formats.gif?.url || preview;
+      if (!preview || !full) continue;
+      const img = document.createElement('img');
+      img.src = preview;
+      img.loading = 'lazy';
+      img.alt = r.content_description || 'gif';
+      img.onclick = () => this._postGif(full, r);
+      this.els.gifGrid.appendChild(img);
+    }
+  }
+
+  _postGif(url, result) {
+    const formats = result?.media_formats || {};
+    const size = formats.gif?.size || 0;
+    this.mesh.send({
+      type: 'chat-send',
+      channelId: this.currentChannel,
+      parentId: this.threadParentId,
+      text: '',
+      attachments: [{
+        url,
+        name: (result?.content_description || 'tenor.gif').slice(0, 80),
+        contentType: 'image/gif',
+        size,
+      }],
+    });
+    this.els.gifPicker.classList.add('hidden');
   }
 }
 

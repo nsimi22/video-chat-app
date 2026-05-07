@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' ws: wss: http: https:;" />
+          content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: mediastream: https:; connect-src 'self' ws: wss: http: https:;" />
     <title>Huddle</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
@@ -94,6 +94,7 @@
         <div class="composer">
           <button id="attach-btn" title="Attach file">📎</button>
           <input id="file-input" type="file" multiple class="hidden" />
+          <button id="gif-btn" title="GIF">GIF</button>
           <button id="emoji-btn" title="Emoji">😀</button>
           <textarea id="composer-input" placeholder="Message #general"
                     rows="1"></textarea>
@@ -102,6 +103,16 @@
 
         <!-- Emoji picker -->
         <div id="emoji-picker" class="emoji-picker hidden"></div>
+
+        <!-- GIF picker -->
+        <div id="gif-picker" class="gif-picker hidden">
+          <div class="gif-search-row">
+            <input id="gif-search" type="text" placeholder="Search GIFs (Tenor)…" />
+            <button id="gif-close" title="Close">✕</button>
+          </div>
+          <div id="gif-grid" class="gif-grid"></div>
+          <div id="gif-attribution" class="gif-attribution hidden">Powered by Tenor</div>
+        </div>
       </section>
     </div>
 

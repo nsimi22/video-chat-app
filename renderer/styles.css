@@ -222,6 +222,31 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
 /* Make `.chat` a positioning ancestor for the drag overlay. */
 .chat { position: relative; }
 
+/* GIF picker — sits above the composer like the emoji picker. */
+.gif-picker {
+  position: absolute; bottom: 60px; right: 16px; left: 16px;
+  background: var(--bg-3); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px; max-height: 360px; display: flex; flex-direction: column; gap: 6px;
+  z-index: 30; box-shadow: 0 6px 20px rgba(0,0,0,.5);
+}
+.gif-search-row { display: flex; gap: 6px; align-items: center; }
+.gif-search-row input { flex: 1; }
+.gif-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;
+  overflow-y: auto; min-height: 60px;
+}
+.gif-grid img {
+  width: 100%; height: 110px; object-fit: cover; cursor: pointer;
+  background: #000; border-radius: 4px;
+}
+.gif-grid img:hover { outline: 2px solid var(--accent-2); }
+.gif-grid .empty {
+  grid-column: 1/-1; color: var(--text-dim); text-align: center;
+  padding: 16px; font-size: 12px;
+}
+.gif-attribution { font-size: 10px; color: var(--text-dim); text-align: right; }
+#gif-btn { font-weight: 700; font-size: 11px; letter-spacing: 0.5px; }
+
 /* Stage (call + screens) */
 .stage {
   display: flex; flex-direction: column; min-width: 0;

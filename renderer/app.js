@@ -68,6 +68,12 @@ const els = {
   send: $('#send-btn'),
   emojiBtn: $('#emoji-btn'),
   emojiPicker: $('#emoji-picker'),
+  gifBtn: $('#gif-btn'),
+  gifPicker: $('#gif-picker'),
+  gifSearch: $('#gif-search'),
+  gifGrid: $('#gif-grid'),
+  gifClose: $('#gif-close'),
+  gifAttribution: $('#gif-attribution'),
   // source picker
   sourcePicker: $('#source-picker'),
   sourceGrid: $('#source-grid'),

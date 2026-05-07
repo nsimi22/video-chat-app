@@ -24,6 +24,11 @@ A self-contained Electron desktop app that combines:
     loud red badge; plain channel chatter gets a muted one).
   - **File uploads** — drag-drop, paste, or click 📎. Images preview
     inline; everything else lands as a download chip. Capped at 50 MB.
+  - **GIF picker** powered by Tenor — click `GIF`, search, click a
+    result to post. Requires a free Tenor API key in
+    `TENOR_API_KEY`. Get one at
+    <https://tenor.com/developer/dashboard>; the picker shows a help
+    message until you set it.
   - **History pagination** — channels load 50 messages at a time with
     a "Load older" button.
   - **Search** — 🔍 in the chat header, optionally scoped to the
@@ -45,6 +50,9 @@ on one machine and have other peers on the same LAN point at
 ```bash
 npm install
 npm start            # launches Electron + the signaling server on :8787
+
+# Optional: enable the GIF picker (Tenor)
+TENOR_API_KEY=... npm start
 ```
 
 To run more peers on the same network, start the app on another machine and

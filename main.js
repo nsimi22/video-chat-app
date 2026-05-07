@@ -61,6 +61,7 @@ ipcMain.handle('get-screen-sources', async () => {
 });
 
 ipcMain.handle('get-signaling-port', () => SIGNALING_PORT);
+ipcMain.handle('get-tenor-key', () => process.env.TENOR_API_KEY || '');
 
 app.whenReady().then(async () => {
   serverHandle = await startServer(SIGNALING_PORT);
