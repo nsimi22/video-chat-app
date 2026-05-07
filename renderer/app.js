@@ -358,11 +358,12 @@ async function joinTeamAndStart(teamId) {
   huddle.addEventListener('chat-channel-removed', (e) => onChannelRemoved(e.detail.channelId));
   huddle.addEventListener('call-presence', (e) => onCallPresence(e.detail));
 
-  // Now that listeners are attached, kick off the realtime handshake
-  // and let `welcome` flow into onWelcome.
-  try { await huddle.start(); }
-  catch (err) { showError(err.message || 'Could not start huddle.'); return; }
-
+  // Construct ChatView + assign state BEFORE huddle.start(), because
+  // start() dispatches `welcome` synchronously at the end of its
+  // handshake. onWelcome auto-focuses #general via focusChannel, which
+  // calls state.chat.setChannel() — that throws silently if state.chat
+  // isn't constructed yet, and the auto-focus is lost. (Channels still
+  // render in the sidebar, but the chat panel never binds to one.)
   state.huddle = huddle;
   state.mesh = null;
   state.myName = huddle.name;
@@ -388,6 +389,12 @@ async function joinTeamAndStart(teamId) {
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission().catch(() => {});
   }
+
+  // Now kick off the realtime handshake. welcome will fire inside
+  // start() and flow into onWelcome — which can safely auto-focus
+  // #general now that state.chat is wired up.
+  try { await huddle.start(); }
+  catch (err) { showError(err.message || 'Could not start huddle.'); return; }
 }
 
 // User clicked "Start call" or "Join call". Construct MeshClient first
@@ -399,6 +406,11 @@ async function startCall(channelId) {
   state.callStarting = true;
   els.btnStartCall.disabled = true;
   els.btnJoinCall.disabled = true;
+  // Each call starts with mic/cam enabled (fresh getUserMedia). Clear
+  // any leftover .muted styling from a previous call we left while
+  // muted; otherwise the UI can lie about the live track state.
+  els.btnMic.classList.remove('muted');
+  els.btnCam.classList.remove('muted');
   // Wire MeshClient before joinCall — joinCall's await resolves AFTER
   // the realtime channel's initial presence sync, so peer-joined
   // events for existing participants would otherwise fire into the
