@@ -39,7 +39,9 @@
         { "target": "dmg", "arch": ["x64", "arm64"] },
         { "target": "zip", "arch": ["x64", "arm64"] }
       ],
-      "artifactName": "Huddle-mac-${arch}.${ext}"
+      "artifactName": "Huddle-mac-${arch}.${ext}",
+      "identity": null,
+      "gatekeeperAssess": false
     },
     "win": {
       "target": [

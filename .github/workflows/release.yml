@@ -3,11 +3,15 @@
 # artifacts to a GitHub Release of the same tag. Can also be triggered
 # manually via the Actions tab (workflow_dispatch).
 #
-# Builds are unsigned. Users will see Gatekeeper / SmartScreen warnings
-# on first launch — they can override with right-click "Open" on macOS or
-# "More info → Run anyway" on Windows. To switch on real signing later,
-# add the secrets called out in the README and electron-builder will
-# pick them up automatically.
+# Builds are ad-hoc signed only (via `identity: null` in the mac build
+# config — required so the binary launches on Apple Silicon at all),
+# not Developer ID signed and not notarized. Modern macOS reports
+# ad-hoc-signed downloaded apps as "damaged"; users clear the
+# quarantine xattr once after install — see the README for the exact
+# command. Windows users click "More info → Run anyway" past
+# SmartScreen. To switch on real signing later, add the secrets called
+# out in the README and electron-builder will pick them up
+# automatically.
 name: Release
 
 on:

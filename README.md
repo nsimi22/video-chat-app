@@ -103,10 +103,28 @@ to the [latest GitHub Release](../../releases/latest):
 | Linux (AppImage) | [Huddle-linux-x64.AppImage](../../releases/latest/download/Huddle-linux-x64.AppImage) |
 | Linux (.deb) | [Huddle-linux-x64.deb](../../releases/latest/download/Huddle-linux-x64.deb) |
 
-Builds are **unsigned**. On first launch you'll see a Gatekeeper
-warning on macOS ("Huddle can't be opened because it is from an
-unidentified developer" — right-click the app and pick *Open* to
-override) or SmartScreen on Windows (*More info → Run anyway*).
+Builds are **not Developer ID signed / not notarized** (the macOS
+binary is ad-hoc signed only, so it launches on Apple Silicon, but
+Gatekeeper still won't trust it). You'll need to bypass each OS's
+first-launch gatekeeper:
+
+- **macOS** — recent macOS versions report ad-hoc-signed downloaded
+  apps as *"'Huddle' is damaged and can't be opened. You should move
+  it to the Trash."* It isn't actually damaged; that's Gatekeeper
+  refusing to trust the app because the browser tagged the download
+  with `com.apple.quarantine`. After dragging Huddle into
+  `/Applications`, remove just the quarantine attribute from Terminal:
+
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Huddle.app
+  ```
+
+  Then double-click to open normally. (The older right-click → *Open*
+  bypass no longer works in macOS Sequoia 15+; the `xattr` command
+  replaces it.)
+- **Windows** — SmartScreen will block on first launch; click
+  *More info → Run anyway*.
+
 Signing requires an Apple Developer ID (~$99/yr) and a Windows
 code-signing cert; once you have those, set the secrets called out in
 `.github/workflows/release.yml` and electron-builder will sign +
