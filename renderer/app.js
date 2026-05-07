@@ -63,6 +63,8 @@ const els = {
   channelTopic: $('#channel-topic'),
   me: $('#me'),
   tiles: $('#tiles'),
+  btnStartCall: $('#btn-start-call'),
+  btnJoinCall: $('#btn-join-call'),
   btnMic: $('#btn-mic'),
   btnCam: $('#btn-cam'),
   btnShare: $('#btn-share'),
@@ -125,7 +127,10 @@ const els = {
 };
 
 const state = {
-  mesh: null,
+  huddle: null,           // HuddleClient — alive while signed into a team
+  mesh: null,             // MeshClient — alive only while in a call
+  inCallChannelId: null,  // channel.id of the active call, if any
+  lurkingChannelId: null, // channel.id we're watching call-presence on
   chat: null,
   myName: '',
   tilesByKey: new Map(),
@@ -316,7 +321,9 @@ async function stepJoinTeam() {
   }
 }
 
-// Final step: spin up the HuddleClient + MeshClient and reveal the app.
+// Spin up the HuddleClient (chat + team presence) and reveal the app.
+// Calls are now started on demand via startCall() — joining a team no
+// longer auto-grabs camera/mic or constructs MeshClient.
 async function joinTeamAndStart(teamId) {
   els.loginError.classList.add('hidden');
   let huddle;
@@ -324,37 +331,32 @@ async function joinTeamAndStart(teamId) {
   catch (err) { showError(err.message || 'Could not start huddle.'); return; }
   // Remember this team so the next launch resumes straight here.
   try { localStorage.setItem('huddle.lastTeamId', teamId); } catch {}
-  const mesh = new MeshClient(huddle);
 
-  // Per-user integration settings — drives the Jira client + Giphy key
-  // override. Reload after the user saves new ones in the Settings modal.
+  // Per-user integration settings — drives the Jira client + Giphy key.
+  // Reload after the user saves new ones in the Settings modal.
   await refreshSettings();
 
-  mesh.addEventListener('welcome', (e) => onWelcome(e.detail));
-  mesh.addEventListener('peer-joined', (e) => addPersonToSidebar(e.detail));
-  mesh.addEventListener('peer-left', (e) => onPeerLeft(e.detail));
-  mesh.addEventListener('track', (e) => onTrack(e.detail));
-  mesh.addEventListener('screen-announce', (e) => onScreenAnnounce(e.detail));
-  mesh.addEventListener('screen-stop', (e) => onScreenStop(e.detail));
-  mesh.addEventListener('remote-stream-ended', (e) => onScreenStop(e.detail));
-  mesh.addEventListener('draw', (e) => onRemoteDraw(e.detail));
-  mesh.addEventListener('chat-channel-added', (e) => onChannelAdded(e.detail.channel));
-  mesh.addEventListener('chat-channel-removed', (e) => onChannelRemoved(e.detail.channelId));
+  // Welcome + sidebar wiring listens to HuddleClient directly. Team
+  // presence drives the People sidebar's online dot via member-online/
+  // -offline; WebRTC peer events come from the call channel and only
+  // when the user has explicitly joined a call.
+  huddle.addEventListener('welcome', (e) => onWelcome(e.detail));
+  huddle.addEventListener('member-online', (e) => addPersonToSidebar(e.detail));
+  huddle.addEventListener('member-offline', (e) => onMemberOffline(e.detail));
+  huddle.addEventListener('chat-channel-added', (e) => onChannelAdded(e.detail.channel));
+  huddle.addEventListener('chat-channel-removed', (e) => onChannelRemoved(e.detail.channelId));
+  huddle.addEventListener('call-presence', (e) => onCallPresence(e.detail));
 
-  state.mesh = mesh;
-  state.myName = mesh.name;
+  state.huddle = huddle;
+  state.mesh = null;
+  state.myName = huddle.name;
   els.login.classList.add('hidden');
   els.app.classList.remove('hidden');
-  els.me.textContent = mesh.name;
-  if (mesh.teamMeta?.name) els.workspaceName.textContent = mesh.teamMeta.name;
-
-  try {
-    const cam = await mesh.setCamera({ video: true, audio: true });
-    addLocalCameraTile(cam, mesh.name);
-  } catch (err) { console.warn('No camera/mic available', err); }
+  els.me.textContent = huddle.name;
+  if (huddle.team?.name) els.workspaceName.textContent = huddle.team.name;
 
   state.chat = new ChatView({
-    mesh, els,
+    huddle, els,
     hooks: {
       onMessage: (m) => onChatMessage(m),
       getGiphyKey,
@@ -365,24 +367,79 @@ async function joinTeamAndStart(teamId) {
     },
   });
   wireControls();
-  els.btnLeave.classList.remove('hidden');
+  // Default to the pre-call header (Start call). startCall flips it.
+  renderCallHeader();
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission().catch(() => {});
   }
 }
 
-function teardownMesh() {
+// User clicked "Start call" or "Join call". Subscribe the call topic,
+// construct MeshClient, prompt cam/mic, show the tile grid.
+async function startCall(channelId) {
+  if (!state.huddle || state.mesh) return; // already in a call or no team
+  try {
+    await state.huddle.joinCall(channelId);
+  } catch (err) {
+    console.warn('joinCall failed', err);
+    return;
+  }
+  const mesh = new MeshClient(state.huddle);
+  mesh.addEventListener('peer-joined', (e) => onCallPeerJoined(e.detail));
+  mesh.addEventListener('peer-left', (e) => onCallPeerLeft(e.detail));
+  mesh.addEventListener('track', (e) => onTrack(e.detail));
+  mesh.addEventListener('screen-announce', (e) => onScreenAnnounce(e.detail));
+  mesh.addEventListener('screen-stop', (e) => onScreenStop(e.detail));
+  mesh.addEventListener('remote-stream-ended', (e) => onScreenStop(e.detail));
+  mesh.addEventListener('draw', (e) => onRemoteDraw(e.detail));
+  state.mesh = mesh;
+  state.inCallChannelId = channelId;
+  els.tiles.classList.remove('hidden');
+  try {
+    const cam = await mesh.setCamera({ video: true, audio: true });
+    addLocalCameraTile(cam, state.huddle.name);
+  } catch (err) {
+    console.warn('No camera/mic available', err);
+  }
+  renderCallHeader();
+}
+
+// Drop the call (media + WebRTC peers + tile grid) but stay signed
+// into the team. The HuddleClient keeps chat realtime running.
+async function leaveCall() {
   if (!state.mesh) return;
   for (const session of state.whiteboardSessions.values()) session.stop();
   state.whiteboardSessions.clear();
+  state.mesh.disconnect();
+  state.mesh = null;
+  state.inCallChannelId = null;
+  for (const tile of state.tilesByKey.values()) tile.remove();
+  state.tilesByKey.clear();
+  state.drawLayers.clear();
+  for (const p of state.pendingStreams.values()) clearTimeout(p.timer);
+  state.pendingStreams.clear();
+  closeAnnotate();
+  els.tiles.classList.add('hidden');
+  try { await state.huddle?.leaveCall(); } catch {}
+  renderCallHeader();
+}
+
+function teardownTeam() {
+  if (state.mesh) {
+    for (const session of state.whiteboardSessions.values()) session.stop();
+    state.whiteboardSessions.clear();
+    state.mesh.disconnect();
+    state.mesh = null;
+  }
   // Detach the chat view's interval + every listener it installed before
   // dropping the reference, otherwise rejoining accumulates handlers.
   state.chat?.destroy();
-  state.mesh.disconnect();
-  state.mesh = null;
+  state.huddle?.stop();
+  state.huddle = null;
   state.chat = null;
   state.channelMeta.clear();
   state.unread.clear();
+  state.inCallChannelId = null;
   els.channels.replaceChildren();
   els.dms.replaceChildren();
   els.people.replaceChildren();
@@ -393,13 +450,13 @@ function teardownMesh() {
   for (const p of state.pendingStreams.values()) clearTimeout(p.timer);
   state.pendingStreams.clear();
   closeAnnotate();
+  els.tiles.classList.add('hidden');
   els.app.classList.add('hidden');
-  els.btnLeave.classList.add('hidden');
 }
 
-// "Leave" button: drop the mesh + go back to the team picker (still signed in).
+// "Leave team" — drop everything, go back to the team picker (still signed in).
 async function leave() {
-  teardownMesh();
+  teardownTeam();
   els.login.classList.remove('hidden');
   showStep('team');
   await renderMyTeams();
@@ -407,7 +464,7 @@ async function leave() {
 
 // Full sign-out: leave the team, drop the Supabase session, reset to email step.
 async function signOutFully() {
-  teardownMesh();
+  teardownTeam();
   try { await window.huddleApi.signOut(); } catch {}
   // Clear remembered team so the next signed-in user starts at the
   // team picker (and doesn't auto-resume into someone else's team).
@@ -417,6 +474,62 @@ async function signOutFully() {
   if (els.authOtp) els.authOtp.value = '';
   els.login.classList.remove('hidden');
   showStep('email');
+}
+
+// Re-render the call-controls header for the active channel + mesh
+// state. Three modes:
+//   not in call, no one's in call here  -> Start call
+//   not in call, others are in call     -> Join call · N
+//   in call here                        -> Mic / Cam / Share / ... / Leave
+function renderCallHeader() {
+  const channelId = state.chat?.currentChannel;
+  const inCallHere = state.mesh && state.inCallChannelId === channelId;
+  const lurkerCount = (channelId && state.huddle && !inCallHere)
+    ? (state.huddle._lurkerCounts.get(channelId) || 0) : 0;
+  const others = inCallHere ? null : (lurkerCount > 0);
+  els.btnStartCall.classList.toggle('hidden', !!inCallHere || !!others);
+  els.btnJoinCall.classList.toggle('hidden', !!inCallHere || !others);
+  if (others) {
+    els.btnJoinCall.innerHTML = `📞 Join call <span class="count">${lurkerCount}</span>`;
+  }
+  els.btnMic.classList.toggle('hidden', !inCallHere);
+  els.btnCam.classList.toggle('hidden', !inCallHere);
+  els.btnShare.classList.toggle('hidden', !inCallHere);
+  els.btnJira.classList.toggle('hidden', !inCallHere);
+  els.btnLeave.classList.toggle('hidden', !inCallHere);
+}
+
+function onCallPeerJoined(peer) {
+  // Per-call peer joined; MeshClient already opened the WebRTC
+  // connection — we just need to render an empty tile they can stream
+  // into. Track callbacks fill in the actual stream once it arrives.
+  // (For now, MeshClient's track event creates the tile imperatively;
+  // this is a no-op hook left for future "show participant before
+  // their first frame" UX.)
+}
+
+function onCallPeerLeft(peerId) {
+  removePersonFromCall(peerId);
+}
+
+function removePersonFromCall(peerId) {
+  removeTile(`peer:${peerId}`);
+  // Drop any screen tiles owned by this peer too.
+  for (const [key, tile] of state.tilesByKey.entries()) {
+    if (key.startsWith('screen:') && tile.dataset.fromId === peerId) {
+      removeTile(key);
+    }
+  }
+}
+
+function onMemberOffline(peerId) {
+  // Sidebar dot only — call grid is driven by call presence.
+  const li = els.people.querySelector(`[data-id="${cssEscape(peerId)}"]`);
+  if (li) li.remove();
+}
+
+function onCallPresence({ channelId, count }) {
+  if (state.chat?.currentChannel === channelId) renderCallHeader();
 }
 
 // ---------------------------------------------------------------------------
@@ -470,7 +583,7 @@ function appendChannelToSidebar(channel, makeActive) {
       const verb = isDm ? 'Close' : 'Delete';
       const target = isDm ? `your DM with ${displayLabelFor(channel).replace(/^@\s*/, '')}` : `#${channel.name}`;
       if (!confirm(`${verb} ${target}? This is permanent.`)) return;
-      state.mesh.deleteChannel(channel.id);
+      state.huddle.deleteChannel(channel.id);
     };
     li.appendChild(del);
   }
@@ -489,6 +602,21 @@ function focusChannel(channelId) {
   const li = list.querySelector(`[data-id="${cssEscape(channel.id)}"]`);
   if (li) li.classList.add('active');
   state.chat.setChannel(channel.id, channel.topic, displayLabelFor(channel));
+  // Swap call-presence lurker subscriptions so the header reflects
+  // whether someone's already in this channel's call. We unsubscribe
+  // the previously-watched channel to avoid an unbounded fan-out; the
+  // active call (if any) keeps its own non-lurker subscription.
+  const prev = state.lurkingChannelId;
+  if (prev && prev !== channelId && prev !== state.inCallChannelId) {
+    state.huddle?.unwatchCallPresence(prev);
+  }
+  if (state.huddle && channelId !== state.inCallChannelId) {
+    state.lurkingChannelId = channelId;
+    state.huddle.watchCallPresence(channelId).catch(() => {});
+  } else {
+    state.lurkingChannelId = null;
+  }
+  renderCallHeader();
   // Visiting a channel clears its unread.
   state.unread.delete(channelId);
   updateUnreadBadge(channelId);
@@ -496,7 +624,7 @@ function focusChannel(channelId) {
 
 // On window focus, clear unread for the channel we're already viewing.
 function clearUnreadIfActive() {
-  if (!state.chat || !state.mesh) return;
+  if (!state.chat || !state.huddle) return;
   const id = state.chat.currentChannel;
   if (state.unread.has(id)) {
     state.unread.delete(id);
@@ -538,7 +666,7 @@ function updateUnreadBadge(channelId) {
 // Called by ChatView via the onMessage hook for every inbound chat message
 // (including our own echo). Decides whether to bump unread and notify.
 function onChatMessage(m) {
-  if (!state.mesh) return;
+  if (!state.huddle) return;
   if (m.authorName === state.myName) return; // ignore our own messages
   const channel = state.channelMeta.get(m.channelId);
   const mentionsMe = Array.isArray(m.mentions) && m.mentions.includes(state.myName);
@@ -599,7 +727,7 @@ function canDelete(channel) {
   if (channel.type === 'dm') return (channel.members || []).includes(state.myName);
   // createdBy is a user uuid; compare against the authenticated user's id,
   // not the display name.
-  return channel.createdBy && channel.createdBy === state.mesh?.peerId;
+  return channel.createdBy && channel.createdBy === state.huddle?.peerId;
 }
 
 // CSS.escape isn't available everywhere; tiny shim for our id alphabet.
@@ -622,7 +750,7 @@ function addPersonToSidebar(peer) {
   li.onclick = async () => {
     if (peer.name === state.myName) return;
     try {
-      const channel = await state.mesh.createDm(peer.name);
+      const channel = await state.huddle.createDm(peer.name);
       onChannelAdded(channel);
       focusChannel(channel.id);
     } catch (err) { console.warn('createDm failed', err); }
@@ -631,11 +759,8 @@ function addPersonToSidebar(peer) {
   els.people.appendChild(li);
 }
 
-function onPeerLeft(peerId) {
-  const li = els.people.querySelector(`[data-id="${peerId}"]`);
-  if (li) li.remove();
-  removeTile(`peer:${peerId}`);
-}
+// (onMemberOffline + onCallPeerLeft above replace the old onPeerLeft —
+// team presence and call presence are now distinct event sources.)
 
 // ---------------------------------------------------------------------------
 // Tiles
@@ -713,7 +838,7 @@ function commitStreamAsCamera(streamId) {
   state.pendingStreams.delete(streamId);
   clearTimeout(pending.timer);
   const key = `peer:${pending.fromId}`;
-  const peer = state.mesh.peerInfo.get(pending.fromId);
+  const peer = state.huddle.peerInfo.get(pending.fromId);
   const tile = makeTile({ key, label: peer ? peer.name : 'guest', kind: 'remote' });
   tile.querySelector('video').srcObject = pending.stream;
 }
@@ -757,7 +882,7 @@ function attachDrawingLayer(tile, streamId, isOwner) {
   const layer = new DrawingLayer({
     streamId,
     isOwner,
-    send: (stroke) => state.mesh.sendDraw(streamId, stroke),
+    send: (stroke) => state.huddle.sendDraw(streamId, stroke),
   });
   layer.attach(tile);
   state.drawLayers.set(streamId, layer);
@@ -804,18 +929,31 @@ function closeAnnotate() {
 // ---------------------------------------------------------------------------
 
 function wireControls() {
+  // Pre-call entry: starts (or joins) a call in the active channel.
+  els.btnStartCall.onclick = () => {
+    const ch = state.chat?.currentChannel;
+    if (ch) startCall(ch);
+  };
+  els.btnJoinCall.onclick = () => {
+    const ch = state.chat?.currentChannel;
+    if (ch) startCall(ch);
+  };
   els.btnMic.onclick = () => {
+    if (!state.mesh) return;
     const on = state.mesh.toggleMic();
     els.btnMic.textContent = on ? '🎤' : '🔇';
     const tile = state.tilesByKey.get('self-cam');
     if (tile) tile.classList.toggle('muted', !on);
   };
   els.btnCam.onclick = () => {
+    if (!state.mesh) return;
     const on = state.mesh.toggleCam();
     els.btnCam.textContent = on ? '📷' : '📵';
   };
   els.btnShare.onclick = openSourcePicker;
-  els.btnLeave.onclick = leave;
+  // Leave the call (drop media + tile grid, keep chat). Held-down "Leave
+  // team" is in the sidebar's sign-out menu.
+  els.btnLeave.onclick = leaveCall;
   els.sourceCancel.onclick = () => els.sourcePicker.classList.add('hidden');
 
   // Settings
@@ -907,7 +1045,7 @@ async function submitCreateChannel() {
     : undefined;
   els.ccModal.classList.add('hidden');
   try {
-    const channel = await state.mesh.createChannel({ name, topic: els.ccTopic.value, isPrivate, memberNames });
+    const channel = await state.huddle.createChannel({ name, topic: els.ccTopic.value, isPrivate, memberNames });
     onChannelAdded(channel);
     focusChannel(channel.id);
   } catch (err) {
@@ -918,7 +1056,7 @@ async function submitCreateChannel() {
 // Render a multi-select list of online peers (excluding self) for member invitation.
 function renderMemberPicker(container) {
   container.replaceChildren();
-  const peers = [...state.mesh.peerInfo.values()].filter((p) => p.name !== state.myName);
+  const peers = [...state.huddle.peerInfo.values()].filter((p) => p.name !== state.myName);
   if (peers.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty';
@@ -948,7 +1086,7 @@ function renderMemberPicker(container) {
 
 function openDmPicker() {
   els.dmPeople.replaceChildren();
-  const peers = [...state.mesh.peerInfo.values()].filter((p) => p.name !== state.myName);
+  const peers = [...state.huddle.peerInfo.values()].filter((p) => p.name !== state.myName);
   if (peers.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty';
@@ -967,7 +1105,7 @@ function openDmPicker() {
       row.onclick = async () => {
         els.dmPicker.classList.add('hidden');
         try {
-          const channel = await state.mesh.createDm(p.name);
+          const channel = await state.huddle.createDm(p.name);
           onChannelAdded(channel);
           focusChannel(channel.id);
         } catch (err) { console.warn('createDm failed', err); }
@@ -996,7 +1134,7 @@ async function runSearch() {
   loading.textContent = 'Searching…';
   els.searchResults.appendChild(loading);
   try {
-    const results = await state.mesh.searchMessages(q, channelId);
+    const results = await state.huddle.searchMessages(q, channelId);
     renderSearchResults({ query: q, results });
   } catch (err) {
     renderSearchResults({ query: q, results: [] });
@@ -1039,11 +1177,11 @@ function renderSearchResults({ query, results }) {
 // ---------------------------------------------------------------------------
 
 async function openWhiteboard() {
-  if (!state.mesh || !state.chat) return;
+  if (!state.huddle || !state.chat) return;
   const channelId = state.chat.currentChannel;
   const channel = state.channelMeta.get(channelId);
   let wb;
-  try { wb = await state.mesh.huddle.getOrCreateWhiteboard(channelId); }
+  try { wb = await state.huddle.getOrCreateWhiteboard(channelId); }
   catch (err) { alert('Could not open whiteboard: ' + (err.message || err)); return; }
 
   // If already open as a tile, just refocus it (don't toggle off).
@@ -1061,7 +1199,7 @@ async function openWhiteboard() {
   tile.dataset.streamId = wb.id;
 
   const session = new window.WhiteboardSession({
-    huddle: state.mesh.huddle, channelId, whiteboard: wb, tile,
+    huddle: state.huddle, channelId, whiteboard: wb, tile,
   });
   state.whiteboardSessions.set(wb.id, session);
   try { await session.start(); }
@@ -1264,7 +1402,7 @@ async function submitTicket() {
     showTicketStatus(`Created ${issue.key}.`, 'success');
     if (els.ticketPostToChannel.checked && state.chat) {
       // Posting the URL triggers the auto-unfurl on every viewer.
-      state.mesh.sendMessage({
+      state.huddle.sendMessage({
         channelId: state.chat.currentChannel,
         parentId: state.chat.threadParentId,
         text: `Created Jira ticket: ${url}`,

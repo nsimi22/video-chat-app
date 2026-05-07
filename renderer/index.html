@@ -92,16 +92,21 @@
             <span id="channel-topic" class="channel-topic"></span>
           </div>
           <div class="call-controls">
-            <button id="btn-mic" class="ctrl" title="Toggle microphone">🎤</button>
-            <button id="btn-cam" class="ctrl" title="Toggle camera">📷</button>
-            <button id="btn-share" class="ctrl primary" title="Share a screen">🖥️ Share screen</button>
-            <button id="btn-jira" class="ctrl" title="Create a Jira ticket">🎫 Ticket</button>
-            <button id="btn-leave" class="ctrl danger hidden" title="Leave call">⏻</button>
+            <!-- Pre-call entry: visible when no call is live in this channel
+                 OR when a call is live but the user hasn't joined yet. -->
+            <button id="btn-start-call" class="ctrl primary" title="Start a call in this channel">📞 Start call</button>
+            <button id="btn-join-call" class="ctrl primary hidden" title="Join the call in this channel">📞 Join call</button>
+            <!-- In-call controls: visible only while the user is in a call. -->
+            <button id="btn-mic" class="ctrl hidden" title="Toggle microphone">🎤</button>
+            <button id="btn-cam" class="ctrl hidden" title="Toggle camera">📷</button>
+            <button id="btn-share" class="ctrl hidden" title="Share a screen">🖥️ Share screen</button>
+            <button id="btn-jira" class="ctrl hidden" title="Create a Jira ticket">🎫 Ticket</button>
+            <button id="btn-leave" class="ctrl danger hidden" title="Leave call">⏻ Leave</button>
           </div>
         </div>
 
-        <!-- Tile grid: cameras + every active screen share (local & remote). -->
-        <section id="tiles" class="tiles"></section>
+        <!-- Tile grid: cameras + active screen shares. Hidden until you're in a call. -->
+        <section id="tiles" class="tiles hidden"></section>
 
         <!-- Drawing toolbar appears when a screen tile is focused for annotation. -->
         <div id="draw-toolbar" class="draw-toolbar hidden">

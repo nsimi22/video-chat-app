@@ -222,6 +222,10 @@ class MeshClient extends EventTarget {
   // Signaling for drawing strokes; renderer calls this as it strokes.
   sendDraw(streamId, stroke) { this.huddle.sendDraw(streamId, stroke); }
 
+  // Drops the WebRTC + media surface only. Leaving a call must not
+  // tear down the HuddleClient (chat realtime, team presence, etc.) —
+  // the user stays signed into the team. Full sign-out happens via
+  // huddle.stop() called separately by the orchestrator.
   disconnect() {
     for (const id of [...this._screenStreams.keys()]) this.removeScreen(id);
     if (this.cameraStream) {
@@ -230,7 +234,6 @@ class MeshClient extends EventTarget {
     }
     for (const conn of this.peers.values()) conn.close();
     this.peers.clear();
-    this.huddle.stop();
   }
 }
 
