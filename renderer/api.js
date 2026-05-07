@@ -666,11 +666,15 @@
     }
     // Otherwise create — RLS lets any authenticated user create a team, and
     // the team_after_insert trigger seeds defaults + adds creator as member.
-    const { data: created, error } = await sb.from('teams').insert({
+    // Don't chain .select() here: at RETURNING time the AFTER trigger hasn't
+    // run yet, so the SELECT policy (is_team_member) would reject the row
+    // and throw "new row violates row-level security policy for table teams"
+    // even though the insert itself succeeded.
+    const { error } = await sb.from('teams').insert({
       id, name: id, created_by: user.id,
-    }).select('id, name').single();
+    });
     if (error) throw error;
-    return created;
+    return { id, name: id };
   }
 
   async function startHuddle(team) {
