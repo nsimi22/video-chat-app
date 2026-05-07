@@ -1,16 +1,16 @@
 {
   "name": "video-chat-app",
-  "version": "0.1.0",
-  "description": "Desktop video + multi-screen-share + Slack-style chat with drawing annotations",
+  "version": "0.2.0",
+  "description": "Desktop video + multi-screen-share + Slack-style chat, on Supabase",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "server": "node server/signaling.js"
+    "postinstall": "node scripts/copy-vendor.js"
   },
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "ws": "^8.18.0"
+    "@supabase/supabase-js": "^2.45.0"
   },
   "devDependencies": {
     "electron": "^31.0.0"

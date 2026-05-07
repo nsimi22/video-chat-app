@@ -114,6 +114,16 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
   margin-top: 10px; padding: 8px 10px; border-radius: 6px;
   background: rgba(224, 30, 90, .15); color: #ff9bb6; font-size: 12px;
 }
+/* Team picker */
+.team-mine { display: flex; flex-direction: column; gap: 4px; }
+.team-mine .hint { margin: 4px 0; }
+.team-pick {
+  text-align: left; padding: 8px 10px; background: var(--bg-3);
+  border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+}
+.team-pick:hover { background: rgba(255,255,255,.05); border-color: var(--accent); }
+.modal h3 { font-size: 13px; color: var(--text-dim); text-transform: uppercase;
+            letter-spacing: .5px; margin: 0; font-weight: 600; }
 
 /* Unread badges in sidebar */
 .channel-list li .ch-badge {

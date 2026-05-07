@@ -22,7 +22,6 @@ class ChatView {
     this.typingUsers = new Map();
     this.editingMessageId = null;
     this.composerAttachments = []; // [{file, status, info?}] where info = {url, name, contentType, size}
-    this._uploadTokenWaiters = []; // queued resolvers awaiting next upload-token
 
     this.typingClock = setInterval(() => this._refreshTyping(), 800);
     this._wireDom();
@@ -47,7 +46,26 @@ class ChatView {
     this.els.composer.placeholder = `Message ${label}`;
     this.els.threadBack.classList.add('hidden');
     this._render();
-    this.mesh.send({ type: 'chat-history', channelId, limit: 50 });
+    this._fetchHistory(channelId);
+  }
+
+  async _fetchHistory(channelId, before) {
+    try {
+      const { messages, hasMore } = await this.mesh.loadHistory(channelId, { before, limit: 50 });
+      this._ingestHistory(channelId, messages, hasMore);
+    } catch (err) { console.warn('history failed', err); }
+  }
+
+  _ingestHistory(channelId, incoming, hasMore) {
+    const existing = this.byChannel.get(channelId) || [];
+    const ids = new Set(existing.map((m) => m.id));
+    const merged = existing.slice();
+    for (const m of incoming) if (!ids.has(m.id)) merged.unshift(m);
+    merged.sort((a, b) => a.ts - b.ts);
+    this.byChannel.set(channelId, merged);
+    const oldest = merged.length ? merged[0].ts : null;
+    this.paginationByChannel.set(channelId, { hasMore, oldestTs: oldest });
+    if (channelId === this.currentChannel) this._render();
   }
 
   openThread(messageId) {
@@ -78,7 +96,7 @@ class ChatView {
         e.preventDefault();
         this._submit();
       } else {
-        this.mesh.send({ type: 'typing', channelId: this.currentChannel, parentId: this.threadParentId });
+        this.mesh.sendTyping(this.currentChannel, this.threadParentId);
       }
     });
     this.els.composer.addEventListener('input', () => {
@@ -119,23 +137,12 @@ class ChatView {
   }
 
   _wireMesh() {
-    this.mesh.addEventListener('chat-history', (e) => {
-      const { channelId, messages, hasMore } = e.detail;
-      const existing = this.byChannel.get(channelId) || [];
-      // Merge dedupe-by-id, keep chronological.
-      const ids = new Set(existing.map((m) => m.id));
-      const merged = existing.slice();
-      for (const m of messages) if (!ids.has(m.id)) merged.unshift(m);
-      merged.sort((a, b) => a.ts - b.ts);
-      this.byChannel.set(channelId, merged);
-      const oldest = merged.length ? merged[0].ts : null;
-      this.paginationByChannel.set(channelId, { hasMore: !!hasMore, oldestTs: oldest });
-      if (channelId === this.currentChannel) this._render();
-    });
     this.mesh.addEventListener('chat-message', (e) => {
       const m = e.detail.message;
       const arr = this.byChannel.get(m.channelId) || [];
-      arr.push(m);
+      // Postgres realtime can deliver our own insert before the local fetch
+      // resolves; dedupe by id.
+      if (!arr.some((x) => x.id === m.id)) arr.push(m);
       this.byChannel.set(m.channelId, arr);
       if (m.channelId === this.currentChannel) this._appendIncremental(m);
       this.hooks.onMessage?.(m);
@@ -165,10 +172,6 @@ class ChatView {
       this.typingUsers.set(from, { name: fromName, until: Date.now() + 2500 });
       this._refreshTyping();
     });
-    this.mesh.addEventListener('upload-token', (e) => {
-      const fn = this._uploadTokenWaiters.shift();
-      if (fn) fn(e.detail.token);
-    });
   }
 
   // --- Submit / edit ------------------------------------------------------
@@ -189,8 +192,7 @@ class ChatView {
     const attachments = this.composerAttachments.filter((a) => a.status === 'done').map((a) => a.info);
     if (!text && attachments.length === 0) return;
 
-    this.mesh.send({
-      type: 'chat-send',
+    await this.mesh.sendMessage({
       channelId: this.currentChannel,
       parentId: this.threadParentId,
       text: window.replaceShortcodes(text),
@@ -208,9 +210,9 @@ class ChatView {
   }
 
   _saveEdit(messageId, newText) {
-    this.mesh.send({ type: 'chat-edit', messageId, text: newText });
+    this.mesh.editMessage(messageId, newText);
     this.editingMessageId = null;
-    // Server will broadcast chat-update; render happens then.
+    // Realtime postgres_changes will fire chat-update; render happens then.
   }
 
   _cancelEdit() {
@@ -221,7 +223,7 @@ class ChatView {
 
   _delete(messageId) {
     if (!confirm('Delete this message? It will be removed for everyone.')) return;
-    this.mesh.send({ type: 'chat-delete-message', messageId });
+    this.mesh.deleteMessage(messageId);
   }
 
   // --- File uploads -------------------------------------------------------
@@ -242,37 +244,13 @@ class ChatView {
     this.composerAttachments.push(slot);
     this._renderAttachmentChips();
     try {
-      const token = await this._requestUploadToken();
-      const httpBase = this.mesh.url.replace(/^ws/, 'http').replace(/\/$/, '');
-      const res = await fetch(`${httpBase}/upload?token=${encodeURIComponent(token)}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': file.type || 'application/octet-stream',
-          'X-Filename': file.name || 'file',
-        },
-        body: file,
-      });
-      if (!res.ok) throw new Error('upload failed: ' + res.status);
-      const json = await res.json();
-      slot.info = {
-        url: `${httpBase}${json.url}`,
-        name: json.name,
-        contentType: json.contentType,
-        size: json.size,
-      };
+      slot.info = await this.mesh.uploadFile(file);
       slot.status = 'done';
     } catch (err) {
       console.warn('upload failed', err);
       slot.status = 'failed';
     }
     this._renderAttachmentChips();
-  }
-
-  _requestUploadToken() {
-    return new Promise((resolve) => {
-      this._uploadTokenWaiters.push(resolve);
-      this.mesh.send({ type: 'request-upload-token', channelId: this.currentChannel });
-    });
   }
 
   _renderAttachmentChips() {
@@ -330,7 +308,7 @@ class ChatView {
       more.textContent = '↑ Load older messages';
       more.onclick = () => {
         const oldest = pagination.oldestTs || Date.now();
-        this.mesh.send({ type: 'chat-history', channelId: this.currentChannel, before: oldest, limit: 50 });
+        this._fetchHistory(this.currentChannel, oldest);
       };
       container.appendChild(more);
     }
@@ -490,7 +468,7 @@ class ChatView {
       const pill = document.createElement('span');
       pill.className = 'reaction' + (peers.includes(this.mesh.peerId) ? ' mine' : '');
       pill.textContent = `${emoji} ${peers.length}`;
-      pill.onclick = () => this.mesh.send({ type: 'chat-react', messageId: m.id, emoji });
+      pill.onclick = () => this.mesh.toggleReaction(m.id, emoji);
       reactions.appendChild(pill);
     }
 
@@ -499,7 +477,7 @@ class ChatView {
     for (const e of window.QUICK_REACTIONS.slice(0, 5)) {
       const b = document.createElement('button');
       b.textContent = e;
-      b.onclick = () => this.mesh.send({ type: 'chat-react', messageId: m.id, emoji: e });
+      b.onclick = () => this.mesh.toggleReaction(m.id, e);
       actions.appendChild(b);
     }
     const more = document.createElement('button');
@@ -551,7 +529,7 @@ class ChatView {
         b.onclick = (e) => {
           e.stopPropagation();
           if (this._emojiPickerMode === 'react' && this._emojiPickerTarget) {
-            this.mesh.send({ type: 'chat-react', messageId: this._emojiPickerTarget, emoji: char });
+            this.mesh.toggleReaction(this._emojiPickerTarget, char);
           } else {
             this.els.composer.value += char;
             this.els.composer.focus();
@@ -661,8 +639,7 @@ class ChatView {
   _postGif(url, result) {
     const formats = result?.media_formats || {};
     const size = formats.gif?.size || 0;
-    this.mesh.send({
-      type: 'chat-send',
+    this.mesh.sendMessage({
       channelId: this.currentChannel,
       parentId: this.threadParentId,
       text: '',

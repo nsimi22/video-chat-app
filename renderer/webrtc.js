@@ -1,13 +1,25 @@
 // WebRTC mesh manager.
 //
-// Topology: full mesh — every peer holds one RTCPeerConnection per other peer.
-// Media: each peer owns one camera/mic stream and N screen-share streams.
-// To support sharing more than one screen at a time we use addTransceiver per
-// stream and label tracks via a `screen-announce` signaling message that maps
-// streamId -> human name. Renegotiation is automatic via onnegotiationneeded.
+// Topology: full mesh — every peer holds one RTCPeerConnection per other
+// peer. Signaling rides on a Supabase Realtime broadcast channel; this
+// module no longer talks to a WebSocket. Instead a MeshClient wraps a
+// `HuddleClient` (from api.js) which owns the realtime channel + chat
+// persistence; MeshClient adds camera/microphone, screen sharing, and
+// peer-connection lifecycle on top.
 //
-// We follow the "polite peer" pattern (perfect negotiation) so simultaneous
-// offers don't deadlock.
+// Public API (mostly identical to the previous WebSocket-based MeshClient
+// so chat.js and app.js can keep their existing listeners):
+//   - peerInfo, remoteScreenLabels, peerId, name, color, teamMeta, url
+//   - setCamera, toggleMic, toggleCam
+//   - addScreen, removeScreen, screenStreams
+//   - chat passthroughs: sendMessage, editMessage, deleteMessage,
+//     toggleReaction, sendTyping, loadHistory, createChannel, createDm,
+//     deleteChannel, searchMessages, uploadFile
+//   - disconnect()
+//   - events: welcome, connected, peer-joined, peer-left, signal, track,
+//     remote-stream-ended, screen-announce, screen-stop, draw, typing,
+//     chat-message, chat-update, chat-message-deleted, chat-channel-added,
+//     chat-channel-removed
 
 const ICE_SERVERS = [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
@@ -17,27 +29,21 @@ class PeerConn {
   constructor({ remoteId, signal, polite, onTrack, onScreenStop }) {
     this.remoteId = remoteId;
     this.polite = polite;
-    this.signal = signal; // (payload) => void  — relay through signaling server.
+    this.signal = signal;
     this.onTrack = onTrack;
     this.onScreenStop = onScreenStop;
     this.makingOffer = false;
     this.ignoreOffer = false;
-
     this.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
-    this.pc.onicecandidate = (e) => {
-      if (e.candidate) signal({ candidate: e.candidate });
-    };
+    this.pc.onicecandidate = (e) => { if (e.candidate) signal({ candidate: e.candidate }); };
     this.pc.onnegotiationneeded = async () => {
       try {
         this.makingOffer = true;
         await this.pc.setLocalDescription();
         signal({ description: this.pc.localDescription });
-      } catch (err) {
-        console.error('negotiation error', err);
-      } finally {
-        this.makingOffer = false;
-      }
+      } catch (err) { console.error('negotiation error', err); }
+      finally { this.makingOffer = false; }
     };
     this.pc.ontrack = (e) => {
       const stream = e.streams[0];
@@ -66,15 +72,10 @@ class PeerConn {
         try { await this.pc.addIceCandidate(candidate); }
         catch (err) { if (!this.ignoreOffer) throw err; }
       }
-    } catch (err) {
-      console.error('signal error', err);
-    }
+    } catch (err) { console.error('signal error', err); }
   }
 
-  addStream(stream) {
-    for (const track of stream.getTracks()) this.pc.addTrack(track, stream);
-  }
-
+  addStream(stream) { for (const t of stream.getTracks()) this.pc.addTrack(t, stream); }
   removeStream(stream) {
     for (const sender of this.pc.getSenders()) {
       if (sender.track && stream.getTracks().includes(sender.track)) {
@@ -82,157 +83,75 @@ class PeerConn {
       }
     }
   }
-
   close() { try { this.pc.close(); } catch {} }
 }
 
 class MeshClient extends EventTarget {
-  constructor({ url, name, color, team, password }) {
+  constructor(huddle) {
     super();
-    this.url = url;
-    this.name = name;
-    this.color = color;
-    this.team = team || '';
-    this.password = password || '';
-    this.peerId = null;
-    this.teamMeta = null;
-    this.peers = new Map();
-    this.peerInfo = new Map();
+    this.huddle = huddle;
+    this.peers = new Map();             // remoteId -> PeerConn
     this.cameraStream = null;
-    this.screenStreams = new Map();
-    this.remoteScreenLabels = new Map();
-    this.ws = null;
-    // Reconnect bookkeeping. `_intentionalClose` flips to true when the user
-    // explicitly leaves so `disconnect()` doesn't fight the reconnect loop.
-    this._intentionalClose = false;
-    this._reconnectAttempt = 0;
-    this._authFailed = false;
-  }
+    this._screenStreams = new Map();    // streamId -> { stream, label }
 
-  // Construct the underlying WebSocket. Returns a promise that resolves on the
-  // first successful welcome (initial connect) or rejects on permanent failure
-  // (e.g. auth-failed). Subsequent disconnects trigger background reconnect
-  // attempts and emit `connected` / `disconnected` events instead of resolving.
-  connect() {
-    return new Promise((resolve, reject) => {
-      const open = (isFirst) => {
-        let resolvedOrRejected = false;
-        this.ws = new WebSocket(this.url);
-        this.ws.onopen = () => {
-          this.ws.send(JSON.stringify({
-            type: 'hello', name: this.name, color: this.color,
-            team: this.team, password: this.password,
-          }));
-        };
-        this.ws.onerror = (e) => {
-          if (isFirst && !resolvedOrRejected) { resolvedOrRejected = true; reject(e); }
-        };
-        this.ws.onclose = () => {
-          this.dispatchEvent(new CustomEvent('disconnected', { detail: { authFailed: this._authFailed } }));
-          if (this._intentionalClose || this._authFailed) return;
-          // Reconnect with exponential backoff, capped at 30s.
-          const delay = Math.min(30000, 1000 * Math.pow(2, this._reconnectAttempt++));
-          this.dispatchEvent(new CustomEvent('reconnecting', { detail: { attempt: this._reconnectAttempt, delayMs: delay } }));
-          setTimeout(() => open(false), delay);
-        };
-      this.ws.onmessage = (ev) => {
-        let m;
-        try {
-          m = JSON.parse(ev.data);
-        } catch (err) {
-          console.warn('[mesh] dropped malformed signaling message', err);
-          return;
-        }
-        if (!m || typeof m !== 'object' || typeof m.type !== 'string') return;
-        switch (m.type) {
-          case 'auth-failed':
-            this._authFailed = true;
-            this.dispatchEvent(new CustomEvent('auth-failed', { detail: m }));
-            if (isFirst && !resolvedOrRejected) {
-              resolvedOrRejected = true;
-              reject(new Error(m.reason || 'auth_failed'));
-            }
-            return;
-          case 'welcome':
-            this.peerId = m.peerId;
-            this.teamMeta = m.team || null;
-            this._reconnectAttempt = 0;
-            // After a reconnect, `peerInfo` is stale (peerIds reset on the
-            // server). Clear and repopulate from the fresh roster.
-            this.peerInfo.clear();
-            this.remoteScreenLabels.clear();
-            for (const p of m.peers) this.peerInfo.set(p.id, p);
-            for (const s of m.activeScreens || []) {
-              this.remoteScreenLabels.set(s.streamId, { label: s.label, fromName: s.fromName, from: s.from });
-            }
-            this.dispatchEvent(new CustomEvent('welcome', { detail: m }));
-            this.dispatchEvent(new CustomEvent('connected', { detail: { isFirst } }));
-            if (isFirst && !resolvedOrRejected) { resolvedOrRejected = true; resolve(); }
-            break;
-          case 'peer-joined':
-            this.peerInfo.set(m.peer.id, m.peer);
-            this.dispatchEvent(new CustomEvent('peer-joined', { detail: m.peer }));
-            // The newer peer is the impolite one; existing peers are polite.
-            this._ensurePeer(m.peer.id, /*polite*/ true).then((conn) => {
-              if (this.cameraStream) conn.addStream(this.cameraStream);
-              for (const { stream } of this.screenStreams.values()) conn.addStream(stream);
-            });
-            break;
-          case 'peer-left':
-            this._dropPeer(m.peerId);
-            this.dispatchEvent(new CustomEvent('peer-left', { detail: m.peerId }));
-            break;
-          case 'signal': {
-            // Polite if our id sorts higher than theirs (deterministic tiebreak).
-            const polite = this.peerId > m.from;
-            this._ensurePeer(m.from, polite).then((conn) => conn.handleSignal(m.payload));
-            break;
-          }
-          case 'screen-announce':
-            this.remoteScreenLabels.set(m.streamId, { label: m.label, fromName: m.fromName, from: m.from });
-            this.dispatchEvent(new CustomEvent('screen-announce', { detail: m }));
-            break;
-          case 'screen-stop':
-            this.remoteScreenLabels.delete(m.streamId);
-            this.dispatchEvent(new CustomEvent('screen-stop', { detail: m }));
-            break;
-          case 'draw':
-            this.dispatchEvent(new CustomEvent('draw', { detail: m }));
-            break;
-          case 'chat-history':
-          case 'chat-message':
-          case 'chat-message-deleted':
-          case 'chat-update':
-          case 'chat-channel-added':
-          case 'chat-channel-removed':
-          case 'chat-channel-focus':
-          case 'chat-search-results':
-          case 'upload-token':
-          case 'typing':
-            this.dispatchEvent(new CustomEvent(m.type, { detail: m }));
-            break;
-        }
-      };
-      };
-      open(true);
+    // Forward events from the HuddleClient so external listeners attached
+    // to the mesh keep working unchanged.
+    const FORWARD = [
+      'welcome', 'connected', 'peer-joined', 'peer-left',
+      'screen-announce', 'screen-stop', 'draw', 'typing',
+      'chat-message', 'chat-update', 'chat-message-deleted',
+      'chat-channel-added', 'chat-channel-removed',
+    ];
+    for (const ev of FORWARD) {
+      huddle.addEventListener(ev, (e) => this.dispatchEvent(new CustomEvent(ev, { detail: e.detail })));
+    }
+
+    // Signaling: route inbound signals into the matching PeerConn, and add
+    // the local camera/screens to any peer that joins.
+    huddle.addEventListener('signal', (e) => {
+      const { from, payload } = e.detail;
+      const polite = this.peerId > from;
+      this._ensurePeer(from, polite).then((conn) => conn.handleSignal(payload));
     });
+    huddle.addEventListener('peer-joined', (e) => {
+      this._ensurePeer(e.detail.id, /*polite*/ true).then((conn) => {
+        if (this.cameraStream) conn.addStream(this.cameraStream);
+        for (const { stream } of this._screenStreams.values()) conn.addStream(stream);
+      });
+    });
+    huddle.addEventListener('peer-left', (e) => this._dropPeer(e.detail));
   }
 
-  send(obj) {
-    // During a reconnect the socket may be CLOSING/CONNECTING; drop rather
-    // than throw. Most callers are best-effort signaling messages; the
-    // server resends authoritative state via the next welcome.
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    this.ws.send(JSON.stringify(obj));
-  }
+  // --- Pass-through accessors so callers can read from `mesh` directly ----
+  get peerId() { return this.huddle.peerId; }
+  get name() { return this.huddle.name; }
+  get color() { return this.huddle.color; }
+  get peerInfo() { return this.huddle.peerInfo; }
+  get remoteScreenLabels() { return this.huddle.remoteScreenLabels; }
+  get teamMeta() { return this.huddle.team; }
+  get url() { return this.huddle.url; }
+  get screenStreams() { return this._screenStreams; }
 
+  // --- Chat passthroughs --------------------------------------------------
+  sendMessage(args)        { return this.huddle.sendMessage(args); }
+  editMessage(id, text)    { return this.huddle.editMessage(id, text); }
+  deleteMessage(id)        { return this.huddle.deleteMessage(id); }
+  toggleReaction(id, e)    { return this.huddle.toggleReaction(id, e); }
+  sendTyping(c, p)         { return this.huddle.sendTyping(c, p); }
+  loadHistory(c, opts)     { return this.huddle.loadHistory(c, opts); }
+  createChannel(args)      { return this.huddle.createChannel(args); }
+  createDm(name)           { return this.huddle.createDm(name); }
+  deleteChannel(id)        { return this.huddle.deleteChannel(id); }
+  searchMessages(q, c)     { return this.huddle.searchMessages(q, c); }
+  uploadFile(f)            { return this.huddle.uploadFile(f); }
+
+  // --- WebRTC peer-connection lifecycle -----------------------------------
   async _ensurePeer(remoteId, polite) {
     let conn = this.peers.get(remoteId);
     if (conn) return conn;
     conn = new PeerConn({
-      remoteId,
-      polite,
-      signal: (payload) => this.send({ type: 'signal', to: remoteId, payload }),
+      remoteId, polite,
+      signal: (payload) => this.huddle.sendSignal(remoteId, payload),
       onTrack: (stream, track, fromId) =>
         this.dispatchEvent(new CustomEvent('track', { detail: { stream, track, fromId } })),
       onScreenStop: (fromId, streamId) =>
@@ -247,11 +166,9 @@ class MeshClient extends EventTarget {
     if (!c) return;
     c.close();
     this.peers.delete(remoteId);
-    this.peerInfo.delete(remoteId);
   }
 
-  // Media management ---------------------------------------------------------
-
+  // --- Media: camera + screens -------------------------------------------
   async setCamera(constraints = { video: true, audio: true }) {
     if (this.cameraStream) {
       for (const t of this.cameraStream.getTracks()) t.stop();
@@ -262,79 +179,57 @@ class MeshClient extends EventTarget {
     for (const conn of this.peers.values()) conn.addStream(stream);
     return stream;
   }
-
   toggleMic() {
     if (!this.cameraStream) return false;
-    const track = this.cameraStream.getAudioTracks()[0];
-    if (!track) return false;
-    track.enabled = !track.enabled;
-    return track.enabled;
+    const t = this.cameraStream.getAudioTracks()[0];
+    if (!t) return false; t.enabled = !t.enabled; return t.enabled;
   }
-
   toggleCam() {
     if (!this.cameraStream) return false;
-    const track = this.cameraStream.getVideoTracks()[0];
-    if (!track) return false;
-    track.enabled = !track.enabled;
-    return track.enabled;
+    const t = this.cameraStream.getVideoTracks()[0];
+    if (!t) return false; t.enabled = !t.enabled; return t.enabled;
   }
 
-  // Add an additional screen share. Multiple may be active simultaneously.
   async addScreen(sourceId, label) {
-    // chromeMediaSource constraints are how Electron's desktopCapturer hands us a screen/window.
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
         mandatory: {
           chromeMediaSource: 'desktop',
           chromeMediaSourceId: sourceId,
-          maxWidth: 1920,
-          maxHeight: 1080,
-          maxFrameRate: 30,
+          maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30,
         },
       },
     });
-    this.screenStreams.set(stream.id, { stream, label });
-    // Announce BEFORE adding tracks so the metadata broadcast is enqueued on
-    // the WebSocket ahead of the renegotiation traffic. Receivers can then
-    // identify the inbound track as a screen share rather than a camera.
-    this.send({ type: 'screen-announce', streamId: stream.id, label });
+    this._screenStreams.set(stream.id, { stream, label });
+    this.huddle.sendScreenAnnounce(stream.id, label);
     for (const conn of this.peers.values()) conn.addStream(stream);
-    // When the user stops sharing via OS UI, clean up. Defensive guard in
-    // case the platform handed us a video-less stream.
-    const videoTrack = stream.getVideoTracks()[0];
-    if (videoTrack) {
-      videoTrack.addEventListener('ended', () => this.removeScreen(stream.id));
-    } else {
-      console.warn('[mesh] screen stream has no video track; cleaning up');
-      this.removeScreen(stream.id);
-    }
+    const v = stream.getVideoTracks()[0];
+    if (v) v.addEventListener('ended', () => this.removeScreen(stream.id));
+    else this.removeScreen(stream.id);
     return stream;
   }
-
   removeScreen(streamId) {
-    const entry = this.screenStreams.get(streamId);
+    const entry = this._screenStreams.get(streamId);
     if (!entry) return;
     for (const t of entry.stream.getTracks()) t.stop();
     for (const conn of this.peers.values()) conn.removeStream(entry.stream);
-    this.screenStreams.delete(streamId);
-    this.send({ type: 'screen-stop', streamId });
+    this._screenStreams.delete(streamId);
+    this.huddle.sendScreenStop(streamId);
   }
 
-  // Clean teardown — used by the Leave button. Stops the reconnect loop so
-  // closing the WebSocket here doesn't trigger a backoff retry.
+  // Signaling for drawing strokes; renderer calls this as it strokes.
+  sendDraw(streamId, stroke) { this.huddle.sendDraw(streamId, stroke); }
+
   disconnect() {
-    this._intentionalClose = true;
-    for (const id of [...this.screenStreams.keys()]) this.removeScreen(id);
+    for (const id of [...this._screenStreams.keys()]) this.removeScreen(id);
     if (this.cameraStream) {
       for (const t of this.cameraStream.getTracks()) t.stop();
       this.cameraStream = null;
     }
     for (const conn of this.peers.values()) conn.close();
     this.peers.clear();
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try { this.ws.close(); } catch {}
-    }
+    this.huddle.stop();
   }
 }
 

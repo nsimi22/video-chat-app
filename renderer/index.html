@@ -3,26 +3,58 @@
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: mediastream: https:; connect-src 'self' ws: wss: http: https:;" />
+          content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: mediastream: https:; connect-src 'self' wss: https:;" />
     <title>Huddle</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <!-- Login modal -->
+    <!-- Login / sign-up flow (email -> OTP -> profile -> team picker) -->
     <div id="login" class="modal-backdrop">
       <div class="modal">
-        <h2>Join the huddle</h2>
-        <label>Team / workspace</label>
-        <input id="login-team" type="text" placeholder="acme" maxlength="30" />
-        <p class="hint">Joining a team that doesn't exist yet creates it. People in different teams can't see each other.</p>
-        <label>Display name</label>
-        <input id="login-name" type="text" placeholder="Your name" maxlength="32" />
-        <label>Team password (sets one on first join)</label>
-        <input id="login-password" type="password" placeholder="optional" maxlength="128" />
-        <label>Server</label>
-        <input id="login-server" type="text" placeholder="ws://localhost:8787" />
+        <h2>Welcome to Huddle</h2>
+
+        <!-- Step 1: email -->
+        <div id="auth-email-step">
+          <p class="hint">We'll email you a 6-digit code to sign you in.</p>
+          <label>Email</label>
+          <input id="auth-email" type="email" autocomplete="email" placeholder="you@team.com" />
+          <button id="auth-send-otp" class="primary" style="margin-top:14px; width:100%;">Send code</button>
+        </div>
+
+        <!-- Step 2: OTP -->
+        <div id="auth-otp-step" class="hidden">
+          <p class="hint">Check your email for a 6-digit code from Supabase Auth.</p>
+          <label>Code</label>
+          <input id="auth-otp" type="text" inputmode="numeric" autocomplete="one-time-code"
+                 placeholder="123456" maxlength="6" />
+          <div style="display:flex; gap:8px; margin-top:14px;">
+            <button id="auth-back" style="flex:1;">← Use different email</button>
+            <button id="auth-verify" class="primary" style="flex:1;">Verify</button>
+          </div>
+        </div>
+
+        <!-- Step 3: profile -->
+        <div id="profile-step" class="hidden">
+          <p class="hint">How should teammates see your name?</p>
+          <label>Display name</label>
+          <input id="profile-name" type="text" maxlength="32" placeholder="Alex" />
+          <button id="profile-save" class="primary" style="margin-top:14px; width:100%;">Continue</button>
+        </div>
+
+        <!-- Step 4: team picker -->
+        <div id="team-step" class="hidden">
+          <h3 style="margin:8px 0 4px;">Your teams</h3>
+          <div id="team-mine" class="team-mine"></div>
+          <h3 style="margin:14px 0 4px;">Join or create another</h3>
+          <p class="hint">Type a team name; if it doesn't exist, it'll be created.</p>
+          <input id="team-create" type="text" maxlength="30" placeholder="acme" />
+          <div style="display:flex; gap:8px; margin-top:14px;">
+            <button id="sign-out" style="flex:1;">Sign out</button>
+            <button id="team-go" class="primary" style="flex:1;">Go</button>
+          </div>
+        </div>
+
         <div id="login-error" class="login-error hidden"></div>
-        <button id="login-go" class="primary">Connect</button>
       </div>
     </div>
 
@@ -172,9 +204,11 @@
       </div>
     </div>
 
+    <script src="vendor/supabase.js"></script>
     <script src="emojis.js"></script>
     <script src="markdown.js"></script>
     <script src="drawing.js"></script>
+    <script src="api.js"></script>
     <script src="webrtc.js"></script>
     <script src="chat.js"></script>
     <script src="app.js"></script>

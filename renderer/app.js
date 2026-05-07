@@ -10,13 +10,25 @@
 const $ = (sel) => document.querySelector(sel);
 
 const els = {
+  // Auth: email step
   login: $('#login'),
-  loginName: $('#login-name'),
-  loginTeam: $('#login-team'),
-  loginPassword: $('#login-password'),
-  loginServer: $('#login-server'),
+  authEmailStep: $('#auth-email-step'),
+  authOtpStep: $('#auth-otp-step'),
+  authEmail: $('#auth-email'),
+  authSendOtp: $('#auth-send-otp'),
+  authOtp: $('#auth-otp'),
+  authVerify: $('#auth-verify'),
+  authBack: $('#auth-back'),
+  // Profile + team picker
+  profileStep: $('#profile-step'),
+  profileName: $('#profile-name'),
+  profileSave: $('#profile-save'),
+  teamStep: $('#team-step'),
+  teamMine: $('#team-mine'),
+  teamCreate: $('#team-create'),
+  teamGo: $('#team-go'),
   loginError: $('#login-error'),
-  loginGo: $('#login-go'),
+  signOutBtn: $('#sign-out'),
   workspaceName: $('.workspace-name'),
   reconnectBanner: $('#reconnect-banner'),
   searchBtn: $('#search-btn'),
@@ -89,8 +101,8 @@ const state = {
   channelMeta: new Map(),
   activeAnnotation: null,
   pendingStreams: new Map(),
-  pendingNewChannelId: null,
   unread: new Map(), // channelId -> { count, mentions } both ints
+  _email: null,
 };
 
 // Whether the OS window is currently focused. Used to gate desktop
@@ -102,28 +114,145 @@ window.addEventListener('blur', () => { windowFocused = false; });
 const STREAM_DECISION_MS = 1500;
 
 // ---------------------------------------------------------------------------
-// Boot
+// Boot — auth state machine: email -> OTP -> profile -> team picker -> joined
 // ---------------------------------------------------------------------------
 
 (async function boot() {
-  const port = await window.huddle.getSignalingPort();
-  els.loginServer.value = `ws://localhost:${port}`;
-  els.loginGo.addEventListener('click', join);
-  for (const el of [els.loginName, els.loginTeam, els.loginPassword, els.loginServer]) {
-    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+  // Wire auth UI before checking session, so events bind even on cold start.
+  els.authSendOtp.addEventListener('click', stepSendOtp);
+  els.authVerify.addEventListener('click', stepVerifyOtp);
+  els.authBack.addEventListener('click', () => showStep('email'));
+  els.authEmail.addEventListener('keydown', (e) => { if (e.key === 'Enter') stepSendOtp(); });
+  els.authOtp.addEventListener('keydown', (e) => { if (e.key === 'Enter') stepVerifyOtp(); });
+  els.profileSave.addEventListener('click', stepSaveProfile);
+  els.profileName.addEventListener('keydown', (e) => { if (e.key === 'Enter') stepSaveProfile(); });
+  els.teamGo.addEventListener('click', stepJoinTeam);
+  els.teamCreate.addEventListener('keydown', (e) => { if (e.key === 'Enter') stepJoinTeam(); });
+  els.signOutBtn?.addEventListener('click', async () => {
+    await window.huddleApi.signOut();
+    showStep('email');
+  });
+
+  // If we already have a session, skip ahead to the team picker.
+  const session = await window.huddleApi.getActiveSession();
+  if (session?.user?.email) {
+    state._email = session.user.email;
+    showStep('profile');
+    await prefillProfile();
+  } else {
+    showStep('email');
   }
-  els.loginName.focus();
 })();
 
-async function join() {
-  const name = els.loginName.value.trim() || 'guest';
-  state.myName = name;
-  const url = els.loginServer.value.trim();
-  const team = els.loginTeam.value.trim();
-  const password = els.loginPassword.value;
-  const color = `hsl(${Math.floor(Math.random() * 360)} 70% 55%)`;
-  const mesh = new MeshClient({ url, name, color, team, password });
+// --- Step navigation -----------------------------------------------------
+function showStep(step) {
   els.loginError.classList.add('hidden');
+  els.authEmailStep.classList.toggle('hidden', step !== 'email');
+  els.authOtpStep.classList.toggle('hidden', step !== 'otp');
+  els.profileStep.classList.toggle('hidden', step !== 'profile');
+  els.teamStep.classList.toggle('hidden', step !== 'team');
+  if (step === 'email') els.authEmail.focus();
+  if (step === 'otp') els.authOtp.focus();
+  if (step === 'profile') els.profileName.focus();
+  if (step === 'team') els.teamCreate.focus();
+}
+function showError(msg) {
+  els.loginError.textContent = msg;
+  els.loginError.classList.remove('hidden');
+}
+
+async function stepSendOtp() {
+  els.loginError.classList.add('hidden');
+  const email = els.authEmail.value.trim();
+  if (!email) return;
+  els.authSendOtp.disabled = true;
+  try {
+    await window.huddleApi.sendOtp(email);
+    state._email = email;
+    showStep('otp');
+  } catch (err) {
+    showError(err.message || 'Could not send code.');
+  } finally { els.authSendOtp.disabled = false; }
+}
+
+async function stepVerifyOtp() {
+  els.loginError.classList.add('hidden');
+  const token = els.authOtp.value.trim();
+  if (!token || !state._email) return;
+  els.authVerify.disabled = true;
+  try {
+    await window.huddleApi.verifyOtp(state._email, token);
+    showStep('profile');
+    await prefillProfile();
+  } catch (err) {
+    showError("That code didn't match. Try again or send a new one.");
+  } finally { els.authVerify.disabled = false; }
+}
+
+async function prefillProfile() {
+  // Suggest the email's local-part as the display name on first sign-up.
+  const sb = await window.huddleApi.getSupabase();
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return;
+  const { data: prof } = await sb.from('profiles').select('*').eq('user_id', user.id).maybeSingle();
+  els.profileName.value = prof?.name || (state._email || '').split('@')[0] || '';
+}
+
+async function stepSaveProfile() {
+  els.loginError.classList.add('hidden');
+  const name = els.profileName.value.trim();
+  if (!name) return;
+  state.myName = name;
+  try {
+    const color = `hsl(${Math.floor(Math.random() * 360)} 70% 55%)`;
+    await window.huddleApi.ensureProfile(name, color);
+    showStep('team');
+    await renderMyTeams();
+  } catch (err) {
+    showError(err.message || 'Could not save profile.');
+  }
+}
+
+async function renderMyTeams() {
+  els.teamMine.replaceChildren();
+  let teams;
+  try { teams = await window.huddleApi.listMyTeams(); }
+  catch (err) { showError('Could not load teams.'); return; }
+  if (!teams.length) {
+    const p = document.createElement('p');
+    p.className = 'hint';
+    p.textContent = "You're not in any teams yet — type a name below to create one.";
+    els.teamMine.appendChild(p);
+    return;
+  }
+  for (const t of teams) {
+    const li = document.createElement('button');
+    li.className = 'team-pick';
+    li.textContent = '# ' + t.name;
+    li.onclick = () => joinTeamAndStart(t.id);
+    els.teamMine.appendChild(li);
+  }
+}
+
+async function stepJoinTeam() {
+  els.loginError.classList.add('hidden');
+  const name = els.teamCreate.value.trim();
+  if (!name) return;
+  try {
+    const t = await window.huddleApi.joinOrCreateTeam(name);
+    await joinTeamAndStart(t.id);
+  } catch (err) {
+    showError(err.message || 'Could not join team.');
+  }
+}
+
+// Final step: spin up the HuddleClient + MeshClient and reveal the app.
+async function joinTeamAndStart(teamId) {
+  els.loginError.classList.add('hidden');
+  let huddle;
+  try { huddle = await window.huddleApi.startHuddle({ id: teamId, name: teamId }); }
+  catch (err) { showError(err.message || 'Could not start huddle.'); return; }
+  const mesh = new MeshClient(huddle);
 
   mesh.addEventListener('welcome', (e) => onWelcome(e.detail));
   mesh.addEventListener('peer-joined', (e) => addPersonToSidebar(e.detail));
@@ -135,43 +264,17 @@ async function join() {
   mesh.addEventListener('draw', (e) => onRemoteDraw(e.detail));
   mesh.addEventListener('chat-channel-added', (e) => onChannelAdded(e.detail.channel));
   mesh.addEventListener('chat-channel-removed', (e) => onChannelRemoved(e.detail.channelId));
-  mesh.addEventListener('chat-channel-focus', (e) => focusChannel(e.detail.channelId));
-  mesh.addEventListener('chat-search-results', (e) => renderSearchResults(e.detail));
-  mesh.addEventListener('reconnecting', (e) => {
-    els.reconnectBanner.textContent = `Connection lost — retrying (attempt ${e.detail.attempt})…`;
-    els.reconnectBanner.classList.remove('hidden');
-  });
-  mesh.addEventListener('connected', (e) => {
-    if (!e.detail.isFirst) {
-      els.reconnectBanner.textContent = 'Reconnected.';
-      setTimeout(() => els.reconnectBanner.classList.add('hidden'), 1500);
-    }
-  });
-  mesh.addEventListener('auth-failed', () => {
-    els.loginError.textContent = "That team password didn't match. Ask a teammate.";
-    els.loginError.classList.remove('hidden');
-  });
 
-  try { await mesh.connect(); }
-  catch (err) {
-    if (mesh._authFailed) {
-      // login-error is already populated by the auth-failed listener
-    } else {
-      els.loginError.textContent = 'Could not connect to ' + url;
-      els.loginError.classList.remove('hidden');
-    }
-    return;
-  }
   state.mesh = mesh;
-
+  state.myName = mesh.name;
   els.login.classList.add('hidden');
   els.app.classList.remove('hidden');
-  els.me.textContent = name;
+  els.me.textContent = mesh.name;
   if (mesh.teamMeta?.name) els.workspaceName.textContent = mesh.teamMeta.name;
 
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
-    addLocalCameraTile(cam, name);
+    addLocalCameraTile(cam, mesh.name);
   } catch (err) { console.warn('No camera/mic available', err); }
 
   state.chat = new ChatView({
@@ -180,7 +283,6 @@ async function join() {
   });
   wireControls();
   els.btnLeave.classList.remove('hidden');
-  // Ask for desktop notification permission once on join.
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission().catch(() => {});
   }
@@ -260,7 +362,7 @@ function appendChannelToSidebar(channel, makeActive) {
       const verb = isDm ? 'Close' : 'Delete';
       const target = isDm ? `your DM with ${displayLabelFor(channel).replace(/^@\s*/, '')}` : `#${channel.name}`;
       if (!confirm(`${verb} ${target}? This is permanent.`)) return;
-      state.mesh.send({ type: 'chat-delete-channel', channelId: channel.id });
+      state.mesh.deleteChannel(channel.id);
     };
     li.appendChild(del);
   }
@@ -359,13 +461,7 @@ function sendDesktopNotification(m, channel) {
 }
 
 function onChannelAdded(channel) {
-  const wasNew = !state.channelMeta.has(channel.id);
   appendChannelToSidebar(channel, false);
-  // If this client just created a regular channel, switch into it.
-  if (wasNew && state.pendingNewChannelId === channel.id) {
-    state.pendingNewChannelId = null;
-    focusChannel(channel.id);
-  }
 }
 
 function onChannelRemoved(channelId) {
@@ -413,9 +509,13 @@ function addPersonToSidebar(peer) {
   dot.style.background = peer.color || '';
   li.append(dot, document.createTextNode(peer.name));
   // Click to open a DM with them.
-  li.onclick = () => {
+  li.onclick = async () => {
     if (peer.name === state.myName) return;
-    state.mesh.send({ type: 'chat-create-dm', with: peer.name });
+    try {
+      const channel = await state.mesh.createDm(peer.name);
+      onChannelAdded(channel);
+      focusChannel(channel.id);
+    } catch (err) { console.warn('createDm failed', err); }
   };
   li.title = peer.name === state.myName ? 'You' : `Direct message ${peer.name}`;
   els.people.appendChild(li);
@@ -542,7 +642,7 @@ function attachDrawingLayer(tile, streamId, isOwner) {
   const layer = new DrawingLayer({
     streamId,
     isOwner,
-    send: (stroke) => state.mesh.send({ type: 'draw', streamId, stroke }),
+    send: (stroke) => state.mesh.sendDraw(streamId, stroke),
   });
   layer.attach(tile);
   state.drawLayers.set(streamId, layer);
@@ -639,24 +739,21 @@ function openCreateChannelModal() {
   els.ccName.focus();
 }
 
-function submitCreateChannel() {
+async function submitCreateChannel() {
   const name = els.ccName.value.trim();
   if (!name) return;
-  const slug = name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
-  if (!slug || slug.length < 2) { alert('Channel name must be at least 2 characters.'); return; }
-  state.pendingNewChannelId = slug;
   const isPrivate = els.ccPrivate.checked;
-  const members = isPrivate
+  const memberNames = isPrivate
     ? [...els.ccMembers.querySelectorAll('.row.selected')].map((r) => r.dataset.name)
     : undefined;
-  state.mesh.send({
-    type: 'chat-create-channel',
-    name,
-    topic: els.ccTopic.value,
-    private: isPrivate,
-    members,
-  });
   els.ccModal.classList.add('hidden');
+  try {
+    const channel = await state.mesh.createChannel({ name, topic: els.ccTopic.value, isPrivate, memberNames });
+    onChannelAdded(channel);
+    focusChannel(channel.id);
+  } catch (err) {
+    alert('Could not create channel: ' + (err.message || err));
+  }
 }
 
 // Render a multi-select list of online peers (excluding self) for member invitation.
@@ -708,9 +805,13 @@ function openDmPicker() {
       const lbl = document.createElement('span');
       lbl.textContent = p.name;
       row.append(dot, lbl);
-      row.onclick = () => {
-        state.mesh.send({ type: 'chat-create-dm', with: p.name });
+      row.onclick = async () => {
         els.dmPicker.classList.add('hidden');
+        try {
+          const channel = await state.mesh.createDm(p.name);
+          onChannelAdded(channel);
+          focusChannel(channel.id);
+        } catch (err) { console.warn('createDm failed', err); }
       };
       els.dmPeople.appendChild(row);
     }
@@ -726,16 +827,21 @@ function openSearchModal() {
   els.searchInput.focus();
 }
 
-function runSearch() {
+async function runSearch() {
   const q = els.searchInput.value.trim();
   if (!q) return;
   const channelId = els.searchScopeCurrent.checked ? state.chat.currentChannel : undefined;
-  state.mesh.send({ type: 'chat-search', query: q, channelId });
   els.searchResults.replaceChildren();
   const loading = document.createElement('div');
   loading.className = 'empty';
   loading.textContent = 'Searching…';
   els.searchResults.appendChild(loading);
+  try {
+    const results = await state.mesh.searchMessages(q, channelId);
+    renderSearchResults({ query: q, results });
+  } catch (err) {
+    renderSearchResults({ query: q, results: [] });
+  }
 }
 
 function renderSearchResults({ query, results }) {

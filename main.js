@@ -1,10 +1,18 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, session } = require('electron');
+// Electron entry. With Supabase as the backend, the bundled signaling/chat
+// server is gone — main.js only opens the BrowserWindow, hands the renderer
+// a Supabase URL + publishable key, and exposes the desktopCapturer for
+// screen sharing.
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell } = require('electron');
 const path = require('path');
-const { startServer } = require('./server/signaling');
 
-const SIGNALING_PORT = parseInt(process.env.SIGNALING_PORT || '8787', 10);
+// Defaults point at the project I provisioned. Override either via env vars
+// (HUDDLE_SUPABASE_URL / HUDDLE_SUPABASE_KEY) for self-hosted Supabase.
+const SUPABASE_URL = process.env.HUDDLE_SUPABASE_URL
+  || 'https://jwqvrdgjpftjiwvgdrck.supabase.co';
+const SUPABASE_KEY = process.env.HUDDLE_SUPABASE_KEY
+  || 'sb_publishable_5eJWwJEHWHSLuhFEs2iUlw_tu4fGOvn';
+
 let mainWindow;
-let serverHandle;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -22,29 +30,33 @@ function createWindow() {
     },
   });
 
-  // Auto-allow only the permissions we need, and only for our own renderer
-  // (the BrowserWindow we created loading our local file://). Any other
-  // webContents — e.g. an opened external page — must go through the default
-  // deny path.
+  // Permission handler scoped to our renderer.
   const isOurRenderer = (wc) => wc && mainWindow && wc.id === mainWindow.webContents.id;
-  const ALLOWED_PERMISSIONS = new Set(['media', 'display-capture', 'mediaKeySystem']);
+  const ALLOWED = new Set(['media', 'display-capture', 'mediaKeySystem', 'notifications']);
   session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => {
-    cb(isOurRenderer(wc) && ALLOWED_PERMISSIONS.has(permission));
+    cb(isOurRenderer(wc) && ALLOWED.has(permission));
   });
   session.defaultSession.setPermissionCheckHandler((wc, permission) => {
-    return isOurRenderer(wc) && ALLOWED_PERMISSIONS.has(permission);
+    return isOurRenderer(wc) && ALLOWED.has(permission);
   });
 
-  // Provide on-demand display picker for screen-sharing requests.
+  // Default display picker uses the first screen; user picks via our own UI.
   session.defaultSession.setDisplayMediaRequestHandler(async (_req, callback) => {
     const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] });
     callback({ video: sources[0], audio: 'loopback' });
   }, { useSystemPicker: false });
 
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  mainWindow.webContents.on('did-finish-load', () => {
-    mainWindow.webContents.send('signaling-port', SIGNALING_PORT);
+  // External http(s): links from chat (e.g. uploads, GIFs) open in the system
+  // browser instead of replacing our renderer.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      shell.openExternal(url);
+      return { action: 'deny' };
+    }
+    return { action: 'allow' };
   });
+
+  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 
 ipcMain.handle('get-screen-sources', async () => {
@@ -60,11 +72,10 @@ ipcMain.handle('get-screen-sources', async () => {
   }));
 });
 
-ipcMain.handle('get-signaling-port', () => SIGNALING_PORT);
+ipcMain.handle('get-supabase-config', () => ({ url: SUPABASE_URL, anonKey: SUPABASE_KEY }));
 ipcMain.handle('get-tenor-key', () => process.env.TENOR_API_KEY || '');
 
-app.whenReady().then(async () => {
-  serverHandle = await startServer(SIGNALING_PORT);
+app.whenReady().then(() => {
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -72,6 +83,5 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  if (serverHandle) serverHandle.close();
   if (process.platform !== 'darwin') app.quit();
 });
