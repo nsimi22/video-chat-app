@@ -159,11 +159,15 @@
       // the unsubscribes before clearing the maps so the page isn't
       // unloaded mid-handshake (which leaks subscriptions server-side).
       const direct = [this._teamChannel, this._dbChannel, this._callChannel];
-      const indirect = [...this._screenChannels.values(), ...this._whiteboardChannels.values(), ...this._lurkers.values()];
+      // Screen + whiteboard maps still store raw promise<RealtimeChannel>;
+      // _lurkers values are now {channel, ready} pairs.
+      const indirectPromises = [...this._screenChannels.values(), ...this._whiteboardChannels.values()];
+      const lurkerChannels = [...this._lurkers.values()].map((l) => l.channel);
       const work = direct
         .map((ch) => ch ? Promise.resolve().then(() => ch.unsubscribe()).catch(() => {}) : null)
         .filter(Boolean)
-        .concat(indirect.map((p) => Promise.resolve(p).then((ch) => ch.unsubscribe()).catch(() => {})));
+        .concat(indirectPromises.map((p) => Promise.resolve(p).then((ch) => ch.unsubscribe()).catch(() => {})))
+        .concat(lurkerChannels.map((ch) => Promise.resolve().then(() => ch.unsubscribe()).catch(() => {})));
       await Promise.allSettled(work);
       this._teamChannel = null;
       this._dbChannel = null;
@@ -188,6 +192,31 @@
     async joinCall(channelId) {
       if (this._callChannelId === channelId) return; // already in this call
       if (this._callChannel) await this.leaveCall();
+      // Drop any lurker subscription on this same channel BEFORE
+      // creating the call channel object. supabase.channel(topic)
+      // is cached by topic — if a lurker is already subscribed
+      // we'd get its (already-SUBSCRIBED) instance back, and
+      // ch.on('presence', ...) below would throw "cannot add
+      // presence callbacks after subscribe()". Awaiting the
+      // unsubscribe ensures supabase-js drops the topic from its
+      // internal registry before we ask for a fresh channel.
+      const hadLurker = this._lurkers.has(channelId);
+      await this._dropLurker(channelId);
+      try {
+        await this._joinCallInner(channelId);
+      } catch (err) {
+        // joinCall failed after we dropped the lurker. The user is
+        // still viewing this channel via the chat header, so
+        // re-subscribe a lurker on a best-effort basis — without
+        // it the "Join call · N" count would freeze at its
+        // pre-attempt value until something else triggered a
+        // refocus.
+        if (hadLurker) this.watchCallPresence(channelId).catch(() => {});
+        throw err;
+      }
+    }
+
+    async _joinCallInner(channelId) {
       const topic = `call:${this.team.id}:${channelId}`;
       const ch = this.supabase.channel(topic, {
         config: {
@@ -287,14 +316,8 @@
 
       this._callChannel = ch;
       this._callChannelId = channelId;
-      // If we were lurking on this channel, drop the lurker — we're a
-      // full participant now.
-      const lurker = this._lurkers.get(channelId);
-      if (lurker) {
-        Promise.resolve(lurker).then((l) => { try { l.unsubscribe(); } catch {} }).catch(() => {});
-        this._lurkers.delete(channelId);
-        this._lurkerCounts.delete(channelId);
-      }
+      // (Lurker for this channel was already dropped at the top of
+      // joinCall — see _dropLurker.)
     }
 
     async leaveCall() {
@@ -336,7 +359,7 @@
       }
       const cached = this._lurkers.get(channelId);
       if (cached) {
-        await Promise.resolve(cached);
+        try { await cached.ready; } catch {}
         return this._lurkerCounts.get(channelId) || 0;
       }
       const topic = `call:${this.team.id}:${channelId}`;
@@ -355,18 +378,47 @@
           else if (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') rej(e);
         });
       });
-      this._lurkers.set(channelId, ready);
+      // Store BOTH the synchronously-available channel handle and
+      // the readiness promise. _dropLurker calls .unsubscribe()
+      // on the channel directly instead of awaiting `ready` —
+      // otherwise a lurker whose subscribe handshake is hanging
+      // would block joinCall forever (no timeout in subscribe()
+      // for the lurker path).
+      this._lurkers.set(channelId, { channel: ch, ready });
       ready.catch(() => this._lurkers.delete(channelId));
       await ready;
       return this._lurkerCounts.get(channelId) || 0;
     }
 
+    // Fire-and-forget version of _dropLurker. Public callers (the
+    // chat header swap when focusing a different channel) don't
+    // need to await the unsubscribe — supabase-js will tear it
+    // down in the background. _dropLurker swallows its own errors,
+    // so no .catch() needed here.
     unwatchCallPresence(channelId) {
+      this._dropLurker(channelId);
+    }
+
+    // Tear down the lurker subscription on a channel. joinCall
+    // needs the unsubscribe to complete before it asks
+    // supabase.channel(topic) for a fresh instance — supabase.js
+    // caches channels by topic, so a still-subscribed lurker
+    // would hand back its already-SUBSCRIBED instance and
+    // ch.on('presence', ...) would throw "cannot add presence
+    // callbacks after subscribe()".
+    //
+    // We unsubscribe via the channel handle directly (not by
+    // awaiting `ready`) so a lurker whose subscribe handshake is
+    // still pending can still be dropped immediately. The
+    // handshake's resolution is swallowed so its error doesn't
+    // leak after we've moved on.
+    async _dropLurker(channelId) {
       const cached = this._lurkers.get(channelId);
       if (!cached) return;
-      Promise.resolve(cached).then((c) => { try { c.unsubscribe(); } catch {} }).catch(() => {});
       this._lurkers.delete(channelId);
       this._lurkerCounts.delete(channelId);
+      cached.ready.catch(() => {});
+      try { await cached.channel.unsubscribe(); } catch {}
     }
 
     // Last-known participant count for a watched channel, or 0 if not
