@@ -452,6 +452,13 @@ button.ctrl.muted.icon-only::after {
 }
 .tile-actions {
   position: absolute; right: 8px; top: 8px; display: flex; gap: 4px;
+  /* Sit above .draw-canvas (z-index: auto). On annotated screen
+     tiles and whiteboards the canvas has pointer-events: auto and
+     covers the entire tile, which silently swallows clicks on the
+     Close / Annotate / Stop buttons here. Without an explicit
+     z-index, hit-testing follows DOM order and the canvas
+     (appended later by DrawingLayer.attach) wins. */
+  z-index: 30;
 }
 .tile-actions button {
   background: rgba(0,0,0,.6); border: none; color: white; padding: 4px 8px;
