@@ -87,12 +87,14 @@ class PeerConn {
 }
 
 class MeshClient extends EventTarget {
-  constructor({ url, name, color }) {
+  constructor({ url, name, color, team }) {
     super();
     this.url = url;
     this.name = name;
     this.color = color;
+    this.team = team || ''; // server falls back to a default team if blank
     this.peerId = null;
+    this.teamMeta = null; // {id, name} after welcome
     this.peers = new Map(); // remoteId -> PeerConn
     this.peerInfo = new Map(); // remoteId -> {name, color}
     this.cameraStream = null;
@@ -105,7 +107,12 @@ class MeshClient extends EventTarget {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(this.url);
       this.ws.onopen = () => {
-        this.ws.send(JSON.stringify({ type: 'hello', name: this.name, color: this.color }));
+        this.ws.send(JSON.stringify({
+          type: 'hello',
+          name: this.name,
+          color: this.color,
+          team: this.team,
+        }));
       };
       this.ws.onerror = (e) => reject(e);
       this.ws.onclose = () => this.dispatchEvent(new CustomEvent('disconnected'));
@@ -121,6 +128,7 @@ class MeshClient extends EventTarget {
         switch (m.type) {
           case 'welcome':
             this.peerId = m.peerId;
+            this.teamMeta = m.team || null;
             for (const p of m.peers) this.peerInfo.set(p.id, p);
             // Seed labels for screens that were already being shared before we joined.
             for (const s of m.activeScreens || []) {

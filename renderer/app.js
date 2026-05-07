@@ -12,8 +12,10 @@ const $ = (sel) => document.querySelector(sel);
 const els = {
   login: $('#login'),
   loginName: $('#login-name'),
+  loginTeam: $('#login-team'),
   loginServer: $('#login-server'),
   loginGo: $('#login-go'),
+  workspaceName: $('.workspace-name'),
   app: $('#app'),
   channels: $('#channels'),
   dms: $('#dms'),
@@ -90,8 +92,9 @@ async function join() {
   const name = els.loginName.value.trim() || 'guest';
   state.myName = name;
   const url = els.loginServer.value.trim();
+  const team = els.loginTeam.value.trim();
   const color = `hsl(${Math.floor(Math.random() * 360)} 70% 55%)`;
-  const mesh = new MeshClient({ url, name, color });
+  const mesh = new MeshClient({ url, name, color, team });
 
   mesh.addEventListener('welcome', (e) => onWelcome(e.detail));
   mesh.addEventListener('peer-joined', (e) => addPersonToSidebar(e.detail));
@@ -113,6 +116,10 @@ async function join() {
   els.login.classList.add('hidden');
   els.app.classList.remove('hidden');
   els.me.textContent = name;
+  // Reflect the team name (server may have slugified it).
+  if (mesh.teamMeta?.name) {
+    els.workspaceName.textContent = mesh.teamMeta.name;
+  }
 
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });

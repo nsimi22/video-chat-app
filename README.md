@@ -2,14 +2,19 @@
 
 A self-contained Electron desktop app that combines:
 
+- **Teams (workspaces)** — every connection joins one team. People in
+  different teams cannot see each other's chat, presence, or screen
+  shares. Joining an unknown team auto-creates it.
 - **Video chat** over WebRTC (camera + microphone, full mesh).
 - **Multi-screen sharing** — share more than one screen or window at the same
-  time. Each share appears as its own tile for everyone in the room.
+  time. Each share appears as its own tile for everyone in the team.
 - **Live drawing on shared screens** — anyone can pen, arrow, or erase on top
   of any shared screen. Strokes are broadcast in real time and are
   resolution-independent so they line up for every viewer.
-- **Slack-style chat** — channels, threaded replies, emoji reactions, an emoji
-  picker (with `:shortcode:` autoreplace on send), and a typing indicator.
+- **Slack-style chat** — public + private channels, direct messages,
+  threaded replies, emoji reactions, an emoji picker (with
+  `:shortcode:` autoreplace on send), and a typing indicator. Everything
+  is persisted to disk and survives server restarts.
 
 The app ships a built-in signaling/chat server (WebSocket) so you can launch it
 on one machine and have other peers on the same LAN point at
@@ -25,6 +30,10 @@ npm start            # launches Electron + the signaling server on :8787
 To run more peers on the same network, start the app on another machine and
 enter `ws://<first-machine-ip>:8787` in the connect dialog. Or run the server
 standalone (`npm run server`) and have all clients point at it.
+
+Type the same team name to land in the same workspace; type a different one
+to spin up an isolated workspace on the same server (handy for hosting
+multiple unrelated groups on one signaling box).
 
 ## Architecture
 
