@@ -838,11 +838,34 @@ function onChannelRemoved(channelId) {
 
 function displayLabelFor(channel) {
   if (channel.type === 'dm') {
-    const other = (channel.members || []).find((m) => m !== state.myName) || channel.name;
-    return `@ ${other}`;
+    return `@ ${dmCounterpartName(channel)}`;
   }
   if (channel.type === 'private') return `🔒 ${channel.name}`;
   return `# ${channel.name}`;
+}
+
+// Resolve the "other party" name for a DM. The previous logic
+// (find a name in channel.members that wasn't state.myName) broke
+// after Edit-profile renames: channel.members is a snapshot of
+// display names taken at DM creation, state.myName is the user's
+// current name, and after a rename the find() could pick the
+// stale OLD self-name and label the DM with your own old name.
+//
+// Parse the uuids out of the channel id (dm:<uuid_a>::<uuid_b>)
+// and look up the counterpart's CURRENT name from live presence.
+// channel.name (set to the counterpart's display name at
+// creation) is the last-resort fallback for offline counterparts.
+function dmCounterpartName(channel) {
+  const m = /^dm:([0-9a-f-]+)::([0-9a-f-]+)$/.exec(channel.id);
+  const me = state.huddle?.peerId;
+  if (m && me) {
+    const otherId = m[1] === me ? m[2] : (m[2] === me ? m[1] : null);
+    if (otherId) {
+      const live = state.huddle.peerInfo.get(otherId)?.name;
+      if (live) return live;
+    }
+  }
+  return channel.name || 'unknown';
 }
 
 function canDelete(channel) {
