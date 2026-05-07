@@ -369,7 +369,7 @@ async function joinTeamAndStart(teamId) {
   // -offline; WebRTC peer events come from the call channel and only
   // when the user has explicitly joined a call.
   huddle.addEventListener('welcome', (e) => onWelcome(e.detail));
-  huddle.addEventListener('member-online', (e) => addPersonToSidebar(e.detail));
+  huddle.addEventListener('member-online', (e) => onMemberOnline(e.detail));
   huddle.addEventListener('member-offline', (e) => onMemberOffline(e.detail));
   huddle.addEventListener('chat-channel-added', (e) => onChannelAdded(e.detail.channel));
   huddle.addEventListener('chat-channel-removed', (e) => onChannelRemoved(e.detail.channelId));
@@ -641,9 +641,10 @@ function removePersonFromCall(peerId) {
 }
 
 function onMemberOffline(peerId) {
-  // Sidebar dot only — call grid is driven by call presence.
-  const li = els.people.querySelector(`[data-id="${cssEscape(peerId)}"]`);
-  if (li) li.remove();
+  // Don't remove the row — offline teammates have to stay visible
+  // so they can be DMed. Re-render so the now-offline member sinks
+  // to the bottom of the sorted list with a grey dot.
+  renderRoster();
 }
 
 function onCallPresence({ channelId, count }) {
@@ -659,8 +660,10 @@ function onWelcome({ peers, channels }) {
   els.dms.replaceChildren();
   state.channelMeta.clear();
   for (const c of channels) appendChannelToSidebar(c, false);
-  els.people.replaceChildren();
-  for (const p of peers) addPersonToSidebar(p);
+  // Roster was loaded synchronously inside huddle.start before the
+  // welcome dispatched, so render the full list here. Online status
+  // is overlaid from peerInfo (which `peers` is the snapshot of).
+  renderRoster();
   // Activate the general channel by default.
   const generalLi = els.channels.querySelector('[data-id="general"]');
   if (generalLi) generalLi.click();
@@ -894,20 +897,63 @@ function attachProfileTrigger(el, userId) {
   });
 }
 
-function addPersonToSidebar(peer) {
-  if (els.people.querySelector(`[data-id="${peer.id}"]`)) return;
+// Render the People sidebar from the full team roster. Online
+// teammates (those in peerInfo) get a coloured dot, offline ones
+// get a grey dot but stay visible — otherwise you can't DM someone
+// who hasn't opened the app today, which is the regression report.
+// Sort: online first, alphabetical within each group.
+function renderRoster() {
+  els.people.replaceChildren();
+  const members = [...state.huddle.roster.values()];
+  members.sort((a, b) => {
+    const aOn = state.huddle.peerInfo.has(a.id) ? 0 : 1;
+    const bOn = state.huddle.peerInfo.has(b.id) ? 0 : 1;
+    if (aOn !== bOn) return aOn - bOn;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+  for (const m of members) renderRosterRow(m);
+}
+
+function renderRosterRow(member) {
+  if (els.people.querySelector(`[data-id="${cssEscape(member.id)}"]`)) return;
+  const online = state.huddle.peerInfo.has(member.id);
+  // Prefer the live presence-broadcast name/color (peerInfo) over
+  // the roster row, which is a snapshot from start(). For offline
+  // members peerInfo is empty, so fall through to roster.
+  const live = state.huddle.peerInfo.get(member.id);
+  const name = live?.name || member.name;
+  const color = online ? (live?.color || member.color || '') : '';
   const li = document.createElement('li');
-  li.dataset.id = peer.id;
-  li.dataset.name = peer.name;
+  li.dataset.id = member.id;
+  li.dataset.name = name;
   const dot = document.createElement('span');
-  dot.className = 'dot online';
-  dot.style.background = peer.color || '';
-  li.append(dot, document.createTextNode(peer.name));
-  // Click opens the profile card; the card's "Message" button is
-  // where DM-creation happens. (Was: row click → createDm directly.)
-  attachProfileTrigger(li, peer.id);
-  li.title = peer.name === state.myName ? 'You' : `View ${peer.name}'s profile`;
+  dot.className = online ? 'dot online' : 'dot';
+  dot.style.background = color;
+  li.append(dot, document.createTextNode(name));
+  attachProfileTrigger(li, member.id);
+  li.title = member.id === state.huddle.peerId
+    ? 'You'
+    : `View ${name}'s profile${online ? '' : ' (offline)'}`;
+  if (!online) li.classList.add('offline');
   els.people.appendChild(li);
+}
+
+// Member-online: ensure the row exists in the roster (somebody who
+// just joined the team mid-session won't be in our snapshot), then
+// re-render the whole list so online users bubble back to the top.
+function onMemberOnline(peer) {
+  if (!state.huddle.roster.has(peer.id)) {
+    state.huddle.roster.set(peer.id, {
+      id: peer.id, name: peer.name, color: peer.color, avatar_url: null,
+    });
+  } else {
+    // Update the cached name/color in case they changed since
+    // start() loaded the roster.
+    const r = state.huddle.roster.get(peer.id);
+    r.name = peer.name || r.name;
+    r.color = peer.color || r.color;
+  }
+  renderRoster();
 }
 
 // (onMemberOffline + onCallPeerLeft above replace the old onPeerLeft —
@@ -1250,55 +1296,77 @@ async function submitCreateChannel() {
 // Render a multi-select list of online peers (excluding self) for member invitation.
 function renderMemberPicker(container) {
   container.replaceChildren();
-  const peers = [...state.huddle.peerInfo.values()].filter((p) => p.name !== state.myName);
-  if (peers.length === 0) {
+  // Roster (all teammates), not peerInfo (online only) — channel
+  // invites should reach offline teammates too. Sort online first
+  // so they're easy to find.
+  const members = [...state.huddle.roster.values()]
+    .filter((m) => m.id !== state.huddle.peerId)
+    .sort((a, b) => {
+      const aOn = state.huddle.peerInfo.has(a.id) ? 0 : 1;
+      const bOn = state.huddle.peerInfo.has(b.id) ? 0 : 1;
+      if (aOn !== bOn) return aOn - bOn;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+  if (members.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty';
-    empty.textContent = 'No other people are online right now.';
+    empty.textContent = 'No other teammates yet.';
     container.appendChild(empty);
     return;
   }
-  for (const p of peers) {
+  for (const m of members) {
+    const online = state.huddle.peerInfo.has(m.id);
+    const live = state.huddle.peerInfo.get(m.id);
+    const name = live?.name || m.name;
     const row = document.createElement('div');
-    row.className = 'row';
-    row.dataset.name = p.name;
+    row.className = 'row' + (online ? '' : ' offline');
+    row.dataset.name = name;
     const dot = document.createElement('span');
-    dot.className = 'dot online';
-    dot.style.background = p.color || '';
+    dot.className = online ? 'dot online' : 'dot';
+    dot.style.background = online ? (live?.color || m.color || '') : '';
     const check = document.createElement('span');
     check.className = 'check';
     const lbl = document.createElement('span');
-    lbl.textContent = p.name;
+    lbl.textContent = name;
     row.append(dot, lbl, check);
-    // Row-click toggles selection (channel-invite UI). The name span
-    // alone opens the profile card via attachProfileTrigger, which
-    // stops propagation so it doesn't also toggle the row.
     row.onclick = () => {
       const selected = row.classList.toggle('selected');
       check.textContent = selected ? '✓' : '';
     };
-    attachProfileTrigger(lbl, p.id);
+    attachProfileTrigger(lbl, m.id);
     container.appendChild(row);
   }
 }
 
 function openDmPicker() {
   els.dmPeople.replaceChildren();
-  const peers = [...state.huddle.peerInfo.values()].filter((p) => p.name !== state.myName);
-  if (peers.length === 0) {
+  // Iterate the full team roster — DMing offline teammates is the
+  // whole point. Sort online first so they're at the top.
+  const members = [...state.huddle.roster.values()]
+    .filter((m) => m.id !== state.huddle.peerId)
+    .sort((a, b) => {
+      const aOn = state.huddle.peerInfo.has(a.id) ? 0 : 1;
+      const bOn = state.huddle.peerInfo.has(b.id) ? 0 : 1;
+      if (aOn !== bOn) return aOn - bOn;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+  if (members.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty';
-    empty.textContent = 'No other people are online right now.';
+    empty.textContent = 'No other teammates yet.';
     els.dmPeople.appendChild(empty);
   } else {
-    for (const p of peers) {
+    for (const m of members) {
+      const online = state.huddle.peerInfo.has(m.id);
+      const live = state.huddle.peerInfo.get(m.id);
+      const name = live?.name || m.name;
       const row = document.createElement('div');
-      row.className = 'row';
+      row.className = 'row' + (online ? '' : ' offline');
       const dot = document.createElement('span');
-      dot.className = 'dot online';
-      dot.style.background = p.color || '';
+      dot.className = online ? 'dot online' : 'dot';
+      dot.style.background = online ? (live?.color || m.color || '') : '';
       const lbl = document.createElement('span');
-      lbl.textContent = p.name;
+      lbl.textContent = name;
       row.append(dot, lbl);
       // The DM picker is intent-driven (the user explicitly opened
       // it to start a DM), so a row click goes directly to creating
@@ -1307,7 +1375,7 @@ function openDmPicker() {
       // list, and call tile labels.
       row.addEventListener('click', () => {
         els.dmPicker.classList.add('hidden');
-        openDmWith(p.id, p.name);
+        openDmWith(m.id, name);
       });
       els.dmPeople.appendChild(row);
     }
