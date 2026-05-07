@@ -416,12 +416,23 @@
       if (!id) throw new Error('invalid channel name');
       const { data: existing } = await this.supabase.from('channels').select('*').eq('team_id', this.team.id).eq('id', id).maybeSingle();
       if (existing) return this._marshalChannel(existing);
-      const { data: created, error } = await this.supabase.from('channels').insert({
+      // Don't chain .select() on the insert: for private/dm channels the
+      // SELECT policy gates RETURNING on `is_channel_member(team_id, id)`,
+      // and the on_channel_after_insert trigger that adds the creator to
+      // channel_members fires after RETURNING evaluates. Same RLS-with-
+      // RETURNING gotcha as team-create — surfaces as "new row violates
+      // row-level security policy for table channels", swallowing the
+      // follow-up channel_members invites for everyone else.
+      const type = isPrivate ? 'private' : 'public';
+      const { error } = await this.supabase.from('channels').insert({
         team_id: this.team.id, id, name: id, topic: topic || '',
-        type: isPrivate ? 'private' : 'public', protected: false, created_by: this.peerId,
-      }).select('*').single();
+        type, protected: false, created_by: this.peerId,
+      });
       if (error) throw error;
-      const meta = this._marshalChannel(created);
+      const meta = {
+        id, name: id, topic: topic || '', type, protected: false,
+        createdBy: this.peerId, members: undefined,
+      };
       if (isPrivate) {
         const invited = memberNames?.length
           ? Array.from(new Set([this.name, ...memberNames]))
@@ -456,18 +467,31 @@
         meta.members = [this.name, otherUserName];
         return meta;
       }
-      const { data: created, error } = await this.supabase.from('channels').insert({
+      // Don't chain .select() on the insert: channels_read RLS gates
+      // type='dm' rows on `is_channel_member(team_id, id)`, but the
+      // on_channel_after_insert trigger that adds the creator to
+      // channel_members hasn't fired yet at RETURNING time. The insert
+      // itself succeeds (WITH CHECK passes) but RETURNING throws
+      // "new row violates row-level security policy for table channels"
+      // — the catch then blocks the next two statements (the explicit
+      // channel_members rows for both DM participants), so the channel
+      // exists in the DB with no members and is invisible to either
+      // user next session. Same gotcha as team-create.
+      const { error } = await this.supabase.from('channels').insert({
         team_id: this.team.id, id, name: otherUserName, topic: '',
         type: 'dm', protected: false, created_by: this.peerId,
-      }).select('*').single();
+      });
       if (error) throw error;
-      await this.supabase.from('channel_members').insert([
+      // Trigger added the creator (a). Add the other side explicitly so
+      // both participants can see the DM.
+      await this.supabase.from('channel_members').upsert([
         { team_id: this.team.id, channel_id: id, user_id: a },
         { team_id: this.team.id, channel_id: id, user_id: b },
       ]);
-      const meta = this._marshalChannel(created);
-      meta.members = [this.name, otherUserName];
-      return meta;
+      return {
+        id, name: otherUserName, topic: '', type: 'dm', protected: false,
+        createdBy: this.peerId, members: [this.name, otherUserName],
+      };
     }
 
     async deleteChannel(channelId) {
@@ -698,7 +722,7 @@
     await sb.auth.signOut();
   }
 
-  // --- Per-user integration settings (Jira host/email/token, Tenor key, …) -
+  // --- Per-user integration settings (Jira host/email/token, Giphy key, …) -
   // Stored in Supabase under public.user_integrations, RLS-gated to the
   // signed-in user's row.
   async function loadSettings() {
