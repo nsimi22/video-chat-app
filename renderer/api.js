@@ -126,17 +126,30 @@
     // and overlay online status from peerInfo.
     async _loadRoster() {
       this.roster = new Map();
-      const { data, error } = await this.supabase
+      // Two queries instead of `select('user_id, profiles!inner(...)')`:
+      // there's no direct FK between team_members and profiles
+      // (both reference auth.users), so PostgREST can't infer the
+      // embed reliably. Fetch user_ids first, then resolve them
+      // against profiles in one round-trip — same shape that
+      // _loadInitialChannels already uses.
+      const { data: members, error: memErr } = await this.supabase
         .from('team_members')
-        .select('user_id, profiles!inner(name, color, avatar_url)')
+        .select('user_id')
         .eq('team_id', this.team.id);
-      if (error) throw error;
-      for (const row of (data || [])) {
-        this.roster.set(row.user_id, {
-          id: row.user_id,
-          name: row.profiles.name,
-          color: row.profiles.color,
-          avatar_url: row.profiles.avatar_url || null,
+      if (memErr) throw memErr;
+      const ids = (members || []).map((m) => m.user_id);
+      if (!ids.length) return;
+      const { data: profs, error: profErr } = await this.supabase
+        .from('profiles')
+        .select('user_id, name, color, avatar_url')
+        .in('user_id', ids);
+      if (profErr) throw profErr;
+      for (const p of (profs || [])) {
+        this.roster.set(p.user_id, {
+          id: p.user_id,
+          name: p.name,
+          color: p.color,
+          avatar_url: p.avatar_url || null,
         });
       }
     }

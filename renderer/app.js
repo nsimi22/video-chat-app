@@ -897,12 +897,15 @@ function attachProfileTrigger(el, userId) {
   });
 }
 
-// Roster sort: online first, alphabetical within each group.
-// Mutates the array in place and returns it for chaining.
+// Roster sort: online first, alphabetical within each group. Self
+// always sorts as online — peerInfo deliberately excludes the
+// signed-in user, but the user is by definition online with
+// respect to themselves.
 function sortRosterMembers(members) {
+  const me = state.huddle?.peerId;
   return members.sort((a, b) => {
-    const aOn = state.huddle.peerInfo.has(a.id) ? 0 : 1;
-    const bOn = state.huddle.peerInfo.has(b.id) ? 0 : 1;
+    const aOn = (a.id === me || state.huddle.peerInfo.has(a.id)) ? 0 : 1;
+    const bOn = (b.id === me || state.huddle.peerInfo.has(b.id)) ? 0 : 1;
     if (aOn !== bOn) return aOn - bOn;
     return (a.name || '').localeCompare(b.name || '');
   });
@@ -911,9 +914,18 @@ function sortRosterMembers(members) {
 // Resolve a member's display attributes for rendering. Live presence
 // (peerInfo) is preferred over the roster snapshot — it carries the
 // most recent name/color the member has broadcast — and offline
-// members fall through to the roster row. Color is suppressed
-// entirely when offline so the grey dot reads correctly.
+// members fall through to the roster row. Self is special-cased:
+// peerInfo excludes the signed-in user, so without this branch
+// "you" would render as grey + dim.
 function resolveMemberDisplay(member) {
+  const isSelf = member.id === state.huddle?.peerId;
+  if (isSelf) {
+    return {
+      online: true,
+      name: state.huddle.name || member.name,
+      color: state.huddle.color || member.color || '',
+    };
+  }
   const online = state.huddle.peerInfo.has(member.id);
   const live = state.huddle.peerInfo.get(member.id);
   return {
