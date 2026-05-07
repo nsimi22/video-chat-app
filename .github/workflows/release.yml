@@ -1,0 +1,46 @@
+# Builds Huddle installers for macOS, Windows, and Linux on every tagged
+# release (e.g. `git tag v0.3.0 && git push --tags`) and uploads the
+# artifacts to a GitHub Release of the same tag. Can also be triggered
+# manually via the Actions tab (workflow_dispatch).
+#
+# Builds are unsigned. Users will see Gatekeeper / SmartScreen warnings
+# on first launch — they can override with right-click "Open" on macOS or
+# "More info → Run anyway" on Windows. To switch on real signing later,
+# add the secrets called out in the README and electron-builder will
+# pick them up automatically.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      # electron-builder reads GH_TOKEN to publish to the matching tag's
+      # release; if it doesn't exist yet, it creates a draft release.
+      - name: Build & publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run dist -- --publish always
