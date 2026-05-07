@@ -41,7 +41,6 @@
       ],
       "artifactName": "Huddle-mac-${arch}.${ext}",
       "identity": null,
-      "hardenedRuntime": false,
       "gatekeeperAssess": false
     },
     "win": {
