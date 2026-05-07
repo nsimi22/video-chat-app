@@ -833,6 +833,76 @@
       };
     }
 
+    // Profile-card lookup: returns full profile + email (email gated
+    // server-side to teammates only; non-teammates get null). Cached
+    // for a few seconds so opening/closing/reopening the same card
+    // doesn't re-roundtrip.
+    async getProfile(userId) {
+      const cached = this._profileCache?.get(userId);
+      if (cached && Date.now() - cached.fetchedAt < 30_000) return cached.profile;
+      const { data, error } = await this.supabase.rpc('get_profile', { p_user_id: userId });
+      if (error) throw error;
+      const profile = (data && data[0]) || null;
+      if (!this._profileCache) this._profileCache = new Map();
+      if (profile) this._profileCache.set(userId, { profile, fetchedAt: Date.now() });
+      return profile;
+    }
+
+    // Edit-your-own-profile: persists name / color / bio / avatar_url
+    // to public.profiles, then re-broadcasts presence so other peers
+    // see the new name + color immediately. Avatar URL changes don't
+    // need a presence push because avatars are fetched lazily by the
+    // profile card; chat avatar circles still re-resolve on next
+    // render via getProfile.
+    async updateProfile({ name, color, bio, avatar_url }) {
+      const patch = {};
+      if (name !== undefined) patch.name = name;
+      if (color !== undefined) patch.color = color;
+      if (bio !== undefined) patch.bio = bio;
+      if (avatar_url !== undefined) patch.avatar_url = avatar_url;
+      if (Object.keys(patch).length === 0) return;
+      const { error } = await this.supabase.from('profiles').update(patch).eq('user_id', this.peerId);
+      if (error) throw error;
+      if (patch.name !== undefined) this.name = patch.name;
+      if (patch.color !== undefined) this.color = patch.color;
+      this._profileCache?.delete(this.peerId);
+      // Re-track team presence so peers re-render with the new
+      // identity. The call channel (if any) is left alone — joinCall
+      // tracks once and stale name/color in an active call is mostly
+      // cosmetic. supabase-js track() returns 'ok' / 'error' /
+      // 'timed out' rather than throwing; we don't want to fail the
+      // whole save when presence falters (the DB row is already
+      // updated, peers will pick up the change on next reconnect),
+      // but we should at least surface it so the silent-failure
+      // mode is visible during debugging.
+      try {
+        const trackResult = await this._teamChannel?.track({ name: this.name, color: this.color, online_at: new Date().toISOString() });
+        if (trackResult && trackResult !== 'ok') {
+          console.warn('updateProfile: presence re-track returned', trackResult);
+        }
+      } catch (e) {
+        console.warn('updateProfile: presence re-track threw', e);
+      }
+    }
+
+    async uploadAvatar(file) {
+      // Storage policy gates writes to `<auth.uid()>/...`. The path
+      // is fixed (no extension) so a second upload always replaces
+      // the first via upsert; if we kept the original extension a
+      // user switching from avatar.jpg to avatar.png would leak the
+      // old file. The Content-Type header carries the real format
+      // for the browser, so the extension on disk is unnecessary.
+      const objectPath = `${this.peerId}/avatar`;
+      const { error } = await this.supabase.storage.from('avatars').upload(objectPath, file, {
+        contentType: file.type || 'image/png',
+        upsert: true,
+      });
+      if (error) throw error;
+      const { data } = this.supabase.storage.from('avatars').getPublicUrl(objectPath);
+      // Cache-bust so freshly-uploaded avatars don't show the old image.
+      return `${data.publicUrl}?t=${Date.now()}`;
+    }
+
     // --- Marshalling: DB row -> wire shape the renderer already speaks ---
     _marshalMessage(row) {
       return {
