@@ -696,12 +696,17 @@ function appendChannelToSidebar(channel, makeActive) {
     del.className = 'ch-delete';
     del.title = isDm ? 'Close DM' : 'Delete channel';
     del.textContent = '✕';
-    del.onclick = (e) => {
+    del.onclick = async (e) => {
       e.stopPropagation();
       const verb = isDm ? 'Close' : 'Delete';
       const target = isDm ? `your DM with ${displayLabelFor(channel).replace(/^@\s*/, '')}` : `#${channel.name}`;
       if (!confirm(`${verb} ${target}? This is permanent.`)) return;
-      state.huddle.deleteChannel(channel.id);
+      try {
+        await state.huddle.deleteChannel(channel.id);
+      } catch (err) {
+        console.warn('deleteChannel failed', err);
+        showCallError(`Could not ${verb.toLowerCase()} ${target}: ${err?.message || err}`);
+      }
     };
     li.appendChild(del);
   }
@@ -842,7 +847,18 @@ function displayLabelFor(channel) {
 
 function canDelete(channel) {
   if (channel.protected) return false;
-  if (channel.type === 'dm') return (channel.members || []).includes(state.myName);
+  if (channel.type === 'dm') {
+    // Parse membership from the channel id (`dm:<uuid_a>::<uuid_b>`)
+    // rather than channel.members. The members array is a snapshot
+    // of display names taken at DM creation / channel-load time;
+    // after Edit-profile renames it can drift away from
+    // state.myName, which silently strips the ✕ delete button from
+    // DMs the user actually owns. The id is stable.
+    const m = /^dm:([0-9a-f-]+)::([0-9a-f-]+)$/i.exec(channel.id);
+    if (!m) return false;
+    const me = state.huddle?.peerId;
+    return !!me && (m[1] === me || m[2] === me);
+  }
   // createdBy is a user uuid; compare against the authenticated user's id,
   // not the display name.
   return channel.createdBy && channel.createdBy === state.huddle?.peerId;

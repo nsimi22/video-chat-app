@@ -749,8 +749,14 @@
     }
 
     async deleteChannel(channelId) {
+      // Throw on failure so the renderer can surface the error
+      // instead of leaving the user staring at an unchanged sidebar.
+      // RLS may legitimately deny (non-owner trying to delete a
+      // public/private channel; protected #general; etc.) so the
+      // caller is responsible for catching + showing a useful
+      // message.
       const { error } = await this.supabase.from('channels').delete().eq('team_id', this.team.id).eq('id', channelId);
-      if (error) console.warn('deleteChannel failed', error);
+      if (error) throw error;
     }
 
     async searchMessages(query, channelId) {
