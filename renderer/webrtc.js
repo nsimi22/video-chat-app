@@ -169,7 +169,7 @@ class MeshClient extends EventTarget {
   sendTyping(c, p)         { return this.huddle.sendTyping(c, p); }
   loadHistory(c, opts)     { return this.huddle.loadHistory(c, opts); }
   createChannel(args)      { return this.huddle.createChannel(args); }
-  createDm(name)           { return this.huddle.createDm(name); }
+  createDm(userId, name)   { return this.huddle.createDm(userId, name); }
   deleteChannel(id)        { return this.huddle.deleteChannel(id); }
   searchMessages(q, c)     { return this.huddle.searchMessages(q, c); }
   uploadFile(f)            { return this.huddle.uploadFile(f); }

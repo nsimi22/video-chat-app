@@ -391,13 +391,7 @@ async function joinTeamAndStart(teamId) {
 
   state.profileCard = new window.ProfileCard({
     huddle,
-    onMessage: async (name) => {
-      try {
-        const channel = await state.huddle.createDm(name);
-        onChannelAdded(channel);
-        focusChannel(channel.id);
-      } catch (err) { console.warn('createDm failed', err); }
-    },
+    onMessage: (profile) => openDmWith(profile.user_id, profile.name),
     onEditProfile: () => openSettingsToProfile(),
   });
 
@@ -861,6 +855,27 @@ function cssEscape(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' 
 // People
 // ---------------------------------------------------------------------------
 
+// Open or focus the DM with another team member. Used by the
+// "Direct messages +" picker (intent-driven: clicking a row IS the
+// pick, no profile-card detour) and by the profile card's Message
+// button. Failures used to log to console.warn only — that's the
+// "card → Message does nothing" bug. Surface them as alerts so the
+// user knows why nothing happened.
+async function openDmWith(userId, name) {
+  if (!userId) {
+    showCallError('Could not open DM: no user id.');
+    return;
+  }
+  try {
+    const channel = await state.huddle.createDm(userId, name);
+    onChannelAdded(channel);
+    focusChannel(channel.id);
+  } catch (err) {
+    console.warn('createDm failed', err);
+    showCallError('Could not open DM: ' + (err?.message || err));
+  }
+}
+
 // Wire any element to open the profile card for `userId` on click.
 // Used by every UI surface that shows a user's identity (chat author
 // rows, sidebar people list, call-tile labels, DM/member pickers) so
@@ -1285,17 +1300,15 @@ function openDmPicker() {
       const lbl = document.createElement('span');
       lbl.textContent = p.name;
       row.append(dot, lbl);
-      // Open the profile card; its "Message" action drives DM
-      // creation. We have to anchor the card to the row BEFORE
-      // hiding the picker — `.hidden { display:none }` collapses
-      // the row's bounding rect to zero, which would otherwise pin
-      // the popover at the viewport origin.
-      row.addEventListener('click', (e) => {
-        e.stopPropagation();
-        state.profileCard?.show(row, p.id);
+      // The DM picker is intent-driven (the user explicitly opened
+      // it to start a DM), so a row click goes directly to creating
+      // the channel — no profile-card detour. Browse-style profile
+      // viewing lives on the chat author/avatar, the sidebar people
+      // list, and call tile labels.
+      row.addEventListener('click', () => {
         els.dmPicker.classList.add('hidden');
+        openDmWith(p.id, p.name);
       });
-      row.classList.add('profile-clickable');
       els.dmPeople.appendChild(row);
     }
   }

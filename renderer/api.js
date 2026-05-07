@@ -667,19 +667,55 @@
       return meta;
     }
 
-    async createDm(otherUserName) {
-      const { data: members } = await this.supabase
+    // Last-resort display-name fetch for createDm callers that
+    // somehow have a uuid but no name (shouldn't happen given every
+    // identity surface in the renderer carries both, but the schema
+    // requires the channel row to have *something* in `name`).
+    async _fetchDisplayName(userId) {
+      try {
+        const { data } = await this.supabase.from('profiles').select('name').eq('user_id', userId).maybeSingle();
+        return data?.name || null;
+      } catch { return null; }
+    }
+
+    // Open or create the DM between this client and another team
+    // member. Takes the other user's uuid directly (lookup-by-name
+    // was fragile: profile renames invalidated callers' cached
+    // names, and there's no per-team uniqueness constraint on
+    // names so two teammates with the same display name produced
+    // an arbitrary winner).
+    async createDm(otherUserId, otherUserName) {
+      if (!otherUserId) throw new Error('createDm: missing user id');
+      const a = this.peerId, b = otherUserId;
+      if (a === b) throw new Error("can't DM yourself");
+      // Verify the target is a member of the current team. The
+      // previous lookup-by-name path enforced this implicitly (only
+      // team_members were findable); the uuid path skips it, so
+      // without a guard a caller could DM an arbitrary user. The
+      // channel_members insert downstream is RLS-gated, but it
+      // fires AFTER the channel row is created — without this
+      // upfront check we'd leak orphan channel rows on misuse.
+      const { data: membership, error: memCheckErr } = await this.supabase
         .from('team_members')
-        .select('user_id, profiles!inner(name)')
-        .eq('team_id', this.team.id);
-      const other = (members || []).find((m) => m.profiles.name === otherUserName);
-      if (!other) throw new Error('peer not found');
-      const a = this.peerId, b = other.user_id;
+        .select('user_id')
+        .eq('team_id', this.team.id)
+        .eq('user_id', otherUserId)
+        .maybeSingle();
+      if (memCheckErr) throw memCheckErr;
+      if (!membership) throw new Error('not a member of this team');
       const id = 'dm:' + (a < b ? `${a}::${b}` : `${b}::${a}`);
+      // Prefer the caller-supplied name, then the live presence
+      // cache (fresher than profiles.name when a teammate has
+      // renamed since the caller cached its copy), then a DB fetch
+      // as a last resort.
+      const displayName = otherUserName
+        || this.peerInfo.get(otherUserId)?.name
+        || (await this._fetchDisplayName(otherUserId))
+        || 'unknown';
       const { data: existing } = await this.supabase.from('channels').select('*').eq('team_id', this.team.id).eq('id', id).maybeSingle();
       if (existing) {
         const meta = this._marshalChannel(existing);
-        meta.members = [this.name, otherUserName];
+        meta.members = [this.name, displayName];
         return meta;
       }
       // Don't chain .select() on the insert: channels_read RLS gates
@@ -693,7 +729,7 @@
       // exists in the DB with no members and is invisible to either
       // user next session. Same gotcha as team-create.
       const { error } = await this.supabase.from('channels').insert({
-        team_id: this.team.id, id, name: otherUserName, topic: '',
+        team_id: this.team.id, id, name: displayName, topic: '',
         type: 'dm', protected: false, created_by: this.peerId,
       });
       if (error) throw error;
@@ -707,8 +743,8 @@
       ]);
       if (memErr) throw memErr;
       return {
-        id, name: otherUserName, topic: '', type: 'dm', protected: false,
-        createdBy: this.peerId, members: [this.name, otherUserName],
+        id, name: displayName, topic: '', type: 'dm', protected: false,
+        createdBy: this.peerId, members: [this.name, displayName],
       };
     }
 
