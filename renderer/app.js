@@ -242,6 +242,16 @@ function showError(msg) {
   els.loginError.classList.remove('hidden');
 }
 
+// Surface in-app failures (call start, media access) where the
+// renderer is already past the auth/login screen — the loginError
+// element isn't visible there. Use alert for now: it's intrusive but
+// guaranteed to be seen, which is the right tradeoff for "your call
+// didn't start" or "the OS denied camera access". Replace with a
+// proper toast/banner later if it becomes annoying.
+function showCallError(msg) {
+  alert(msg);
+}
+
 async function stepSendOtp() {
   els.loginError.classList.add('hidden');
   const email = els.authEmail.value.trim();
@@ -428,6 +438,11 @@ async function startCall(channelId) {
     await state.huddle.joinCall(channelId);
   } catch (err) {
     console.warn('joinCall failed', err);
+    // Surface the failure as a banner instead of swallowing into
+    // console.warn — otherwise the user sees the button greyed out
+    // and nothing else (the regression that "Start call doesn't
+    // start a call" reported on v0.2.5).
+    showCallError('Could not start the call: ' + (err?.message || err));
     mesh.disconnect();
     state.callStarting = false;
     els.btnStartCall.disabled = false;
@@ -436,7 +451,7 @@ async function startCall(channelId) {
   }
   state.mesh = mesh;
   state.inCallChannelId = channelId;
-  els.tiles.classList.remove('hidden');
+  syncTilesVisibility();
   // Belt + suspenders: also bootstrap from the snapshot HuddleClient
   // already has, in case the presence-sync handler fired before our
   // listener attached during the joinCall handshake. _ensurePeer is
@@ -447,6 +462,12 @@ async function startCall(channelId) {
     addLocalCameraTile(cam, state.huddle.name);
   } catch (err) {
     console.warn('No camera/mic available', err);
+    // The call itself is still alive (signaling + presence work) so
+    // we don't tear it down — just tell the user their tile isn't
+    // sharing video. Common cause on macOS: the OS-level mic/camera
+    // permission was previously denied for Electron / Huddle, and
+    // the OS won't reprompt automatically.
+    showCallError('Could not access camera/microphone: ' + (err?.message || err) + '. Check System Settings → Privacy & Security → Camera/Microphone.');
   }
   state.callStarting = false;
   els.btnStartCall.disabled = false;
@@ -469,7 +490,7 @@ async function leaveCall() {
   for (const p of state.pendingStreams.values()) clearTimeout(p.timer);
   state.pendingStreams.clear();
   closeAnnotate();
-  els.tiles.classList.add('hidden');
+  syncTilesVisibility();
   try { await state.huddle?.leaveCall(); } catch {}
   // joinCall dropped the lurker for this channel when we became a
   // full participant. After leaveCall, the user is still viewing the
@@ -513,8 +534,19 @@ async function teardownTeam() {
   for (const p of state.pendingStreams.values()) clearTimeout(p.timer);
   state.pendingStreams.clear();
   closeAnnotate();
-  els.tiles.classList.add('hidden');
+  syncTilesVisibility();
   els.app.classList.add('hidden');
+}
+
+// Toggle the tile-grid visibility based on whether anything lives in
+// it. Called from startCall (camera tile), leaveCall (calls drop),
+// openWhiteboard (whiteboard tile), removeTile (anything closing),
+// and teardownTeam (full reset). Whiteboards are tiles that should
+// be visible even when no call is active, which the original PR #14
+// hidden-by-default rule accidentally suppressed.
+function syncTilesVisibility() {
+  const hasContent = state.tilesByKey.size > 0;
+  els.tiles.classList.toggle('hidden', !hasContent);
 }
 
 // "Leave team" — drop everything, go back to the team picker (still signed in).
@@ -878,6 +910,7 @@ function removeTile(key) {
   const tile = state.tilesByKey.get(key);
   if (tile) tile.remove();
   state.tilesByKey.delete(key);
+  syncTilesVisibility();
 }
 
 function addLocalCameraTile(stream, name) {
@@ -1284,6 +1317,10 @@ async function openWhiteboard() {
     kind: 'whiteboard',
   });
   tile.dataset.streamId = wb.id;
+  // The tile grid is hidden when not in a call; whiteboards live in
+  // the same grid, so reveal it when one opens. leaveCall / closing
+  // the last whiteboard hides it again (see syncTilesVisibility).
+  syncTilesVisibility();
 
   const session = new window.WhiteboardSession({
     huddle: state.huddle, channelId, whiteboard: wb, tile,
