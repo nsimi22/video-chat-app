@@ -38,6 +38,18 @@
       document.addEventListener('keydown', this._onKey);
     }
 
+    // Tear down the popover. Called from teardownTeam so a new
+    // HuddleClient gets a fresh ProfileCard — without this the old
+    // instance's document listeners stay attached on every team
+    // rejoin, eventually firing N copies of the dismissal logic per
+    // mousedown.
+    destroy() {
+      this.hide();
+      document.removeEventListener('mousedown', this._onDocClick, true);
+      document.removeEventListener('keydown', this._onKey);
+      this.el.remove();
+    }
+
     async show(targetEl, userId) {
       if (!userId) return;
       this._opener = targetEl;

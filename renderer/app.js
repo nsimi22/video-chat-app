@@ -616,7 +616,9 @@ async function startCall(channelId) {
 // into the team. The HuddleClient keeps chat realtime running.
 async function leaveCall() {
   if (!state.mesh) return;
-  for (const session of state.whiteboardSessions.values()) session.stop();
+  // stop() is async (flushes pending note-save timers); await all
+  // sessions in parallel so a slow DB write doesn't block the rest.
+  await Promise.allSettled([...state.whiteboardSessions.values()].map((s) => s.stop()));
   state.whiteboardSessions.clear();
   state.mesh.disconnect();
   state.mesh = null;
@@ -643,7 +645,7 @@ async function leaveCall() {
 
 async function teardownTeam() {
   if (state.mesh) {
-    for (const session of state.whiteboardSessions.values()) session.stop();
+    await Promise.allSettled([...state.whiteboardSessions.values()].map((s) => s.stop()));
     state.whiteboardSessions.clear();
     state.mesh.disconnect();
     state.mesh = null;
@@ -656,6 +658,16 @@ async function teardownTeam() {
   try { await state.huddle?.stop(); } catch {}
   state.huddle = null;
   state.chat = null;
+  // Drop the profile-card popover and its document-level mousedown
+  // / keydown listeners. Without destroy() the old instance lingers
+  // across team rejoins and stacks N copies of the dismissal logic
+  // per mousedown.
+  state.profileCard?.destroy();
+  state.profileCard = null;
+  // Drop a redemption hop that never finished (e.g. user signed out
+  // mid-load). Otherwise the next sign-in's onWelcome would jump
+  // somebody else's session into a stale channel.
+  state.pendingInviteHop = null;
   state.channelMeta.clear();
   state.unread.clear();
   state.inCallChannelId = null;
@@ -664,6 +676,9 @@ async function teardownTeam() {
   els.channels.replaceChildren();
   els.dms.replaceChildren();
   els.people.replaceChildren();
+  // Clear any leftover toasts so they don't bleed into the login
+  // screen of the next session.
+  els.toasts?.replaceChildren();
   els.reconnectBanner?.classList.add('hidden');
   for (const tile of state.tilesByKey.values()) tile.remove();
   state.tilesByKey.clear();
@@ -1713,10 +1728,13 @@ async function openWhiteboard() {
   toggleAnnotate(wb.id);
 }
 
-function closeWhiteboard(whiteboardId) {
+async function closeWhiteboard(whiteboardId) {
   const session = state.whiteboardSessions.get(whiteboardId);
-  if (session) session.stop();
+  // Drop the session-map entry up front so concurrent close calls
+  // don't double-fire the async stop(). Awaited stop() flushes
+  // pending note-save timers before the realtime channel goes away.
   state.whiteboardSessions.delete(whiteboardId);
+  if (session) await session.stop();
   state.drawLayers.delete(whiteboardId);
   state.tilesByKey.delete(`whiteboard:${whiteboardId}`);
   syncTilesVisibility();
