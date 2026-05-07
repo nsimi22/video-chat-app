@@ -31,8 +31,6 @@ not force-push or rewrite history. Open the next change as a PR.
 - Per-user API keys live in `public.user_integrations.settings` (JSONB,
   RLS-gated). The Settings panel (`⚙` in the sidebar) is the one place
   to surface new keys — do not add env vars for new runtime API keys.
-  (The existing `TENOR_API_KEY` env-var fallback is grandfathered for
-  back-compat and not a model to copy.)
 - Releases are cut by tagging `vX.Y.Z` on `main`; the
   `.github/workflows/release.yml` workflow builds Mac/Windows/Linux
   installers and uploads to GitHub Releases.

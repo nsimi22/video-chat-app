@@ -104,7 +104,7 @@ const els = {
   setOpenrouterKey: $('#set-openrouter-key'),
   setOpenrouterModel: $('#set-openrouter-model'),
   setGithubToken: $('#set-github-token'),
-  setTenorKey: $('#set-tenor-key'),
+  setGiphyKey: $('#set-giphy-key'),
   settingsStatus: $('#settings-status'),
   settingsCancel: $('#settings-cancel'),
   settingsSave: $('#settings-save'),
@@ -168,14 +168,49 @@ const STREAM_DECISION_MS = 1500;
   els.signOutBtn?.addEventListener('click', signOutFully);
   els.meSignout?.addEventListener('click', signOutFully);
 
-  // If we already have a session, skip ahead to the team picker.
+  // Resume the previous session if we have one. Boot priority:
+  //   no session                  -> email step
+  //   session, no profile yet     -> profile step (first-time sign-up)
+  //   session + profile, 0 teams  -> team picker
+  //   session + profile + teams   -> auto-rejoin the last team (or the
+  //                                  only team if just one), no clicks
   const session = await window.huddleApi.getActiveSession();
-  if (session?.user?.email) {
-    state._email = session.user.email;
+  if (!session?.user?.email) {
+    showStep('email');
+    return;
+  }
+  state._email = session.user.email;
+  let prof = null;
+  try {
+    const sb = await window.huddleApi.getSupabase();
+    const { data } = await sb.from('profiles').select('name, color').eq('user_id', session.user.id).maybeSingle();
+    prof = data;
+  } catch (err) {
+    // Network / supabase blip: don't strand the user on a blank screen.
+    // Fall through to the profile step; ensureProfile is an upsert so a
+    // re-entry of the existing name is harmless.
+    console.warn('boot: profile fetch failed', err);
+  }
+  if (!prof?.name) {
     showStep('profile');
     await prefillProfile();
+    return;
+  }
+  state.myName = prof.name;
+  let teams = [];
+  try { teams = await window.huddleApi.listMyTeams(); } catch {}
+  if (!teams.length) {
+    showStep('team');
+    await renderMyTeams();
+    return;
+  }
+  const lastId = (() => { try { return localStorage.getItem('huddle.lastTeamId'); } catch { return null; } })();
+  const target = teams.find((t) => t.id === lastId) || (teams.length === 1 ? teams[0] : null);
+  if (target) {
+    await joinTeamAndStart(target.id);
   } else {
-    showStep('email');
+    showStep('team');
+    await renderMyTeams();
   }
 })();
 
@@ -287,9 +322,11 @@ async function joinTeamAndStart(teamId) {
   let huddle;
   try { huddle = await window.huddleApi.startHuddle({ id: teamId, name: teamId }); }
   catch (err) { showError(err.message || 'Could not start huddle.'); return; }
+  // Remember this team so the next launch resumes straight here.
+  try { localStorage.setItem('huddle.lastTeamId', teamId); } catch {}
   const mesh = new MeshClient(huddle);
 
-  // Per-user integration settings — drives the Jira client + Tenor key
+  // Per-user integration settings — drives the Jira client + Giphy key
   // override. Reload after the user saves new ones in the Settings modal.
   await refreshSettings();
 
@@ -320,7 +357,7 @@ async function joinTeamAndStart(teamId) {
     mesh, els,
     hooks: {
       onMessage: (m) => onChatMessage(m),
-      getTenorKey,
+      getGiphyKey,
       getJira: () => state.jira,
       openTicketModal: (preset) => openTicketModal(preset),
       getAi: () => state.ai,
@@ -372,6 +409,9 @@ async function leave() {
 async function signOutFully() {
   teardownMesh();
   try { await window.huddleApi.signOut(); } catch {}
+  // Clear remembered team so the next signed-in user starts at the
+  // team picker (and doesn't auto-resume into someone else's team).
+  try { localStorage.removeItem('huddle.lastTeamId'); } catch {}
   state._email = null;
   if (els.authEmail) els.authEmail.value = '';
   if (els.authOtp) els.authOtp.value = '';
@@ -1105,7 +1145,7 @@ function openSettings() {
   els.setOpenrouterKey.value = s.ai?.openrouterKey || '';
   els.setOpenrouterModel.value = s.ai?.openrouterModel || '';
   els.setGithubToken.value = s.github?.token || '';
-  els.setTenorKey.value = s.tenor?.key || '';
+  els.setGiphyKey.value = s.giphy?.key || '';
   els.settingsStatus.classList.add('hidden');
   els.settingsModal.classList.remove('hidden');
   els.setJiraHost.focus();
@@ -1127,7 +1167,7 @@ async function saveSettings() {
       openrouterModel: els.setOpenrouterModel.value.trim(),
     },
     github: { token: els.setGithubToken.value },
-    tenor: { key: els.setTenorKey.value.trim() },
+    giphy: { key: els.setGiphyKey.value.trim() },
   };
   try {
     await window.huddleApi.saveSettings(next);
@@ -1144,11 +1184,9 @@ async function saveSettings() {
   }
 }
 
-// Tenor key resolver: prefer in-app settings, fall back to env-var (so
-// existing setups keep working).
-async function getTenorKey() {
-  if (state.settings?.tenor?.key) return state.settings.tenor.key;
-  try { return (await window.huddle.getTenorKey()) || ''; } catch { return ''; }
+// Giphy key resolver — sourced exclusively from per-user Settings.
+async function getGiphyKey() {
+  return state.settings?.giphy?.key || '';
 }
 
 // ---------------------------------------------------------------------------

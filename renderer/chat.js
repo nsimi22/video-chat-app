@@ -26,10 +26,10 @@ class ChatView {
     // null = lookup failed but completed (don't retry within session).
     this._jiraCache = new Map();
     this._jiraInflight = new Map();
-    // GIF picker state: monotonic sequence to drop stale Tenor responses.
+    // GIF picker state: monotonic sequence to drop stale Giphy responses.
     this._gifFetchSeq = 0;
     this._gifSearchTimer = null;
-    this._tenorKey = null;
+    this._giphyKey = null;
     // In-flight AI requests — tracked as a counter so overlapping commands
     // don't prematurely hide the "thinking" indicator.
     this._aiThinkingCount = 0;
@@ -628,7 +628,7 @@ class ChatView {
     this.els.emojiPicker.classList.remove('hidden');
   }
 
-  // --- GIF picker (Tenor) -------------------------------------------------
+  // --- GIF picker (Giphy) -------------------------------------------------
 
   _initGifPicker() {
     if (!this.els.gifBtn) return;
@@ -647,21 +647,19 @@ class ChatView {
   }
 
   async _openGifPicker() {
-    // The orchestrator owns settings, including the Tenor key. We always
+    // The orchestrator owns settings, including the Giphy key. We always
     // re-read so a freshly-saved key takes effect immediately.
     try {
-      this._tenorKey = this.hooks.getTenorKey
-        ? await this.hooks.getTenorKey()
-        : (await window.huddle.getTenorKey()) || '';
-    } catch { this._tenorKey = ''; }
+      this._giphyKey = this.hooks.getGiphyKey ? await this.hooks.getGiphyKey() : '';
+    } catch { this._giphyKey = ''; }
     this.els.gifSearch.value = '';
     this.els.gifSearch.focus();
-    this.els.gifAttribution?.classList.toggle('hidden', !this._tenorKey);
-    if (!this._tenorKey) {
-      this._renderGifEmpty('Set TENOR_API_KEY in your environment to enable the GIF picker. (https://tenor.com/developer/dashboard)');
+    this.els.gifAttribution?.classList.toggle('hidden', !this._giphyKey);
+    if (!this._giphyKey) {
+      this._renderGifEmpty('Add a Giphy API key in Settings (⚙) to enable the GIF picker. Get one at https://developers.giphy.com/');
       return;
     }
-    // Show featured/trending GIFs as the default state.
+    // Show trending GIFs as the default state.
     this._fetchGifs('');
   }
 
@@ -671,23 +669,27 @@ class ChatView {
   }
 
   async _fetchGifs(query) {
-    if (!this._tenorKey) return;
+    if (!this._giphyKey) return;
     const seq = ++this._gifFetchSeq;
-    const base = 'https://tenor.googleapis.com/v2';
-    const url = query
-      ? `${base}/search?q=${encodeURIComponent(query)}&key=${encodeURIComponent(this._tenorKey)}&limit=24&media_filter=gif,tinygif&contentfilter=high`
-      : `${base}/featured?key=${encodeURIComponent(this._tenorKey)}&limit=24&media_filter=gif,tinygif&contentfilter=high`;
+    const base = 'https://api.giphy.com/v1/gifs';
+    const params = new URLSearchParams({
+      api_key: this._giphyKey,
+      limit: '24',
+      rating: 'g',
+    });
+    if (query) params.set('q', query);
+    const url = query ? `${base}/search?${params}` : `${base}/trending?${params}`;
     try {
       const res = await fetch(url);
-      if (!res.ok) throw new Error('tenor ' + res.status);
+      if (!res.ok) throw new Error('giphy ' + res.status);
       const json = await res.json();
       // A newer query may have superseded this one mid-flight.
       if (seq !== this._gifFetchSeq) return;
-      this._renderGifResults(json.results || []);
+      this._renderGifResults(json.data || []);
     } catch (err) {
       if (seq !== this._gifFetchSeq) return;
-      console.warn('tenor failed', err);
-      this._renderGifEmpty('Could not reach Tenor. Check your key and network.');
+      console.warn('giphy failed', err);
+      this._renderGifEmpty('Could not reach Giphy. Check your key and network.');
     }
   }
 
@@ -706,14 +708,16 @@ class ChatView {
       return;
     }
     for (const r of results) {
-      const formats = r.media_formats || {};
-      const preview = formats.tinygif?.url || formats.nanogif?.url || formats.gif?.url;
-      const full = formats.gif?.url || preview;
+      const images = r.images || {};
+      const preview = images.fixed_height_small?.url
+        || images.preview_gif?.url
+        || images.original?.url;
+      const full = images.original?.url || preview;
       if (!preview || !full) continue;
       const img = document.createElement('img');
       img.src = preview;
       img.loading = 'lazy';
-      img.alt = r.content_description || 'gif';
+      img.alt = r.title || 'gif';
       img.onclick = () => this._postGif(full, r);
       this.els.gifGrid.appendChild(img);
     }
@@ -1058,15 +1062,15 @@ class ChatView {
   }
 
   _postGif(url, result) {
-    const formats = result?.media_formats || {};
-    const size = formats.gif?.size || 0;
+    const images = result?.images || {};
+    const size = parseInt(images.original?.size, 10) || 0;
     this.mesh.sendMessage({
       channelId: this.currentChannel,
       parentId: this.threadParentId,
       text: '',
       attachments: [{
         url,
-        name: (result?.content_description || 'tenor.gif').slice(0, 80),
+        name: (result?.title || 'giphy.gif').slice(0, 80),
         contentType: 'image/gif',
         size,
       }],

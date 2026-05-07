@@ -34,10 +34,10 @@ A self-contained Electron desktop app that combines:
     loud red badge; plain channel chatter gets a muted one).
   - **File uploads** — drag-drop, paste, or click 📎. Images preview
     inline; everything else lands as a download chip.
-  - **GIF picker** powered by Tenor — click `GIF`, search, click a
+  - **GIF picker** powered by Giphy — click `GIF`, search, click a
     result to post. Get a free key at
-    <https://tenor.com/developer/dashboard> and drop it into the
-    in-app **Settings** panel.
+    <https://developers.giphy.com/> and drop it into the in-app
+    **Settings** panel.
   - **History pagination** — channels load 50 messages at a time.
   - **Search** — 🔍 in the chat header, scoped to all visible channels
     or just the current one.
@@ -88,7 +88,7 @@ shared with teammates.
     from chat and posts the new URL.
   - Each viewer's PAT is used for their own unfurls, so visibility
     matches their actual GitHub access.
-- **Tenor** (GIF picker) — same panel.
+- **Giphy** (GIF picker) — same panel.
 
 ## Download
 
@@ -135,10 +135,11 @@ notarize automatically.
 ```bash
 npm install
 npm start
-
-# Optional: enable the GIF picker (Tenor)
-TENOR_API_KEY=... npm start
 ```
+
+The GIF picker (Giphy), AI assistant, Jira, GitHub, and other
+integrations are configured per-user in the in-app **⚙ Settings**
+panel after sign-in — no env vars required.
 
 `npm install` runs a `postinstall` step that copies the
 `@supabase/supabase-js` UMD bundle into `renderer/vendor/` so the
@@ -169,7 +170,7 @@ that produced this state, or run them via the Supabase SQL editor:
 
 ```
 main.js                Electron entry; opens window, handles screen-source
-                       picker, exposes Supabase config + Tenor key via IPC.
+                       picker, exposes Supabase config + fetch-proxy via IPC.
 preload.js             contextBridge surface for the renderer.
 scripts/copy-vendor.js postinstall: copies supabase-js UMD into renderer/vendor/
 renderer/

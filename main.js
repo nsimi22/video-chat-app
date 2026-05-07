@@ -73,8 +73,6 @@ ipcMain.handle('get-screen-sources', async () => {
 });
 
 ipcMain.handle('get-supabase-config', () => ({ url: SUPABASE_URL, anonKey: SUPABASE_KEY }));
-// Tenor key fallback for users who haven't set it in the in-app settings.
-ipcMain.handle('get-tenor-key', () => process.env.TENOR_API_KEY || '');
 
 // Generic fetch proxy. Some third-party APIs (notably Atlassian Cloud)
 // don't permit browser-origin requests via CORS; routing through main lets
