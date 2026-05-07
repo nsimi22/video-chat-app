@@ -474,6 +474,8 @@ async function teardownTeam() {
   state.channelMeta.clear();
   state.unread.clear();
   state.inCallChannelId = null;
+  state.lurkingChannelId = null;
+  state.callStarting = false;
   els.channels.replaceChildren();
   els.dms.replaceChildren();
   els.people.replaceChildren();
