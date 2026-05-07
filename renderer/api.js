@@ -320,28 +320,28 @@
       return this._lurkerCounts.get(channelId) || 0;
     }
 
+    // Fire-and-forget version of _dropLurker. Public callers (the
+    // chat header swap when focusing a different channel) don't
+    // need to await the unsubscribe — supabase-js will tear it
+    // down in the background.
     unwatchCallPresence(channelId) {
-      const cached = this._lurkers.get(channelId);
-      if (!cached) return;
-      Promise.resolve(cached).then((c) => { try { c.unsubscribe(); } catch {} }).catch(() => {});
-      this._lurkers.delete(channelId);
-      this._lurkerCounts.delete(channelId);
+      this._dropLurker(channelId).catch(() => {});
     }
 
-    // Same as unwatchCallPresence but waits for the unsubscribe to
-    // resolve before returning. joinCall needs this synchronous
-    // teardown — supabase.channel(topic) is cached by topic, so
-    // creating a new channel object while a lurker is still
-    // subscribed would hand back the lurker's already-SUBSCRIBED
-    // instance, and ch.on('presence', ...) would throw "cannot add
-    // presence callbacks after subscribe()".
+    // Tear down the lurker subscription on a channel and wait for
+    // the unsubscribe to resolve before returning. joinCall needs
+    // this synchronous teardown — supabase.channel(topic) is
+    // cached by topic, so creating a new channel while a lurker
+    // is still subscribed would hand back the lurker's already-
+    // SUBSCRIBED instance, and ch.on('presence', ...) would throw
+    // "cannot add presence callbacks after subscribe()".
     async _dropLurker(channelId) {
       const cached = this._lurkers.get(channelId);
       if (!cached) return;
       this._lurkers.delete(channelId);
       this._lurkerCounts.delete(channelId);
       try {
-        const c = await Promise.resolve(cached);
+        const c = await cached;
         await c.unsubscribe();
       } catch {}
     }
