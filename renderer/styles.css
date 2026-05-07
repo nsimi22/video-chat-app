@@ -151,6 +151,12 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
 .msg-body pre code { background: transparent; padding: 0; }
 .msg-body a { color: var(--accent-2); text-decoration: none; }
 .msg-body a:hover { text-decoration: underline; }
+.msg-body blockquote {
+  border-left: 3px solid var(--line);
+  margin: 4px 0;
+  padding: 2px 10px;
+  color: var(--text-dim);
+}
 .mention {
   background: rgba(54, 197, 240, .15); color: var(--accent-2);
   padding: 0 3px; border-radius: 3px; font-weight: 600;
@@ -305,7 +311,8 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
   padding-left: 5px;
 }
 .msg .avatar-ai {
-  background: #3a3f47 !important;
+  /* Background is set inline by chat.js per-element; no !important needed
+     here. Only override font-size to give the 🤖 glyph room to breathe. */
   font-size: 18px;
 }
 

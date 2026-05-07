@@ -30,6 +30,9 @@ class ChatView {
     this._gifFetchSeq = 0;
     this._gifSearchTimer = null;
     this._tenorKey = null;
+    // In-flight AI requests — tracked as a counter so overlapping commands
+    // don't prematurely hide the "thinking" indicator.
+    this._aiThinkingCount = 0;
     // Single AbortController so destroy() can yank every DOM and mesh
     // listener this view installed in one go. ChatView is rebuilt on each
     // join/leave cycle, so without this the host elements (composer,
@@ -226,8 +229,10 @@ class ChatView {
     if (!text && attachments.length === 0) return;
 
     // Slash commands run client-side and either consume the input (no chat
-    // message sent) or fall through to the normal path. Right now we ship
-    // /jira; more can join the same shape.
+    // message sent) or fall through to the normal path. The slow-API
+    // handlers (/ai, /summarize) clear the composer themselves once they've
+    // validated input, so unrecognized /commands fall back through to
+    // sendMessage with the user's text intact.
     if (text.startsWith('/')) {
       const handled = await this._maybeRunSlash(text);
       if (handled) {
@@ -335,10 +340,18 @@ class ChatView {
       if (info.until > now) live.push(info.name);
       else this.typingUsers.delete(id);
     }
-    this.els.typing.textContent = live.length === 0 ? ''
+    let text = live.length === 0 ? ''
       : live.length === 1 ? `${live[0]} is typing…`
       : `${live.slice(0, -1).join(', ')} and ${live.at(-1)} are typing…`;
+    if (this._aiThinkingCount > 0) text = (text ? text + ' · ' : '') + '🤖 AI is thinking…';
+    this.els.typing.textContent = text;
   }
+
+  // Track AI requests in flight as a counter, not a boolean — otherwise
+  // overlapping `/ai` and `/summarize` would have the first one's `finally`
+  // hide the indicator while the second is still running.
+  _beginAiThinking() { this._aiThinkingCount = (this._aiThinkingCount || 0) + 1; this._refreshTyping(); }
+  _endAiThinking()   { this._aiThinkingCount = Math.max(0, (this._aiThinkingCount || 0) - 1); this._refreshTyping(); }
 
   _messages() { return this.byChannel.get(this.currentChannel) || []; }
 
@@ -758,15 +771,25 @@ class ChatView {
       alert('Usage: /ai <your question>');
       return true;
     }
-    // Wrap the response so the team has context: include the human's question
-    // at the top and the AI response below. Single message, single bubble.
+    // Once validated, clear the composer + show "🤖 AI is thinking…" in
+    // the typing-indicator slot so the user knows the (slow) request is
+    // in flight. Only the local user sees the thinking indicator —
+    // it's not broadcast.
+    this.els.composer.value = '';
+    this.els.composer.style.height = 'auto';
+    this._beginAiThinking();
     let result;
     try {
       result = await ai.chat({ messages: [{ role: 'user', content: prompt }] });
     } catch (err) {
       alert('AI request failed: ' + (err.message || err));
       return true;
+    } finally {
+      this._endAiThinking();
     }
+    // Wrap the response so the team has context: include the human's question
+    // as a markdown blockquote at the top and the AI response below. Single
+    // message, single bubble.
     const body = `> ${prompt.replace(/\n/g, '\n> ')}\n\n${result.text || '(no response)'}`;
     await this.mesh.sendAiMessage({
       channelId: this.currentChannel,
@@ -794,9 +817,14 @@ class ChatView {
       alert('Nothing to summarize yet.');
       return true;
     }
+    // Clear composer + flag thinking before the slow API call.
+    this.els.composer.value = '';
+    this.els.composer.style.height = 'auto';
+    this._beginAiThinking();
     let result;
     try { result = await ai.summarize(list); }
     catch (err) { alert('Summarize failed: ' + (err.message || err)); return true; }
+    finally { this._endAiThinking(); }
     const body = `🧠 **Summary of recent messages**\n\n${result.text || '(no summary)'}`;
     await this.mesh.sendAiMessage({
       channelId: this.currentChannel,
