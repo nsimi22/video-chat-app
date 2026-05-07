@@ -94,8 +94,19 @@ class MeshClient extends EventTarget {
     this.cameraStream = null;
     this._screenStreams = new Map();    // streamId -> { stream, label }
 
-    // Forward events from the HuddleClient so external listeners attached
-    // to the mesh keep working unchanged.
+    // Track bound handlers so disconnect() can detach them — calls are
+    // on-demand now, so a new MeshClient is constructed every time the
+    // user clicks Start/Join. Without removeEventListener the handlers
+    // accumulate on the long-lived HuddleClient and create zombie
+    // peer connections + signaling on subsequent calls.
+    this._bound = [];
+    const wire = (event, handler) => {
+      huddle.addEventListener(event, handler);
+      this._bound.push([event, handler]);
+    };
+
+    // Forward events from the HuddleClient so external listeners
+    // attached to the mesh keep working unchanged.
     const FORWARD = [
       'welcome', 'connected', 'peer-joined', 'peer-left',
       'screen-announce', 'screen-stop', 'draw', 'typing',
@@ -103,23 +114,40 @@ class MeshClient extends EventTarget {
       'chat-channel-added', 'chat-channel-removed',
     ];
     for (const ev of FORWARD) {
-      huddle.addEventListener(ev, (e) => this.dispatchEvent(new CustomEvent(ev, { detail: e.detail })));
+      wire(ev, (e) => this.dispatchEvent(new CustomEvent(ev, { detail: e.detail })));
     }
 
-    // Signaling: route inbound signals into the matching PeerConn, and add
-    // the local camera/screens to any peer that joins.
-    huddle.addEventListener('signal', (e) => {
+    // Signaling: route inbound signals into the matching PeerConn, and
+    // add the local camera/screens to any peer that joins.
+    wire('signal', (e) => {
       const { from, payload } = e.detail;
       const polite = this.peerId > from;
       this._ensurePeer(from, polite).then((conn) => conn.handleSignal(payload));
     });
-    huddle.addEventListener('peer-joined', (e) => {
+    wire('peer-joined', (e) => {
       this._ensurePeer(e.detail.id, /*polite*/ true).then((conn) => {
         if (this.cameraStream) conn.addStream(this.cameraStream);
         for (const { stream } of this._screenStreams.values()) conn.addStream(stream);
       });
     });
-    huddle.addEventListener('peer-left', (e) => this._dropPeer(e.detail));
+    wire('peer-left', (e) => this._dropPeer(e.detail));
+  }
+
+  // Bootstrap WebRTC peer connections to everyone already in the call
+  // when this MeshClient is constructed. We can't rely on the
+  // peer-joined event for them: the call channel's initial presence
+  // sync fires from inside huddle.joinCall(), so by the time MeshClient
+  // is created (and its listeners attached) those events are already
+  // gone. Iterate the snapshot the HuddleClient holds in
+  // `callPeerInfo` and fan out to each.
+  bootstrapExistingPeers() {
+    if (!this.huddle.callPeerInfo) return;
+    for (const peer of this.huddle.callPeerInfo.values()) {
+      this._ensurePeer(peer.id, /*polite*/ true).then((conn) => {
+        if (this.cameraStream) conn.addStream(this.cameraStream);
+        for (const { stream } of this._screenStreams.values()) conn.addStream(stream);
+      });
+    }
   }
 
   // --- Pass-through accessors so callers can read from `mesh` directly ----
@@ -226,6 +254,12 @@ class MeshClient extends EventTarget {
   // tear down the HuddleClient (chat realtime, team presence, etc.) —
   // the user stays signed into the team. Full sign-out happens via
   // huddle.stop() called separately by the orchestrator.
+  //
+  // Detaches every event listener registered on the long-lived
+  // HuddleClient: a new MeshClient is constructed each time the user
+  // starts/joins a call, so without explicit teardown the handlers
+  // accumulate and rejoining a call creates zombie PeerConns +
+  // duplicate signal routing.
   disconnect() {
     for (const id of [...this._screenStreams.keys()]) this.removeScreen(id);
     if (this.cameraStream) {
@@ -234,6 +268,10 @@ class MeshClient extends EventTarget {
     }
     for (const conn of this.peers.values()) conn.close();
     this.peers.clear();
+    for (const [event, handler] of this._bound) {
+      try { this.huddle.removeEventListener(event, handler); } catch {}
+    }
+    this._bound = [];
   }
 }
 

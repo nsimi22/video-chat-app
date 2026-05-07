@@ -130,6 +130,7 @@ const state = {
   huddle: null,           // HuddleClient — alive while signed into a team
   mesh: null,             // MeshClient — alive only while in a call
   inCallChannelId: null,  // channel.id of the active call, if any
+  callStarting: false,    // re-entrancy guard for startCall()
   lurkingChannelId: null, // channel.id we're watching call-presence on
   chat: null,
   myName: '',
@@ -374,16 +375,20 @@ async function joinTeamAndStart(teamId) {
   }
 }
 
-// User clicked "Start call" or "Join call". Subscribe the call topic,
-// construct MeshClient, prompt cam/mic, show the tile grid.
+// User clicked "Start call" or "Join call". Construct MeshClient first
+// (so its peer-joined listener is attached before huddle.joinCall fires
+// presence-sync events for everyone already in the call), then join.
 async function startCall(channelId) {
   if (!state.huddle || state.mesh) return; // already in a call or no team
-  try {
-    await state.huddle.joinCall(channelId);
-  } catch (err) {
-    console.warn('joinCall failed', err);
-    return;
-  }
+  if (state.callStarting) return;          // double-click / re-entrancy guard
+  state.callStarting = true;
+  els.btnStartCall.disabled = true;
+  els.btnJoinCall.disabled = true;
+  // Wire MeshClient before joinCall — joinCall's await resolves AFTER
+  // the realtime channel's initial presence sync, so peer-joined
+  // events for existing participants would otherwise fire into the
+  // void (no MeshClient listener yet) and we'd never form WebRTC
+  // connections to them.
   const mesh = new MeshClient(state.huddle);
   mesh.addEventListener('peer-joined', (e) => onCallPeerJoined(e.detail));
   mesh.addEventListener('peer-left', (e) => onCallPeerLeft(e.detail));
@@ -392,15 +397,33 @@ async function startCall(channelId) {
   mesh.addEventListener('screen-stop', (e) => onScreenStop(e.detail));
   mesh.addEventListener('remote-stream-ended', (e) => onScreenStop(e.detail));
   mesh.addEventListener('draw', (e) => onRemoteDraw(e.detail));
+  try {
+    await state.huddle.joinCall(channelId);
+  } catch (err) {
+    console.warn('joinCall failed', err);
+    mesh.disconnect();
+    state.callStarting = false;
+    els.btnStartCall.disabled = false;
+    els.btnJoinCall.disabled = false;
+    return;
+  }
   state.mesh = mesh;
   state.inCallChannelId = channelId;
   els.tiles.classList.remove('hidden');
+  // Belt + suspenders: also bootstrap from the snapshot HuddleClient
+  // already has, in case the presence-sync handler fired before our
+  // listener attached during the joinCall handshake. _ensurePeer is
+  // memoised so the duplicate path is a no-op when peer-joined races us.
+  mesh.bootstrapExistingPeers();
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, state.huddle.name);
   } catch (err) {
     console.warn('No camera/mic available', err);
   }
+  state.callStarting = false;
+  els.btnStartCall.disabled = false;
+  els.btnJoinCall.disabled = false;
   renderCallHeader();
 }
 
@@ -421,6 +444,15 @@ async function leaveCall() {
   closeAnnotate();
   els.tiles.classList.add('hidden');
   try { await state.huddle?.leaveCall(); } catch {}
+  // joinCall dropped the lurker for this channel when we became a
+  // full participant. After leaveCall, the user is still viewing the
+  // same chat — re-watch it so the header can show "Join call · N"
+  // if other participants stayed behind.
+  const ch = state.chat?.currentChannel;
+  if (ch && state.huddle) {
+    state.lurkingChannelId = ch;
+    try { await state.huddle.watchCallPresence(ch); } catch {}
+  }
   renderCallHeader();
 }
 
