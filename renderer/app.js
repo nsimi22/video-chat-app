@@ -1327,7 +1327,7 @@ function wireControls() {
   };
   // Sticky note button — only meaningful for whiteboards (the toolbar
   // is also used for screen-share annotations, which don't support
-  // notes). The button visibility toggles from openAnnotate based on
+  // notes). The button visibility toggles from toggleAnnotate based on
   // whether the active surface is a whiteboard.
   els.drawAddNote.onclick = () => {
     const session = state.whiteboardSessions.get(state.activeAnnotation);

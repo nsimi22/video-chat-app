@@ -32,10 +32,12 @@ class WhiteboardSession {
     this.layer = null;
     this._currentStroke = null;     // local in-progress stroke + its uuid
     this._paintedUuids = new Set(); // strokes painted live; replay skips matches
-    // Sticky notes: id -> { el, data }. data = { id, x, y, w, h, text, color }.
-    // Positions are fractional (0..1) of the tile bounding rect, so notes
-    // render consistently across viewers with different tile sizes — same
-    // scheme strokes use for points.
+    // Sticky notes: id -> { el, textarea, handle, data } where data is
+    // { id, x, y, w, h, text, color }. el is the .wb-note container,
+    // textarea + handle are kept for direct event/style access without
+    // re-querying the DOM. Positions are fractional (0..1) of the tile
+    // bounding rect — same scheme strokes use for points — so notes
+    // render consistently across viewers with different tile sizes.
     this.notes = new Map();
     this._noteSaveTimers = new Map(); // id -> setTimeout, debounce text saves
   }
@@ -96,14 +98,20 @@ class WhiteboardSession {
   // Renders, persists, and broadcasts so other peers see it live.
   // Default placement is the visible center.
   async addNote({ x = 0.4, y = 0.4 } = {}) {
-    const id = (typeof crypto !== 'undefined' && crypto.randomUUID)
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    // whiteboard_notes.id is a uuid column, so we need a real UUID
+    // here — the previous Date+Math.random fallback would fail at
+    // insert time. Modern Electron / Chromium ships crypto.randomUUID;
+    // bail loudly if it's missing rather than silently producing
+    // bad ids.
+    if (typeof crypto === 'undefined' || !crypto.randomUUID) {
+      throw new Error('crypto.randomUUID unavailable; cannot create note');
+    }
+    const id = crypto.randomUUID();
     const note = { id, x, y, w: 0.18, h: 0.18, text: '', color: '#ffd866' };
     this._renderNote(note, { focus: true });
     this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note });
     try {
-      await this.huddle.createWhiteboardNote(this.whiteboardId, this.channelId, note);
+      await this.huddle.createWhiteboardNote(this.whiteboardId, note);
     } catch (err) {
       console.warn('[whiteboard] note create failed', err);
     }

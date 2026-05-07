@@ -923,12 +923,15 @@
       return data || [];
     }
 
-    async createWhiteboardNote(whiteboardId, channelId, note) {
+    async createWhiteboardNote(whiteboardId, note) {
+      // team_id / channel_id used to be on this insert but they were
+      // redundant with the whiteboards FK and let a malicious client
+      // diverge them from the parent. RLS now uses an EXISTS join on
+      // whiteboards (mirroring the strokes_* policies after PR-#5
+      // review), so we only send the FK-anchored fields.
       const row = {
         id: note.id,
         whiteboard_id: whiteboardId,
-        team_id: this.team.id,
-        channel_id: channelId,
         author_id: this.peerId,
         x: note.x, y: note.y,
         w: note.w, h: note.h,

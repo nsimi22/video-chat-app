@@ -3,9 +3,15 @@
 -- consistently across viewers with different tile sizes — same scheme
 -- the drawing layer uses for stroke points.
 --
--- Updates (text edits, drag-moves) overwrite the row in place via
--- author_id-gated UPDATE; deletes are gated to the author OR any
--- channel member, matching how strokes_delete is permissive.
+-- Updates and deletes are intentionally permissive: anyone in the
+-- channel can move, edit, or delete any note. Matches the
+-- collaborative model used by strokes_delete (anyone can clear the
+-- canvas).
+--
+-- The team_id/channel_id columns + RLS defined here were dropped /
+-- rebased onto the parent whiteboards row in
+-- 20260507240000_huddle_whiteboard_notes_rls_fix.sql per the PR-#22
+-- review; see that migration for the current shape.
 
 create table public.whiteboard_notes (
   id uuid primary key default gen_random_uuid(),
