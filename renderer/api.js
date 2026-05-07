@@ -899,7 +899,11 @@
     const { data: { session } } = await sb.auth.getSession();
     const profile = (await sb.from('profiles').select('*').eq('user_id', session.user.id).single()).data;
     const client = new HuddleClient({ supabase: sb, session, profile, team });
-    await client.start();
+    // NOTE: callers must attach event listeners on `client` before
+    // calling `client.start()`. start() dispatches `welcome` (with the
+    // initial channels + peers payload) synchronously at the end of
+    // its handshake; if listeners aren't attached yet, the event fires
+    // into the void and the sidebar never renders.
     return client;
   }
 

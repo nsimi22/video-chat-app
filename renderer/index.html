@@ -66,44 +66,81 @@
           <div class="workspace-name">Huddle</div>
           <div class="me-row">
             <div id="me" class="me"></div>
-            <button id="open-settings" class="ghost" title="Settings">⚙</button>
-            <button id="me-signout" class="ghost" title="Sign out">⎋</button>
+            <button id="open-settings" class="ghost" title="Settings" aria-label="Settings">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+            <button id="me-signout" class="ghost" title="Sign out" aria-label="Sign out">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            </button>
           </div>
         </div>
         <div class="section-header section-header-row">
           <span>Channels</span>
-          <button id="add-channel" class="ghost" title="Create a channel">＋</button>
+          <button id="add-channel" class="ghost" title="Create a channel" aria-label="Create a channel">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
         </div>
         <ul id="channels" class="channel-list"></ul>
         <div class="section-header section-header-row">
           <span>Direct Messages</span>
-          <button id="add-dm" class="ghost" title="New direct message">＋</button>
+          <button id="add-dm" class="ghost" title="New direct message" aria-label="New direct message">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
         </div>
         <ul id="dms" class="channel-list"></ul>
         <div class="section-header">People</div>
         <ul id="people" class="people-list"></ul>
       </aside>
 
-      <!-- Call / screens area -->
+      <!-- Stage: chat occupies the full main area; the tile grid stacks
+           above it only while a call is live in this channel. -->
       <main class="stage">
-        <div class="stage-header">
+        <header class="stage-header">
           <div class="stage-title">
-            <span id="channel-name">#general</span>
+            <button id="sidebar-toggle" class="ghost icon-only" title="Toggle channels" aria-label="Toggle channels">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
+            <span id="channel-name" class="channel-name">#general</span>
             <span id="channel-topic" class="channel-topic"></span>
           </div>
-          <div class="call-controls">
+          <div class="header-actions">
+            <button id="whiteboard-btn" class="icon-only ghost" title="Open whiteboard" aria-label="Open whiteboard">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            </button>
+            <button id="search-btn" class="icon-only ghost" title="Search messages" aria-label="Search messages">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </button>
+            <button id="chat-thread-back" class="hidden">← Back to channel</button>
+            <span class="header-spacer"></span>
             <!-- Pre-call entry: visible when no call is live in this channel
                  OR when a call is live but the user hasn't joined yet. -->
-            <button id="btn-start-call" class="ctrl primary" title="Start a call in this channel">📞 Start call</button>
-            <button id="btn-join-call" class="ctrl primary hidden" title="Join the call in this channel">📞 Join call</button>
+            <button id="btn-start-call" class="ctrl primary" title="Start a call in this channel">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.86 19.86 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.86 19.86 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+              <span>Start call</span>
+            </button>
+            <button id="btn-join-call" class="ctrl primary hidden" title="Join the call in this channel">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.86 19.86 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.86 19.86 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+              <span>Join call</span>
+            </button>
             <!-- In-call controls: visible only while the user is in a call. -->
-            <button id="btn-mic" class="ctrl hidden" title="Toggle microphone">🎤</button>
-            <button id="btn-cam" class="ctrl hidden" title="Toggle camera">📷</button>
-            <button id="btn-share" class="ctrl hidden" title="Share a screen">🖥️ Share screen</button>
-            <button id="btn-jira" class="ctrl hidden" title="Create a Jira ticket">🎫 Ticket</button>
-            <button id="btn-leave" class="ctrl danger hidden" title="Leave call">⏻ Leave</button>
+            <button id="btn-mic" class="ctrl icon-only hidden" title="Toggle microphone" aria-label="Toggle microphone">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg>
+            </button>
+            <button id="btn-cam" class="ctrl icon-only hidden" title="Toggle camera" aria-label="Toggle camera">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+            </button>
+            <button id="btn-share" class="ctrl icon-only hidden" title="Share a screen" aria-label="Share a screen">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="9 8 12 5 15 8"/><line x1="12" y1="5" x2="12" y2="13"/></svg>
+            </button>
+            <button id="btn-jira" class="ctrl icon-only hidden" title="Create a Jira ticket" aria-label="Create a Jira ticket">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7" cy="7" r="1"/></svg>
+            </button>
+            <button id="btn-leave" class="ctrl danger hidden" title="Leave call">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+              <span>Leave</span>
+            </button>
           </div>
-        </div>
+        </header>
 
         <!-- Tile grid: cameras + active screen shares. Hidden until you're in a call. -->
         <section id="tiles" class="tiles hidden"></section>
@@ -119,27 +156,22 @@
           <button id="draw-clear">Clear</button>
           <button id="draw-close">Done</button>
         </div>
-      </main>
 
-      <!-- Chat pane -->
-      <section class="chat">
-        <header class="chat-header">
-          <div id="chat-channel-name">#general</div>
-          <div class="chat-header-actions">
-            <button id="whiteboard-btn" title="Open whiteboard">🎨</button>
-            <button id="search-btn" title="Search messages">🔍</button>
-            <button id="chat-thread-back" class="hidden">← Back to channel</button>
-          </div>
-        </header>
+        <!-- Chat: the redundant chat-channel-name header was removed; the
+             stage header above is the canonical channel label. -->
         <div id="messages" class="messages"></div>
         <div id="typing-indicator" class="typing"></div>
         <div id="reconnect-banner" class="reconnect-banner hidden"></div>
         <div id="attachment-chips" class="attachment-chips hidden"></div>
         <div class="composer">
-          <button id="attach-btn" title="Attach file">📎</button>
+          <button id="attach-btn" class="icon-only ghost" title="Attach file" aria-label="Attach file">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          </button>
           <input id="file-input" type="file" multiple class="hidden" />
           <button id="gif-btn" title="GIF">GIF</button>
-          <button id="emoji-btn" title="Emoji">😀</button>
+          <button id="emoji-btn" class="icon-only" title="Emoji" aria-label="Emoji">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+          </button>
           <textarea id="composer-input" placeholder="Message #general"
                     rows="1"></textarea>
           <button id="send-btn" class="primary">Send</button>
@@ -157,7 +189,7 @@
           <div id="gif-grid" class="gif-grid"></div>
           <div id="gif-attribution" class="gif-attribution hidden">Powered by GIPHY</div>
         </div>
-      </section>
+      </main>
     </div>
 
     <!-- Create-channel modal -->
