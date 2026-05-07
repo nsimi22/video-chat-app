@@ -688,6 +688,21 @@
       if (!otherUserId) throw new Error('createDm: missing user id');
       const a = this.peerId, b = otherUserId;
       if (a === b) throw new Error("can't DM yourself");
+      // Verify the target is a member of the current team. The
+      // previous lookup-by-name path enforced this implicitly (only
+      // team_members were findable); the uuid path skips it, so
+      // without a guard a caller could DM an arbitrary user. The
+      // channel_members insert downstream is RLS-gated, but it
+      // fires AFTER the channel row is created — without this
+      // upfront check we'd leak orphan channel rows on misuse.
+      const { data: membership, error: memCheckErr } = await this.supabase
+        .from('team_members')
+        .select('user_id')
+        .eq('team_id', this.team.id)
+        .eq('user_id', otherUserId)
+        .maybeSingle();
+      if (memCheckErr) throw memCheckErr;
+      if (!membership) throw new Error('not a member of this team');
       const id = 'dm:' + (a < b ? `${a}::${b}` : `${b}::${a}`);
       // Prefer the caller-supplied name, then the live presence
       // cache (fresher than profiles.name when a teammate has
