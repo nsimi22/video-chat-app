@@ -180,8 +180,17 @@ const STREAM_DECISION_MS = 1500;
     return;
   }
   state._email = session.user.email;
-  const sb = await window.huddleApi.getSupabase();
-  const { data: prof } = await sb.from('profiles').select('name, color').eq('user_id', session.user.id).maybeSingle();
+  let prof = null;
+  try {
+    const sb = await window.huddleApi.getSupabase();
+    const { data } = await sb.from('profiles').select('name, color').eq('user_id', session.user.id).maybeSingle();
+    prof = data;
+  } catch (err) {
+    // Network / supabase blip: don't strand the user on a blank screen.
+    // Fall through to the profile step; ensureProfile is an upsert so a
+    // re-entry of the existing name is harmless.
+    console.warn('boot: profile fetch failed', err);
+  }
   if (!prof?.name) {
     showStep('profile');
     await prefillProfile();
