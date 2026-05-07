@@ -23,15 +23,27 @@ html, body {
 .hidden { display: none !important; }
 button {
   background: var(--bg-3); color: var(--text); border: 1px solid var(--line);
-  padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 13px;
+  padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+  line-height: 1.2; min-height: 32px;
+  transition: background 80ms ease, border-color 80ms ease;
 }
 button:hover { background: #34373c; }
+button:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 1px; }
 button.primary { background: var(--accent); border-color: var(--accent); }
 button.primary:hover { background: #1573b8; }
 button.danger { background: var(--bad); border-color: var(--bad); }
+button.danger:hover { background: #c0184d; }
+button.subtle {
+  background: transparent; border-color: transparent; color: var(--text-dim);
+}
+button.subtle:hover { background: rgba(255,255,255,.06); color: var(--text); }
+button[disabled] { opacity: .5; cursor: not-allowed; }
+.btn-row { display: flex; gap: 8px; margin-top: 14px; }
+.btn-row > button { flex: 1; }
+.btn-block { width: 100%; margin-top: 14px; }
 input, textarea {
   background: var(--bg-2); color: var(--text); border: 1px solid var(--line);
-  border-radius: 6px; padding: 8px; font-size: 13px;
+  border-radius: 6px; padding: 8px 10px; font-size: 13px;
   font-family: inherit;
 }
 input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
@@ -48,7 +60,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
 .modal h2 { margin: 0 0 12px 0; font-size: 18px; }
 .modal label { display:block; font-size: 12px; color: var(--text-dim); margin: 10px 0 4px; }
 .modal input { width: 100%; }
-.modal .primary { width: 100%; margin-top: 16px; padding: 10px; font-size: 14px; }
+/* Solo modal CTAs (no paired Cancel) opt-in via .btn-block on the button. */
 
 /* Layout */
 .app {
@@ -379,6 +391,8 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
   display: block;
 }
 .tile.screen video { object-fit: contain; }
+/* Local camera reads as a mirror so left/right matches the user's expectation. */
+.tile[data-kind="self"] video { transform: scaleX(-1); }
 .tile-label {
   position: absolute; left: 8px; bottom: 8px;
   background: rgba(0,0,0,.6); color: white; padding: 3px 8px; border-radius: 6px;
