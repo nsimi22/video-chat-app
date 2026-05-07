@@ -111,23 +111,22 @@
       this._dispatchWelcome();
     }
 
-    stop() {
-      try { this._teamChannel?.unsubscribe(); } catch {}
-      try { this._dbChannel?.unsubscribe(); } catch {}
-      try { this._callChannel?.unsubscribe(); } catch {}
+    async stop() {
+      // Channel maps store readiness promises — resolve them and await
+      // the unsubscribes before clearing the maps so the page isn't
+      // unloaded mid-handshake (which leaks subscriptions server-side).
+      const direct = [this._teamChannel, this._dbChannel, this._callChannel];
+      const indirect = [...this._screenChannels.values(), ...this._whiteboardChannels.values(), ...this._lurkers.values()];
+      const work = direct
+        .map((ch) => ch ? Promise.resolve().then(() => ch.unsubscribe()).catch(() => {}) : null)
+        .filter(Boolean)
+        .concat(indirect.map((p) => Promise.resolve(p).then((ch) => ch.unsubscribe()).catch(() => {})));
+      await Promise.allSettled(work);
+      this._teamChannel = null;
+      this._dbChannel = null;
       this._callChannel = null;
       this._callChannelId = null;
       this._callPeerInfo.clear();
-      // Channel maps now store readiness promises — resolve before unsubscribing.
-      for (const p of this._screenChannels.values()) {
-        Promise.resolve(p).then((ch) => { try { ch.unsubscribe(); } catch {} }).catch(() => {});
-      }
-      for (const p of this._whiteboardChannels.values()) {
-        Promise.resolve(p).then((ch) => { try { ch.unsubscribe(); } catch {} }).catch(() => {});
-      }
-      for (const p of this._lurkers.values()) {
-        Promise.resolve(p).then((ch) => { try { ch.unsubscribe(); } catch {} }).catch(() => {});
-      }
       this._screenChannels.clear();
       this._whiteboardChannels.clear();
       this._lurkers.clear();
@@ -234,13 +233,17 @@
       this._callPeerInfo.clear();
       this._callChannel = null;
       this._callChannelId = null;
-      try { await ch.unsubscribe(); } catch {}
-      // Drop any per-screen channels we joined for this call so we
-      // don't pay drawing-stroke bandwidth after leaving.
-      for (const [sid, p] of this._screenChannels.entries()) {
-        Promise.resolve(p).then((c) => { try { c.unsubscribe(); } catch {} }).catch(() => {});
-        this._screenChannels.delete(sid);
-      }
+      // Await the call channel + every per-screen channel before clearing
+      // their maps, otherwise we can drop the references mid-handshake
+      // and leave subscriptions hanging server-side.
+      const screenUnsubs = [...this._screenChannels.values()].map(
+        (p) => Promise.resolve(p).then((c) => c.unsubscribe()).catch(() => {})
+      );
+      await Promise.allSettled([
+        Promise.resolve().then(() => ch.unsubscribe()).catch(() => {}),
+        ...screenUnsubs,
+      ]);
+      this._screenChannels.clear();
       this.activeScreens.clear();
       this.remoteScreenLabels.clear();
       this.dispatchEvent(new CustomEvent('call-left', { detail: { channelId: wasIn } }));
@@ -288,6 +291,15 @@
       Promise.resolve(cached).then((c) => { try { c.unsubscribe(); } catch {} }).catch(() => {});
       this._lurkers.delete(channelId);
       this._lurkerCounts.delete(channelId);
+    }
+
+    // Last-known participant count for a watched channel, or 0 if not
+    // currently watched. The renderer reads this synchronously while
+    // rendering the channel header; it's kept fresh by the lurker's
+    // presence-sync handler.
+    getCallParticipantCount(channelId) {
+      if (this._callChannelId === channelId) return this._callPeerInfo.size + 1;
+      return this._lurkerCounts.get(channelId) || 0;
     }
 
     // Live mirror of the current call membership for the renderer's

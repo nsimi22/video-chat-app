@@ -424,7 +424,7 @@ async function leaveCall() {
   renderCallHeader();
 }
 
-function teardownTeam() {
+async function teardownTeam() {
   if (state.mesh) {
     for (const session of state.whiteboardSessions.values()) session.stop();
     state.whiteboardSessions.clear();
@@ -434,7 +434,9 @@ function teardownTeam() {
   // Detach the chat view's interval + every listener it installed before
   // dropping the reference, otherwise rejoining accumulates handlers.
   state.chat?.destroy();
-  state.huddle?.stop();
+  // Await the huddle teardown so unsubscribes complete before the page
+  // can navigate / reload — otherwise channels can leak server-side.
+  try { await state.huddle?.stop(); } catch {}
   state.huddle = null;
   state.chat = null;
   state.channelMeta.clear();
@@ -456,7 +458,7 @@ function teardownTeam() {
 
 // "Leave team" — drop everything, go back to the team picker (still signed in).
 async function leave() {
-  teardownTeam();
+  await teardownTeam();
   els.login.classList.remove('hidden');
   showStep('team');
   await renderMyTeams();
@@ -464,7 +466,7 @@ async function leave() {
 
 // Full sign-out: leave the team, drop the Supabase session, reset to email step.
 async function signOutFully() {
-  teardownTeam();
+  await teardownTeam();
   try { await window.huddleApi.signOut(); } catch {}
   // Clear remembered team so the next signed-in user starts at the
   // team picker (and doesn't auto-resume into someone else's team).
@@ -485,7 +487,7 @@ function renderCallHeader() {
   const channelId = state.chat?.currentChannel;
   const inCallHere = state.mesh && state.inCallChannelId === channelId;
   const lurkerCount = (channelId && state.huddle && !inCallHere)
-    ? (state.huddle._lurkerCounts.get(channelId) || 0) : 0;
+    ? state.huddle.getCallParticipantCount(channelId) : 0;
   const others = inCallHere ? null : (lurkerCount > 0);
   els.btnStartCall.classList.toggle('hidden', !!inCallHere || !!others);
   els.btnJoinCall.classList.toggle('hidden', !!inCallHere || !others);
