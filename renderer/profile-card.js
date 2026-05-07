@@ -91,9 +91,12 @@
         </div>
       `;
       this.el.querySelector('[data-act="message"]')?.addEventListener('click', () => {
-        const name = p.name;
+        // Pass the full profile so the host can DM by user_id (the
+        // FK) rather than re-looking-up by display name. The string
+        // form was fragile after profile renames and ambiguous
+        // when two teammates share a name.
         this.hide();
-        this.onMessage?.(name);
+        this.onMessage?.(p);
       });
       this.el.querySelector('[data-act="edit"]')?.addEventListener('click', () => {
         this.hide();
