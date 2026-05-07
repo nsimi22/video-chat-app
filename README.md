@@ -14,6 +14,13 @@ A self-contained Electron desktop app that combines:
 - **Live drawing on shared screens** — pen, arrow, eraser. Strokes are
   broadcast in real time on a per-screen Realtime channel and align
   for every viewer (resolution-independent).
+- **Collaborative whiteboard per channel** — click 🎨 in the chat
+  header to open a blank canvas anyone in the channel can draw on
+  together. Live strokes ride the same broadcast pipe; completed
+  strokes are persisted as polylines in Postgres so the canvas
+  survives reloads and latecomers replay the full board on open.
+  Open as many as you want at once — each channel gets its own
+  whiteboard.
 - **Slack-style chat** — public + private channels, direct messages,
   threaded replies, emoji reactions, an emoji picker (with
   `:shortcode:` autoreplace on send), and a typing indicator.

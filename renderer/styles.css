@@ -330,6 +330,11 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
   border: 1px solid var(--line);
 }
 .tile.screen { grid-column: span 2; min-height: 360px; }
+.tile.whiteboard {
+  grid-column: span 2; min-height: 360px;
+  background: #fdfcf8; /* warm off-white, easier on the eyes than #fff */
+}
+.tile.whiteboard video { display: none; }
 .tile video {
   width: 100%; height: 100%; object-fit: cover; background: #000;
   display: block;

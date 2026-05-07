@@ -33,6 +33,7 @@ const els = {
   workspaceName: $('.workspace-name'),
   reconnectBanner: $('#reconnect-banner'),
   searchBtn: $('#search-btn'),
+  whiteboardBtn: $('#whiteboard-btn'),
   searchModal: $('#search-modal'),
   searchInput: $('#search-input'),
   searchScopeCurrent: $('#search-scope-current'),
@@ -130,6 +131,7 @@ const state = {
   _email: null,
   settings: {},      // user_integrations.settings; loaded post-auth
   jira: null,        // JiraClient — rebuilt whenever settings change
+  whiteboardSessions: new Map(), // whiteboardId -> WhiteboardSession
 };
 
 // Whether the OS window is currently focused. Used to gate desktop
@@ -324,6 +326,8 @@ async function joinTeamAndStart(teamId) {
 
 function teardownMesh() {
   if (!state.mesh) return;
+  for (const session of state.whiteboardSessions.values()) session.stop();
+  state.whiteboardSessions.clear();
   state.mesh.disconnect();
   state.mesh = null;
   state.chat = null;
@@ -586,8 +590,12 @@ function makeTile({ key, label, kind }) {
   let tile = state.tilesByKey.get(key);
   if (tile) return tile;
   tile = document.createElement('div');
-  tile.className = 'tile' + (kind === 'screen' ? ' screen' : '');
+  // 'screen' tiles span two grid columns. Whiteboards reuse the same
+  // generous footprint without the screen-specific overlay logic.
+  const sizeClass = (kind === 'screen' || kind === 'whiteboard') ? ' screen' : '';
+  tile.className = `tile${sizeClass}` + (kind === 'whiteboard' ? ' whiteboard' : '');
   tile.dataset.key = key;
+  tile.dataset.kind = kind || '';
   const video = document.createElement('video');
   video.autoplay = true;
   video.playsInline = true;
@@ -597,14 +605,15 @@ function makeTile({ key, label, kind }) {
   lbl.className = 'tile-label';
   lbl.textContent = label;
   tile.appendChild(lbl);
-  if (kind === 'screen') {
+  if (kind === 'screen' || kind === 'whiteboard') {
     const actions = document.createElement('div');
     actions.className = 'tile-actions';
-    const annotate = document.createElement('button');
-    annotate.textContent = '✏️ Annotate';
-    annotate.onclick = () => toggleAnnotate(tile.dataset.streamId);
-    actions.appendChild(annotate);
-    tile.dataset.kind = 'screen';
+    if (kind === 'screen') {
+      const annotate = document.createElement('button');
+      annotate.textContent = '✏️ Annotate';
+      annotate.onclick = () => toggleAnnotate(tile.dataset.streamId);
+      actions.appendChild(annotate);
+    }
     tile.appendChild(actions);
   }
   els.tiles.appendChild(tile);
@@ -758,6 +767,9 @@ function wireControls() {
     openSettings();
   };
 
+  // Whiteboard (🎨)
+  els.whiteboardBtn.onclick = openWhiteboard;
+
   // Search
   els.searchBtn.onclick = openSearchModal;
   els.searchCancel.onclick = () => els.searchModal.classList.add('hidden');
@@ -791,8 +803,23 @@ function wireControls() {
   });
   els.drawColor.oninput = () => state.drawLayers.get(state.activeAnnotation)?.setColor(els.drawColor.value);
   els.drawSize.oninput = () => state.drawLayers.get(state.activeAnnotation)?.setSize(parseInt(els.drawSize.value, 10));
-  els.drawClear.onclick = () => state.drawLayers.get(state.activeAnnotation)?.clearAll(true);
-  els.drawClose.onclick = closeAnnotate;
+  els.drawClear.onclick = () => {
+    // Whiteboards have a separate clear path that also wipes persistent
+    // strokes; screen annotations only clear the local overlay + broadcast.
+    const session = state.whiteboardSessions.get(state.activeAnnotation);
+    if (session) {
+      if (confirm('Clear the whiteboard for everyone? This cannot be undone.')) session.clear();
+      return;
+    }
+    state.drawLayers.get(state.activeAnnotation)?.clearAll(true);
+  };
+  els.drawClose.onclick = () => {
+    if (state.whiteboardSessions.has(state.activeAnnotation)) {
+      closeWhiteboard(state.activeAnnotation);
+    } else {
+      closeAnnotate();
+    }
+  };
 }
 
 function openCreateChannelModal() {
@@ -938,6 +965,70 @@ function renderSearchResults({ query, results }) {
       if (m.parentId) state.chat.openThread(m.parentId);
     };
     els.searchResults.appendChild(hit);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Whiteboard (one collaborative canvas per channel, persisted to Postgres)
+// ---------------------------------------------------------------------------
+
+async function openWhiteboard() {
+  if (!state.mesh || !state.chat) return;
+  const channelId = state.chat.currentChannel;
+  const channel = state.channelMeta.get(channelId);
+  let wb;
+  try { wb = await state.mesh.huddle.getOrCreateWhiteboard(channelId); }
+  catch (err) { alert('Could not open whiteboard: ' + (err.message || err)); return; }
+
+  // If already open as a tile, just refocus it.
+  const key = `whiteboard:${wb.id}`;
+  if (state.tilesByKey.has(key)) {
+    toggleAnnotate(wb.id);
+    return;
+  }
+
+  const tile = makeTile({
+    key,
+    label: `Whiteboard — ${channel ? displayLabelFor(channel) : '#' + channelId}`,
+    kind: 'whiteboard',
+  });
+  tile.dataset.streamId = wb.id;
+
+  const session = new window.WhiteboardSession({
+    huddle: state.mesh.huddle, channelId, whiteboard: wb, tile,
+  });
+  state.whiteboardSessions.set(wb.id, session);
+  try { await session.start(); }
+  catch (err) {
+    console.warn('whiteboard start failed', err);
+    closeWhiteboard(wb.id);
+    return;
+  }
+  // Register the layer so the existing draw toolbar (color, size, tool)
+  // controls the whiteboard the same way it controls a screen annotation.
+  state.drawLayers.set(wb.id, session.layer);
+
+  // Tile actions: just close (the toolbar's Clear button covers clearing).
+  const actions = tile.querySelector('.tile-actions');
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕ Close';
+  closeBtn.onclick = () => closeWhiteboard(wb.id);
+  actions.appendChild(closeBtn);
+
+  // Drawing is always active on a whiteboard; reuse the screen-annotation
+  // toolbar so pen/arrow/eraser/color/size all work.
+  toggleAnnotate(wb.id);
+}
+
+function closeWhiteboard(whiteboardId) {
+  const session = state.whiteboardSessions.get(whiteboardId);
+  if (session) session.stop();
+  state.whiteboardSessions.delete(whiteboardId);
+  state.drawLayers.delete(whiteboardId);
+  state.tilesByKey.delete(`whiteboard:${whiteboardId}`);
+  if (state.activeAnnotation === whiteboardId) {
+    state.activeAnnotation = null;
+    els.drawToolbar.classList.add('hidden');
   }
 }
 

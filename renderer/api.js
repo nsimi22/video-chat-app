@@ -84,8 +84,9 @@
       this.activeScreens = new Map(); // streamId -> { from, label, owner: bool }
       this.url = _config.url;
       this._teamChannel = null;
-      this._screenChannels = new Map(); // streamId -> RealtimeChannel
-      this._dbChannel = null;           // postgres_changes subscription
+      this._screenChannels = new Map();     // streamId -> RealtimeChannel
+      this._whiteboardChannels = new Map(); // whiteboardId -> RealtimeChannel
+      this._dbChannel = null;               // postgres_changes subscription
     }
 
     async start() {
@@ -103,7 +104,9 @@
       try { this._teamChannel?.unsubscribe(); } catch {}
       try { this._dbChannel?.unsubscribe(); } catch {}
       for (const ch of this._screenChannels.values()) try { ch.unsubscribe(); } catch {}
+      for (const ch of this._whiteboardChannels.values()) try { ch.unsubscribe(); } catch {}
       this._screenChannels.clear();
+      this._whiteboardChannels.clear();
     }
 
     // --- Team channel: presence + signaling + typing + announcements -----
@@ -444,6 +447,84 @@
       const { data, error } = await q;
       if (error) throw error;
       return (data || []).map((m) => this._marshalMessage(m));
+    }
+
+    // --- Whiteboards (one per channel) ----------------------------------
+    //
+    // Live strokes go over a per-board Realtime broadcast channel so peers
+    // see drawing as it happens. Completed strokes are persisted as
+    // polylines so latecomers can replay the canvas.
+
+    async getOrCreateWhiteboard(channelId) {
+      const { data: existing } = await this.supabase
+        .from('whiteboards').select('*')
+        .eq('team_id', this.team.id).eq('channel_id', channelId).maybeSingle();
+      if (existing) return existing;
+      const { data: created, error } = await this.supabase
+        .from('whiteboards').insert({
+          team_id: this.team.id, channel_id: channelId, created_by: this.peerId,
+        }).select('*').single();
+      if (error) throw error;
+      return created;
+    }
+
+    async fetchWhiteboardStrokes(whiteboardId) {
+      const { data, error } = await this.supabase
+        .from('whiteboard_strokes').select('id, data')
+        .eq('whiteboard_id', whiteboardId).order('id', { ascending: true });
+      if (error) throw error;
+      return data || [];
+    }
+
+    async persistWhiteboardStroke(whiteboardId, channelId, polyline) {
+      await this.supabase.from('whiteboard_strokes').insert({
+        whiteboard_id: whiteboardId,
+        team_id: this.team.id,
+        channel_id: channelId,
+        author_id: this.peerId,
+        data: polyline,
+      });
+    }
+
+    async clearWhiteboard(whiteboardId) {
+      // Live viewers get a "clear" stroke via broadcast; persistent state is
+      // wiped by deleting every stroke row. New viewers fetch zero rows on
+      // open and start blank.
+      await this.supabase.from('whiteboard_strokes').delete().eq('whiteboard_id', whiteboardId);
+    }
+
+    // Subscribe to live strokes on a whiteboard. Idempotent — repeated calls
+    // for the same whiteboardId hit the cached channel. The most recent
+    // onStroke replaces the previous handler.
+    async ensureWhiteboardChannel(whiteboardId, onStroke) {
+      let ch = this._whiteboardChannels.get(whiteboardId);
+      if (ch) {
+        ch._onStroke = onStroke;
+        return ch;
+      }
+      ch = this.supabase.channel(`whiteboard:${whiteboardId}`, { config: { broadcast: { self: false }, private: true } });
+      ch._onStroke = onStroke;
+      ch.on('broadcast', { event: 'stroke' }, ({ payload }) => ch._onStroke?.(payload));
+      await new Promise((res, rej) => ch.subscribe((s, e) =>
+        s === 'SUBSCRIBED' ? res()
+        : (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') ? rej(e)
+        : null
+      ));
+      this._whiteboardChannels.set(whiteboardId, ch);
+      return ch;
+    }
+
+    sendWhiteboardStroke(whiteboardId, stroke) {
+      const ch = this._whiteboardChannels.get(whiteboardId);
+      if (ch) ch.send({ type: 'broadcast', event: 'stroke', payload: { from: this.peerId, stroke } });
+    }
+
+    closeWhiteboardChannel(whiteboardId) {
+      const ch = this._whiteboardChannels.get(whiteboardId);
+      if (ch) {
+        try { ch.unsubscribe(); } catch {}
+        this._whiteboardChannels.delete(whiteboardId);
+      }
     }
 
     // --- File uploads (Supabase Storage) --------------------------------
