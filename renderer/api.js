@@ -85,8 +85,7 @@
       this.url = _config.url;
       this._teamChannel = null;
       this._screenChannels = new Map(); // streamId -> RealtimeChannel
-      this._messagesChannel = null;
-      this._tableChannel = null;
+      this._dbChannel = null;           // postgres_changes subscription
     }
 
     async start() {
@@ -102,7 +101,7 @@
 
     stop() {
       try { this._teamChannel?.unsubscribe(); } catch {}
-      try { this._messagesChannel?.unsubscribe(); } catch {}
+      try { this._dbChannel?.unsubscribe(); } catch {}
       for (const ch of this._screenChannels.values()) try { ch.unsubscribe(); } catch {}
       this._screenChannels.clear();
     }
@@ -150,11 +149,19 @@
       ch.on('broadcast', { event: 'screen-announce' }, ({ payload }) => {
         this.activeScreens.set(payload.streamId, { fromId: payload.from, label: payload.label });
         this.remoteScreenLabels.set(payload.streamId, { label: payload.label, fromName: payload.fromName, from: payload.from });
+        // Receivers also need to join the per-screen broadcast channel, otherwise
+        // drawing strokes from other peers never reach this client.
+        this._ensureScreenChannel(payload.streamId).catch(() => {});
         this.dispatchEvent(new CustomEvent('screen-announce', { detail: payload }));
       });
       ch.on('broadcast', { event: 'screen-stop' }, ({ payload }) => {
         this.activeScreens.delete(payload.streamId);
         this.remoteScreenLabels.delete(payload.streamId);
+        const screenCh = this._screenChannels.get(payload.streamId);
+        if (screenCh) {
+          try { screenCh.unsubscribe(); } catch {}
+          this._screenChannels.delete(payload.streamId);
+        }
         this.dispatchEvent(new CustomEvent('screen-stop', { detail: payload }));
       });
       ch.on('broadcast', { event: 'typing' }, ({ payload }) => {
@@ -177,7 +184,7 @@
 
     async _subscribeToMessages() {
       const ch = this.supabase.channel(`db:team:${this.team.id}`);
-      this._tableChannel = ch;
+      this._dbChannel = ch;
       const teamFilter = `team_id=eq.${this.team.id}`;
       ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: teamFilter },
         (p) => this.dispatchEvent(new CustomEvent('chat-message', { detail: { message: this._marshalMessage(p.new) } })));
@@ -192,12 +199,21 @@
       ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'channel_members', filter: teamFilter },
         async (p) => {
           // A member was added to a private channel — if it's us, fetch the
-          // channel meta and announce it client-side so it appears in the
-          // sidebar (we wouldn't have been able to read it before this).
+          // channel meta + member names and announce it client-side so it
+          // appears in the sidebar (we couldn't have read it before this).
           if (p.new.user_id !== this.peerId) return;
           const { data } = await this.supabase
             .from('channels').select('*').eq('team_id', p.new.team_id).eq('id', p.new.channel_id).maybeSingle();
-          if (data) this.dispatchEvent(new CustomEvent('chat-channel-added', { detail: { channel: this._marshalChannel(data) } }));
+          if (!data) return;
+          const meta = this._marshalChannel(data);
+          if (meta.type !== 'public') {
+            const { data: rows } = await this.supabase
+              .from('channel_members')
+              .select('profiles!inner(name)')
+              .eq('team_id', p.new.team_id).eq('channel_id', p.new.channel_id);
+            meta.members = (rows || []).map((r) => r.profiles.name);
+          }
+          this.dispatchEvent(new CustomEvent('chat-channel-added', { detail: { channel: meta } }));
         });
       await new Promise((resolve, reject) => {
         ch.subscribe((status, err) => {
@@ -259,10 +275,17 @@
     sendScreenAnnounce(streamId, label) {
       this._teamChannel?.send({ type: 'broadcast', event: 'screen-announce', payload: { from: this.peerId, fromName: this.name, streamId, label } });
       this.activeScreens.set(streamId, { fromId: this.peerId, label });
+      // Owner also subscribes so they receive strokes drawn by other peers.
+      this._ensureScreenChannel(streamId).catch(() => {});
     }
     sendScreenStop(streamId) {
       this._teamChannel?.send({ type: 'broadcast', event: 'screen-stop', payload: { from: this.peerId, streamId } });
       this.activeScreens.delete(streamId);
+      const screenCh = this._screenChannels.get(streamId);
+      if (screenCh) {
+        try { screenCh.unsubscribe(); } catch {}
+        this._screenChannels.delete(streamId);
+      }
     }
     sendTyping(channelId, parentId) {
       this._teamChannel?.send({
@@ -359,17 +382,24 @@
         type: isPrivate ? 'private' : 'public', protected: false, created_by: this.peerId,
       }).select('*').single();
       if (error) throw error;
-      if (isPrivate && memberNames?.length) {
-        const { data: members } = await this.supabase
-          .from('team_members')
-          .select('user_id, profiles!inner(name)')
-          .eq('team_id', this.team.id);
-        const idByName = new Map((members || []).map((m) => [m.profiles.name, m.user_id]));
-        const rows = memberNames.map((n) => idByName.get(n)).filter(Boolean)
-          .map((uid) => ({ team_id: this.team.id, channel_id: id, user_id: uid }));
-        if (rows.length) await this.supabase.from('channel_members').insert(rows);
+      const meta = this._marshalChannel(created);
+      if (isPrivate) {
+        const invited = memberNames?.length
+          ? Array.from(new Set([this.name, ...memberNames]))
+          : [this.name];
+        if (memberNames?.length) {
+          const { data: members } = await this.supabase
+            .from('team_members')
+            .select('user_id, profiles!inner(name)')
+            .eq('team_id', this.team.id);
+          const idByName = new Map((members || []).map((m) => [m.profiles.name, m.user_id]));
+          const rows = memberNames.map((n) => idByName.get(n)).filter(Boolean)
+            .map((uid) => ({ team_id: this.team.id, channel_id: id, user_id: uid }));
+          if (rows.length) await this.supabase.from('channel_members').insert(rows);
+        }
+        meta.members = invited;
       }
-      return this._marshalChannel(created);
+      return meta;
     }
 
     async createDm(otherUserName) {
@@ -382,7 +412,11 @@
       const a = this.peerId, b = other.user_id;
       const id = 'dm:' + (a < b ? `${a}::${b}` : `${b}::${a}`);
       const { data: existing } = await this.supabase.from('channels').select('*').eq('team_id', this.team.id).eq('id', id).maybeSingle();
-      if (existing) return this._marshalChannel(existing);
+      if (existing) {
+        const meta = this._marshalChannel(existing);
+        meta.members = [this.name, otherUserName];
+        return meta;
+      }
       const { data: created, error } = await this.supabase.from('channels').insert({
         team_id: this.team.id, id, name: otherUserName, topic: '',
         type: 'dm', protected: false, created_by: this.peerId,
@@ -392,7 +426,9 @@
         { team_id: this.team.id, channel_id: id, user_id: a },
         { team_id: this.team.id, channel_id: id, user_id: b },
       ]);
-      return this._marshalChannel(created);
+      const meta = this._marshalChannel(created);
+      meta.members = [this.name, otherUserName];
+      return meta;
     }
 
     async deleteChannel(channelId) {

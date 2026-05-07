@@ -29,6 +29,7 @@ const els = {
   teamGo: $('#team-go'),
   loginError: $('#login-error'),
   signOutBtn: $('#sign-out'),
+  meSignout: $('#me-signout'),
   workspaceName: $('.workspace-name'),
   reconnectBanner: $('#reconnect-banner'),
   searchBtn: $('#search-btn'),
@@ -128,10 +129,8 @@ const STREAM_DECISION_MS = 1500;
   els.profileName.addEventListener('keydown', (e) => { if (e.key === 'Enter') stepSaveProfile(); });
   els.teamGo.addEventListener('click', stepJoinTeam);
   els.teamCreate.addEventListener('keydown', (e) => { if (e.key === 'Enter') stepJoinTeam(); });
-  els.signOutBtn?.addEventListener('click', async () => {
-    await window.huddleApi.signOut();
-    showStep('email');
-  });
+  els.signOutBtn?.addEventListener('click', signOutFully);
+  els.meSignout?.addEventListener('click', signOutFully);
 
   // If we already have a session, skip ahead to the team picker.
   const session = await window.huddleApi.getActiveSession();
@@ -288,7 +287,7 @@ async function joinTeamAndStart(teamId) {
   }
 }
 
-function leave() {
+function teardownMesh() {
   if (!state.mesh) return;
   state.mesh.disconnect();
   state.mesh = null;
@@ -298,7 +297,7 @@ function leave() {
   els.channels.replaceChildren();
   els.dms.replaceChildren();
   els.people.replaceChildren();
-  els.reconnectBanner.classList.add('hidden');
+  els.reconnectBanner?.classList.add('hidden');
   for (const tile of state.tilesByKey.values()) tile.remove();
   state.tilesByKey.clear();
   state.drawLayers.clear();
@@ -307,8 +306,25 @@ function leave() {
   closeAnnotate();
   els.app.classList.add('hidden');
   els.btnLeave.classList.add('hidden');
+}
+
+// "Leave" button: drop the mesh + go back to the team picker (still signed in).
+async function leave() {
+  teardownMesh();
   els.login.classList.remove('hidden');
-  els.loginName.focus();
+  showStep('team');
+  await renderMyTeams();
+}
+
+// Full sign-out: leave the team, drop the Supabase session, reset to email step.
+async function signOutFully() {
+  teardownMesh();
+  try { await window.huddleApi.signOut(); } catch {}
+  state._email = null;
+  if (els.authEmail) els.authEmail.value = '';
+  if (els.authOtp) els.authOtp.value = '';
+  els.login.classList.remove('hidden');
+  showStep('email');
 }
 
 // ---------------------------------------------------------------------------

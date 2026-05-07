@@ -23,7 +23,8 @@
 
         <!-- Step 2: OTP -->
         <div id="auth-otp-step" class="hidden">
-          <p class="hint">Check your email for a 6-digit code from Supabase Auth.</p>
+          <p class="hint">Check your email — the message has a 6-digit code near the top.
+            Type it below. (Don't click the magic link; it can't redirect into the desktop app.)</p>
           <label>Code</label>
           <input id="auth-otp" type="text" inputmode="numeric" autocomplete="one-time-code"
                  placeholder="123456" maxlength="6" />
@@ -63,7 +64,10 @@
       <aside class="sidebar">
         <div class="workspace">
           <div class="workspace-name">Huddle</div>
-          <div id="me" class="me"></div>
+          <div class="me-row">
+            <div id="me" class="me"></div>
+            <button id="me-signout" class="ghost" title="Sign out">⎋</button>
+          </div>
         </div>
         <div class="section-header section-header-row">
           <span>Channels</span>

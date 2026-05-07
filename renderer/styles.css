@@ -65,7 +65,13 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
 }
 .workspace { padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .workspace-name { font-weight: 700; }
-.me { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+.me-row { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; }
+.me { font-size: 12px; color: var(--text-dim); }
+.me-row .ghost {
+  background: transparent; border: none; color: var(--text-dim);
+  cursor: pointer; padding: 0 4px; font-size: 14px;
+}
+.me-row .ghost:hover { color: var(--text); }
 .section-header {
   font-size: 11px; text-transform: uppercase; color: var(--text-dim);
   padding: 12px 14px 4px; letter-spacing: .5px;
