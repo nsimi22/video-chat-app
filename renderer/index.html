@@ -18,7 +18,7 @@
           <p class="hint">We'll email you a verification code to sign you in.</p>
           <label>Email</label>
           <input id="auth-email" type="email" autocomplete="email" placeholder="you@team.com" />
-          <button id="auth-send-otp" class="primary" style="margin-top:14px; width:100%;">Send code</button>
+          <button id="auth-send-otp" class="primary btn-block">Send code</button>
         </div>
 
         <!-- Step 2: OTP -->
@@ -28,9 +28,9 @@
           <label>Code</label>
           <input id="auth-otp" type="text" inputmode="numeric" autocomplete="one-time-code"
                  placeholder="••••••" maxlength="10" />
-          <div style="display:flex; gap:8px; margin-top:14px;">
-            <button id="auth-back" style="flex:1;">← Use different email</button>
-            <button id="auth-verify" class="primary" style="flex:1;">Verify</button>
+          <div class="btn-row">
+            <button id="auth-back" class="subtle">← Use different email</button>
+            <button id="auth-verify" class="primary">Verify</button>
           </div>
         </div>
 
@@ -39,7 +39,7 @@
           <p class="hint">How should teammates see your name?</p>
           <label>Display name</label>
           <input id="profile-name" type="text" maxlength="32" placeholder="Alex" />
-          <button id="profile-save" class="primary" style="margin-top:14px; width:100%;">Continue</button>
+          <button id="profile-save" class="primary btn-block">Continue</button>
         </div>
 
         <!-- Step 4: team picker -->
@@ -49,9 +49,9 @@
           <h3 style="margin:14px 0 4px;">Join or create another</h3>
           <p class="hint">Type a team name; if it doesn't exist, it'll be created.</p>
           <input id="team-create" type="text" maxlength="30" placeholder="acme" />
-          <div style="display:flex; gap:8px; margin-top:14px;">
-            <button id="sign-out" style="flex:1;">Sign out</button>
-            <button id="team-go" class="primary" style="flex:1;">Go</button>
+          <div class="btn-row">
+            <button id="sign-out" class="subtle">Sign out</button>
+            <button id="team-go" class="primary">Go</button>
           </div>
         </div>
 
@@ -171,9 +171,9 @@
           <label>Invite members</label>
           <div id="cc-members" class="member-picker"></div>
         </div>
-        <div style="display:flex; gap:8px; margin-top:16px;">
-          <button id="cc-cancel" style="flex:1;">Cancel</button>
-          <button id="cc-create" class="primary" style="flex:1;">Create</button>
+        <div class="btn-row">
+          <button id="cc-cancel" class="subtle">Cancel</button>
+          <button id="cc-create" class="primary">Create</button>
         </div>
       </div>
     </div>
@@ -184,7 +184,7 @@
         <h2>Start a direct message</h2>
         <p class="hint">Pick someone to message privately.</p>
         <div id="dm-people" class="member-picker"></div>
-        <button id="dm-cancel" style="margin-top:12px;">Cancel</button>
+        <button id="dm-cancel" class="subtle btn-block">Cancel</button>
       </div>
     </div>
 
@@ -227,9 +227,9 @@
         <input id="set-tenor-key" type="password" autocomplete="off" />
 
         <div id="settings-status" class="settings-status hidden"></div>
-        <div style="display:flex; gap:8px; margin-top:16px;">
-          <button id="settings-cancel" style="flex:1;">Cancel</button>
-          <button id="settings-save" class="primary" style="flex:1;">Save</button>
+        <div class="btn-row">
+          <button id="settings-cancel" class="subtle">Cancel</button>
+          <button id="settings-save" class="primary">Save</button>
         </div>
       </div>
     </div>
@@ -256,9 +256,9 @@
           </label>
         </div>
         <div id="ticket-status" class="settings-status hidden"></div>
-        <div style="display:flex; gap:8px; margin-top:16px;">
-          <button id="ticket-cancel" style="flex:1;">Cancel</button>
-          <button id="ticket-create" class="primary" style="flex:1;">Create</button>
+        <div class="btn-row">
+          <button id="ticket-cancel" class="subtle">Cancel</button>
+          <button id="ticket-create" class="primary">Create</button>
         </div>
       </div>
     </div>
