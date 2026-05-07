@@ -115,6 +115,13 @@ const els = {
   settingsStatus: $('#settings-status'),
   settingsCancel: $('#settings-cancel'),
   settingsSave: $('#settings-save'),
+  settingsProfileAnchor: $('#settings-profile-anchor'),
+  setProfileName: $('#set-profile-name'),
+  setProfileBio: $('#set-profile-bio'),
+  setAvatarFile: $('#set-avatar-file'),
+  setAvatarPreview: $('#set-avatar-preview'),
+  setAvatarFallback: $('#set-avatar-fallback'),
+  setAvatarClear: $('#set-avatar-clear'),
   // Ticket
   btnJira: $('#btn-jira'),
   ticketModal: $('#ticket-modal'),
@@ -382,6 +389,18 @@ async function joinTeamAndStart(teamId) {
   els.me.textContent = huddle.name;
   if (huddle.team?.name) els.workspaceName.textContent = huddle.team.name;
 
+  state.profileCard = new window.ProfileCard({
+    huddle,
+    onMessage: async (name) => {
+      try {
+        const channel = await state.huddle.createDm(name);
+        onChannelAdded(channel);
+        focusChannel(channel.id);
+      } catch (err) { console.warn('createDm failed', err); }
+    },
+    onEditProfile: () => openSettingsToProfile(),
+  });
+
   state.chat = new ChatView({
     huddle, els,
     hooks: {
@@ -391,6 +410,7 @@ async function joinTeamAndStart(teamId) {
       openTicketModal: (preset) => openTicketModal(preset),
       getAi: () => state.ai,
       getGitHub: () => state.github,
+      attachProfileTrigger: (el, userId) => attachProfileTrigger(el, userId),
     },
   });
   wireControls();
@@ -841,6 +861,24 @@ function cssEscape(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' 
 // People
 // ---------------------------------------------------------------------------
 
+// Wire any element to open the profile card for `userId` on click.
+// Used by every UI surface that shows a user's identity (chat author
+// rows, sidebar people list, call-tile labels, DM/member pickers) so
+// the click semantics are uniform: card pops up, "Message" button on
+// the card kicks off the DM. Cursor + hover styling come from the
+// `.profile-clickable` class.
+function attachProfileTrigger(el, userId) {
+  if (!el || !userId) return;
+  el.classList.add('profile-clickable');
+  el.dataset.profileFor = userId;
+  el.addEventListener('click', (e) => {
+    // Stop click bubbling so containers (e.g. member-picker rows that
+    // toggle a checkbox on row click) don't fire their own handler.
+    e.stopPropagation();
+    state.profileCard?.show(el, userId);
+  });
+}
+
 function addPersonToSidebar(peer) {
   if (els.people.querySelector(`[data-id="${peer.id}"]`)) return;
   const li = document.createElement('li');
@@ -850,16 +888,10 @@ function addPersonToSidebar(peer) {
   dot.className = 'dot online';
   dot.style.background = peer.color || '';
   li.append(dot, document.createTextNode(peer.name));
-  // Click to open a DM with them.
-  li.onclick = async () => {
-    if (peer.name === state.myName) return;
-    try {
-      const channel = await state.huddle.createDm(peer.name);
-      onChannelAdded(channel);
-      focusChannel(channel.id);
-    } catch (err) { console.warn('createDm failed', err); }
-  };
-  li.title = peer.name === state.myName ? 'You' : `Direct message ${peer.name}`;
+  // Click opens the profile card; the card's "Message" button is
+  // where DM-creation happens. (Was: row click → createDm directly.)
+  attachProfileTrigger(li, peer.id);
+  li.title = peer.name === state.myName ? 'You' : `View ${peer.name}'s profile`;
   els.people.appendChild(li);
 }
 
@@ -870,7 +902,7 @@ function addPersonToSidebar(peer) {
 // Tiles
 // ---------------------------------------------------------------------------
 
-function makeTile({ key, label, kind }) {
+function makeTile({ key, label, kind, userId }) {
   let tile = state.tilesByKey.get(key);
   if (tile) return tile;
   tile = document.createElement('div');
@@ -888,6 +920,7 @@ function makeTile({ key, label, kind }) {
   const lbl = document.createElement('div');
   lbl.className = 'tile-label';
   lbl.textContent = label;
+  if (userId) attachProfileTrigger(lbl, userId);
   tile.appendChild(lbl);
   if (kind === 'screen' || kind === 'whiteboard') {
     const actions = document.createElement('div');
@@ -917,7 +950,7 @@ function removeTile(key) {
 }
 
 function addLocalCameraTile(stream, name) {
-  const tile = makeTile({ key: 'self-cam', label: `${name} (you)`, kind: 'self' });
+  const tile = makeTile({ key: 'self-cam', label: `${name} (you)`, kind: 'self', userId: state.huddle.peerId });
   tile.querySelector('video').srcObject = stream;
 }
 
@@ -948,7 +981,7 @@ function commitStreamAsCamera(streamId) {
   clearTimeout(pending.timer);
   const key = `peer:${pending.fromId}`;
   const peer = state.huddle.peerInfo.get(pending.fromId);
-  const tile = makeTile({ key, label: peer ? peer.name : 'guest', kind: 'remote' });
+  const tile = makeTile({ key, label: peer ? peer.name : 'guest', kind: 'remote', userId: pending.fromId });
   tile.querySelector('video').srcObject = pending.stream;
 }
 
@@ -959,7 +992,7 @@ function renderRemoteScreen(stream, screen) {
       `${screen.label} — ${screen.fromName}`;
     return;
   }
-  const tile = makeTile({ key, label: `${screen.label} — ${screen.fromName}`, kind: 'screen' });
+  const tile = makeTile({ key, label: `${screen.label} — ${screen.fromName}`, kind: 'screen', userId: screen.from });
   tile.dataset.streamId = stream.id;
   tile.querySelector('video').srcObject = stream;
   attachDrawingLayer(tile, stream.id, /*owner*/ false);
@@ -1084,6 +1117,29 @@ function wireControls() {
   els.settingsCancel.onclick = () => els.settingsModal.classList.add('hidden');
   els.settingsSave.onclick = saveSettings;
 
+  // Avatar picker. The actual upload is deferred to saveSettings so
+  // hitting Cancel after picking a file doesn't leave a half-saved
+  // avatar lying around in storage.
+  els.setAvatarFile.addEventListener('change', () => {
+    const file = els.setAvatarFile.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      showCallError('Avatar is too big (max 2 MB).');
+      els.setAvatarFile.value = '';
+      return;
+    }
+    state._pendingAvatarFile = file;
+    const reader = new FileReader();
+    reader.onload = () => renderAvatarPreview(reader.result, state.huddle?.color, state.huddle?.name);
+    reader.readAsDataURL(file);
+  });
+  els.setAvatarClear.onclick = () => {
+    state._pendingAvatarFile = null;
+    state._editingAvatarUrl = null;
+    els.setAvatarFile.value = '';
+    renderAvatarPreview(null, state.huddle?.color, state.huddle?.name);
+  };
+
   // Jira create-ticket modal
   els.btnJira.onclick = () => openTicketModal();
   els.ticketCancel.onclick = () => els.ticketModal.classList.add('hidden');
@@ -1199,10 +1255,14 @@ function renderMemberPicker(container) {
     const lbl = document.createElement('span');
     lbl.textContent = p.name;
     row.append(dot, lbl, check);
+    // Row-click toggles selection (channel-invite UI). The name span
+    // alone opens the profile card via attachProfileTrigger, which
+    // stops propagation so it doesn't also toggle the row.
     row.onclick = () => {
       const selected = row.classList.toggle('selected');
       check.textContent = selected ? '✓' : '';
     };
+    attachProfileTrigger(lbl, p.id);
     container.appendChild(row);
   }
 }
@@ -1225,14 +1285,14 @@ function openDmPicker() {
       const lbl = document.createElement('span');
       lbl.textContent = p.name;
       row.append(dot, lbl);
-      row.onclick = async () => {
+      // Open the profile card; its "Message" action drives DM
+      // creation. Close the picker so the card isn't covered.
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
         els.dmPicker.classList.add('hidden');
-        try {
-          const channel = await state.huddle.createDm(p.name);
-          onChannelAdded(channel);
-          focusChannel(channel.id);
-        } catch (err) { console.warn('createDm failed', err); }
-      };
+        state.profileCard?.show(row, p.id);
+      });
+      row.classList.add('profile-clickable');
       els.dmPeople.appendChild(row);
     }
   }
@@ -1396,7 +1456,7 @@ function rebuildGitHubClient() {
   state.github = new window.GitHubClient({ token: g.token || '' });
 }
 
-function openSettings() {
+async function openSettings() {
   const s = state.settings || {};
   els.setJiraHost.value = s.jira?.host || '';
   els.setJiraEmail.value = s.jira?.email || '';
@@ -1409,8 +1469,43 @@ function openSettings() {
   els.setGithubToken.value = s.github?.token || '';
   els.setGiphyKey.value = s.giphy?.key || '';
   els.settingsStatus.classList.add('hidden');
+  // Pre-fill the profile fields from the current profile.
+  els.setProfileName.value = state.huddle?.name || '';
+  try {
+    const p = await state.huddle?.getProfile(state.huddle.peerId);
+    els.setProfileBio.value = p?.bio || '';
+    state._editingAvatarUrl = p?.avatar_url || null;
+    renderAvatarPreview(state._editingAvatarUrl, p?.color || state.huddle?.color, p?.name || state.huddle?.name);
+  } catch (err) {
+    console.warn('profile prefill failed', err);
+    els.setProfileBio.value = '';
+    state._editingAvatarUrl = null;
+    renderAvatarPreview(null, state.huddle?.color, state.huddle?.name);
+  }
   els.settingsModal.classList.remove('hidden');
-  els.setJiraHost.focus();
+  els.setProfileName.focus();
+}
+
+function openSettingsToProfile() {
+  openSettings().then(() => {
+    els.settingsProfileAnchor?.scrollIntoView({ block: 'start' });
+  });
+}
+
+function renderAvatarPreview(avatarUrl, color, name) {
+  const img = els.setAvatarPreview;
+  const fb = els.setAvatarFallback;
+  if (avatarUrl) {
+    img.src = avatarUrl;
+    img.style.display = '';
+    fb.style.display = 'none';
+  } else {
+    img.removeAttribute('src');
+    img.style.display = 'none';
+    fb.style.display = '';
+    fb.style.background = color || '#888';
+    fb.textContent = (name || '?').slice(0, 1).toUpperCase();
+  }
 }
 
 async function saveSettings() {
@@ -1432,6 +1527,24 @@ async function saveSettings() {
     giphy: { key: els.setGiphyKey.value.trim() },
   };
   try {
+    // Upload pending avatar first so the URL is included in the
+    // profile patch. Failing here aborts the whole save so we don't
+    // leave a stale avatar/profile mismatch on disk.
+    let avatarUrl = state._editingAvatarUrl;
+    if (state._pendingAvatarFile) {
+      avatarUrl = await state.huddle.uploadAvatar(state._pendingAvatarFile);
+      state._pendingAvatarFile = null;
+      state._editingAvatarUrl = avatarUrl;
+    }
+    const profilePatch = {
+      name: els.setProfileName.value.trim() || state.huddle.name,
+      bio: els.setProfileBio.value.trim() || null,
+      avatar_url: avatarUrl,
+    };
+    await state.huddle.updateProfile(profilePatch);
+    state.myName = state.huddle.name;
+    els.me.textContent = state.huddle.name;
+
     await window.huddleApi.saveSettings(next);
     state.settings = next;
     rebuildJiraClient();

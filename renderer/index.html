@@ -231,6 +231,24 @@
         <h2>Settings</h2>
         <p class="hint">Drop in API keys for the integrations you want to use. Keys are stored in your private Supabase row and never shared with teammates.</p>
 
+        <h3 id="settings-profile-anchor">Profile</h3>
+        <p class="hint">Visible to teammates. Click your name anywhere in the app to preview the card.</p>
+        <div class="profile-edit">
+          <div class="profile-edit-avatar">
+            <img id="set-avatar-preview" alt="" />
+            <div id="set-avatar-fallback" class="profile-card-avatar fallback"></div>
+            <label class="subtle profile-edit-avatar-pick" for="set-avatar-file">Change…</label>
+            <input id="set-avatar-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
+            <button id="set-avatar-clear" class="subtle">Remove</button>
+          </div>
+          <div class="profile-edit-fields">
+            <label>Display name</label>
+            <input id="set-profile-name" type="text" maxlength="32" />
+            <label>Bio <span class="hint-inline">(up to 280 chars)</span></label>
+            <textarea id="set-profile-bio" rows="3" maxlength="280"></textarea>
+          </div>
+        </div>
+
         <h3>Jira</h3>
         <label>Atlassian site (e.g. <code>acme.atlassian.net</code>)</label>
         <input id="set-jira-host" type="text" placeholder="acme.atlassian.net" />
@@ -333,6 +351,7 @@
     <script src="github.js"></script>
     <script src="whiteboard.js"></script>
     <script src="webrtc.js"></script>
+    <script src="profile-card.js"></script>
     <script src="chat.js"></script>
     <script src="app.js"></script>
   </body>

@@ -458,6 +458,11 @@ class ChatView {
     } else {
       avatar.style.background = m.authorColor || '#666';
       avatar.textContent = initials;
+      // Author + avatar open the profile card. The card lazily
+      // resolves the up-to-date avatar_url, so we don't try to
+      // pre-load images into the chat row itself — the colored
+      // initial is fine inline.
+      this.hooks.attachProfileTrigger?.(avatar, m.authorId);
     }
 
     const right = document.createElement('div');
@@ -467,6 +472,7 @@ class ChatView {
     const author = document.createElement('span');
     author.className = 'msg-author';
     author.textContent = m.aiGenerated ? `AI · ${m.aiModel || 'unknown model'}` : m.authorName;
+    if (!m.aiGenerated) this.hooks.attachProfileTrigger?.(author, m.authorId);
     const time = document.createElement('span');
     time.className = 'msg-time';
     time.textContent = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
