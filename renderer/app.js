@@ -1114,7 +1114,7 @@ function wireControls() {
 
   // Settings
   els.openSettings.onclick = openSettings;
-  els.settingsCancel.onclick = () => els.settingsModal.classList.add('hidden');
+  els.settingsCancel.onclick = closeSettingsAndDiscardPending;
   els.settingsSave.onclick = saveSettings;
 
   // Avatar picker. The actual upload is deferred to saveSettings so
@@ -1286,11 +1286,14 @@ function openDmPicker() {
       lbl.textContent = p.name;
       row.append(dot, lbl);
       // Open the profile card; its "Message" action drives DM
-      // creation. Close the picker so the card isn't covered.
+      // creation. We have to anchor the card to the row BEFORE
+      // hiding the picker — `.hidden { display:none }` collapses
+      // the row's bounding rect to zero, which would otherwise pin
+      // the popover at the viewport origin.
       row.addEventListener('click', (e) => {
         e.stopPropagation();
-        els.dmPicker.classList.add('hidden');
         state.profileCard?.show(row, p.id);
+        els.dmPicker.classList.add('hidden');
       });
       row.classList.add('profile-clickable');
       els.dmPeople.appendChild(row);
@@ -1492,6 +1495,17 @@ function openSettingsToProfile() {
   });
 }
 
+// Cancel button on Settings: must drop any deferred avatar selection
+// so the file picked in this session doesn't ride along with a later
+// Save. Without this clear, picking a file → Cancel → reopening
+// → editing only the bio → Save would also upload the abandoned
+// avatar, surprising the user.
+function closeSettingsAndDiscardPending() {
+  state._pendingAvatarFile = null;
+  els.setAvatarFile.value = '';
+  els.settingsModal.classList.add('hidden');
+}
+
 function renderAvatarPreview(avatarUrl, color, name) {
   const img = els.setAvatarPreview;
   const fb = els.setAvatarFallback;
@@ -1528,8 +1542,20 @@ async function saveSettings() {
   };
   try {
     // Upload pending avatar first so the URL is included in the
-    // profile patch. Failing here aborts the whole save so we don't
-    // leave a stale avatar/profile mismatch on disk.
+    // profile patch. Failing the upload aborts the whole save.
+    //
+    // If updateProfile fails AFTER a successful upload there's a
+    // brief inconsistency: storage holds the new image at the fixed
+    // <uid>/avatar path, but the DB row still has the old URL
+    // (with an older `?t=` cache-buster). The DB URL still resolves
+    // to the new image via the storage path, so anyone fetching
+    // fresh sees the new avatar; only browsers that already cached
+    // the old object under the old `?t=` will keep showing the
+    // previous version until their cache expires. We clear
+    // _pendingAvatarFile after a successful upload so a retry
+    // doesn't re-upload — Save again with the same form just
+    // re-runs updateProfile against the URL we already have. Not
+    // worth a backup-and-restore dance for that failure mode.
     let avatarUrl = state._editingAvatarUrl;
     if (state._pendingAvatarFile) {
       avatarUrl = await state.huddle.uploadAvatar(state._pendingAvatarFile);

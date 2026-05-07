@@ -869,10 +869,20 @@
       // Re-track team presence so peers re-render with the new
       // identity. The call channel (if any) is left alone — joinCall
       // tracks once and stale name/color in an active call is mostly
-      // cosmetic.
+      // cosmetic. supabase-js track() returns 'ok' / 'error' /
+      // 'timed out' rather than throwing; we don't want to fail the
+      // whole save when presence falters (the DB row is already
+      // updated, peers will pick up the change on next reconnect),
+      // but we should at least surface it so the silent-failure
+      // mode is visible during debugging.
       try {
-        await this._teamChannel?.track({ name: this.name, color: this.color, online_at: new Date().toISOString() });
-      } catch {}
+        const trackResult = await this._teamChannel?.track({ name: this.name, color: this.color, online_at: new Date().toISOString() });
+        if (trackResult && trackResult !== 'ok') {
+          console.warn('updateProfile: presence re-track returned', trackResult);
+        }
+      } catch (e) {
+        console.warn('updateProfile: presence re-track threw', e);
+      }
     }
 
     async uploadAvatar(file) {
