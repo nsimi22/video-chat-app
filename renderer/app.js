@@ -854,7 +854,7 @@ function canDelete(channel) {
     // after Edit-profile renames it can drift away from
     // state.myName, which silently strips the ✕ delete button from
     // DMs the user actually owns. The id is stable.
-    const m = /^dm:([0-9a-f-]+)::([0-9a-f-]+)$/i.exec(channel.id);
+    const m = /^dm:([0-9a-f-]+)::([0-9a-f-]+)$/.exec(channel.id);
     if (!m) return false;
     const me = state.huddle?.peerId;
     return !!me && (m[1] === me || m[2] === me);
