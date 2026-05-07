@@ -204,7 +204,13 @@
         // hiccup mid-handshake, etc.). Without this the await hangs
         // forever and the Start-call button stays disabled — the
         // user sees "nothing happens" with no signal in the UI.
-        const timer = setTimeout(() => reject(new Error('realtime call subscribe timed out')), 8000);
+        // Also explicitly unsubscribe on timeout: the realtime backend
+        // may otherwise treat us as a ghost participant once the
+        // handshake belatedly resolves.
+        const timer = setTimeout(() => {
+          try { ch.unsubscribe(); } catch {}
+          reject(new Error('realtime call subscribe timed out'));
+        }, 8000);
         ch.subscribe(async (status, err) => {
           if (status === 'SUBSCRIBED') {
             try {

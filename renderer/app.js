@@ -451,7 +451,6 @@ async function startCall(channelId) {
   }
   state.mesh = mesh;
   state.inCallChannelId = channelId;
-  syncTilesVisibility();
   // Belt + suspenders: also bootstrap from the snapshot HuddleClient
   // already has, in case the presence-sync handler fired before our
   // listener attached during the joinCall handshake. _ensurePeer is
@@ -903,6 +902,10 @@ function makeTile({ key, label, kind }) {
   }
   els.tiles.appendChild(tile);
   state.tilesByKey.set(key, tile);
+  // Reveal the tile grid as soon as anything lives in it. This covers
+  // local cam (startCall), remote cam (commitStreamAsCamera), screen
+  // shares (renderRemoteScreen / addLocalScreenTile), and whiteboards.
+  syncTilesVisibility();
   return tile;
 }
 
@@ -1317,10 +1320,6 @@ async function openWhiteboard() {
     kind: 'whiteboard',
   });
   tile.dataset.streamId = wb.id;
-  // The tile grid is hidden when not in a call; whiteboards live in
-  // the same grid, so reveal it when one opens. leaveCall / closing
-  // the last whiteboard hides it again (see syncTilesVisibility).
-  syncTilesVisibility();
 
   const session = new window.WhiteboardSession({
     huddle: state.huddle, channelId, whiteboard: wb, tile,
