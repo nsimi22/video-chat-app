@@ -84,6 +84,9 @@ const els = {
   drawClear: $('#draw-clear'),
   drawClose: $('#draw-close'),
   drawAddNote: $('#draw-add-note'),
+  drawZoomIn: $('#draw-zoom-in'),
+  drawZoomOut: $('#draw-zoom-out'),
+  drawZoomReset: $('#draw-zoom-reset'),
   // chat
   // Canonical channel-name label is now in the stage header. The old
   // #chat-channel-name was removed when stage and chat merged into a
@@ -1761,6 +1764,11 @@ function toggleAnnotate(streamId) {
   // a place to store them. Toggle visibility per-surface.
   const isWhiteboard = state.whiteboardSessions.has(streamId);
   els.drawAddNote.classList.toggle('hidden', !isWhiteboard);
+  // Zoom controls also only apply to whiteboards (the screen
+  // annotation overlay is locked to the underlying video frame).
+  els.drawZoomIn.classList.toggle('hidden', !isWhiteboard);
+  els.drawZoomOut.classList.toggle('hidden', !isWhiteboard);
+  els.drawZoomReset.classList.toggle('hidden', !isWhiteboard);
 }
 
 // Make the toolbar/active-annotation state target `streamId`, but never
@@ -1931,6 +1939,12 @@ function wireControls() {
     const session = state.whiteboardSessions.get(state.activeAnnotation);
     if (session) session.addNote();
   };
+  // Zoom + reset operate on the active whiteboard session's
+  // InfiniteCanvas. Buttons are hidden when no whiteboard is the
+  // active annotation surface (toggleAnnotate sets visibility).
+  els.drawZoomIn.onclick = () => state.whiteboardSessions.get(state.activeAnnotation)?.zoomIn();
+  els.drawZoomOut.onclick = () => state.whiteboardSessions.get(state.activeAnnotation)?.zoomOut();
+  els.drawZoomReset.onclick = () => state.whiteboardSessions.get(state.activeAnnotation)?.resetViewport();
   els.drawClose.onclick = () => {
     if (state.whiteboardSessions.has(state.activeAnnotation)) {
       closeWhiteboard(state.activeAnnotation);
@@ -2164,9 +2178,12 @@ async function openWhiteboard() {
     closeWhiteboard(wb.id);
     return;
   }
-  // Register the layer so the existing draw toolbar (color, size, tool)
-  // controls the whiteboard the same way it controls a screen annotation.
-  state.drawLayers.set(wb.id, session.layer);
+  // Register the canvas so the existing draw toolbar (color, size,
+  // tool) controls the whiteboard the same way it controls a screen
+  // annotation. Whiteboards now use InfiniteCanvas (world coords +
+  // pan/zoom) instead of DrawingLayer; both expose the same setTool
+  // / setColor / setSize / clearAll surface for toolbar interop.
+  state.drawLayers.set(wb.id, session.canvas);
 
   // Tile actions: just close (the toolbar's Clear button covers
   // clearing). The pop-out button was already inserted above; this

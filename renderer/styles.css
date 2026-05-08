@@ -551,10 +551,34 @@ button.ctrl.muted.icon-only::after {
 .tile.annotating .draw-canvas { pointer-events: auto; cursor: crosshair; }
 .tile.annotating { outline: 2px solid var(--warn); }
 
-/* Sticky notes — absolutely positioned over the whiteboard tile,
-   sized in fractional units of the tile rect. The handle strip
-   is the drag surface; the textarea fills the body. Z-indexed
-   above the draw-canvas so clicks land on text/drag targets. */
+/* InfiniteCanvas — replaces DrawingLayer for whiteboards. Fills
+   the parent tile and listens for its own pointer events (drawing
+   + space-drag pan + Ctrl-wheel zoom). Cursor defaults to crosshair
+   so the user knows they can draw; the JS toggles to grab/grabbing
+   while panning. */
+.infinite-canvas {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+/* Sticky-note container layered above the InfiniteCanvas. The
+   container itself is non-interactive (so empty whiteboard
+   regions still take pointer events for drawing); individual
+   .wb-note children opt back in. */
+.wb-notes-layer {
+  position: absolute; inset: 0;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 10;
+}
+.wb-notes-layer > .wb-note { pointer-events: auto; }
+
+/* Sticky notes — absolutely positioned over the whiteboard tile
+   in WORLD coords projected through the canvas viewport. The
+   handle strip is the drag surface; the textarea fills the body.
+   Z-indexed above the canvas so clicks land on text/drag targets. */
 .wb-note {
   position: absolute;
   background: #ffd866;

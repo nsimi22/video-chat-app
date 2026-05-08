@@ -33,25 +33,38 @@ class WhiteboardSession {
     this._currentStroke = null;     // local in-progress stroke + its uuid
     this._paintedUuids = new Set(); // strokes painted live; replay skips matches
     // Sticky notes: id -> { el, textarea, handle, data } where data is
-    // { id, x, y, w, h, text, color }. el is the .wb-note container,
-    // textarea + handle are kept for direct event/style access without
-    // re-querying the DOM. Positions are fractional (0..1) of the tile
-    // bounding rect — same scheme strokes use for points — so notes
-    // render consistently across viewers with different tile sizes.
+    // { id, x, y, w, h, text, color }. Positions are absolute world
+    // coords (~ pixels at scale 1) since the v0.6.0 infinite-canvas
+    // migration. The renderer projects them through the canvas's
+    // viewport at render time so notes pan/zoom along with strokes.
     this.notes = new Map();
     this._noteSaveTimers = new Map(); // id -> setTimeout, debounce text saves
+    // Container for sticky-note DOM elements. Sized to the tile and
+    // pointer-events: none for the empty area so it doesn't shadow
+    // the canvas; individual notes opt back in to pointer events.
+    // Created lazily in start() once the tile is attached.
+    this.notesLayer = null;
+    // Scratch state: reposition-on-pan/zoom queues a single rAF.
+    this._noteRafPending = false;
   }
 
   async start() {
-    // Drawing layer: identical to the screen-share annotation overlay, but
-    // attached to a tile that has no underlying <video>.
-    this.layer = new DrawingLayer({
-      streamId: this.whiteboardId,
-      isOwner: true,
+    // Build the InfiniteCanvas (replaces the old DrawingLayer for
+    // whiteboards — DrawingLayer is still used by screen-share
+    // annotations). Drawing always emits absolute world coords;
+    // pan/zoom only mutate the canvas viewport, not the strokes.
+    this.canvas = new window.InfiniteCanvas({
+      tile: this.tile,
       send: (stroke) => this._onLocalStroke(stroke),
     });
-    this.layer.attach(this.tile);
-    this.layer.setActive(true);
+    this.canvas.onStrokeFinished((polyline) => this._persistFinishedStroke(polyline));
+    this.canvas.onViewportChange(() => this._scheduleNoteReposition());
+
+    // Sticky notes ride above the canvas in their own absolutely-
+    // positioned layer; viewport changes recompute their CSS rects.
+    this.notesLayer = document.createElement('div');
+    this.notesLayer.className = 'wb-notes-layer';
+    this.tile.appendChild(this.notesLayer);
 
     // Subscribe to live broadcast first so we don't miss strokes / notes
     // drawn between the DB fetch and the subscribe. The dedup Set below
@@ -61,7 +74,7 @@ class WhiteboardSession {
       (payload) => {
         if (payload.from === this.huddle.peerId) return; // ignore self echoes
         const stroke = payload.stroke;
-        this.layer.applyRemote(stroke);
+        this.canvas.applyRemote(stroke);
         if (stroke.action === 'end' && stroke.uuid) this._paintedUuids.add(stroke.uuid);
       },
       (payload) => {
@@ -75,9 +88,15 @@ class WhiteboardSession {
       const rows = await this.huddle.fetchWhiteboardStrokes(this.whiteboardId);
       for (const row of rows) {
         const polyline = row.data;
-        if (polyline?.uuid && this._paintedUuids.has(polyline.uuid)) continue;
-        if (polyline?.uuid) this._paintedUuids.add(polyline.uuid);
-        replayPolyline(this.layer, polyline);
+        if (!polyline) continue;
+        if (polyline.uuid && this._paintedUuids.has(polyline.uuid)) continue;
+        if (polyline.uuid) this._paintedUuids.add(polyline.uuid);
+        if (polyline.action === 'clear') { this.canvas.clearAll(); continue; }
+        // History rows already store the full polyline shape the
+        // canvas wants — feed it directly instead of replaying via
+        // begin/move/end, which is unnecessary work for the pure-
+        // render-from-DB path.
+        this.canvas.addPersistedStroke(polyline);
       }
     } catch (err) {
       console.warn('[whiteboard] history fetch failed', err);
@@ -96,18 +115,21 @@ class WhiteboardSession {
 
   // Add a note at the given fractional (0..1) tile-relative coords.
   // Renders, persists, and broadcasts so other peers see it live.
-  // Default placement is the visible center.
-  async addNote({ x = 0.4, y = 0.4 } = {}) {
-    // whiteboard_notes.id is a uuid column, so we need a real UUID
-    // here — the previous Date+Math.random fallback would fail at
-    // insert time. Modern Electron / Chromium ships crypto.randomUUID;
-    // bail loudly if it's missing rather than silently producing
-    // bad ids.
+  // Default placement is the centre of the current viewport in
+  // world coords, so notes drop wherever the user is looking
+  // rather than at world (0,0) when zoomed/panned.
+  async addNote(opts = {}) {
     if (typeof crypto === 'undefined' || !crypto.randomUUID) {
       throw new Error('crypto.randomUUID unavailable; cannot create note');
     }
     const id = crypto.randomUUID();
-    const note = { id, x, y, w: 0.18, h: 0.18, text: '', color: '#ffd866' };
+    const vp = this.canvas?.getViewport() || { x: 0, y: 0, scale: 1 };
+    const r = this.tile.getBoundingClientRect();
+    const w = 180; // world units; matches the legacy 0.18 × 0.18 of a 1000-unit tile
+    const h = 180;
+    const x = opts.x ?? (vp.x + (r.width / vp.scale) / 2 - w / 2);
+    const y = opts.y ?? (vp.y + (r.height / vp.scale) / 2 - h / 2);
+    const note = { id, x, y, w, h, text: '', color: '#ffd866' };
     this._renderNote(note, { focus: true });
     this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note });
     try {
@@ -161,7 +183,7 @@ class WhiteboardSession {
     ta.placeholder = 'Type a note…';
     ta.value = note.text || '';
     el.append(handle, ta);
-    this.tile.appendChild(el);
+    (this.notesLayer || this.tile).appendChild(el);
 
     const entry = { el, textarea: ta, handle, data: { ...note } };
     this.notes.set(note.id, entry);
@@ -172,10 +194,27 @@ class WhiteboardSession {
 
   _positionNote(entry) {
     const { el, data } = entry;
-    el.style.left = `${data.x * 100}%`;
-    el.style.top = `${data.y * 100}%`;
-    el.style.width = `${data.w * 100}%`;
-    el.style.height = `${data.h * 100}%`;
+    // Notes live in world coords; project through the canvas's
+    // viewport so they pan/zoom along with strokes. Fractional CSS
+    // units (px) instead of % because the world rect can extend
+    // beyond the visible tile.
+    const vp = this.canvas?.getViewport() || { x: 0, y: 0, scale: 1 };
+    el.style.left = `${(data.x - vp.x) * vp.scale}px`;
+    el.style.top = `${(data.y - vp.y) * vp.scale}px`;
+    el.style.width = `${data.w * vp.scale}px`;
+    el.style.height = `${data.h * vp.scale}px`;
+  }
+
+  // Reposition every note when the canvas viewport changes. Wrap
+  // in rAF so a stream of mousemove pan events doesn't trigger
+  // a layout per frame.
+  _scheduleNoteReposition() {
+    if (this._noteRafPending) return;
+    this._noteRafPending = true;
+    requestAnimationFrame(() => {
+      this._noteRafPending = false;
+      for (const entry of this.notes.values()) this._positionNote(entry);
+    });
   }
 
   _wireNoteHandlers(entry) {
@@ -190,10 +229,13 @@ class WhiteboardSession {
     let dragStart = null;
     const onMouseMove = (e) => {
       if (!dragStart) return;
-      const dx = (e.clientX - dragStart.x) / dragStart.rectW;
-      const dy = (e.clientY - dragStart.y) / dragStart.rectH;
-      data.x = Math.max(0, Math.min(1 - data.w, dragStart.origX + dx));
-      data.y = Math.max(0, Math.min(1 - data.h, dragStart.origY + dy));
+      // Drag distance in CLIENT pixels divided by the canvas
+      // scale = world units of movement. Notes can land anywhere
+      // — there's no clamping to the visible tile because the
+      // world is unbounded.
+      const scale = dragStart.scale || 1;
+      data.x = dragStart.origX + (e.clientX - dragStart.x) / scale;
+      data.y = dragStart.origY + (e.clientY - dragStart.y) / scale;
       this._positionNote(entry);
     };
     const onMouseUp = () => {
@@ -208,11 +250,11 @@ class WhiteboardSession {
     handle.addEventListener('mousedown', (e) => {
       if (e.target.classList.contains('wb-note-close')) return;
       e.preventDefault();
-      const rect = this.tile.getBoundingClientRect();
+      const vp = this.canvas?.getViewport() || { scale: 1 };
       dragStart = {
         x: e.clientX, y: e.clientY,
         origX: data.x, origY: data.y,
-        rectW: rect.width, rectH: rect.height,
+        scale: vp.scale,
       };
       el.classList.add('dragging');
       window.addEventListener('mousemove', onMouseMove);
@@ -277,39 +319,24 @@ class WhiteboardSession {
     this._noteSaveTimers.delete(id);
   }
 
-  // Live stroke from the local user — broadcast immediately, accumulate for
-  // persistence, and rely on the DrawingLayer to have already painted it.
-  // Each stroke gets a uuid generated at `begin` and propagated through
-  // `move`/`end` plus the persisted polyline so receivers can dedup.
+  // Live stroke from the local user — broadcast each begin/move/end
+  // event for liveness. The InfiniteCanvas owns the polyline buffer
+  // and notifies us on `end` via onStrokeFinished, which is where
+  // we persist (see _persistFinishedStroke).
   _onLocalStroke(stroke) {
-    if (stroke.action === 'begin') {
-      const uuid = (typeof crypto !== 'undefined' && crypto.randomUUID)
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      this._currentStroke = {
-        uuid,
-        tool: stroke.tool, color: stroke.color, size: stroke.size,
-        points: [[stroke.x, stroke.y]],
-      };
-      this.huddle.sendWhiteboardStroke(this.whiteboardId, { ...stroke, uuid });
-    } else if (stroke.action === 'move' && this._currentStroke) {
-      this._currentStroke.points.push([stroke.x, stroke.y]);
-      this.huddle.sendWhiteboardStroke(this.whiteboardId, { ...stroke, uuid: this._currentStroke.uuid });
-    } else if (stroke.action === 'end' && this._currentStroke) {
-      const polyline = this._currentStroke;
-      this._currentStroke = null;
-      this.huddle.sendWhiteboardStroke(this.whiteboardId, { ...stroke, uuid: polyline.uuid });
-      // Remember our own stroke so we don't double-paint it on reload.
-      this._paintedUuids.add(polyline.uuid);
-      if (polyline.points.length >= 1) {
-        this.huddle.persistWhiteboardStroke(this.whiteboardId, polyline)
-          .catch((err) => console.warn('[whiteboard] persist failed', err));
-      }
-    }
+    this.huddle.sendWhiteboardStroke(this.whiteboardId, stroke);
+  }
+
+  _persistFinishedStroke(polyline) {
+    if (!polyline?.uuid) return;
+    this._paintedUuids.add(polyline.uuid);
+    if (!polyline.points || polyline.points.length < 1) return;
+    this.huddle.persistWhiteboardStroke(this.whiteboardId, polyline)
+      .catch((err) => console.warn('[whiteboard] persist failed', err));
   }
 
   async clear() {
-    this.layer.clearAll(/*broadcast*/ false);
+    this.canvas.clearAll();
     this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'clear' });
     this._paintedUuids.clear();
     // Sticky notes are part of the canvas state — clearing should
@@ -323,9 +350,12 @@ class WhiteboardSession {
     catch (err) { console.warn('[whiteboard] clear failed', err); }
   }
 
-  setTool(t) { this.layer?.setTool(t); }
-  setColor(c) { this.layer?.setColor(c); }
-  setSize(s) { this.layer?.setSize(s); }
+  setTool(t) { this.canvas?.setTool(t); }
+  setColor(c) { this.canvas?.setColor(c); }
+  setSize(s) { this.canvas?.setSize(s); }
+  zoomIn() { this.canvas?.zoomIn(); }
+  zoomOut() { this.canvas?.zoomOut(); }
+  resetViewport() { this.canvas?.resetViewport(); }
 
   async stop() {
     // Flush + AWAIT any pending debounced note text saves before
@@ -337,23 +367,11 @@ class WhiteboardSession {
     const pending = [...this._noteSaveTimers.keys()].map((id) => this._flushNoteSave(id));
     if (pending.length) await Promise.allSettled(pending);
     this.huddle.closeWhiteboardChannel(this.whiteboardId);
+    this.canvas?.destroy();
+    this.canvas = null;
     if (this.tile?.parentElement) this.tile.remove();
   }
 }
 
-// Replay a saved polyline by feeding the DrawingLayer the same begin/move/end
-// events it sees during live drawing. Keeps all rendering in one code path.
-function replayPolyline(layer, polyline) {
-  if (!polyline) return;
-  if (polyline.action === 'clear') { layer.applyRemote({ action: 'clear' }); return; }
-  const { tool, color, size, points } = polyline;
-  if (!Array.isArray(points) || points.length === 0) return;
-  layer.applyRemote({ action: 'begin', x: points[0][0], y: points[0][1], tool, color, size });
-  for (let i = 1; i < points.length; i++) {
-    layer.applyRemote({ action: 'move', x: points[i][0], y: points[i][1], tool, color, size });
-  }
-  const last = points[points.length - 1];
-  layer.applyRemote({ action: 'end', x: last[0], y: last[1], tool, color, size });
-}
 
 window.WhiteboardSession = WhiteboardSession;
