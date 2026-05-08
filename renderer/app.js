@@ -76,6 +76,7 @@ const els = {
   btnCam: $('#btn-cam'),
   btnShare: $('#btn-share'),
   btnLeave: $('#btn-leave'),
+  btnPopoutCall: $('#btn-popout-call'),
   drawToolbar: $('#draw-toolbar'),
   drawTargetName: $('#draw-target-name'),
   drawColor: $('#draw-color'),
@@ -171,6 +172,12 @@ const state = {
   // that includes a channel/call, we stash the target here; onWelcome
   // (which fires after the team subscription is up) consumes it.
   pendingInviteHop: null,
+  // Channel ids whose call has been moved to a popout window and
+  // is currently owned by that popout. While a channel is in
+  // here, renderCallHeader hides Join/Start so the user can't
+  // rejoin in the main window and become a duplicate participant.
+  // Cleared when the corresponding popout-closed event arrives.
+  poppedOutCalls: new Set(),
 };
 
 // Whether the OS window is currently focused. Used to gate desktop
@@ -201,6 +208,19 @@ const STREAM_DECISION_MS = 1500;
     });
     return;
   }
+
+  // Main-window-only: listen for popout-closed events so the call
+  // header re-renders when a popped-out call ends (popout window
+  // closed via Leave or the system × button). Without this, the
+  // channel stays in state.poppedOutCalls forever and the user
+  // can't Start call again from main.
+  window.huddle.onPopoutEvent?.((msg) => {
+    if (msg?.event !== 'popout-closed') return;
+    const target = String(msg.target || '');
+    if (!target.startsWith('call:')) return;
+    const channelId = target.slice('call:'.length);
+    if (state.poppedOutCalls.delete(channelId)) renderCallHeader();
+  });
 
   // Render the static Settings → Slash commands explainer from
   // chat.js's SLASH_COMMANDS catalog so the composer autocomplete
@@ -400,7 +420,13 @@ async function bootPopout(cfg) {
   }
   state._email = session.user.email;
   if (cfg.kind === 'whiteboard') {
+    document.body.classList.add('popout-whiteboard');
     await bootWhiteboardPopout(cfg);
+    return;
+  }
+  if (cfg.kind === 'call') {
+    document.body.classList.add('popout-call');
+    await bootCallPopout(cfg);
     return;
   }
   document.body.innerHTML =
@@ -456,6 +482,218 @@ async function bootWhiteboardPopout(cfg) {
   });
   await session.start();
   document.title = cfg.title || 'Whiteboard — Huddle';
+}
+
+// Pop the active call out into a child window. Implements
+// "move-the-call" semantics: the main window leaves the call once
+// the popout is ready, then the popout joins. Avoids duplicate
+// participant + duplicate presence under the same auth.uid() key,
+// at the cost of a brief mid-handoff gap where neither window is
+// in the call. The popout can be closed manually; closing it does
+// NOT auto-rejoin the main window.
+async function popOutCurrentCall() {
+  const channelId = state.inCallChannelId;
+  if (!channelId || !state.huddle) return;
+  // Two listeners with mutual-exclusion via `handoffDone`:
+  //   - call-popout-ready: the happy path. Leave the call, tell
+  //     the popout to take over, mark this call as popped-out so
+  //     renderCallHeader can hide the Join button (otherwise the
+  //     user can rejoin in main and become a duplicate
+  //     participant alongside the popout).
+  //   - popout-closed: fallback for when the popout's renderer
+  //     crashed or the user closed the window before the handoff
+  //     completed. Abort the handoff so we don't leaveCall on a
+  //     ghost popout.
+  let handoffDone = false;
+  const unsubReady = window.huddle.onPopoutEvent(async (msg) => {
+    if (msg?.event !== 'call-popout-ready') return;
+    if (msg.channelId !== channelId) return;
+    if (handoffDone) return;
+    handoffDone = true;
+    unsubReady();
+    unsubClosed();
+    try {
+      await leaveCall();
+    } finally {
+      // Even if leaveCall threw, signal the popout — otherwise it
+      // sits forever waiting for the handoff and the user has to
+      // close + reopen.
+      window.huddle.sendPopoutEvent({ event: 'main-call-left', channelId });
+    }
+    state.poppedOutCalls.add(channelId);
+    renderCallHeader();
+  });
+  const unsubClosed = window.huddle.onPopoutEvent((msg) => {
+    if (msg?.event !== 'popout-closed') return;
+    if (msg.target !== `call:${channelId}`) return;
+    if (handoffDone) return;
+    handoffDone = true;
+    unsubReady();
+    unsubClosed();
+    showToast('Popout closed before the handoff finished; staying in the call here.', { kind: 'error' });
+  });
+  try {
+    await window.huddle.openPopout({
+      target: `call:${channelId}`,
+      teamId: state.huddle.team.id,
+      channelId,
+      title: `Call — ${state.huddle.team.name || state.huddle.team.id}`,
+    });
+    showToast('Call moved to a new window');
+  } catch (err) {
+    unsubReady();
+    unsubClosed();
+    console.warn('call popout failed', err);
+    showCallError('Could not open call popout: ' + (err?.message || err));
+  }
+}
+
+// Boot the popout window into call mode. Builds a focused tile
+// grid + control bar in #popout-stage, redirects els.btn* + els.tiles
+// to those popout-local DOM nodes so the existing call handlers
+// (onCallPeerJoined, onTrack, addLocalCameraTile, etc.) continue
+// to work unmodified, then waits for `main-call-left` before
+// joining. The HuddleClient is constructed bare (no .start()) so
+// the popout doesn't subscribe to the team channel — only the
+// call:<team>:<channel> presence + signaling subscription matters
+// for the call tile grid.
+async function bootCallPopout(cfg) {
+  if (!cfg.teamId || !cfg.channelId) {
+    document.body.innerHTML =
+      '<div style="padding:32px;color:#fff;font:14px system-ui">'
+      + 'Popout missing context (team/channel). Close + reopen from the main window.'
+      + '</div>';
+    return;
+  }
+  const huddle = await window.huddleApi.startHuddle({ id: cfg.teamId, name: cfg.teamId });
+  state.huddle = huddle;
+  state.myName = huddle.name;
+  document.title = cfg.title || 'Call — Huddle';
+
+  const stage = document.getElementById('popout-stage') || document.body;
+  stage.replaceChildren();
+  // The tile grid and the control bar both need to coexist: tiles
+  // fill the upper area, controls pin to the bottom. Use a flex
+  // column so resizing the window stretches the tiles.
+  const wrap = document.createElement('div');
+  wrap.className = 'popout-call';
+  const tiles = document.createElement('section');
+  tiles.id = 'popout-call-tiles';
+  tiles.className = 'tiles popout-tiles';
+  wrap.appendChild(tiles);
+  const bar = document.createElement('div');
+  bar.className = 'popout-call-bar';
+  const mkBtn = (id, label, cls = 'ctrl') => {
+    const b = document.createElement('button');
+    b.id = id; b.className = cls; b.textContent = label;
+    return b;
+  };
+  // Mic / Cam start disabled — startPopoutCall enables them once
+  // the MeshClient is wired and joinCall has resolved. Without
+  // this, clicking either button during the brief handoff gap
+  // (state.mesh still null) silently no-ops and the user thinks
+  // the popout is broken.
+  const btnMic = mkBtn('popout-btn-mic', '🎤 Mic');
+  btnMic.disabled = true;
+  const btnCam = mkBtn('popout-btn-cam', '📷 Cam');
+  btnCam.disabled = true;
+  const btnLeave = mkBtn('popout-btn-leave', '⏹ Leave call', 'ctrl danger');
+  bar.append(btnMic, btnCam, btnLeave);
+  wrap.appendChild(bar);
+  stage.appendChild(wrap);
+
+  // Redirect els refs so the existing helpers (makeTile, syncTilesVisibility,
+  // renderCallHeader, etc.) operate on the popout's DOM. We supply
+  // dummy nodes for els the popout doesn't render so toggles are
+  // safe no-ops.
+  els.tiles = tiles;
+  els.btnMic = btnMic;
+  els.btnCam = btnCam;
+  els.btnLeave = btnLeave;
+  // Anything not visible in the popout: replace with a detached node
+  // so toggleClass(...) / textContent assignments don't throw.
+  const stub = () => document.createElement('div');
+  els.btnStartCall = stub();
+  els.btnJoinCall = stub();
+  els.btnShare = stub();
+  els.btnJira = stub();
+  els.btnPopoutCall = stub();
+  els.channelName = stub();
+  els.channelTopic = stub();
+  els.callPresenceCount = stub();
+
+  // Wire popout-local controls. Mic/Cam toggle methods on MeshClient
+  // exist already; Leave closes the call AND the popout window.
+  btnMic.onclick = () => {
+    if (!state.mesh) return;
+    const on = state.mesh.toggleMic();
+    btnMic.classList.toggle('muted', !on);
+    // Mirror the main-window behaviour: the self-cam tile gets a
+    // .muted class so the CSS strike-through overlay tracks the
+    // actual mic state.
+    const tile = state.tilesByKey.get('self-cam');
+    if (tile) tile.classList.toggle('muted', !on);
+  };
+  btnCam.onclick = () => {
+    if (!state.mesh) return;
+    const on = state.mesh.toggleCam();
+    btnCam.classList.toggle('muted', !on);
+  };
+  btnLeave.onclick = async () => {
+    try { await leaveCall(); }
+    finally { window.close(); }
+  };
+
+  // Wait for the main window to have left the call before joining,
+  // so the call channel doesn't carry duplicate presence under the
+  // same peer key.
+  const unsub = window.huddle.onPopoutEvent((msg) => {
+    if (msg?.event !== 'main-call-left') return;
+    if (msg.channelId !== cfg.channelId) return;
+    unsub();
+    startPopoutCall(cfg.channelId).catch((err) => {
+      console.warn('startPopoutCall failed', err);
+      showCallError('Could not start the call: ' + (err?.message || err));
+    });
+  });
+  // Tell the main window we're ready to take over.
+  window.huddle.sendPopoutEvent({ event: 'call-popout-ready', channelId: cfg.channelId });
+}
+
+// Popout-local equivalent of startCall(). Same MeshClient setup +
+// joinCall + setCamera, but skips the start/join button toggles
+// and the in-flight guard (popout has its own UI).
+async function startPopoutCall(channelId) {
+  const huddle = state.huddle;
+  if (!huddle || state.mesh) return;
+  const mesh = new MeshClient(huddle);
+  mesh.addEventListener('peer-joined', (e) => onCallPeerJoined(e.detail));
+  mesh.addEventListener('peer-left', (e) => onCallPeerLeft(e.detail));
+  mesh.addEventListener('track', (e) => onTrack(e.detail));
+  mesh.addEventListener('screen-announce', (e) => onScreenAnnounce(e.detail));
+  mesh.addEventListener('screen-stop', (e) => onScreenStop(e.detail));
+  mesh.addEventListener('remote-stream-ended', (e) => onScreenStop(e.detail));
+  mesh.addEventListener('draw', (e) => onRemoteDraw(e.detail));
+  try {
+    await huddle.joinCall(channelId);
+  } catch (err) {
+    showCallError('Could not join the call: ' + (err?.message || err));
+    mesh.disconnect();
+    return;
+  }
+  state.mesh = mesh;
+  state.inCallChannelId = channelId;
+  // The mic/cam controls were disabled in bootCallPopout; flip
+  // them on now that mesh.toggle{Mic,Cam} have something to act on.
+  els.btnMic.disabled = false;
+  els.btnCam.disabled = false;
+  mesh.bootstrapExistingPeers();
+  try {
+    const cam = await mesh.setCamera({ video: true, audio: true });
+    addLocalCameraTile(cam, huddle.name);
+  } catch (err) {
+    showCallError('Could not access camera/microphone: ' + (err?.message || err));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -904,11 +1142,15 @@ async function signOutFully() {
 function renderCallHeader() {
   const channelId = state.chat?.currentChannel;
   const inCallHere = state.mesh && state.inCallChannelId === channelId;
+  // Channels whose call this user popped out are owned by the
+  // popout window — hide both Start/Join here so a click in main
+  // doesn't rejoin and become a duplicate participant.
+  const ownedByPopout = !!channelId && state.poppedOutCalls.has(channelId);
   const lurkerCount = (channelId && state.huddle && !inCallHere)
     ? state.huddle.getCallParticipantCount(channelId) : 0;
   const others = inCallHere ? null : (lurkerCount > 0);
-  els.btnStartCall.classList.toggle('hidden', !!inCallHere || !!others);
-  els.btnJoinCall.classList.toggle('hidden', !!inCallHere || !others);
+  els.btnStartCall.classList.toggle('hidden', !!inCallHere || !!others || ownedByPopout);
+  els.btnJoinCall.classList.toggle('hidden', !!inCallHere || !others || ownedByPopout);
   if (others) {
     // Update the text span inside the button (which sits next to the
     // SVG icon) instead of replacing innerHTML, so we keep the icon.
@@ -926,6 +1168,7 @@ function renderCallHeader() {
   els.btnCam.classList.toggle('hidden', !inCallHere);
   els.btnShare.classList.toggle('hidden', !inCallHere);
   els.btnJira.classList.toggle('hidden', !inCallHere);
+  els.btnPopoutCall.classList.toggle('hidden', !inCallHere);
   els.btnLeave.classList.toggle('hidden', !inCallHere);
 }
 
@@ -1385,7 +1628,12 @@ function makeTile({ key, label, kind, userId }) {
   if (kind === 'screen' || kind === 'whiteboard') {
     const actions = document.createElement('div');
     actions.className = 'tile-actions';
-    if (kind === 'screen') {
+    // Annotate spawns the draw toolbar (#draw-toolbar) which lives
+    // in the main window's #app and is hidden in popout mode. Skip
+    // the button there so we don't render a click target that does
+    // nothing visible.
+    const inPopoutCall = document.body.classList.contains('popout-call');
+    if (kind === 'screen' && !inPopoutCall) {
       const annotate = document.createElement('button');
       annotate.textContent = '✏️ Annotate';
       annotate.onclick = () => toggleAnnotate(tile.dataset.streamId);
@@ -1575,6 +1823,7 @@ function wireControls() {
   // Leave the call (drop media + tile grid, keep chat). Held-down "Leave
   // team" is in the sidebar's sign-out menu.
   els.btnLeave.onclick = leaveCall;
+  els.btnPopoutCall.onclick = popOutCurrentCall;
   els.sourceCancel.onclick = () => els.sourcePicker.classList.add('hidden');
 
   // Invite links — workspace header (team) + channel header (call).
