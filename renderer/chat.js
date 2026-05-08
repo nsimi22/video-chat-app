@@ -12,6 +12,11 @@
 
 // System prompt for /ai-ticket. The AI is instructed to emit ONE
 // JSON object with no preamble, no markdown fences, no commentary.
+// Composer auto-resize cap. Values larger than this scroll
+// internally instead of growing the textarea, so the message list
+// stays mostly visible while you draft a long message.
+const MAX_COMPOSER_HEIGHT = 160;
+
 // Schema is small + opinionated — anything beyond the documented
 // keys is dropped, defaults pick up the rest.
 const TICKET_SYSTEM_PROMPT = `You convert freeform descriptions into Jira tickets.
@@ -115,6 +120,9 @@ class ChatView {
     this._slashFiltered = [];
     this._slashIndex = 0;
     this._slashBlurTimer = null;
+    // Debounced draft persistence — see _scheduleDraftSave.
+    this._draftSaveTimer = null;
+    this._pendingDraft = null;
 
     this.typingClock = setInterval(() => this._refreshTyping(), 800);
     this._wireDom();
@@ -127,9 +135,12 @@ class ChatView {
 
   setChannel(channelId, topic, displayLabel) {
     // Save the previous channel's draft before swapping in the new
-    // one. Drafts persist in-memory across switches and are flushed
-    // to localStorage on every change so they survive reloads.
+    // one. Flush any pending debounced save first, then capture
+    // the current composer value synchronously — the input event
+    // for the very last keystroke might not have reached the
+    // 150ms debounce yet.
     if (this.currentChannel && this.currentChannel !== channelId) {
+      this._flushDraftSave();
       this._saveDraft(this.currentChannel, this.els.composer.value);
     }
     this.currentChannel = channelId;
@@ -147,8 +158,7 @@ class ChatView {
     // Restore the new channel's draft (if any). Null/empty leaves
     // the composer blank.
     this.els.composer.value = this._loadDraft(channelId) || '';
-    this.els.composer.style.height = 'auto';
-    this.els.composer.style.height = Math.min(160, this.els.composer.scrollHeight) + 'px';
+    this._autoResizeComposer();
     this._render();
     this._fetchHistory(channelId);
   }
@@ -216,16 +226,21 @@ class ChatView {
       }
     });
     this._on(this.els.composer, 'input', () => {
-      this.els.composer.style.height = 'auto';
-      this.els.composer.style.height = Math.min(160, this.els.composer.scrollHeight) + 'px';
+      this._autoResizeComposer();
       this._refreshSlashSuggest();
-      // Persist the draft on every keystroke. localStorage writes
-      // are synchronous but cheap enough at typing speed; debouncing
-      // would risk losing the last few keystrokes if the renderer
-      // crashed.
-      if (this.currentChannel) this._saveDraft(this.currentChannel, this.els.composer.value);
+      // Persist the draft, but debounced — localStorage is a
+      // synchronous, thread-blocking API and a large draft saved
+      // on every keystroke can cause noticeable input lag. The
+      // 150ms window is short enough that a renderer crash won't
+      // lose much, and blur / channel-switch / submit each flush
+      // any pending save so committed text is never stale.
+      if (this.currentChannel) this._scheduleDraftSave(this.currentChannel, this.els.composer.value);
     });
     this._on(this.els.composer, 'blur', () => {
+      // Flush any pending debounced draft save before yielding focus
+      // — otherwise a fast blur (channel switch, etc.) could lose
+      // the last keystrokes.
+      this._flushDraftSave();
       // Slight delay so a click on a suggestion can fire before we
       // tear down the popup. Tracked so destroy() can clear the
       // timer — without it, a teardown within 80ms of a blur
@@ -318,6 +333,10 @@ class ChatView {
     this._gifSearchTimer = null;
     if (this._slashBlurTimer) clearTimeout(this._slashBlurTimer);
     this._slashBlurTimer = null;
+    // Flush any pending debounced draft save so a sign-out / team
+    // switch never strands the user's last keystrokes in a
+    // never-fired timer.
+    this._flushDraftSave();
     this._listenerCtrl?.abort();
     this._listenerCtrl = null;
   }
@@ -417,9 +436,8 @@ class ChatView {
     // Programmatic value assignments don't fire `input`, so the
     // composer's auto-resize logic — which lives in the input
     // listener — never runs and the textarea height drifts. Run
-    // the same recompute inline.
-    this.els.composer.style.height = 'auto';
-    this.els.composer.style.height = Math.min(160, this.els.composer.scrollHeight) + 'px';
+    // the same recompute via the shared helper.
+    this._autoResizeComposer();
     this.els.composer.focus();
     this._hideSlashSuggest();
   }
@@ -429,6 +447,15 @@ class ChatView {
   // mid-thought switch + back doesn't drop what the user was
   // writing. Storage key includes the team id so multi-team users
   // don't bleed drafts across workspaces.
+
+  // Recompute the composer textarea's height to fit its content,
+  // capped at MAX_COMPOSER_HEIGHT. Three call sites (setChannel
+  // restore, input listener, _fillSlashSuggest) needed the same
+  // sequence and the literal 160 was about to become a fourth.
+  _autoResizeComposer() {
+    this.els.composer.style.height = 'auto';
+    this.els.composer.style.height = Math.min(MAX_COMPOSER_HEIGHT, this.els.composer.scrollHeight) + 'px';
+  }
 
   _draftKey(channelId) {
     const teamId = this.huddle?.team?.id || 'unknown';
@@ -454,7 +481,45 @@ class ChatView {
     catch { return ''; }
   }
 
-  _clearDraft(channelId) { this._saveDraft(channelId, ''); }
+  // Debounced draft save. localStorage is synchronous and large
+  // drafts saved on every keystroke produce noticeable input lag,
+  // so coalesce within a 150ms window. Always paired with
+  // _flushDraftSave on blur / channel-switch / submit / destroy
+  // so committed text never strands in the timer.
+  _scheduleDraftSave(channelId, value) {
+    this._pendingDraft = { channelId, value };
+    if (this._draftSaveTimer) return;
+    this._draftSaveTimer = setTimeout(() => {
+      this._draftSaveTimer = null;
+      this._flushDraftSave();
+    }, 150);
+  }
+
+  _flushDraftSave() {
+    if (this._draftSaveTimer) {
+      clearTimeout(this._draftSaveTimer);
+      this._draftSaveTimer = null;
+    }
+    if (!this._pendingDraft) return;
+    const { channelId, value } = this._pendingDraft;
+    this._pendingDraft = null;
+    this._saveDraft(channelId, value);
+  }
+
+  _clearDraft(channelId) {
+    // Drop any pending save for this channel — we're explicitly
+    // clearing, so the queued value is moot. Pending saves for
+    // OTHER channels (rare; only happens via fast cross-channel
+    // edits) are left alone to fire on schedule.
+    if (this._pendingDraft?.channelId === channelId) {
+      this._pendingDraft = null;
+      if (this._draftSaveTimer) {
+        clearTimeout(this._draftSaveTimer);
+        this._draftSaveTimer = null;
+      }
+    }
+    this._saveDraft(channelId, '');
+  }
 
   // --- Submit / edit ------------------------------------------------------
 

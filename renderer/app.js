@@ -229,8 +229,11 @@ const STREAM_DECISION_MS = 1500;
 
   // Global keyboard shortcuts. Cmd/Ctrl + / toggles the cheat
   // sheet; Esc closes it (for parity with the other modals'
-  // dismiss conventions).
+  // dismiss conventions). Skipped while the workspace UI is
+  // hidden so the shortcut doesn't fire over the login / team
+  // picker screens.
   document.addEventListener('keydown', (e) => {
+    if (els.app.classList.contains('hidden')) return;
     if ((e.metaKey || e.ctrlKey) && e.key === '/') {
       e.preventDefault();
       els.shortcutsModal.classList.toggle('hidden');
@@ -1410,7 +1413,12 @@ function updateUnreadTitle() {
   let loudCount = 0;
   for (const [channelId, u] of state.unread) {
     const channel = state.channelMeta.get(channelId);
-    if (u.mentions > 0 || channel?.type === 'dm') loudCount += u.count;
+    // DMs count every unread message (the whole conversation is
+    // for you). Channels only count direct @mentions — getting
+    // the full chatter count would scream every time a busy
+    // channel sees one mention buried in fifty messages.
+    if (channel?.type === 'dm') loudCount += u.count;
+    else if (u.mentions > 0) loudCount += u.mentions;
   }
   document.title = loudCount > 0 ? `(${loudCount}) ${base}` : base;
 }
