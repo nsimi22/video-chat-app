@@ -181,12 +181,24 @@
         <!-- Drawing toolbar appears when a screen tile is focused for annotation. -->
         <div id="draw-toolbar" class="draw-toolbar hidden">
           <span class="draw-target">Drawing on <b id="draw-target-name"></b></span>
-          <button data-tool="pen" class="tool active">✏️ Pen</button>
-          <button data-tool="arrow" class="tool">➤ Arrow</button>
-          <button data-tool="eraser" class="tool">🧽 Erase</button>
+          <button data-tool="pen" class="tool active" title="Pen" aria-label="Pen">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            <span>Pen</span>
+          </button>
+          <button data-tool="arrow" class="tool" title="Arrow" aria-label="Arrow">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+            <span>Arrow</span>
+          </button>
+          <button data-tool="eraser" class="tool" title="Eraser" aria-label="Eraser">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20H7l-4-4 9-9 11 11-3 2z"/><line x1="14" y1="6" x2="20" y2="12"/></svg>
+            <span>Erase</span>
+          </button>
           <input type="color" id="draw-color" value="#ff3b30" />
           <input type="range" id="draw-size" min="1" max="20" value="4" />
-          <button id="draw-add-note" class="hidden">📝 Note</button>
+          <button id="draw-add-note" class="hidden" title="Add note" aria-label="Add note">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-9z"/><polyline points="14 3 14 10 21 10"/></svg>
+            <span>Note</span>
+          </button>
           <button id="draw-zoom-out" class="hidden" title="Zoom out (Ctrl+wheel)">−</button>
           <button id="draw-zoom-reset" class="hidden" title="Reset zoom + pan">Reset view</button>
           <button id="draw-zoom-in" class="hidden" title="Zoom in (Ctrl+wheel)">+</button>
@@ -225,7 +237,9 @@
         <div id="gif-picker" class="gif-picker hidden">
           <div class="gif-search-row">
             <input id="gif-search" type="text" placeholder="Search GIFs (Giphy)…" />
-            <button id="gif-close" title="Close">✕</button>
+            <button id="gif-close" class="icon-only ghost" title="Close" aria-label="Close">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
           </div>
           <div id="gif-grid" class="gif-grid"></div>
           <div id="gif-attribution" class="gif-attribution hidden">Powered by GIPHY</div>

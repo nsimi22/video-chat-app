@@ -651,7 +651,8 @@ class ChatView {
       const txt = document.createElement('span');
       txt.textContent = a.file.name + (a.status === 'uploading' ? ' …' : a.status === 'failed' ? ' (failed)' : '');
       const x = document.createElement('button');
-      x.textContent = '✕';
+      x.title = 'Remove'; x.setAttribute('aria-label', 'Remove');
+      x.innerHTML = window.HuddleIcons.x;
       x.onclick = () => {
         this.composerAttachments = this.composerAttachments.filter((c) => c !== a);
         this._renderAttachmentChips();
@@ -670,11 +671,19 @@ class ChatView {
       if (info.until > now) live.push(info.name);
       else this.typingUsers.delete(id);
     }
-    let text = live.length === 0 ? ''
+    const text = live.length === 0 ? ''
       : live.length === 1 ? `${live[0]} is typing…`
       : `${live.slice(0, -1).join(', ')} and ${live.at(-1)} are typing…`;
-    if (this._aiThinkingCount > 0) text = (text ? text + ' · ' : '') + '🤖 AI is thinking…';
+    // Names go through textContent first so any HTML-ish chars are
+    // escaped; we only inject our trusted AI-thinking SVG via innerHTML.
     this.els.typing.textContent = text;
+    if (this._aiThinkingCount > 0) {
+      const sep = text ? ' · ' : '';
+      const ai = document.createElement('span');
+      ai.className = 'typing-ai';
+      ai.innerHTML = `${window.HuddleIcons.robot}<span>AI is thinking…</span>`;
+      this.els.typing.append(sep, ai);
+    }
   }
 
   // Track AI requests in flight as a counter, not a boolean — otherwise
@@ -831,7 +840,7 @@ class ChatView {
     if (m.aiGenerated) {
       // Robot icon avatar; same size as the human ones so the grid stays aligned.
       avatar.style.background = '#3a3f47';
-      avatar.textContent = '🤖';
+      avatar.innerHTML = window.HuddleIcons.robot;
     } else {
       avatar.style.background = m.authorColor || '#666';
       avatar.textContent = initials;
@@ -920,7 +929,9 @@ class ChatView {
           link.target = '_blank';
           link.rel = 'noopener noreferrer';
           link.className = 'attachment-chip';
-          link.textContent = `📎 ${a.name}${a.size ? ` (${formatBytes(a.size)})` : ''}`;
+          const sizeLabel = a.size ? ` (${formatBytes(a.size)})` : '';
+          link.innerHTML = `${window.HuddleIcons.paperclip}<span></span>`;
+          link.querySelector('span').textContent = `${a.name}${sizeLabel}`;
           attachmentsEl.appendChild(link);
         }
       }

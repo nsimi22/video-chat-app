@@ -1439,6 +1439,26 @@ body.popout .popout-stage { display: block; }
   border-top: 1px solid var(--line);
 }
 .popout-call-bar .ctrl.muted { background: var(--bad); }
+/* Popout buttons mirror the main-window pattern: SVG icon + optional
+   text label in a child span. Match the main toolbar's sizing. */
+.popout-call-bar .ctrl svg { width: 16px; height: 16px; }
+.popout-call-bar .ctrl.danger svg { width: 14px; height: 14px; }
+.popout-call-bar .ctrl span { margin-left: 6px; }
+/* When the draw-toolbar is reparented into the popout-stage (call
+   popout's Annotate flow), keep it pinned above the call bar so it
+   doesn't float to the top of the window. */
+body.popout-call .popout-stage > .draw-toolbar {
+  position: fixed; left: 50%; bottom: 76px; transform: translateX(-50%);
+  margin: 0; z-index: 30;
+}
+/* Attachment chip: paperclip SVG + filename. Keep them inline-aligned. */
+.attachment-chip { display: inline-flex; align-items: center; gap: 6px; }
+.attachment-chip svg { width: 14px; height: 14px; }
+/* AI avatar: robot SVG sits inside the round avatar tile. */
+.avatar-ai svg { width: 18px; height: 18px; color: #fff; }
+/* AI typing indicator: small SVG + label, inline with the human typing text. */
+.typing-ai { display: inline-flex; align-items: center; gap: 4px; }
+.typing-ai svg { width: 12px; height: 12px; }
 
 /* Keyboard-shortcut cheat sheet (Cmd/Ctrl + /). Reuses the
    .modal chrome; the shortcut table is the focus. */
