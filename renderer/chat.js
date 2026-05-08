@@ -40,6 +40,36 @@ function parseTicketJson(raw) {
   throw new Error('response was not valid JSON');
 }
 
+// Single source of truth for both the composer's autocomplete
+// popup AND the Settings → Slash commands explainer (rendered from
+// this list by app.js). When adding a new command, add ONE entry
+// here and both surfaces pick it up.
+//
+//   name      — canonical command (no leading slash). What the popup
+//                shows and what _fillSlashSuggest types into the
+//                composer.
+//   usage     — short usage hint shown in the popup. Should fit on
+//                one line.
+//   desc      — sentence-length description for both the popup and
+//                Settings. Aliases mentioned here are documentation
+//                only; the actual dispatch lives in _maybeRunSlash.
+//   aliases   — optional list of equivalent commands (just for the
+//                Settings explainer; popup renders one row per
+//                canonical name to keep it tight).
+//   extras    — optional list of {usage, desc} variants to show in
+//                Settings only (e.g., /jira create vs /jira <KEY>).
+const SLASH_COMMANDS = [
+  { name: 'ai',         usage: '/ai <question>',           desc: 'Ask the configured AI provider; the answer is posted as a teammate-visible message.' },
+  { name: 'ai-ticket',  usage: '/ai-ticket <description>', desc: 'AI structures the description into a Jira ticket and creates it in your default project.', aliases: ['ait'] },
+  { name: 'summarize',  usage: '/summarize',               desc: 'Summarize the last few messages in this channel.', aliases: ['summary'] },
+  { name: 'jira',       usage: '/jira',                    desc: 'Open the Jira create-ticket modal.', extras: [
+      { usage: '/jira create <summary>', desc: 'Open the create-ticket modal pre-filled with a summary.' },
+      { usage: '/jira <KEY>',            desc: 'Post the issue URL — auto-unfurls into a status card for everyone.' },
+  ] },
+  { name: 'gh',         usage: '/gh <owner/repo#N>',       desc: 'Post a GitHub issue or PR URL — auto-unfurls into a status card.', aliases: ['github'] },
+];
+window.SLASH_COMMANDS = SLASH_COMMANDS;
+
 class ChatView {
   constructor({ huddle, els, hooks }) {
     // ChatView used to take a MeshClient (`mesh`); the MeshClient was
@@ -77,6 +107,13 @@ class ChatView {
     // join/leave cycle, so without this the host elements (composer,
     // document, etc.) accumulate stale handlers.
     this._listenerCtrl = new AbortController();
+
+    // Slash-command autocomplete state. Initialized here so any code
+    // path that touches it (the keydown handler in particular) can't
+    // observe an undefined _slashFiltered before the first refresh.
+    this._slashOpen = false;
+    this._slashFiltered = [];
+    this._slashIndex = 0;
 
     this.typingClock = setInterval(() => this._refreshTyping(), 800);
     this._wireDom();
@@ -155,6 +192,10 @@ class ChatView {
     this._on(this.els.threadBack, 'click', () => this.closeThread());
     this._on(this.els.send, 'click', () => this._submit());
     this._on(this.els.composer, 'keydown', (e) => {
+      // Slash autocomplete claims arrow keys, Tab, and Escape while
+      // visible. Enter still submits (the popup just disappears as
+      // the message is sent).
+      if (this._slashOpen && this._handleSlashKeydown(e)) return;
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this._submit();
@@ -165,6 +206,12 @@ class ChatView {
     this._on(this.els.composer, 'input', () => {
       this.els.composer.style.height = 'auto';
       this.els.composer.style.height = Math.min(160, this.els.composer.scrollHeight) + 'px';
+      this._refreshSlashSuggest();
+    });
+    this._on(this.els.composer, 'blur', () => {
+      // Slight delay so a click on a suggestion can fire before we
+      // tear down the popup.
+      setTimeout(() => this._hideSlashSuggest(), 80);
     });
     this._on(this.els.composer, 'paste', (e) => this._onPaste(e));
     this._on(this.els.emojiBtn, 'click', (e) => {
@@ -249,10 +296,110 @@ class ChatView {
     this._listenerCtrl = null;
   }
 
+  // --- Slash-command autocomplete -----------------------------------------
+
+  // Re-evaluate the popup against the current composer value. Shows
+  // the popup when the value is a /<partial-name> token (no spaces)
+  // and at least one command matches; hides otherwise. Re-rendering
+  // also resets the highlight to the first match so Tab fills the
+  // top suggestion as the user types.
+  _refreshSlashSuggest() {
+    const value = this.els.composer.value;
+    // Allow digits in command names (e.g., a future /k8s) — the
+    // dispatch in _maybeRunSlash also accepts \w, so they stay in
+    // sync. Hyphens stay supported for /ai-ticket.
+    const m = /^\/([a-zA-Z0-9-]*)$/.exec(value);
+    if (!m) { this._hideSlashSuggest(); return; }
+    const partial = m[1].toLowerCase();
+    const matches = SLASH_COMMANDS.filter((c) => c.name.startsWith(partial));
+    if (!matches.length) { this._hideSlashSuggest(); return; }
+    this._slashFiltered = matches;
+    this._slashIndex = 0;
+    this._slashOpen = true;
+    this._renderSlashSuggest();
+  }
+
+  _renderSlashSuggest() {
+    const root = this.els.slashSuggest;
+    root.replaceChildren();
+    for (let i = 0; i < this._slashFiltered.length; i++) {
+      const cmd = this._slashFiltered[i];
+      const row = document.createElement('div');
+      row.className = 'slash-suggest-item' + (i === this._slashIndex ? ' selected' : '');
+      row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', i === this._slashIndex ? 'true' : 'false');
+      const code = document.createElement('code');
+      code.textContent = cmd.usage;
+      const desc = document.createElement('span');
+      desc.className = 'desc';
+      desc.textContent = cmd.desc;
+      row.append(code, desc);
+      // mousedown (not click) so the textarea blur doesn't close the
+      // popup before the click lands. preventDefault keeps focus on
+      // the textarea after the fill.
+      row.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        this._fillSlashSuggest(i);
+      });
+      root.appendChild(row);
+    }
+    root.classList.remove('hidden');
+  }
+
+  _hideSlashSuggest() {
+    this._slashOpen = false;
+    this._slashFiltered = [];
+    this._slashIndex = 0;
+    this.els.slashSuggest.classList.add('hidden');
+  }
+
+  // Returns true iff the keypress was handled here (caller bails out).
+  _handleSlashKeydown(e) {
+    if (!this._slashOpen) return false;
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        this._slashIndex = (this._slashIndex + 1) % this._slashFiltered.length;
+        this._renderSlashSuggest();
+        return true;
+      case 'ArrowUp':
+        e.preventDefault();
+        this._slashIndex = (this._slashIndex - 1 + this._slashFiltered.length) % this._slashFiltered.length;
+        this._renderSlashSuggest();
+        return true;
+      case 'Tab':
+        e.preventDefault();
+        this._fillSlashSuggest(this._slashIndex);
+        return true;
+      case 'Escape':
+        e.preventDefault();
+        this._hideSlashSuggest();
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  _fillSlashSuggest(index) {
+    const cmd = this._slashFiltered[index];
+    if (!cmd) return;
+    // Replace the partial with `/<name> ` so the user can keep
+    // typing the argument. The trailing space also closes the
+    // popup (input handler matches /^\/[a-zA-Z-]*$/, which fails
+    // once a space is present).
+    this.els.composer.value = `/${cmd.name} `;
+    this.els.composer.focus();
+    this._hideSlashSuggest();
+  }
+
   // --- Submit / edit ------------------------------------------------------
 
   async _submit() {
     if (this.editingMessageId) return; // edits use their own inline path
+    // Submit dismisses the slash autocomplete unconditionally — the
+    // composer either clears or has its content shipped, both of
+    // which invalidate the popup.
+    this._hideSlashSuggest();
 
     // Wait for any in-flight uploads to settle before sending.
     const pending = this.composerAttachments.filter((a) => a.status === 'uploading');

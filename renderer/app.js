@@ -93,6 +93,7 @@ const els = {
   messages: $('#messages'),
   typing: $('#typing-indicator'),
   composer: $('#composer-input'),
+  slashSuggest: $('#slash-suggest'),
   send: $('#send-btn'),
   emojiBtn: $('#emoji-btn'),
   emojiPicker: $('#emoji-picker'),
@@ -185,6 +186,12 @@ const STREAM_DECISION_MS = 1500;
 // ---------------------------------------------------------------------------
 
 (async function boot() {
+  // Render the static Settings → Slash commands explainer from
+  // chat.js's SLASH_COMMANDS catalog so the composer autocomplete
+  // and this list stay in lockstep. Runs once at boot — settings is
+  // hidden initially, so building it now is free.
+  renderSlashList();
+
   // Wire auth UI before checking session, so events bind even on cold start.
   els.authSendOtp.addEventListener('click', stepSendOtp);
   els.authVerify.addEventListener('click', stepVerifyOtp);
@@ -287,6 +294,38 @@ function showToast(message, { kind = 'info', duration = 2400 } = {}) {
     t.style.opacity = '0';
     setTimeout(() => t.remove(), 220);
   }, duration);
+}
+
+// Populate Settings → Slash commands from window.SLASH_COMMANDS
+// (chat.js). Rendered as <li><code>usage</code><span>desc</span></li>;
+// aliases are appended as a sub-line, and any `extras` (e.g. /jira
+// variants) become sibling rows so the explainer covers all the
+// command shapes the user might want to type.
+function renderSlashList() {
+  const ul = $('#slash-list');
+  if (!ul || !window.SLASH_COMMANDS) return;
+  ul.replaceChildren();
+  for (const cmd of window.SLASH_COMMANDS) {
+    ul.appendChild(buildSlashRow(cmd.usage, cmd.desc, cmd.aliases));
+    for (const extra of (cmd.extras || [])) {
+      ul.appendChild(buildSlashRow(extra.usage, extra.desc));
+    }
+  }
+}
+
+function buildSlashRow(usage, desc, aliases) {
+  const li = document.createElement('li');
+  const code = document.createElement('code');
+  code.textContent = usage;
+  const span = document.createElement('span');
+  if (aliases?.length) {
+    const aliasNote = aliases.map((a) => `/${a}`).join(', ');
+    span.textContent = `(alias ${aliasNote}) ${desc}`;
+  } else {
+    span.textContent = desc;
+  }
+  li.append(code, span);
+  return li;
 }
 
 // ---------------------------------------------------------------------------

@@ -653,9 +653,41 @@ button.ctrl.muted.icon-only::after {
 }
 .thread-link:hover { text-decoration: underline; }
 .composer {
+  position: relative;
   border-top: 1px solid var(--line); padding: 8px;
   display: flex; gap: 6px; align-items: end;
 }
+
+/* Slash-command autocomplete popup. Anchored above the composer
+   via position:absolute / bottom:100% so it grows upward and
+   doesn't push the textarea around as items appear/disappear. */
+.slash-suggest {
+  position: absolute;
+  bottom: 100%; left: 8px; right: 8px;
+  margin-bottom: 4px;
+  background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  max-height: 240px; overflow-y: auto;
+  z-index: 50;
+  font-size: 13px;
+}
+.slash-suggest-item {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 6px 10px; cursor: pointer;
+}
+.slash-suggest-item:not(:last-child) { border-bottom: 1px solid var(--line); }
+.slash-suggest-item.selected { background: var(--accent); color: white; }
+.slash-suggest-item code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: rgba(255,255,255,.08);
+  padding: 2px 6px; border-radius: 4px;
+  font-size: 12.5px;
+  flex-shrink: 0;
+}
+.slash-suggest-item.selected code { background: rgba(255,255,255,.18); }
+.slash-suggest-item .desc { color: var(--text-dim); }
+.slash-suggest-item.selected .desc { color: rgba(255,255,255,.85); }
 .composer textarea {
   flex: 1; resize: none; min-height: 36px; max-height: 160px;
 }
