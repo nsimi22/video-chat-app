@@ -41,6 +41,8 @@ const els = {
   searchBtn: $('#search-btn'),
   whiteboardBtn: $('#whiteboard-btn'),
   searchModal: $('#search-modal'),
+  shortcutsModal: $('#shortcuts-modal'),
+  shortcutsClose: $('#shortcuts-close'),
   searchInput: $('#search-input'),
   searchScopeCurrent: $('#search-scope-current'),
   searchResults: $('#search-results'),
@@ -224,6 +226,21 @@ const STREAM_DECISION_MS = 1500;
     const channelId = target.slice('call:'.length);
     if (state.poppedOutCalls.delete(channelId)) renderCallHeader();
   });
+
+  // Global keyboard shortcuts. Cmd/Ctrl + / toggles the cheat
+  // sheet; Esc closes it (for parity with the other modals'
+  // dismiss conventions).
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === '/') {
+      e.preventDefault();
+      els.shortcutsModal.classList.toggle('hidden');
+      return;
+    }
+    if (e.key === 'Escape' && !els.shortcutsModal.classList.contains('hidden')) {
+      els.shortcutsModal.classList.add('hidden');
+    }
+  });
+  els.shortcutsClose.onclick = () => els.shortcutsModal.classList.add('hidden');
 
   // Render the static Settings → Slash commands explainer from
   // chat.js's SLASH_COMMANDS catalog so the composer autocomplete
@@ -1084,6 +1101,7 @@ async function teardownTeam() {
   state.pendingInviteHop = null;
   state.channelMeta.clear();
   state.unread.clear();
+  updateUnreadTitle();
   state.inCallChannelId = null;
   state.lurkingChannelId = null;
   state.callStarting = false;
@@ -1329,6 +1347,7 @@ function focusChannel(channelId) {
   // Visiting a channel clears its unread.
   state.unread.delete(channelId);
   updateUnreadBadge(channelId);
+  updateUnreadTitle();
 }
 
 // On window focus, clear unread for the channel we're already viewing.
@@ -1338,6 +1357,7 @@ function clearUnreadIfActive() {
   if (state.unread.has(id)) {
     state.unread.delete(id);
     updateUnreadBadge(id);
+    updateUnreadTitle();
   }
 }
 
@@ -1349,6 +1369,7 @@ function bumpUnread(channelId, mentionsMe) {
   if (mentionsMe) cur.mentions += 1;
   state.unread.set(channelId, cur);
   updateUnreadBadge(channelId);
+  updateUnreadTitle();
 }
 
 function updateUnreadBadge(channelId) {
@@ -1370,6 +1391,28 @@ function updateUnreadBadge(channelId) {
   const channel = state.channelMeta.get(channelId);
   const loud = u.mentions > 0 || channel?.type === 'dm';
   badge.classList.toggle('muted', !loud);
+  updateUnreadTitle();
+}
+
+// Sum the "loud" unreads (mentions + DMs) across every channel and
+// prefix the window title with the count. The OS dock / taskbar
+// shows the prefix in any window-list view, so the user sees
+// attention-required at a glance even when Huddle isn't focused.
+// Plain-channel chatter is intentionally excluded so the title
+// doesn't scream every time anyone posts anywhere.
+function updateUnreadTitle() {
+  // Popout windows have their own title (the call / whiteboard
+  // they're showing) — skip the unread prefix for them.
+  if (document.body.classList.contains('popout')) return;
+  const base = state.huddle?.team?.name
+    ? `Huddle — ${state.huddle.team.name}`
+    : 'Huddle';
+  let loudCount = 0;
+  for (const [channelId, u] of state.unread) {
+    const channel = state.channelMeta.get(channelId);
+    if (u.mentions > 0 || channel?.type === 'dm') loudCount += u.count;
+  }
+  document.title = loudCount > 0 ? `(${loudCount}) ${base}` : base;
 }
 
 // Called by ChatView via the onMessage hook for every inbound chat message

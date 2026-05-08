@@ -126,6 +126,12 @@ class ChatView {
   // --- Public API ---------------------------------------------------------
 
   setChannel(channelId, topic, displayLabel) {
+    // Save the previous channel's draft before swapping in the new
+    // one. Drafts persist in-memory across switches and are flushed
+    // to localStorage on every change so they survive reloads.
+    if (this.currentChannel && this.currentChannel !== channelId) {
+      this._saveDraft(this.currentChannel, this.els.composer.value);
+    }
     this.currentChannel = channelId;
     this.threadParentId = null;
     this.editingMessageId = null;
@@ -138,6 +144,11 @@ class ChatView {
     this.els.channelTopic.textContent = topic || '';
     this.els.composer.placeholder = `Message ${label}`;
     this.els.threadBack.classList.add('hidden');
+    // Restore the new channel's draft (if any). Null/empty leaves
+    // the composer blank.
+    this.els.composer.value = this._loadDraft(channelId) || '';
+    this.els.composer.style.height = 'auto';
+    this.els.composer.style.height = Math.min(160, this.els.composer.scrollHeight) + 'px';
     this._render();
     this._fetchHistory(channelId);
   }
@@ -208,6 +219,11 @@ class ChatView {
       this.els.composer.style.height = 'auto';
       this.els.composer.style.height = Math.min(160, this.els.composer.scrollHeight) + 'px';
       this._refreshSlashSuggest();
+      // Persist the draft on every keystroke. localStorage writes
+      // are synchronous but cheap enough at typing speed; debouncing
+      // would risk losing the last few keystrokes if the renderer
+      // crashed.
+      if (this.currentChannel) this._saveDraft(this.currentChannel, this.els.composer.value);
     });
     this._on(this.els.composer, 'blur', () => {
       // Slight delay so a click on a suggestion can fire before we
@@ -408,6 +424,38 @@ class ChatView {
     this._hideSlashSuggest();
   }
 
+  // --- Drafts -------------------------------------------------------------
+  // Composer text is persisted per-channel in localStorage so a
+  // mid-thought switch + back doesn't drop what the user was
+  // writing. Storage key includes the team id so multi-team users
+  // don't bleed drafts across workspaces.
+
+  _draftKey(channelId) {
+    const teamId = this.huddle?.team?.id || 'unknown';
+    return `huddle.draft.${teamId}.${channelId}`;
+  }
+
+  _saveDraft(channelId, value) {
+    if (!channelId) return;
+    try {
+      const key = this._draftKey(channelId);
+      if (!value) localStorage.removeItem(key);
+      else localStorage.setItem(key, value);
+    } catch {
+      // localStorage can be unavailable in private modes / quota'd
+      // — drafts just don't survive in that case. Not worth
+      // surfacing to the user.
+    }
+  }
+
+  _loadDraft(channelId) {
+    if (!channelId) return '';
+    try { return localStorage.getItem(this._draftKey(channelId)) || ''; }
+    catch { return ''; }
+  }
+
+  _clearDraft(channelId) { this._saveDraft(channelId, ''); }
+
   // --- Submit / edit ------------------------------------------------------
 
   async _submit() {
@@ -438,6 +486,7 @@ class ChatView {
     if (text.startsWith('/')) {
       const handled = await this._maybeRunSlash(text);
       if (handled) {
+        this._clearDraft(this.currentChannel);
         this.els.composer.value = '';
         this.els.composer.style.height = 'auto';
         this.composerAttachments = [];
@@ -452,6 +501,7 @@ class ChatView {
       text: window.replaceShortcodes(text),
       attachments,
     });
+    this._clearDraft(this.currentChannel);
     this.els.composer.value = '';
     this.els.composer.style.height = 'auto';
     this.composerAttachments = [];
