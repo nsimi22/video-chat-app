@@ -13,6 +13,12 @@ const SUPABASE_KEY = process.env.HUDDLE_SUPABASE_KEY
   || 'sb_publishable_5eJWwJEHWHSLuhFEs2iUlw_tu4fGOvn';
 
 let mainWindow;
+// Popout child windows keyed by their target token (e.g.
+// `whiteboard:<uuid>`, `call:<channel_id>`). Used to focus an
+// existing popout if the user clicks the button twice and to
+// fan-out IPC events to / from the popouts. Cleared on window
+// 'closed' so a second pop-out works after the first is closed.
+const popouts = new Map();
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -30,8 +36,17 @@ function createWindow() {
     },
   });
 
-  // Permission handler scoped to our renderer.
-  const isOurRenderer = (wc) => wc && mainWindow && wc.id === mainWindow.webContents.id;
+  // Permission handler scoped to our renderers (main + any popout
+  // child windows). Popouts run the same renderer code and need the
+  // same media / display-capture grants for the call-popout flow.
+  const isOurRenderer = (wc) => {
+    if (!wc) return false;
+    if (mainWindow && wc.id === mainWindow.webContents.id) return true;
+    for (const w of popouts.values()) {
+      if (!w.isDestroyed() && wc.id === w.webContents.id) return true;
+    }
+    return false;
+  };
   const ALLOWED = new Set(['media', 'display-capture', 'mediaKeySystem', 'notifications']);
   session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => {
     cb(isOurRenderer(wc) && ALLOWED.has(permission));
@@ -58,6 +73,80 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
+
+// Spawn (or focus) a child window that runs the same renderer with
+// `?popout=<target>&team=<team_id>&channel=<channel_id>` so it can
+// boot directly into a focused view (whiteboard or call) without
+// the login flow. Each popout has its own renderer process so it
+// gets its own Supabase realtime subscriptions; coordination
+// between main + popout flows over the `popout-event` relay below.
+ipcMain.handle('open-popout', (_event, opts) => {
+  const target = String(opts?.target || '');
+  if (!target) return { ok: false, error: 'missing target' };
+  if (popouts.has(target)) {
+    const existing = popouts.get(target);
+    if (!existing.isDestroyed()) { existing.focus(); return { ok: true, reused: true }; }
+    popouts.delete(target);
+  }
+  const win = new BrowserWindow({
+    width: 1100,
+    height: 760,
+    minWidth: 600,
+    minHeight: 400,
+    backgroundColor: '#1a1d21',
+    title: opts?.title || 'Huddle',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+  // Match the main window's external-link policy.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      shell.openExternal(url);
+      return { action: 'deny' };
+    }
+    return { action: 'allow' };
+  });
+  const params = new URLSearchParams();
+  params.set('popout', target);
+  if (opts?.teamId) params.set('team', opts.teamId);
+  if (opts?.channelId) params.set('channel', opts.channelId);
+  if (opts?.whiteboardId) params.set('whiteboard', opts.whiteboardId);
+  win.loadFile(path.join(__dirname, 'renderer', 'index.html'), { search: '?' + params.toString() });
+  popouts.set(target, win);
+  win.on('closed', () => {
+    if (popouts.get(target) === win) popouts.delete(target);
+    // Notify any remaining window that a popout closed so they can
+    // re-render headers (e.g., show "Pop out" button again).
+    fanoutPopoutEvent(win.webContents.id, { event: 'popout-closed', target });
+  });
+  return { ok: true };
+});
+
+// Cross-window event relay. Renderers send via `huddle.sendPopoutEvent`,
+// and every other window's preload subscribes via `huddle.onPopoutEvent`.
+// Used for: main → popout (channel/team metadata refresh, force-close),
+// popout → main (popout opened/closed, call-leave-please).
+function fanoutPopoutEvent(senderId, msg) {
+  const all = [mainWindow, ...popouts.values()].filter((w) => w && !w.isDestroyed());
+  for (const w of all) {
+    if (w.webContents.id === senderId) continue;
+    try { w.webContents.send('popout-event', msg); } catch {}
+  }
+}
+ipcMain.on('popout-event', (event, msg) => {
+  fanoutPopoutEvent(event.sender.id, msg || {});
+});
+
+ipcMain.handle('close-popout', (_event, opts) => {
+  const target = String(opts?.target || '');
+  const win = popouts.get(target);
+  if (win && !win.isDestroyed()) win.close();
+  return { ok: true };
+});
 
 ipcMain.handle('get-screen-sources', async () => {
   const sources = await desktopCapturer.getSources({

@@ -186,6 +186,22 @@ const STREAM_DECISION_MS = 1500;
 // ---------------------------------------------------------------------------
 
 (async function boot() {
+  // Detect popout mode FIRST. A popout child window loads the same
+  // index.html with `?popout=<target>&team=<id>&channel=<id>` so the
+  // renderer can short-circuit the login + workspace UI and render
+  // a focused view (whiteboard or call). The session is reused via
+  // Supabase's persisted-session storage; the popout doesn't ask
+  // for credentials again.
+  const popoutCfg = parsePopoutQuery(location.search);
+  if (popoutCfg) {
+    document.body.classList.add('popout');
+    bootPopout(popoutCfg).catch((err) => {
+      console.error('popout boot failed', err);
+      alert('Popout failed to load: ' + (err?.message || err));
+    });
+    return;
+  }
+
   // Render the static Settings → Slash commands explainer from
   // chat.js's SLASH_COMMANDS catalog so the composer autocomplete
   // and this list stay in lockstep. Runs once at boot — settings is
@@ -338,6 +354,114 @@ function buildSlashRow(usage, desc, aliases) {
   }
   li.append(code, span);
   return li;
+}
+
+// ---------------------------------------------------------------------------
+// Popout windows. The Electron main process spawns a child
+// BrowserWindow that loads the same index.html with a query string
+// like `?popout=whiteboard:<id>&team=<id>&channel=<id>`. The
+// renderer detects the query at boot, short-circuits the login flow
+// (Supabase persists the session across renderer processes), and
+// renders only the focused view. Move-the-call is on the roadmap;
+// this PR ships the whiteboard popout only.
+// ---------------------------------------------------------------------------
+
+function parsePopoutQuery(search) {
+  if (!search || search.length < 2) return null;
+  const params = new URLSearchParams(search);
+  const target = params.get('popout');
+  if (!target) return null;
+  const colon = target.indexOf(':');
+  if (colon < 0) return null;
+  return {
+    kind: target.slice(0, colon),
+    id: target.slice(colon + 1),
+    target,
+    teamId: params.get('team') || '',
+    channelId: params.get('channel') || '',
+    whiteboardId: params.get('whiteboard') || '',
+  };
+}
+
+async function bootPopout(cfg) {
+  // Reuse the persisted Supabase session — the popout was spawned
+  // from a signed-in main window. If for some reason the session is
+  // missing (cookie wiped between processes, user signed out in the
+  // brief window before popout opened), we can't recover here:
+  // surface an error in place of the workspace.
+  const session = await window.huddleApi.getActiveSession();
+  if (!session?.user?.email) {
+    document.body.innerHTML =
+      '<div style="padding:32px;color:#fff;font:14px system-ui">'
+      + 'No active session. Sign in from the main window first, then re-open the popout.'
+      + '</div>';
+    return;
+  }
+  state._email = session.user.email;
+  if (cfg.kind === 'whiteboard') {
+    await bootWhiteboardPopout(cfg);
+    return;
+  }
+  document.body.innerHTML =
+    `<div style="padding:32px;color:#fff;font:14px system-ui">`
+    + `Unknown popout target: ${cfg.target}`
+    + `</div>`;
+}
+
+async function bootWhiteboardPopout(cfg) {
+  if (!cfg.teamId || !cfg.channelId || !cfg.whiteboardId) {
+    document.body.innerHTML =
+      '<div style="padding:32px;color:#fff;font:14px system-ui">'
+      + 'Popout missing context (team/channel/whiteboard). Close + reopen from the main window.'
+      + '</div>';
+    return;
+  }
+  // Construct a HuddleClient but DON'T call .start(). start() would
+  // subscribe to the team realtime channel and track presence under
+  // the same auth.uid() key as the main window — Supabase presence
+  // dedupes by key, so the popout's track would overwrite the main
+  // window's metadata, and when the popout closes the main window
+  // would briefly show as "offline" to other peers. The whiteboard
+  // session only needs a bare client (supabase + peerId) for its
+  // ensureWhiteboardChannel + persist methods, so the lighter
+  // construction is both correct and cheaper.
+  const huddle = await window.huddleApi.startHuddle({ id: cfg.teamId, name: cfg.teamId });
+  state.huddle = huddle;
+  state.myName = huddle.name;
+
+  // Build a popout-only stage: a single tile that fills the window
+  // hosting the WhiteboardSession.
+  const stage = document.getElementById('popout-stage') || document.body;
+  stage.replaceChildren();
+  const wrap = document.createElement('div');
+  wrap.className = 'popout-whiteboard';
+  stage.appendChild(wrap);
+
+  const tile = document.createElement('div');
+  tile.className = 'tile screen whiteboard popout-tile';
+  const video = document.createElement('video');
+  video.autoplay = true; video.playsInline = true; video.muted = true;
+  tile.appendChild(video);
+  const label = document.createElement('div');
+  label.className = 'tile-label';
+  label.textContent = `Whiteboard — popout`;
+  tile.appendChild(label);
+  wrap.appendChild(tile);
+
+  // Whiteboard meta: the popout was given the whiteboard id; the
+  // session only needs `{id}` to subscribe + persist.
+  const session = new window.WhiteboardSession({
+    huddle,
+    channelId: cfg.channelId,
+    whiteboard: { id: cfg.whiteboardId },
+    tile,
+  });
+  await session.start();
+  document.title = 'Whiteboard — Huddle';
+
+  // Hide the standard login modal even though the boot path didn't
+  // touch it — the popout HTML inherits the modal-backdrop visible.
+  document.getElementById('login')?.classList.add('hidden');
 }
 
 // ---------------------------------------------------------------------------
@@ -1761,6 +1885,36 @@ async function openWhiteboard() {
     huddle: state.huddle, channelId, whiteboard: wb, tile,
   });
   state.whiteboardSessions.set(wb.id, session);
+
+  // Pop-out button — sits next to the existing × Close in
+  // .tile-actions. Clicking spawns a child window that subscribes
+  // to the same whiteboard:<id> realtime topic so strokes/notes
+  // keep syncing across both windows.
+  const actions = tile.querySelector('.tile-actions');
+  if (actions && window.huddle?.openPopout) {
+    const popBtn = document.createElement('button');
+    popBtn.textContent = '⤢ Pop out';
+    popBtn.title = 'Open in a separate window';
+    popBtn.onclick = async (e) => {
+      e.stopPropagation();
+      try {
+        await window.huddle.openPopout({
+          target: `whiteboard:${wb.id}`,
+          teamId: state.huddle.team.id,
+          channelId,
+          whiteboardId: wb.id,
+          title: `Whiteboard — ${channel ? displayLabelFor(channel) : '#' + channelId}`,
+        });
+        showToast('Whiteboard opened in a new window');
+      } catch (err) {
+        console.warn('popout failed', err);
+        showCallError('Could not open popout: ' + (err?.message || err));
+      }
+    };
+    // Insert before the existing × Close so the layout reads:
+    // [Pop out] [× Close]
+    actions.insertBefore(popBtn, actions.firstChild);
+  }
   try { await session.start(); }
   catch (err) {
     console.warn('whiteboard start failed', err);
@@ -1771,8 +1925,9 @@ async function openWhiteboard() {
   // controls the whiteboard the same way it controls a screen annotation.
   state.drawLayers.set(wb.id, session.layer);
 
-  // Tile actions: just close (the toolbar's Clear button covers clearing).
-  const actions = tile.querySelector('.tile-actions');
+  // Tile actions: just close (the toolbar's Clear button covers
+  // clearing). The pop-out button was already inserted above; this
+  // appends Close after it.
   const closeBtn = document.createElement('button');
   closeBtn.textContent = '✕ Close';
   closeBtn.onclick = () => closeWhiteboard(wb.id);
