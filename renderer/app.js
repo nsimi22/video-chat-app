@@ -439,9 +439,6 @@ async function bootWhiteboardPopout(cfg) {
 
   const tile = document.createElement('div');
   tile.className = 'tile screen whiteboard popout-tile';
-  const video = document.createElement('video');
-  video.autoplay = true; video.playsInline = true; video.muted = true;
-  tile.appendChild(video);
   const label = document.createElement('div');
   label.className = 'tile-label';
   label.textContent = `Whiteboard — popout`;
@@ -458,10 +455,6 @@ async function bootWhiteboardPopout(cfg) {
   });
   await session.start();
   document.title = 'Whiteboard — Huddle';
-
-  // Hide the standard login modal even though the boot path didn't
-  // touch it — the popout HTML inherits the modal-backdrop visible.
-  document.getElementById('login')?.classList.add('hidden');
 }
 
 // ---------------------------------------------------------------------------
