@@ -793,6 +793,7 @@ class ChatView {
       && !this.threadParentId
       && !m.parentId && !prev.parentId
       && !!m.aiGenerated === !!prev.aiGenerated
+      && m.aiModel === prev.aiModel
       && (m.authorId || m.authorName) === (prev.authorId || prev.authorName)
       && (m.ts - prev.ts) < FOLLOWUP_WINDOW_MS;
     if (isFollowup) {
