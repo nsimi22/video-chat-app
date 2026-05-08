@@ -1039,11 +1039,16 @@ button.ctrl.muted.icon-only::after {
 
 /* Floating action toolbar — appears in the top-right of a message
    on hover. Small icon chips, frosted-glass surface, no layout
-   shift on the message body (absolutely positioned). */
+   shift on the message body (absolutely positioned).
+   Stays in the DOM and focus tree (opacity instead of display:none)
+   so keyboard/screen-reader users can tab to the actions; the
+   :focus-within rule reveals the toolbar when any action receives
+   focus via Tab. Sits at top: 0 (inside the row) so it never gets
+   clipped by .messages' overflow-y on the first row. */
 .msg-actions {
   position: absolute;
-  top: -10px; right: 12px;
-  display: none;
+  top: 0; right: 8px;
+  display: flex;
   gap: 2px;
   padding: 2px;
   background: var(--bg-2);
@@ -1052,9 +1057,16 @@ button.ctrl.muted.icon-only::after {
   box-shadow: var(--shadow-2);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast);
   z-index: 4;
 }
-.msg:hover .msg-actions { display: flex; }
+.msg:hover .msg-actions,
+.msg:focus-within .msg-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
 .msg-action {
   background: transparent;
   border: none;

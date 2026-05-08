@@ -312,6 +312,12 @@ class ChatView {
         const node = this.nodeById.get(messageId);
         if (node) node.remove();
         this.nodeById.delete(messageId);
+        // The deleted message's successor inherited a .msg-followup
+        // state from its now-missing predecessor. Re-render the
+        // whole channel so successors pick up correct prev refs.
+        // Cheap: deletes are rare and bounded by the visible
+        // message list.
+        this._render();
       }
     });
     on('typing', (e) => {
@@ -764,7 +770,13 @@ class ChatView {
     const all = this._messages();
     const target = all.find((x) => x.id === id);
     if (!target) return;
-    const fresh = this._renderMessage(target, all);
+    // Compute prev so the re-rendered row keeps its .msg-followup
+    // state. Without this, an edit on a follow-up message would
+    // restore the avatar + head and break the burst grouping.
+    const visible = this._visibleList(all);
+    const idx = visible.findIndex((x) => x.id === id);
+    const prev = idx > 0 ? visible[idx - 1] : null;
+    const fresh = this._renderMessage(target, all, prev);
     this.nodeById.set(id, fresh);
     old.replaceWith(fresh);
   }

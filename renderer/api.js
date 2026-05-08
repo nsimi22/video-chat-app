@@ -808,48 +808,47 @@
         || this.peerInfo.get(otherUserId)?.name
         || (await this._fetchDisplayName(otherUserId))
         || 'unknown';
-      const { data: existing } = await this.supabase.from('channels').select('*').eq('team_id', this.team.id).eq('id', id).maybeSingle();
-      if (existing) {
-        const meta = this._marshalChannel(existing);
-        meta.members = [this.name, displayName];
-        return meta;
-      }
-      // Use upsert+ignoreDuplicates so a pre-existing DM channel
-      // doesn't trip the channels_pkey constraint. The row can
-      // exist but be invisible to our SELECT above when RLS gates
-      // type='dm' on channel_members and we (or the counterparty)
-      // got dropped from channel_members historically. Upsert
-      // makes the create idempotent; the explicit channel_members
-      // upsert below restores membership for both sides; the
-      // final SELECT re-reads through RLS now that we're a member.
-      //
-      // Same trade-off as before re: not chaining .select() on
-      // the upsert — the on_channel_after_insert trigger that
-      // adds the creator to channel_members hasn't fired yet at
-      // RETURNING time, so RETURNING would throw the RLS error.
+      // Idempotent channel upsert: ignoreDuplicates keeps a
+      // pre-existing row from tripping channels_pkey, and we don't
+      // chain .select() because on the fresh-insert path the
+      // on_channel_after_insert trigger that adds the creator to
+      // channel_members hasn't fired yet at RETURNING time —
+      // channels_read RLS gates type='dm' on membership and would
+      // throw "row violates row-level security policy".
       const { error } = await this.supabase.from('channels').upsert({
         team_id: this.team.id, id, name: displayName, topic: '',
         type: 'dm', protected: false, created_by: this.peerId,
       }, { onConflict: 'team_id,id', ignoreDuplicates: true });
       if (error) throw error;
-      // Trigger added the creator on first-insert. For the upsert
-      // path on a pre-existing row the trigger doesn't fire, so
-      // upsert both sides explicitly and let it be a no-op when
-      // the rows are already there. Surface failures: a partial
-      // membership leaves the DM in the DB invisible to one side
-      // on reload.
-      const { error: memErr } = await this.supabase.from('channel_members').upsert([
-        { team_id: this.team.id, channel_id: id, user_id: a },
-        { team_id: this.team.id, channel_id: id, user_id: b },
-      ]);
-      if (memErr) throw memErr;
-      // Re-fetch through RLS now that we're definitely a member.
-      // Returns the persisted row's actual created_at / type even
-      // when we hit the upsert-existing-row path.
+      // Add OUR membership unconditionally. channel_members'
+      // insert_self policy permits inserting your own row, so this
+      // works whether the channel was just created (no-op against
+      // the trigger-added row) or pre-existed with us missing
+      // (the legacy bad state we're repairing). On the no-op path
+      // the upsert returns success.
+      const { error: meErr } = await this.supabase.from('channel_members').upsert(
+        { team_id: this.team.id, channel_id: id, user_id: a }
+      );
+      if (meErr) throw meErr;
+      // Re-fetch through RLS now that we're a member. Gives us
+      // the persisted created_by value — needed below.
       const { data: ch, error: selErr } = await this.supabase
         .from('channels').select('*')
         .eq('team_id', this.team.id).eq('id', id).single();
       if (selErr) throw selErr;
+      // Counterparty: only upsert when WE created the channel
+      // (the only path where channel_members' insert_self policy
+      // lets us insert another user's row, via the
+      // `channels.created_by = auth.uid()` branch). If somebody
+      // else created it, B was added by the trigger when they
+      // did, so a no-op here is fine; trying anyway would fail
+      // RLS and break this whole flow.
+      if (ch.created_by === a) {
+        const { error: peerErr } = await this.supabase.from('channel_members').upsert(
+          { team_id: this.team.id, channel_id: id, user_id: b }
+        );
+        if (peerErr) throw peerErr;
+      }
       const meta = this._marshalChannel(ch);
       meta.members = [this.name, displayName];
       return meta;
