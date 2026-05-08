@@ -690,12 +690,37 @@ class ChatView {
       container.appendChild(more);
     }
 
-    for (const m of this._visibleList(all)) {
+    const visible = this._visibleList(all);
+    for (const m of visible) {
       const node = this._renderMessage(m, all);
       this.nodeById.set(m.id, node);
       container.appendChild(node);
     }
+    // Empty state — only when this channel has no messages yet AND
+    // we've finished initial history fetch (pagination entry exists
+    // and has no `hasMore` flag pointing back further). Without the
+    // pagination check we'd briefly flash the empty state during
+    // history load.
+    if (!this.threadParentId && visible.length === 0 && pagination && !pagination.hasMore) {
+      container.appendChild(this._buildEmptyState());
+    }
     container.scrollTop = container.scrollHeight;
+  }
+
+  _buildEmptyState() {
+    const wrap = document.createElement('div');
+    wrap.className = 'channel-empty';
+    const icon = document.createElement('div');
+    icon.className = 'channel-empty-icon';
+    icon.textContent = '✨';
+    const title = document.createElement('div');
+    title.className = 'channel-empty-title';
+    title.textContent = `Welcome to ${this._currentLabel || 'this channel'}`;
+    const hint = document.createElement('div');
+    hint.className = 'channel-empty-hint';
+    hint.textContent = 'Be the first to say something — drop a message, paste a link, or run a /command.';
+    wrap.append(icon, title, hint);
+    return wrap;
   }
 
   _visibleList(all) {

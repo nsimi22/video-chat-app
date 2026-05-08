@@ -902,6 +902,21 @@
       });
     }
 
+    // Per-stroke undo: locate the row by its client-generated uuid
+    // (stored in data.uuid as text) and delete it. The strokes_delete
+    // RLS policy gates by `can_see_channel` via the EXISTS join —
+    // anyone in the channel can undo any stroke, matching the
+    // collaborative model used elsewhere on the board.
+    async deleteWhiteboardStrokeByUuid(whiteboardId, uuid) {
+      if (!uuid) return;
+      const { error } = await this.supabase
+        .from('whiteboard_strokes')
+        .delete()
+        .eq('whiteboard_id', whiteboardId)
+        .eq('data->>uuid', uuid);
+      if (error) throw error;
+    }
+
     async clearWhiteboard(whiteboardId) {
       // Live viewers get a "clear" stroke via broadcast; persistent state is
       // wiped by deleting every stroke row. New viewers fetch zero rows on

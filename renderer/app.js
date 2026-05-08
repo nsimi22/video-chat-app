@@ -40,6 +40,7 @@ const els = {
   reconnectBanner: $('#reconnect-banner'),
   searchBtn: $('#search-btn'),
   whiteboardBtn: $('#whiteboard-btn'),
+  muteChannelBtn: $('#mute-channel-btn'),
   searchModal: $('#search-modal'),
   shortcutsModal: $('#shortcuts-modal'),
   shortcutsClose: $('#shortcuts-close'),
@@ -54,6 +55,7 @@ const els = {
   channels: $('#channels'),
   dms: $('#dms'),
   addChannel: $('#add-channel'),
+  markAllRead: $('#mark-all-read'),
   addDm: $('#add-dm'),
   ccModal: $('#create-channel-modal'),
   ccName: $('#cc-name'),
@@ -239,6 +241,20 @@ const STREAM_DECISION_MS = 1500;
       els.shortcutsModal.classList.toggle('hidden');
       return;
     }
+    // Cmd/Ctrl + Z while a whiteboard is the active annotation
+    // surface pops the user's most-recent stroke. Skipped when
+    // focus is in a textarea / input so the platform's normal
+    // text-undo still works in the composer.
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+      const tag = (document.activeElement?.tagName || '').toLowerCase();
+      if (tag === 'textarea' || tag === 'input') return;
+      const session = state.whiteboardSessions?.get(state.activeAnnotation);
+      if (session) {
+        e.preventDefault();
+        session.undo().catch((err) => console.warn('whiteboard undo failed', err));
+        return;
+      }
+    }
     if (e.key === 'Escape' && !els.shortcutsModal.classList.contains('hidden')) {
       els.shortcutsModal.classList.add('hidden');
     }
@@ -350,6 +366,61 @@ function showError(msg) {
 // proper toast/banner later if it becomes annoying.
 function showCallError(msg) {
   alert(msg);
+}
+
+// ---------------------------------------------------------------------------
+// Per-channel mute. Muted channels skip desktop notifications and
+// don't bump the loud unread title — they still bump the muted
+// (gray) sidebar badge so the user can see something happened
+// without being interrupted. Persisted in localStorage so the
+// preference survives reloads; team-scoped key prevents bleed
+// across workspaces (same shape as the draft key).
+// ---------------------------------------------------------------------------
+function muteKey(channelId) {
+  const teamId = state.huddle?.team?.id || 'unknown';
+  return `huddle.muted.${teamId}.${channelId}`;
+}
+function isChannelMuted(channelId) {
+  if (!channelId) return false;
+  try { return localStorage.getItem(muteKey(channelId)) === '1'; }
+  catch { return false; }
+}
+function setChannelMuted(channelId, muted) {
+  if (!channelId) return;
+  try {
+    if (muted) localStorage.setItem(muteKey(channelId), '1');
+    else localStorage.removeItem(muteKey(channelId));
+  } catch {}
+}
+function toggleCurrentChannelMute() {
+  const channelId = state.chat?.currentChannel;
+  if (!channelId) return;
+  const next = !isChannelMuted(channelId);
+  setChannelMuted(channelId, next);
+  refreshMuteButton();
+  // Re-render the sidebar row so the muted indicator updates.
+  const sel = `[data-id="${cssEscape(channelId)}"]`;
+  const li = els.channels.querySelector(sel) || els.dms.querySelector(sel);
+  if (li) li.classList.toggle('muted', next);
+  // Existing unread for a now-muted channel stays — we just stop
+  // bumping the loud title when fresh activity arrives.
+  updateUnreadBadge(channelId);
+  updateUnreadTitle();
+  showToast(next ? 'Channel muted' : 'Channel unmuted');
+}
+function refreshMuteButton() {
+  const channelId = state.chat?.currentChannel;
+  // Hide the button entirely until a channel is focused — clicking
+  // it without a channel is a no-op (toggleCurrentChannelMute
+  // early-returns) and a functional-looking-but-dead button reads
+  // as broken UX.
+  els.muteChannelBtn.classList.toggle('hidden', !channelId);
+  if (!channelId) return;
+  const muted = isChannelMuted(channelId);
+  els.muteChannelBtn.classList.toggle('muted', muted);
+  els.muteChannelBtn.title = muted
+    ? 'Unmute notifications for this channel'
+    : 'Mute notifications for this channel';
 }
 
 // ---------------------------------------------------------------------------
@@ -1286,6 +1357,10 @@ function appendChannelToSidebar(channel, makeActive) {
 
   const li = document.createElement('li');
   li.dataset.id = channel.id;
+  // Sidebar muted-channel styling: dimmer text + a small bell-slash
+  // suffix in CSS. The class is toggled by toggleCurrentChannelMute
+  // when the user flips the per-channel toggle.
+  if (isChannelMuted(channel.id)) li.classList.add('muted');
 
   const label = document.createElement('span');
   label.className = 'ch-name';
@@ -1347,6 +1422,7 @@ function focusChannel(channelId) {
     state.lurkingChannelId = null;
   }
   renderCallHeader();
+  refreshMuteButton();
   // Visiting a channel clears its unread.
   state.unread.delete(channelId);
   updateUnreadBadge(channelId);
@@ -1390,9 +1466,13 @@ function updateUnreadBadge(channelId) {
   }
   badge.style.display = 'inline-block';
   badge.textContent = String(u.count);
-  // Mentions / DMs render as the loud red badge; plain channel chatter is muted.
+  // Mentions / DMs render as the loud red badge; plain channel
+  // chatter is muted. Per-channel mute also forces the muted
+  // styling regardless of mention status — the user explicitly
+  // asked for this channel to stop being loud.
   const channel = state.channelMeta.get(channelId);
-  const loud = u.mentions > 0 || channel?.type === 'dm';
+  const channelMuted = isChannelMuted(channelId);
+  const loud = !channelMuted && (u.mentions > 0 || channel?.type === 'dm');
   badge.classList.toggle('muted', !loud);
   updateUnreadTitle();
 }
@@ -1412,6 +1492,7 @@ function updateUnreadTitle() {
     : 'Huddle';
   let loudCount = 0;
   for (const [channelId, u] of state.unread) {
+    if (isChannelMuted(channelId)) continue;
     const channel = state.channelMeta.get(channelId);
     // DMs count every unread message (the whole conversation is
     // for you). Channels only count direct @mentions — getting
@@ -1432,8 +1513,13 @@ function onChatMessage(m) {
   const mentionsMe = Array.isArray(m.mentions) && m.mentions.includes(state.myName);
   const isDm = channel?.type === 'dm';
   const isActive = state.chat?.currentChannel === m.channelId && windowFocused;
+  const muted = isChannelMuted(m.channelId);
   if (!isActive) bumpUnread(m.channelId, mentionsMe);
-  // Notification triggers: mentions, DMs, or a reply in a thread you're in.
+  // Muted channels never produce a desktop notification — that's
+  // the whole point of the toggle. They still bump the sidebar
+  // badge (with muted styling via updateUnreadBadge) so the user
+  // can see something happened.
+  if (muted) return;
   const shouldNotify = !isActive && (mentionsMe || isDm);
   if (shouldNotify) sendDesktopNotification(m, channel);
 }
@@ -1938,6 +2024,7 @@ function wireControls() {
 
   // Whiteboard (🎨)
   els.whiteboardBtn.onclick = openWhiteboard;
+  els.muteChannelBtn.onclick = toggleCurrentChannelMute;
 
   // Search
   els.searchBtn.onclick = openSearchModal;
@@ -1946,6 +2033,19 @@ function wireControls() {
     if (e.key === 'Enter') runSearch();
     if (e.key === 'Escape') els.searchModal.classList.add('hidden');
   });
+
+  // Mark every channel + DM as read in one go. Iterates the unread
+  // map and clears each entry; updateUnreadBadge handles the
+  // per-row badge, updateUnreadTitle clears the OS title prefix.
+  els.markAllRead.onclick = () => {
+    if (state.unread.size === 0) return;
+    for (const channelId of [...state.unread.keys()]) {
+      state.unread.delete(channelId);
+      updateUnreadBadge(channelId);
+    }
+    updateUnreadTitle();
+    showToast('All channels marked read');
+  };
 
   // Create-channel modal
   els.addChannel.onclick = openCreateChannelModal;

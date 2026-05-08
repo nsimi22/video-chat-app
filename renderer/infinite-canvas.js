@@ -124,6 +124,17 @@
       this._render();
     }
 
+    // Drop a stroke by uuid (used by undo). Falls back gracefully
+    // to a no-op if the uuid isn't in the list (e.g. the stroke
+    // hasn't synced yet from the broadcast or was already
+    // removed).
+    removeStroke(uuid) {
+      if (!uuid) return;
+      const before = this.strokes.length;
+      this.strokes = this.strokes.filter((s) => s.uuid !== uuid);
+      if (this.strokes.length !== before) this._render();
+    }
+
     clearAll(/*broadcast*/) {
       this.strokes = [];
       this._render();

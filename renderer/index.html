@@ -95,9 +95,14 @@
         </div>
         <div class="section-header section-header-row">
           <span>Channels</span>
-          <button id="add-channel" class="ghost" title="Create a channel" aria-label="Create a channel">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          </button>
+          <span class="section-header-controls">
+            <button id="mark-all-read" class="ghost" title="Mark all channels read" aria-label="Mark all channels read">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            </button>
+            <button id="add-channel" class="ghost" title="Create a channel" aria-label="Create a channel">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </button>
+          </span>
         </div>
         <ul id="channels" class="channel-list"></ul>
         <div class="section-header section-header-row">
@@ -123,6 +128,9 @@
             <span id="channel-topic" class="channel-topic"></span>
           </div>
           <div class="header-actions">
+            <button id="mute-channel-btn" class="icon-only ghost hidden" title="Mute notifications for this channel" aria-label="Mute channel">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+            </button>
             <button id="whiteboard-btn" class="icon-only ghost" title="Open whiteboard" aria-label="Open whiteboard">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
             </button>
@@ -412,6 +420,7 @@
             <tr><td><kbd>Space</kbd> (whiteboard)</td><td>Hold to pan the canvas</td></tr>
             <tr><td><kbd>⌘</kbd>/<kbd>Ctrl</kbd> + scroll (whiteboard)</td><td>Zoom in / out</td></tr>
             <tr><td>scroll (whiteboard)</td><td>Pan the canvas</td></tr>
+            <tr><td><kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>Z</kbd> (whiteboard)</td><td>Undo your last stroke</td></tr>
           </tbody>
         </table>
         <button id="shortcuts-close" class="primary btn-block" style="margin-top:14px;">Close</button>

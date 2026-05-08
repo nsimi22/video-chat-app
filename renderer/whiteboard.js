@@ -74,6 +74,14 @@ class WhiteboardSession {
       (payload) => {
         if (payload.from === this.huddle.peerId) return; // ignore self echoes
         const stroke = payload.stroke;
+        // Remote undo: another peer popped a stroke → drop it from
+        // our canvas + dedup set so a later history replay doesn't
+        // re-paint the deleted one.
+        if (stroke?.action === 'delete-stroke' && stroke.uuid) {
+          this.canvas.removeStroke(stroke.uuid);
+          this._paintedUuids.add(stroke.uuid); // suppress replay
+          return;
+        }
         this.canvas.applyRemote(stroke);
         if (stroke.action === 'end' && stroke.uuid) this._paintedUuids.add(stroke.uuid);
       },
@@ -334,9 +342,23 @@ class WhiteboardSession {
   _persistFinishedStroke(polyline) {
     if (!polyline?.uuid) return;
     this._paintedUuids.add(polyline.uuid);
+    // Track local strokes in an undo stack — Cmd/Ctrl+Z pops the
+    // most recent and broadcasts a delete-stroke event so other
+    // peers drop it too. Capped at 50 entries (memory ceiling +
+    // matches the typical "few seconds of regret" window).
+    if (!this._undoStack) this._undoStack = [];
+    this._undoStack.push(polyline.uuid);
+    if (this._undoStack.length > 50) this._undoStack.shift();
     if (!polyline.points || polyline.points.length < 1) return;
-    this.huddle.persistWhiteboardStroke(this.whiteboardId, polyline)
-      .catch((err) => console.warn('[whiteboard] persist failed', err));
+    // Track the in-flight INSERT so undo() can await it before
+    // issuing DELETE — otherwise a fast Cmd-Z right after the
+    // pointer-up could race the persist + leave the stroke alive
+    // in the DB even though it's gone from local UI.
+    if (!this._inflightPersists) this._inflightPersists = new Map();
+    const p = this.huddle.persistWhiteboardStroke(this.whiteboardId, polyline)
+      .catch((err) => console.warn('[whiteboard] persist failed', err))
+      .finally(() => this._inflightPersists.delete(polyline.uuid));
+    this._inflightPersists.set(polyline.uuid, p);
   }
 
   async clear() {
@@ -360,6 +382,32 @@ class WhiteboardSession {
   zoomIn() { this.canvas?.zoomIn(); }
   zoomOut() { this.canvas?.zoomOut(); }
   resetViewport() { this.canvas?.resetViewport(); }
+
+  // Per-stroke undo. Pops the user's most-recent local stroke
+  // from the undo stack, removes it from the canvas, broadcasts a
+  // delete-stroke event so other peers drop it too, and deletes
+  // the persisted row. Only the user's OWN strokes are
+  // undoable — there's no global history. No-op if the stack is
+  // empty.
+  async undo() {
+    if (!this._undoStack || !this._undoStack.length) return false;
+    const uuid = this._undoStack.pop();
+    this.canvas?.removeStroke(uuid);
+    this._paintedUuids.add(uuid); // belt + suspenders against replay
+    this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'delete-stroke', uuid });
+    try {
+      // If the persist for this stroke is still in flight, wait
+      // for it to land before issuing the DELETE — otherwise the
+      // INSERT could complete after our DELETE and the stroke
+      // would resurrect on the next reload.
+      const inflight = this._inflightPersists?.get(uuid);
+      if (inflight) await inflight;
+      await this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid);
+    } catch (err) {
+      console.warn('[whiteboard] undo persist-delete failed', err);
+    }
+    return true;
+  }
 
   async stop() {
     // Flush + AWAIT any pending debounced note text saves before
