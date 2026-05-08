@@ -179,6 +179,10 @@ const state = {
   // that includes a channel/call, we stash the target here; onWelcome
   // (which fires after the team subscription is up) consumes it.
   pendingInviteHop: null,
+  // huddle:// URL received before the workspace UI was reachable
+  // (e.g. cold-start click while signed-out). Drained when
+  // showStep('team') runs, OR when joinTeamAndStart completes.
+  pendingProtocolUrl: null,
   // Channel ids whose call has been moved to a popout window and
   // is currently owned by that popout. While a channel is in
   // here, renderCallHeader hides Join/Start so the user can't
@@ -228,6 +232,14 @@ const STREAM_DECISION_MS = 1500;
     const channelId = target.slice('call:'.length);
     if (state.poppedOutCalls.delete(channelId)) renderCallHeader();
   });
+
+  // huddle:// protocol URLs. The OS hands us deep links when the
+  // user clicks an invite-link in chat / browser / email; main.js
+  // forwards them via IPC. Route through the existing invite-
+  // redeem path. Buffer until the workspace UI is reachable so a
+  // cold-start link sent before sign-in still completes after
+  // the user authenticates.
+  window.huddle.onProtocolUrl?.((url) => handleProtocolUrl(url));
 
   // Global keyboard shortcuts. Cmd/Ctrl + / toggles the cheat
   // sheet; Esc closes it (for parity with the other modals'
@@ -351,7 +363,18 @@ function showStep(step) {
   if (step === 'email') els.authEmail.focus();
   if (step === 'otp') els.authOtp.focus();
   if (step === 'profile') els.profileName.focus();
-  if (step === 'team') els.teamCreate.focus();
+  if (step === 'team') {
+    els.teamCreate.focus();
+    // Drain any buffered huddle:// URL — cold-start clicks land
+    // here once the user has signed in but doesn't have a default
+    // team. Auto-fills the join-link input + submits.
+    if (state.pendingProtocolUrl) {
+      const url = state.pendingProtocolUrl;
+      state.pendingProtocolUrl = null;
+      els.teamJoinLink.value = url;
+      stepJoinViaLink();
+    }
+  }
 }
 function showError(msg) {
   els.loginError.textContent = msg;
@@ -972,6 +995,93 @@ async function stepJoinViaLink() {
   }
 }
 
+// OS-delivered huddle:// URL handler. The renderer routes the
+// link through whichever path the current UI state allows:
+//   - Already in the linked team → focus channel + optionally
+//     start the call. Cheapest, most common case.
+//   - Signed in but in a different team → confirm + switch.
+//   - On the team picker → prefill the join-link input + click.
+//   - On any earlier step (login / OTP / boot) → buffer until the
+//     team picker is reachable; the showStep('team') drain or the
+//     post-auth boot landing on a workspace will pick it up.
+async function handleProtocolUrl(url) {
+  const parsed = parseInviteLink(url);
+  if (!parsed) {
+    console.warn('handleProtocolUrl: unparseable', url);
+    return;
+  }
+  // Re-entrancy guard. handleProtocolUrl awaits teardownTeam +
+  // joinTeamAndStart on the different-team path; a second URL
+  // arriving mid-await would race the first. Buffer concurrent
+  // calls and let them drain after the in-flight one settles.
+  if (state._handlingProtocolUrl) {
+    state.pendingProtocolUrl = url;
+    return;
+  }
+  state._handlingProtocolUrl = true;
+  try {
+    await _routeProtocolUrl(parsed, url);
+  } finally {
+    state._handlingProtocolUrl = false;
+    // Drain a buffered URL queued during the await. Defer one tick
+    // so the in-flight workflow's onWelcome / showStep callbacks
+    // have a chance to run before we kick off the next.
+    if (state.pendingProtocolUrl) {
+      setTimeout(() => drainPendingProtocolUrl(), 0);
+    }
+  }
+}
+
+async function _routeProtocolUrl(parsed, url) {
+  // Bring the window forward — the OS may have launched us in the
+  // background.
+  try { window.focus(); } catch {}
+
+  if (state.huddle && state.huddle.team?.id === parsed.teamId) {
+    // Same team — just hop. focusChannel is a no-op if the channel
+    // isn't visible (private channel the user isn't in); the
+    // pendingInviteHop fallback below handles those.
+    if (parsed.channelId && state.channelMeta.has(parsed.channelId)) {
+      focusChannel(parsed.channelId);
+      if (parsed.joinCall) setTimeout(() => startCall(parsed.channelId), 0);
+    } else if (parsed.channelId) {
+      showCallError(`Channel #${parsed.channelId} isn't available on this team.`);
+    }
+    return;
+  }
+
+  if (state.huddle) {
+    // Different team — confirm before tearing down the active
+    // session, since the user has chat / drafts / call state in
+    // play.
+    const ok = confirm(`Switch to team "${parsed.teamId}"?`);
+    if (!ok) return;
+    try {
+      await teardownTeam();
+      const t = await window.huddleApi.joinOrCreateTeam(parsed.teamId);
+      if (parsed.channelId) {
+        state.pendingInviteHop = { channelId: parsed.channelId, joinCall: parsed.joinCall };
+      }
+      await joinTeamAndStart(t.id);
+    } catch (err) {
+      showCallError('Could not switch teams: ' + (err?.message || err));
+    }
+    return;
+  }
+
+  // Not signed into a workspace. If the team picker is showing,
+  // route through the existing input → join flow. Otherwise
+  // buffer for showStep('team') / boot resume to drain.
+  if (els.teamStep && !els.teamStep.classList.contains('hidden')) {
+    els.teamJoinLink.value = url;
+    stepJoinViaLink();
+    return;
+  }
+  // Buffer for showStep('team') drain or onWelcome drain to pick up
+  // once the user is past login.
+  state.pendingProtocolUrl = url;
+}
+
 // Spin up the HuddleClient (chat + team presence) and reveal the app.
 // Calls are now started on demand via startCall() — joining a team no
 // longer auto-grabs camera/mic or constructs MeshClient.
@@ -1173,6 +1283,10 @@ async function teardownTeam() {
   // mid-load). Otherwise the next sign-in's onWelcome would jump
   // somebody else's session into a stale channel.
   state.pendingInviteHop = null;
+  // Same reasoning for buffered protocol URLs: a deep link that was
+  // waiting on an active session is stale once we've torn the team
+  // down (e.g. user explicitly switched teams via the picker).
+  state.pendingProtocolUrl = null;
   state.channelMeta.clear();
   state.unread.clear();
   updateUnreadTitle();
@@ -1319,7 +1433,13 @@ function onWelcome({ peers, channels }) {
   // to the normal default-channel logic if the target isn't visible
   // (e.g. the link pointed at a private channel the user wasn't
   // explicitly invited to).
-  if (consumePendingInviteHop()) return;
+  if (consumePendingInviteHop()) {
+    // Drain any buffered protocol URL too — cold-start where the
+    // session auto-resumed into a previous team can leave a
+    // huddle:// URL pointing at a *different* team waiting.
+    drainPendingProtocolUrl();
+    return;
+  }
   // Activate the general channel by default.
   const generalLi = els.channels.querySelector('[data-id="general"]');
   if (generalLi) generalLi.click();
@@ -1327,6 +1447,17 @@ function onWelcome({ peers, channels }) {
     const first = [...state.channelMeta.keys()][0];
     focusChannel(first);
   }
+  drainPendingProtocolUrl();
+}
+
+function drainPendingProtocolUrl() {
+  if (!state.pendingProtocolUrl) return;
+  const url = state.pendingProtocolUrl;
+  state.pendingProtocolUrl = null;
+  // Defer to a microtask so the channel-focus / startCall above
+  // settles before the protocol path potentially prompts to
+  // switch teams.
+  setTimeout(() => handleProtocolUrl(url), 0);
 }
 
 function consumePendingInviteHop() {
