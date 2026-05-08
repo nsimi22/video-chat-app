@@ -350,8 +350,15 @@ class WhiteboardSession {
     this._undoStack.push(polyline.uuid);
     if (this._undoStack.length > 50) this._undoStack.shift();
     if (!polyline.points || polyline.points.length < 1) return;
-    this.huddle.persistWhiteboardStroke(this.whiteboardId, polyline)
-      .catch((err) => console.warn('[whiteboard] persist failed', err));
+    // Track the in-flight INSERT so undo() can await it before
+    // issuing DELETE — otherwise a fast Cmd-Z right after the
+    // pointer-up could race the persist + leave the stroke alive
+    // in the DB even though it's gone from local UI.
+    if (!this._inflightPersists) this._inflightPersists = new Map();
+    const p = this.huddle.persistWhiteboardStroke(this.whiteboardId, polyline)
+      .catch((err) => console.warn('[whiteboard] persist failed', err))
+      .finally(() => this._inflightPersists.delete(polyline.uuid));
+    this._inflightPersists.set(polyline.uuid, p);
   }
 
   async clear() {
@@ -388,8 +395,17 @@ class WhiteboardSession {
     this.canvas?.removeStroke(uuid);
     this._paintedUuids.add(uuid); // belt + suspenders against replay
     this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'delete-stroke', uuid });
-    try { await this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid); }
-    catch (err) { console.warn('[whiteboard] undo persist-delete failed', err); }
+    try {
+      // If the persist for this stroke is still in flight, wait
+      // for it to land before issuing the DELETE — otherwise the
+      // INSERT could complete after our DELETE and the stroke
+      // would resurrect on the next reload.
+      const inflight = this._inflightPersists?.get(uuid);
+      if (inflight) await inflight;
+      await this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid);
+    } catch (err) {
+      console.warn('[whiteboard] undo persist-delete failed', err);
+    }
     return true;
   }
 

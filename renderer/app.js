@@ -404,6 +404,7 @@ function toggleCurrentChannelMute() {
   if (li) li.classList.toggle('muted', next);
   // Existing unread for a now-muted channel stays — we just stop
   // bumping the loud title when fresh activity arrives.
+  updateUnreadBadge(channelId);
   updateUnreadTitle();
   showToast(next ? 'Channel muted' : 'Channel unmuted');
 }
@@ -1460,9 +1461,13 @@ function updateUnreadBadge(channelId) {
   }
   badge.style.display = 'inline-block';
   badge.textContent = String(u.count);
-  // Mentions / DMs render as the loud red badge; plain channel chatter is muted.
+  // Mentions / DMs render as the loud red badge; plain channel
+  // chatter is muted. Per-channel mute also forces the muted
+  // styling regardless of mention status — the user explicitly
+  // asked for this channel to stop being loud.
   const channel = state.channelMeta.get(channelId);
-  const loud = u.mentions > 0 || channel?.type === 'dm';
+  const channelMuted = isChannelMuted(channelId);
+  const loud = !channelMuted && (u.mentions > 0 || channel?.type === 'dm');
   badge.classList.toggle('muted', !loud);
   updateUnreadTitle();
 }
