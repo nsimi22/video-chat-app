@@ -20,14 +20,14 @@
   /* Typography. */
   --text: #f5f5f7;
   --text-dim: #a1a1a6;
-  --text-faint: #6e6e73;
+  --text-faint: #86868b;
 
   /* Accent — Apple's dark-mode systemBlue + a teal companion for
      links / hover highlights. accent-soft is the tinted background
      used on hover / selection states. */
   --accent: #0a84ff;
   --accent-2: #64d2ff;
-  --accent-soft: rgba(10, 132, 255, 0.18);
+  --accent-soft: rgba(10, 132, 255, 0.35);
 
   /* Semantic colors — Apple's dark-mode system palette. */
   --good: #30d158;
@@ -88,7 +88,10 @@ button.primary {
   box-shadow: var(--shadow-1), inset 0 0.5px 0 rgba(255, 255, 255, 0.2);
 }
 button.primary:not([disabled]):hover { background: #1a8eff; }
-button.danger { background: var(--bad); color: white; }
+button.danger {
+  background: var(--bad); color: white;
+  box-shadow: var(--shadow-1), inset 0 0.5px 0 rgba(255, 255, 255, 0.2);
+}
 button.danger:not([disabled]):hover { background: #ff5c52; }
 button.subtle {
   background: transparent; color: var(--text-dim);
