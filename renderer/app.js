@@ -93,6 +93,7 @@ const els = {
   messages: $('#messages'),
   typing: $('#typing-indicator'),
   composer: $('#composer-input'),
+  slashSuggest: $('#slash-suggest'),
   send: $('#send-btn'),
   emojiBtn: $('#emoji-btn'),
   emojiPicker: $('#emoji-picker'),
