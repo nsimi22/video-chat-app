@@ -125,7 +125,10 @@
             onToolUse?.(tu.name, tu.input || {});
             toolUses.push({ name: tu.name, input: tu.input || {} });
             const out = await toolDef.run(tu.input || {});
-            resultText = typeof out === 'string' ? out : JSON.stringify(out);
+            // Anthropic requires tool_result.content to be a string —
+            // an undefined return (or JSON.stringify(undefined)) would
+            // drop the field and trip a 400.
+            resultText = (typeof out === 'string' ? out : JSON.stringify(out)) ?? '';
           } catch (err) {
             resultText = String(err?.message || err);
             isError = true;
@@ -181,9 +184,10 @@
           return { text: message.content || '', model, usage, toolUses };
         }
         // Echo the assistant's tool_calls back so the next request has
-        // matching ids. The OpenAI schema requires a tool message per
-        // tool_call_id with the result string.
-        convo.push({ role: 'assistant', content: message.content || '', tool_calls: calls });
+        // matching ids. The OpenAI schema expects content === null (not
+        // '') when tool_calls are present — strict OR proxies reject
+        // the empty-string variant.
+        convo.push({ role: 'assistant', content: message.content || null, tool_calls: calls });
         for (const call of calls) {
           const name = call.function?.name;
           let input = {};
@@ -195,7 +199,9 @@
             onToolUse?.(name, input);
             toolUses.push({ name, input });
             const out = await toolDef.run(input);
-            resultText = typeof out === 'string' ? out : JSON.stringify(out);
+            // OpenAI tool message requires content as a string — guard
+            // against an undefined return / JSON.stringify(undefined).
+            resultText = (typeof out === 'string' ? out : JSON.stringify(out)) ?? '';
           } catch (err) {
             resultText = `error: ${err?.message || err}`;
           }
