@@ -16,7 +16,13 @@
 // Plus stand-alone helpers: extractKeys/parseJiraUrl for auto-unfurl.
 
 (function () {
-  const ISSUE_FIELDS = 'summary,status,assignee,issuetype,priority,reporter';
+  // Two field lists. Brief is what the unfurl card + status pills
+  // need; full adds description / labels / timestamps for the AI
+  // tools. Splitting keeps every chat unfurl from pulling a full
+  // ticket body, which is wasteful on tickets with long ADF
+  // descriptions (10x payload on the bad cases).
+  const ISSUE_FIELDS_BRIEF = 'summary,status,assignee,issuetype,priority,reporter';
+  const ISSUE_FIELDS_FULL  = `${ISSUE_FIELDS_BRIEF},description,labels,updated,created`;
 
   class JiraClient {
     constructor(settings) {
@@ -52,11 +58,16 @@
       try { return JSON.parse(res.body); } catch { return null; }
     }
 
-    getIssue(key) {
-      return this._request(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=${encodeURIComponent(ISSUE_FIELDS)}`);
+    // `full: true` pulls description + labels + timestamps for AI
+    // consumption; the unfurl path leaves it false to keep the
+    // payload tiny on every chat-render lookup.
+    getIssue(key, { full = false } = {}) {
+      const fields = full ? ISSUE_FIELDS_FULL : ISSUE_FIELDS_BRIEF;
+      return this._request(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=${encodeURIComponent(fields)}`);
     }
-    searchIssues(jql, max = 20) {
-      const q = `jql=${encodeURIComponent(jql)}&maxResults=${max}&fields=${encodeURIComponent(ISSUE_FIELDS)}`;
+    searchIssues(jql, max = 20, { full = false } = {}) {
+      const fields = full ? ISSUE_FIELDS_FULL : ISSUE_FIELDS_BRIEF;
+      const q = `jql=${encodeURIComponent(jql)}&maxResults=${max}&fields=${encodeURIComponent(fields)}`;
       return this._request(`/rest/api/3/search?${q}`);
     }
     listProjects() {
@@ -78,6 +89,57 @@
       };
       return this._request(`/rest/api/3/issue`, { method: 'POST', body });
     }
+    // Update ticket fields. Empty/undefined values are skipped so the
+    // caller can pass a sparse patch (e.g., { key, summary } to only
+    // rename). Description goes through toAdf since Jira Cloud's v3
+    // PUT requires the same ADF shape as create.
+    async updateIssue({ key, summary, description, assigneeAccountId, labels, priorityName }) {
+      const fields = {};
+      if (summary != null) fields.summary = String(summary);
+      if (description != null) fields.description = toAdf(description);
+      if (assigneeAccountId !== undefined) {
+        // null clears the assignee, undefined is skip. Jira's API uses
+        // `accountId: null` for the unassign path.
+        fields.assignee = assigneeAccountId === null ? { accountId: null } : { accountId: assigneeAccountId };
+      }
+      if (Array.isArray(labels)) fields.labels = labels.map(String);
+      if (priorityName) fields.priority = { name: priorityName };
+      if (Object.keys(fields).length === 0) {
+        throw new Error('updateIssue: no fields to update');
+      }
+      // PUT returns 204 on success — _request returns null for an empty
+      // body, which is fine; we only care that no error was thrown.
+      await this._request(`/rest/api/3/issue/${encodeURIComponent(key)}`, { method: 'PUT', body: { fields } });
+      return { key };
+    }
+    // Append a comment. Body is plain text — converted to ADF for the
+    // v3 API. Returns the created comment's id + URL-friendly self.
+    async addComment({ key, body }) {
+      const payload = { body: toAdf(String(body || '')) };
+      return this._request(
+        `/rest/api/3/issue/${encodeURIComponent(key)}/comment`,
+        { method: 'POST', body: payload },
+      );
+    }
+    // List the workflow transitions available to the caller for an
+    // issue. AI calls this before transition_issue so it can map a
+    // human-friendly state name (e.g. "Done") to the workflow's
+    // transition id, which varies per project.
+    listTransitions(key) {
+      return this._request(`/rest/api/3/issue/${encodeURIComponent(key)}/transitions`)
+        .then((r) => r?.transitions || []);
+    }
+    async transitionIssue({ key, transitionId, comment }) {
+      const payload = { transition: { id: String(transitionId) } };
+      if (comment) {
+        payload.update = { comment: [{ add: { body: toAdf(String(comment)) } }] };
+      }
+      await this._request(
+        `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`,
+        { method: 'POST', body: payload },
+      );
+      return { key, transitionId };
+    }
     issueUrl(key) { return `${this._baseUrl()}/browse/${key}`; }
   }
 
@@ -88,6 +150,26 @@
       if (j.errors) return Object.entries(j.errors).map(([k, v]) => `${k}: ${v}`).join('; ');
       return body.slice(0, 200);
     } catch { return body.slice(0, 200); }
+  }
+
+  // Walk an Atlassian Document Format tree and concatenate the text
+  // nodes. The AI tools surface descriptions/comments as plain text;
+  // this is intentionally lossy (we drop bullet markers, link href,
+  // mention metadata, etc.) — the model only needs the prose. Always
+  // returns a string, even for `null`/non-doc input.
+  function adfToText(node) {
+    if (!node) return '';
+    if (typeof node === 'string') return node;
+    if (Array.isArray(node)) return node.map(adfToText).join('');
+    if (node.type === 'text' && typeof node.text === 'string') return node.text;
+    if (node.type === 'hardBreak' || node.type === 'rule') return '\n';
+    const children = adfToText(node.content || []);
+    // paragraph / heading / list-item all close with a newline so
+    // collapsing the doc back to text reads roughly like the original.
+    if (['paragraph', 'heading', 'listItem', 'codeBlock', 'blockquote', 'taskItem'].includes(node.type)) {
+      return children + '\n';
+    }
+    return children;
   }
 
   // Convert plain text -> Atlassian Document Format (the only description
@@ -139,4 +221,5 @@
 
   window.JiraClient = JiraClient;
   window.jiraExtractKeys = extractKeys;
+  window.jiraAdfToText = adfToText;
 })();
