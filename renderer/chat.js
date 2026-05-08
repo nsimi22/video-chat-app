@@ -691,11 +691,14 @@ class ChatView {
     }
 
     const visible = this._visibleList(all);
+    let prev = null;
     for (const m of visible) {
-      const node = this._renderMessage(m, all);
+      const node = this._renderMessage(m, all, prev);
       this.nodeById.set(m.id, node);
       container.appendChild(node);
+      prev = m;
     }
+    this._lastRendered = prev;
     // Empty state — only when this channel has no messages yet AND
     // we've finished initial history fetch (pagination entry exists
     // and has no `hasMore` flag pointing back further). Without the
@@ -741,9 +744,10 @@ class ChatView {
 
   _appendIncremental(m) {
     if (this._isInCurrentView(m)) {
-      const node = this._renderMessage(m, this._messages());
+      const node = this._renderMessage(m, this._messages(), this._lastRendered);
       this.nodeById.set(m.id, node);
       this.els.messages.appendChild(node);
+      this._lastRendered = m;
       this.els.messages.scrollTop = this.els.messages.scrollHeight;
       return;
     }
@@ -774,13 +778,32 @@ class ChatView {
     return [...set];
   }
 
-  _renderMessage(m, all) {
+  _renderMessage(m, all, prev) {
     const wrap = document.createElement('div');
     wrap.className = 'msg';
     const myName = this.mesh.name;
     const isMine = m.authorName === myName;
     const mentionsMe = Array.isArray(m.mentions) && m.mentions.includes(myName);
     if (mentionsMe) wrap.classList.add('msg-mentions-me');
+    // Slack-style consecutive grouping: same author within 5 minutes
+    // collapses the head + reuses the avatar slot. Threads keep the
+    // full chrome on each reply (always shown in a thread pane).
+    const FOLLOWUP_WINDOW_MS = 5 * 60 * 1000;
+    const isFollowup = prev
+      && !this.threadParentId
+      && !m.parentId && !prev.parentId
+      && !!m.aiGenerated === !!prev.aiGenerated
+      && (m.authorId || m.authorName) === (prev.authorId || prev.authorName)
+      && (m.ts - prev.ts) < FOLLOWUP_WINDOW_MS;
+    if (isFollowup) {
+      wrap.classList.add('msg-followup');
+      // Slack-style: surface the time in the avatar gutter on hover
+      // so users can still timestamp a line in a burst.
+      const timeHover = document.createElement('span');
+      timeHover.className = 'msg-time-hover';
+      timeHover.textContent = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      wrap.appendChild(timeHover);
+    }
 
     const initials = (m.authorName || '?').slice(0, 1).toUpperCase();
     const avatar = document.createElement('div');
@@ -893,25 +916,35 @@ class ChatView {
       reactions.appendChild(pill);
     }
 
+    // Floating action toolbar — small chips that appear on row hover.
+    // Replaces the old inline-quick-reactions row (5 large emoji
+    // buttons + ➕) which dominated every hover and pushed body
+    // content around. Now it's an absolutely-positioned cluster
+    // near the top-right with: react, thread, edit, delete.
     const actions = document.createElement('div');
     actions.className = 'msg-actions';
-    for (const e of window.QUICK_REACTIONS.slice(0, 5)) {
-      const b = document.createElement('button');
-      b.textContent = e;
-      b.onclick = () => this.mesh.toggleReaction(m.id, e);
-      actions.appendChild(b);
+    const react = document.createElement('button');
+    react.className = 'msg-action';
+    react.textContent = '🙂';
+    react.title = 'Add reaction';
+    react.onclick = (ev) => this._openReactionPicker(ev, m.id);
+    actions.appendChild(react);
+    if (!m.parentId && this.threadParentId === null) {
+      const thread = document.createElement('button');
+      thread.className = 'msg-action';
+      thread.textContent = '💬';
+      thread.title = 'Reply in thread';
+      thread.onclick = () => this.openThread(m.id);
+      actions.appendChild(thread);
     }
-    const more = document.createElement('button');
-    more.textContent = '➕';
-    more.title = 'Add reaction';
-    more.onclick = (ev) => this._openReactionPicker(ev, m.id);
-    actions.appendChild(more);
     if (isMine) {
       const edit = document.createElement('button');
+      edit.className = 'msg-action';
       edit.textContent = '✏️';
       edit.title = 'Edit message';
       edit.onclick = () => this._beginEdit(m.id);
       const del = document.createElement('button');
+      del.className = 'msg-action';
       del.textContent = '🗑';
       del.title = 'Delete message';
       del.onclick = () => this._delete(m.id);
@@ -930,13 +963,17 @@ class ChatView {
     children.push(reactions, actions);
     if (!m.parentId && this.threadParentId === null) {
       const replies = (all || []).filter((x) => x.parentId === m.id);
-      const link = document.createElement('div');
-      link.className = 'thread-link';
-      link.textContent = replies.length === 0
-        ? '↪ Reply in thread'
-        : `↪ ${replies.length} repl${replies.length === 1 ? 'y' : 'ies'}`;
-      link.onclick = () => this.openThread(m.id);
-      children.push(link);
+      // Only render the inline link when there's an actual thread to
+      // jump to. The empty "Reply in thread" zero-state shipped on
+      // every message and added clutter; the toolbar's 💬 button
+      // covers the new-thread entry point now.
+      if (replies.length > 0) {
+        const link = document.createElement('div');
+        link.className = 'thread-link';
+        link.textContent = `↪ ${replies.length} repl${replies.length === 1 ? 'y' : 'ies'}`;
+        link.onclick = () => this.openThread(m.id);
+        children.push(link);
+      }
     }
     right.append(...children);
     wrap.append(avatar, right);

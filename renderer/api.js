@@ -814,34 +814,45 @@
         meta.members = [this.name, displayName];
         return meta;
       }
-      // Don't chain .select() on the insert: channels_read RLS gates
-      // type='dm' rows on `is_channel_member(team_id, id)`, but the
-      // on_channel_after_insert trigger that adds the creator to
-      // channel_members hasn't fired yet at RETURNING time. The insert
-      // itself succeeds (WITH CHECK passes) but RETURNING throws
-      // "new row violates row-level security policy for table channels"
-      // — the catch then blocks the next two statements (the explicit
-      // channel_members rows for both DM participants), so the channel
-      // exists in the DB with no members and is invisible to either
-      // user next session. Same gotcha as team-create.
-      const { error } = await this.supabase.from('channels').insert({
+      // Use upsert+ignoreDuplicates so a pre-existing DM channel
+      // doesn't trip the channels_pkey constraint. The row can
+      // exist but be invisible to our SELECT above when RLS gates
+      // type='dm' on channel_members and we (or the counterparty)
+      // got dropped from channel_members historically. Upsert
+      // makes the create idempotent; the explicit channel_members
+      // upsert below restores membership for both sides; the
+      // final SELECT re-reads through RLS now that we're a member.
+      //
+      // Same trade-off as before re: not chaining .select() on
+      // the upsert — the on_channel_after_insert trigger that
+      // adds the creator to channel_members hasn't fired yet at
+      // RETURNING time, so RETURNING would throw the RLS error.
+      const { error } = await this.supabase.from('channels').upsert({
         team_id: this.team.id, id, name: displayName, topic: '',
         type: 'dm', protected: false, created_by: this.peerId,
-      });
+      }, { onConflict: 'team_id,id', ignoreDuplicates: true });
       if (error) throw error;
-      // Trigger added the creator (a). Add the other side explicitly so
-      // both participants can see the DM. Surface failures: silently
-      // swallowing leaves the DM in the DB with only one member, which
-      // makes it disappear for both sides on reload.
+      // Trigger added the creator on first-insert. For the upsert
+      // path on a pre-existing row the trigger doesn't fire, so
+      // upsert both sides explicitly and let it be a no-op when
+      // the rows are already there. Surface failures: a partial
+      // membership leaves the DM in the DB invisible to one side
+      // on reload.
       const { error: memErr } = await this.supabase.from('channel_members').upsert([
         { team_id: this.team.id, channel_id: id, user_id: a },
         { team_id: this.team.id, channel_id: id, user_id: b },
       ]);
       if (memErr) throw memErr;
-      return {
-        id, name: displayName, topic: '', type: 'dm', protected: false,
-        createdBy: this.peerId, members: [this.name, displayName],
-      };
+      // Re-fetch through RLS now that we're definitely a member.
+      // Returns the persisted row's actual created_at / type even
+      // when we hit the upsert-existing-row path.
+      const { data: ch, error: selErr } = await this.supabase
+        .from('channels').select('*')
+        .eq('team_id', this.team.id).eq('id', id).single();
+      if (selErr) throw selErr;
+      const meta = this._marshalChannel(ch);
+      meta.members = [this.name, displayName];
+      return meta;
     }
 
     async deleteChannel(channelId) {
