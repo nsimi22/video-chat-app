@@ -728,7 +728,7 @@ class ChatView {
     wrap.className = 'channel-empty';
     const icon = document.createElement('div');
     icon.className = 'channel-empty-icon';
-    icon.textContent = '✨';
+    icon.innerHTML = window.HuddleIcons.sparkle;
     const title = document.createElement('div');
     title.className = 'channel-empty-title';
     title.textContent = `Welcome to ${this._currentLabel || 'this channel'}`;
@@ -945,28 +945,32 @@ class ChatView {
     actions.className = 'msg-actions';
     const react = document.createElement('button');
     react.className = 'msg-action';
-    react.textContent = '🙂';
+    react.innerHTML = window.HuddleIcons.smile;
     react.title = 'Add reaction';
+    react.setAttribute('aria-label', 'Add reaction');
     react.onclick = (ev) => this._openReactionPicker(ev, m.id);
     actions.appendChild(react);
     if (!m.parentId && this.threadParentId === null) {
       const thread = document.createElement('button');
       thread.className = 'msg-action';
-      thread.textContent = '💬';
+      thread.innerHTML = window.HuddleIcons.thread;
       thread.title = 'Reply in thread';
+      thread.setAttribute('aria-label', 'Reply in thread');
       thread.onclick = () => this.openThread(m.id);
       actions.appendChild(thread);
     }
     if (isMine) {
       const edit = document.createElement('button');
       edit.className = 'msg-action';
-      edit.textContent = '✏️';
+      edit.innerHTML = window.HuddleIcons.edit;
       edit.title = 'Edit message';
+      edit.setAttribute('aria-label', 'Edit message');
       edit.onclick = () => this._beginEdit(m.id);
       const del = document.createElement('button');
-      del.className = 'msg-action';
-      del.textContent = '🗑';
+      del.className = 'msg-action danger';
+      del.innerHTML = window.HuddleIcons.trash;
       del.title = 'Delete message';
+      del.setAttribute('aria-label', 'Delete message');
       del.onclick = () => this._delete(m.id);
       actions.append(edit, del);
     }
@@ -1477,7 +1481,7 @@ class ChatView {
     btn.className = 'unfurl-reload';
     btn.title = 'Reload latest status';
     btn.setAttribute('aria-label', 'Reload latest status');
-    btn.textContent = '↻';
+    btn.innerHTML = window.HuddleIcons.refresh;
     btn.onclick = async (e) => {
       e.preventDefault();
       btn.disabled = true;
