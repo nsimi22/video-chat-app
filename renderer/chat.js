@@ -974,11 +974,12 @@ class ChatView {
     stat.className = `gh-status ${statusKind}`;
     stat.textContent = statusKind;
     // Reload — busts the cache and re-fetches so the user can pull
-    // the latest status without re-running /gh.
-    const reload = this._buildReloadButton(() => {
+    // the latest status without re-running /gh. Await the lookup so
+    // the button's disabled state covers the whole refetch.
+    const reload = this._buildReloadButton(async () => {
       this._ghCache.delete(cacheKey);
       this._paintGhLoading(el, ref);
-      this._lookupGhAndPaint(ref, el, gh);
+      await this._lookupGhAndPaint(ref, el, gh);
     });
     top.append(link, stat, reload);
     const sumRow = document.createElement('div');
@@ -1023,14 +1024,20 @@ class ChatView {
     for (const { key } of matches) {
       const el = document.createElement('div');
       el.className = 'jira-unfurl';
-      const loading = document.createElement('div');
-      loading.className = 'jira-loading';
-      loading.textContent = `Loading ${key}…`;
-      el.appendChild(loading);
+      this._paintJiraLoading(el, key);
       out.push(el);
       this._lookupAndPaint(key, el, jira);
     }
     return out;
+  }
+
+  _paintJiraLoading(el, key) {
+    el.classList.remove('error');
+    el.replaceChildren();
+    const loading = document.createElement('div');
+    loading.className = 'jira-loading';
+    loading.textContent = `Loading ${key}…`;
+    el.appendChild(loading);
   }
 
   async _lookupAndPaint(key, el, jira) {
@@ -1065,16 +1072,12 @@ class ChatView {
       stat.className = `jira-status ${statusClass}`;
       stat.textContent = status;
       // Reload — busts the cache and re-fetches the latest status
-      // without re-pasting the issue key into chat.
-      const reload = this._buildReloadButton(() => {
+      // without re-pasting the issue key into chat. Await the lookup
+      // so the button stays disabled for the whole refetch.
+      const reload = this._buildReloadButton(async () => {
         this._jiraCache.delete(key);
-        el.classList.remove('error');
-        el.replaceChildren();
-        const loading = document.createElement('div');
-        loading.className = 'jira-loading';
-        loading.textContent = `Loading ${key}…`;
-        el.appendChild(loading);
-        this._lookupAndPaint(key, el, jira);
+        this._paintJiraLoading(el, key);
+        await this._lookupAndPaint(key, el, jira);
       });
       top.append(link, stat, reload);
 

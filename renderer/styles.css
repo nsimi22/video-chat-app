@@ -364,7 +364,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
 .slash-list { list-style: none; padding: 0; margin: 4px 0 0; }
 .slash-list li {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: minmax(140px, max-content) 1fr;
   gap: 10px;
   padding: 6px 0;
   border-bottom: 1px solid var(--line);
