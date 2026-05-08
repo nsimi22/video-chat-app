@@ -85,7 +85,13 @@ ipcMain.handle('open-popout', (_event, opts) => {
   if (!target) return { ok: false, error: 'missing target' };
   if (popouts.has(target)) {
     const existing = popouts.get(target);
-    if (!existing.isDestroyed()) { existing.focus(); return { ok: true, reused: true }; }
+    if (!existing.isDestroyed()) {
+      // Wrap focus() in a try/catch — between this isDestroyed check
+      // and the focus call, the window's 'closed' event could fire if
+      // the user is double-clicking Pop out during a close.
+      try { existing.focus(); return { ok: true, reused: true }; }
+      catch {}
+    }
     popouts.delete(target);
   }
   const win = new BrowserWindow({
@@ -115,6 +121,10 @@ ipcMain.handle('open-popout', (_event, opts) => {
   if (opts?.teamId) params.set('team', opts.teamId);
   if (opts?.channelId) params.set('channel', opts.channelId);
   if (opts?.whiteboardId) params.set('whiteboard', opts.whiteboardId);
+  // Forward the title to the renderer so document.title matches the
+  // BrowserWindow title (which the OS reads); without this the
+  // popout's tab/page title is a hard-coded fallback.
+  if (opts?.title) params.set('title', opts.title);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'), { search: '?' + params.toString() });
   popouts.set(target, win);
   win.on('closed', () => {

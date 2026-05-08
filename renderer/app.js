@@ -380,6 +380,7 @@ function parsePopoutQuery(search) {
     teamId: params.get('team') || '',
     channelId: params.get('channel') || '',
     whiteboardId: params.get('whiteboard') || '',
+    title: params.get('title') || '',
   };
 }
 
@@ -441,7 +442,7 @@ async function bootWhiteboardPopout(cfg) {
   tile.className = 'tile screen whiteboard popout-tile';
   const label = document.createElement('div');
   label.className = 'tile-label';
-  label.textContent = `Whiteboard — popout`;
+  label.textContent = cfg.title || 'Whiteboard';
   tile.appendChild(label);
   wrap.appendChild(tile);
 
@@ -454,7 +455,7 @@ async function bootWhiteboardPopout(cfg) {
     tile,
   });
   await session.start();
-  document.title = 'Whiteboard — Huddle';
+  document.title = cfg.title || 'Whiteboard — Huddle';
 }
 
 // ---------------------------------------------------------------------------
