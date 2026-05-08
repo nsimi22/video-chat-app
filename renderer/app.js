@@ -410,6 +410,11 @@ function toggleCurrentChannelMute() {
 }
 function refreshMuteButton() {
   const channelId = state.chat?.currentChannel;
+  // Hide the button entirely until a channel is focused — clicking
+  // it without a channel is a no-op (toggleCurrentChannelMute
+  // early-returns) and a functional-looking-but-dead button reads
+  // as broken UX.
+  els.muteChannelBtn.classList.toggle('hidden', !channelId);
   if (!channelId) return;
   const muted = isChannelMuted(channelId);
   els.muteChannelBtn.classList.toggle('muted', muted);
