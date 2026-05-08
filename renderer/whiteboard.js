@@ -369,6 +369,15 @@ class WhiteboardSession {
     this.huddle.closeWhiteboardChannel(this.whiteboardId);
     this.canvas?.destroy();
     this.canvas = null;
+    // Drop the notes layer + every tracked note so the per-note
+    // mousedown listeners (and their captured WhiteboardSession
+    // closure) can be GCd. tile.remove() below would unparent the
+    // DOM tree anyway; clearing internal references explicitly is
+    // belt-and-suspenders for long-running sessions that close +
+    // reopen many whiteboards.
+    for (const id of [...this.notes.keys()]) this._removeNoteEl(id);
+    this.notesLayer?.remove();
+    this.notesLayer = null;
     if (this.tile?.parentElement) this.tile.remove();
   }
 }

@@ -160,22 +160,32 @@
     _renderIncrementalSegment(stroke) {
       // Cheap path: when a single new point arrives, draw just that
       // segment instead of clearing + re-rendering the whole world.
-      // Falls back to a full _render on any complication (eraser,
-      // arrow head, very first point).
+      // Eraser segments cut through existing pixels via
+      // destination-out — same incremental cost as pen — so they
+      // share this fast path. Arrow's per-frame triangle redraw
+      // makes the cheap path inappropriate, so it falls through
+      // to a full _render().
       if (!stroke.points || stroke.points.length < 2) { this._render(); return; }
-      if (stroke.tool === 'eraser' || stroke.tool === 'arrow') { this._render(); return; }
+      if (stroke.tool === 'arrow') { this._render(); return; }
       const [a, b] = [stroke.points[stroke.points.length - 2], stroke.points[stroke.points.length - 1]];
       this.ctx.save();
       this.ctx.scale(this.viewport.scale, this.viewport.scale);
       this.ctx.translate(-this.viewport.x, -this.viewport.y);
-      this.ctx.strokeStyle = stroke.color;
-      this.ctx.lineWidth = stroke.size;
+      if (stroke.tool === 'eraser') {
+        this.ctx.globalCompositeOperation = 'destination-out';
+        this.ctx.lineWidth = (stroke.size || 4) * 2;
+      } else {
+        this.ctx.globalCompositeOperation = 'source-over';
+        this.ctx.lineWidth = stroke.size || 4;
+      }
+      this.ctx.strokeStyle = stroke.color || '#ff3b30';
       this.ctx.lineCap = 'round';
       this.ctx.lineJoin = 'round';
       this.ctx.beginPath();
       this.ctx.moveTo(a[0], a[1]);
       this.ctx.lineTo(b[0], b[1]);
       this.ctx.stroke();
+      this.ctx.globalCompositeOperation = 'source-over';
       this.ctx.restore();
     }
 
@@ -272,11 +282,9 @@
         this.strokes.push(this._currentStroke);
         const finished = this._currentStroke;
         this._currentStroke = null;
-        // Eraser strokes need a full re-render because incremental
-        // destination-out was applied; switching back to
-        // source-over leaves no trace of the cuts on the cached
-        // canvas.
-        if (finished.tool === 'eraser') this._render();
+        // (Eraser segments now apply destination-out incrementally
+        // in _renderIncrementalSegment, so no post-stroke
+        // full-render fixup is needed.)
         // Notify the host so it can persist the polyline.
         this._strokeFinished?.(finished);
       };
@@ -311,16 +319,27 @@
 
     _wireKeyboardPan() {
       // Hold space to enter pan mode (cursor change + click-drag
-      // pans instead of drawing). Released to draw again.
-      const onKeyDown = (e) => {
-        if (e.code === 'Space' && !e.repeat && document.activeElement !== this.canvas) {
-          // Don't hijack space inside a textarea (sticky note text).
-          const tag = (document.activeElement?.tagName || '').toLowerCase();
-          if (tag === 'textarea' || tag === 'input') return;
-          this._panMode = true;
-          this.canvas.style.cursor = 'grab';
-          e.preventDefault();
+      // pans instead of drawing). Only the canvas the pointer is
+      // currently over should react to space — otherwise multiple
+      // InfiniteCanvas instances (e.g. main window + popout) all
+      // flip into pan mode at once.
+      this._hovered = false;
+      this.canvas.addEventListener('mouseenter', () => { this._hovered = true; });
+      this.canvas.addEventListener('mouseleave', () => {
+        this._hovered = false;
+        if (this._panMode && !this._panning) {
+          this._panMode = false;
+          this.canvas.style.cursor = '';
         }
+      });
+      const onKeyDown = (e) => {
+        if (e.code !== 'Space' || e.repeat) return;
+        if (!this._hovered) return;
+        const tag = (document.activeElement?.tagName || '').toLowerCase();
+        if (tag === 'textarea' || tag === 'input') return;
+        this._panMode = true;
+        this.canvas.style.cursor = 'grab';
+        e.preventDefault();
       };
       const onKeyUp = (e) => {
         if (e.code === 'Space') {
