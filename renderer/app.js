@@ -172,6 +172,12 @@ const state = {
   // that includes a channel/call, we stash the target here; onWelcome
   // (which fires after the team subscription is up) consumes it.
   pendingInviteHop: null,
+  // Channel ids whose call has been moved to a popout window and
+  // is currently owned by that popout. While a channel is in
+  // here, renderCallHeader hides Join/Start so the user can't
+  // rejoin in the main window and become a duplicate participant.
+  // Cleared when the corresponding popout-closed event arrives.
+  poppedOutCalls: new Set(),
 };
 
 // Whether the OS window is currently focused. Used to gate desktop
@@ -202,6 +208,19 @@ const STREAM_DECISION_MS = 1500;
     });
     return;
   }
+
+  // Main-window-only: listen for popout-closed events so the call
+  // header re-renders when a popped-out call ends (popout window
+  // closed via Leave or the system × button). Without this, the
+  // channel stays in state.poppedOutCalls forever and the user
+  // can't Start call again from main.
+  window.huddle.onPopoutEvent?.((msg) => {
+    if (msg?.event !== 'popout-closed') return;
+    const target = String(msg.target || '');
+    if (!target.startsWith('call:')) return;
+    const channelId = target.slice('call:'.length);
+    if (state.poppedOutCalls.delete(channelId)) renderCallHeader();
+  });
 
   // Render the static Settings → Slash commands explainer from
   // chat.js's SLASH_COMMANDS catalog so the composer autocomplete
@@ -475,13 +494,24 @@ async function bootWhiteboardPopout(cfg) {
 async function popOutCurrentCall() {
   const channelId = state.inCallChannelId;
   if (!channelId || !state.huddle) return;
-  // Listen for the popout to signal it's ready, then leave + tell
-  // the popout to take over. Listener removed once consumed so a
-  // second pop-out cycle works.
-  const unsub = window.huddle.onPopoutEvent(async (msg) => {
+  // Two listeners with mutual-exclusion via `handoffDone`:
+  //   - call-popout-ready: the happy path. Leave the call, tell
+  //     the popout to take over, mark this call as popped-out so
+  //     renderCallHeader can hide the Join button (otherwise the
+  //     user can rejoin in main and become a duplicate
+  //     participant alongside the popout).
+  //   - popout-closed: fallback for when the popout's renderer
+  //     crashed or the user closed the window before the handoff
+  //     completed. Abort the handoff so we don't leaveCall on a
+  //     ghost popout.
+  let handoffDone = false;
+  const unsubReady = window.huddle.onPopoutEvent(async (msg) => {
     if (msg?.event !== 'call-popout-ready') return;
     if (msg.channelId !== channelId) return;
-    unsub();
+    if (handoffDone) return;
+    handoffDone = true;
+    unsubReady();
+    unsubClosed();
     try {
       await leaveCall();
     } finally {
@@ -490,6 +520,17 @@ async function popOutCurrentCall() {
       // close + reopen.
       window.huddle.sendPopoutEvent({ event: 'main-call-left', channelId });
     }
+    state.poppedOutCalls.add(channelId);
+    renderCallHeader();
+  });
+  const unsubClosed = window.huddle.onPopoutEvent((msg) => {
+    if (msg?.event !== 'popout-closed') return;
+    if (msg.target !== `call:${channelId}`) return;
+    if (handoffDone) return;
+    handoffDone = true;
+    unsubReady();
+    unsubClosed();
+    showToast('Popout closed before the handoff finished; staying in the call here.', { kind: 'error' });
   });
   try {
     await window.huddle.openPopout({
@@ -500,7 +541,8 @@ async function popOutCurrentCall() {
     });
     showToast('Call moved to a new window');
   } catch (err) {
-    unsub();
+    unsubReady();
+    unsubClosed();
     console.warn('call popout failed', err);
     showCallError('Could not open call popout: ' + (err?.message || err));
   }
@@ -1100,11 +1142,15 @@ async function signOutFully() {
 function renderCallHeader() {
   const channelId = state.chat?.currentChannel;
   const inCallHere = state.mesh && state.inCallChannelId === channelId;
+  // Channels whose call this user popped out are owned by the
+  // popout window — hide both Start/Join here so a click in main
+  // doesn't rejoin and become a duplicate participant.
+  const ownedByPopout = !!channelId && state.poppedOutCalls.has(channelId);
   const lurkerCount = (channelId && state.huddle && !inCallHere)
     ? state.huddle.getCallParticipantCount(channelId) : 0;
   const others = inCallHere ? null : (lurkerCount > 0);
-  els.btnStartCall.classList.toggle('hidden', !!inCallHere || !!others);
-  els.btnJoinCall.classList.toggle('hidden', !!inCallHere || !others);
+  els.btnStartCall.classList.toggle('hidden', !!inCallHere || !!others || ownedByPopout);
+  els.btnJoinCall.classList.toggle('hidden', !!inCallHere || !others || ownedByPopout);
   if (others) {
     // Update the text span inside the button (which sits next to the
     // SVG icon) instead of replacing innerHTML, so we keep the icon.
