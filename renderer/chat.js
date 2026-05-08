@@ -9,6 +9,37 @@
 // Per-channel state lives on `byChannel` (messages) and `paginationByChannel`
 // (`{hasMore, oldestTs}`). View-only state (`nodeById`, `_currentLabel`) is
 // reset on channel/thread switches.
+
+// System prompt for /ai-ticket. The AI is instructed to emit ONE
+// JSON object with no preamble, no markdown fences, no commentary.
+// Schema is small + opinionated — anything beyond the documented
+// keys is dropped, defaults pick up the rest.
+const TICKET_SYSTEM_PROMPT = `You convert freeform descriptions into Jira tickets.
+Output ONLY a single JSON object with this shape — no preamble, no markdown fences, no commentary:
+{
+  "summary": "short, imperative title in sentence case (≤80 chars)",
+  "description": "longer markdown description with context, repro steps, acceptance criteria — optional",
+  "issueType": "Task" | "Bug" | "Story"
+}
+Pick "Bug" only when the description is clearly about something broken. Default to "Task". Use "Story" for net-new feature work or larger pieces of scope.
+Output the JSON object and nothing else.`;
+
+// Tolerant JSON extractor: tries plain JSON.parse, then looks for
+// the first {...} block (in case the AI wrapped the JSON in
+// commentary or fenced code despite the instructions). Throws on
+// total failure so the caller can surface a clean error.
+function parseTicketJson(raw) {
+  if (!raw) throw new Error('empty AI response');
+  const trimmed = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
+  try { return JSON.parse(trimmed); } catch {}
+  const first = trimmed.indexOf('{');
+  const last = trimmed.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    try { return JSON.parse(trimmed.slice(first, last + 1)); } catch {}
+  }
+  throw new Error('response was not valid JSON');
+}
+
 class ChatView {
   constructor({ huddle, els, hooks }) {
     // ChatView used to take a MeshClient (`mesh`); the MeshClient was
@@ -746,6 +777,7 @@ class ChatView {
     const cmd = m[1].toLowerCase();
     const arg = (m[2] || '').trim();
     if (cmd === 'ai') return this._runSlashAi(arg);
+    if (cmd === 'ai-ticket' || cmd === 'ait') return this._runSlashAiTicket(arg);
     if (cmd === 'summarize' || cmd === 'summary') return this._runSlashSummarize();
     if (cmd === 'gh' || cmd === 'github') return this._runSlashGh(arg);
     if (cmd === 'jira') {
@@ -814,6 +846,80 @@ class ChatView {
       parentId: this.threadParentId,
       text: body,
       model: result.model,
+    });
+    return true;
+  }
+
+  // /ai-ticket <description> — let the AI structure a freeform
+  // description into {summary, description, issueType} and create
+  // the Jira ticket directly. Uses the default project from
+  // Settings → Jira → Default project. Posts the resulting issue
+  // URL into chat where the existing /jira unfurl handles the
+  // status card.
+  async _runSlashAiTicket(prompt) {
+    const ai = this.hooks.getAi?.();
+    const jira = this.hooks.getJira?.();
+    if (!ai?.isConfigured()) {
+      alert('No AI provider configured. Open Settings (⚙) → AI assistant.');
+      return true;
+    }
+    if (!jira?.isConfigured()) {
+      alert('Jira is not configured. Open Settings (⚙) → Jira.');
+      return true;
+    }
+    const projectKey = (this.hooks.getDefaultJiraProject?.() || '').toUpperCase();
+    if (!projectKey) {
+      alert('No default Jira project set. Open Settings (⚙) → Jira → Default project.');
+      return true;
+    }
+    if (!prompt) {
+      alert('Usage: /ai-ticket <description>');
+      return true;
+    }
+    this.els.composer.value = '';
+    this.els.composer.style.height = 'auto';
+    this._beginAiThinking();
+    let aiResult;
+    try {
+      aiResult = await ai.chat({
+        system: TICKET_SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: prompt }],
+      });
+    } catch (err) {
+      this._endAiThinking();
+      alert('AI request failed: ' + (err?.message || err));
+      return true;
+    }
+    this._endAiThinking();
+    let parsed;
+    try { parsed = parseTicketJson(aiResult.text); }
+    catch (err) {
+      alert('AI returned an unparseable response: ' + err.message);
+      return true;
+    }
+    if (!parsed.summary) {
+      alert('AI did not produce a ticket summary. Try rephrasing the description.');
+      return true;
+    }
+    let issue;
+    try {
+      issue = await jira.createIssue({
+        projectKey,
+        summary: parsed.summary.slice(0, 240),
+        description: parsed.description || '',
+        issueType: parsed.issueType || 'Task',
+      });
+    } catch (err) {
+      alert('Could not create Jira ticket: ' + (err?.message || err));
+      return true;
+    }
+    const url = jira.issueUrl(issue.key);
+    const body = `Created **${issue.key}** (${parsed.issueType || 'Task'}): ${parsed.summary}\n\n${url}`;
+    await this.mesh.sendAiMessage({
+      channelId: this.currentChannel,
+      parentId: this.threadParentId,
+      text: body,
+      model: aiResult.model,
     });
     return true;
   }

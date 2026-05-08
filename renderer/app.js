@@ -528,6 +528,7 @@ async function joinTeamAndStart(teamId) {
       onMessage: (m) => onChatMessage(m),
       getGiphyKey,
       getJira: () => state.jira,
+      getDefaultJiraProject: () => state.settings?.jira?.defaultProject || '',
       openTicketModal: (preset) => openTicketModal(preset),
       getAi: () => state.ai,
       getGitHub: () => state.github,
