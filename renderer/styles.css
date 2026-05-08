@@ -128,7 +128,12 @@ input:focus, textarea:focus {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-/* Modals — frosted backdrop, generous radius, layered shadow. */
+/* Modals — frosted backdrop, generous radius, layered shadow.
+   No CSS keyframe entrance: modals are toggled via .hidden /
+   display:none, and CSS animations don't refire on a display
+   change without a class swap (or @starting-style + display
+   transition, which we'd need JS hooks for). Keep the chrome
+   static; revisit once we want a true entrance choreography. */
 .modal-backdrop {
   position: fixed; inset: 0;
   background: rgba(0, 0, 0, 0.5);
@@ -136,9 +141,7 @@ input:focus, textarea:focus {
   -webkit-backdrop-filter: blur(20px) saturate(140%);
   z-index: 100;
   display: flex; align-items: center; justify-content: center;
-  animation: backdrop-in 200ms ease-out;
 }
-@keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
 .modal {
   background: var(--bg-2);
   padding: 24px 28px;
@@ -146,11 +149,6 @@ input:focus, textarea:focus {
   min-width: 380px;
   border: 1px solid var(--line);
   box-shadow: var(--shadow-3);
-  animation: modal-in 240ms cubic-bezier(0.32, 0.72, 0, 1);
-}
-@keyframes modal-in {
-  from { opacity: 0; transform: scale(0.96) translateY(8px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
 }
 .modal h2 {
   margin: 0 0 14px 0;
@@ -257,9 +255,15 @@ input:focus, textarea:focus {
 .dot {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--text-faint); flex: none;
-  box-shadow: 0 0 0 2px var(--bg-sidebar);
 }
-.dot.online { background: var(--good); box-shadow: 0 0 0 2px var(--bg-sidebar), 0 0 8px rgba(48, 209, 88, 0.5); }
+.dot.online { background: var(--good); }
+/* The 2px halo only matches the sidebar surface; on member-pickers
+   (over bg-2) and active channel rows (over --accent) it would
+   read as a dark hole around the dot. Scope to .sidebar. */
+.sidebar .dot { box-shadow: 0 0 0 2px var(--bg-sidebar); }
+.sidebar .dot.online { box-shadow: 0 0 0 2px var(--bg-sidebar), 0 0 8px rgba(48, 209, 88, 0.5); }
+/* Active row's bg is var(--accent); restore the halo there too. */
+.channel-list li.active .dot { box-shadow: 0 0 0 2px var(--accent); }
 /* Offline rows in the People sidebar + DM/member pickers — dim the
    text so online teammates pop, but keep them clickable so you can
    DM someone who isn't in the app right now. */
@@ -310,7 +314,7 @@ input:focus, textarea:focus {
 }
 .team-pick:hover {
   background: rgba(255, 255, 255, 0.07);
-  border-color: var(--line-strong);
+  border-color: var(--accent);
 }
 .team-pick:active { transform: scale(0.99); }
 .modal h3 { font-size: 11px; color: var(--text-faint); text-transform: uppercase;
@@ -328,6 +332,9 @@ input:focus, textarea:focus {
   color: var(--text-dim);
   box-shadow: none;
 }
+/* Active row's halo would be a dark ring on the accent background;
+   match the row instead so the badge sits flush. */
+.channel-list li.active .ch-badge { box-shadow: 0 0 0 2px var(--accent); }
 
 /* Markdown / chat content */
 .msg-body code {
@@ -562,6 +569,7 @@ input:focus, textarea:focus {
   background: transparent; border: none; color: var(--text-dim);
   cursor: pointer; padding: 0 4px; min-height: auto;
   font-size: 14px; line-height: 1;
+  box-shadow: none;
 }
 .unfurl-reload:hover { color: var(--text); }
 .unfurl-reload:disabled { opacity: 0.5; cursor: wait; }
@@ -755,10 +763,10 @@ input:focus, textarea:focus {
    overlay a diagonal strikethrough across the SVG so the affordance
    matches what users see in FaceTime / Zoom / Slack. */
 button.ctrl.muted {
-  background: var(--bad); border-color: var(--bad); color: white;
+  background: var(--bad); color: white;
   position: relative;
 }
-button.ctrl.muted:not([disabled]):hover { background: #c0184d; }
+button.ctrl.muted:not([disabled]):hover { background: #ff5c52; }
 button.ctrl.muted.icon-only::after {
   content: ''; position: absolute;
   left: 5px; right: 5px; top: 50%;
@@ -880,7 +888,7 @@ button.ctrl.muted.icon-only::after {
 .wb-note {
   position: absolute;
   background: #ffd866;
-  color: #1a1d21;
+  color: #1a1a1c;
   border-radius: 6px;
   box-shadow: 0 4px 12px rgba(0,0,0,.35);
   display: flex; flex-direction: column;
@@ -903,6 +911,7 @@ button.ctrl.muted.icon-only::after {
   background: transparent; border: none; padding: 0;
   font-size: 16px; color: rgba(0,0,0,.5); cursor: pointer;
   min-height: auto; border-radius: 4px;
+  box-shadow: none;
 }
 .wb-note-close:hover { color: rgba(0,0,0,.9); background: rgba(0,0,0,.1); }
 .wb-note-text {
@@ -1063,6 +1072,10 @@ button.ctrl.muted.icon-only::after {
   flex: 1; resize: none;
   min-height: 38px; max-height: 160px;
   line-height: 1.5;
+  /* The composer surface is var(--bg-elev) with backdrop blur, so
+     the global input/textarea border (rgba 0.08) gets washed out
+     against it. Bump to --line-strong for a clearer hairline. */
+  border-color: var(--line-strong);
 }
 .typing {
   padding: 0 16px 4px; font-size: 12px;
@@ -1144,11 +1157,6 @@ button.ctrl.muted.icon-only::after {
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
   font-size: 13px;
-  animation: profile-card-in 200ms cubic-bezier(0.32, 0.72, 0, 1);
-}
-@keyframes profile-card-in {
-  from { opacity: 0; transform: scale(0.96) translateY(4px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
 }
 .profile-card.hidden { display: none; }
 .profile-card-loading,
