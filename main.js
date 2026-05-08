@@ -20,6 +20,67 @@ let mainWindow;
 // 'closed' so a second pop-out works after the first is closed.
 const popouts = new Map();
 
+// huddle:// protocol handler. When the OS hands us a deep link
+// (clicked huddle invite URL in chat / browser / email), the URL
+// arrives via `open-url` on macOS or via process.argv on a
+// second-instance launch on Windows/Linux. We deliver it to the
+// renderer through IPC; the renderer routes it through the
+// existing invite-redeem path. Cold-start URLs that arrive before
+// the renderer is ready buffer here and flush on did-finish-load.
+const HUDDLE_PROTOCOL = 'huddle';
+const pendingProtocolUrls = [];
+
+// Single-instance lock: a second launch (typical when an OS
+// click on huddle://X starts the app while it's already running)
+// hands its argv to this instance via the second-instance event
+// instead of spinning up a duplicate process.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const url = argv.find((a) => typeof a === 'string' && a.startsWith(`${HUDDLE_PROTOCOL}://`));
+    if (url) deliverProtocolUrl(url);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
+// Register the scheme. On packaged builds this writes the OS
+// association (Info.plist on Mac, registry on Windows). In dev
+// (electron .) Windows/Linux need the executable + script-path
+// args so the OS knows how to relaunch us with the URL.
+if (process.defaultApp) {
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient(HUDDLE_PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
+  }
+} else {
+  app.setAsDefaultProtocolClient(HUDDLE_PROTOCOL);
+}
+
+// macOS delivers huddle:// URLs via this event (both cold-start
+// and while running). Windows/Linux use second-instance argv +
+// initial process.argv (see below).
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  deliverProtocolUrl(url);
+});
+
+// Cold-start with the URL on the command line (Windows/Linux):
+const initialUrl = process.argv.find((a) => typeof a === 'string' && a.startsWith(`${HUDDLE_PROTOCOL}://`));
+if (initialUrl) pendingProtocolUrls.push(initialUrl);
+
+function deliverProtocolUrl(url) {
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isLoading()) {
+    try { mainWindow.webContents.send('protocol-url', url); }
+    catch { pendingProtocolUrls.push(url); }
+  } else {
+    pendingProtocolUrls.push(url);
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -72,6 +133,17 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+
+  // Flush any huddle:// URLs that arrived before the renderer was
+  // ready (cold-start case). did-finish-load fires after both the
+  // initial HTML load and renderer-side scripts have run, so the
+  // preload's IPC subscriber is in place.
+  mainWindow.webContents.once('did-finish-load', () => {
+    while (pendingProtocolUrls.length) {
+      try { mainWindow.webContents.send('protocol-url', pendingProtocolUrls.shift()); }
+      catch { break; }
+    }
+  });
 }
 
 // Spawn (or focus) a child window that runs the same renderer with
