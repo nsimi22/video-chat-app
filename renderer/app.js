@@ -1915,8 +1915,11 @@ async function saveSettings() {
       // a user pastes an issue key the leftover "-123" prevents
       // the find() in openTicketModal from matching, and the
       // pre-select silently falls back to projects[0]. Take
-      // everything before the first hyphen so DAP-123 → DAP.
-      defaultProject: els.setJiraProject.value.trim().toUpperCase().split('-')[0],
+      // everything before the first hyphen so DAP-123 → DAP, and
+      // trim AFTER the split so `PROJ - 123` (with surrounding
+      // whitespace around the hyphen) doesn't leave a trailing
+      // space inside the key.
+      defaultProject: els.setJiraProject.value.split('-')[0].trim().toUpperCase(),
     },
     ai: {
       provider: els.setAiProvider.value,
