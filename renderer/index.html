@@ -284,15 +284,9 @@
           <summary>Slash commands</summary>
           <div class="settings-section-body">
             <p class="hint">Type these in any message composer to trigger an action. Configure the relevant integration below first.</p>
-            <ul class="slash-list">
-              <li><code>/ai &lt;question&gt;</code><span>Ask the configured AI provider; the answer is posted as a teammate-visible message.</span></li>
-              <li><code>/ai-ticket &lt;description&gt;</code><span>(alias <code>/ait</code>) AI structures the description into a Jira ticket and creates it in your default project.</span></li>
-              <li><code>/summarize</code><span>(alias <code>/summary</code>) Summarize the last few messages in this channel.</span></li>
-              <li><code>/jira</code><span>Open the Jira create-ticket modal.</span></li>
-              <li><code>/jira create &lt;summary&gt;</code><span>Open the create-ticket modal pre-filled with a summary.</span></li>
-              <li><code>/jira &lt;KEY&gt;</code><span>Post the issue URL — auto-unfurls into a status card for everyone.</span></li>
-              <li><code>/gh &lt;owner/repo#N&gt;</code><span>(alias <code>/github</code>) Post a GitHub issue or PR URL — auto-unfurls into a status card.</span></li>
-            </ul>
+            <!-- Populated from window.SLASH_COMMANDS at boot — single
+                 source of truth shared with the composer autocomplete. -->
+            <ul id="slash-list" class="slash-list"></ul>
           </div>
         </details>
 

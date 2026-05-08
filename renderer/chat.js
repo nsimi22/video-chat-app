@@ -40,17 +40,35 @@ function parseTicketJson(raw) {
   throw new Error('response was not valid JSON');
 }
 
-// Catalog used by the composer's slash-command autocomplete. Mirrors
-// the user-facing list in Settings → Slash commands; keep both in sync
-// when adding a new command. Aliases share a `name` so they show up as
-// distinct rows but resolve to the same handler in _runSlashes.
+// Single source of truth for both the composer's autocomplete
+// popup AND the Settings → Slash commands explainer (rendered from
+// this list by app.js). When adding a new command, add ONE entry
+// here and both surfaces pick it up.
+//
+//   name      — canonical command (no leading slash). What the popup
+//                shows and what _fillSlashSuggest types into the
+//                composer.
+//   usage     — short usage hint shown in the popup. Should fit on
+//                one line.
+//   desc      — sentence-length description for both the popup and
+//                Settings. Aliases mentioned here are documentation
+//                only; the actual dispatch lives in _maybeRunSlash.
+//   aliases   — optional list of equivalent commands (just for the
+//                Settings explainer; popup renders one row per
+//                canonical name to keep it tight).
+//   extras    — optional list of {usage, desc} variants to show in
+//                Settings only (e.g., /jira create vs /jira <KEY>).
 const SLASH_COMMANDS = [
-  { name: 'ai',         usage: '/ai <question>',          desc: 'Ask the configured AI provider.' },
-  { name: 'ai-ticket',  usage: '/ai-ticket <description>', desc: 'AI structures a Jira ticket and creates it.' },
-  { name: 'summarize',  usage: '/summarize',              desc: 'Summarize the recent messages in this channel.' },
-  { name: 'jira',       usage: '/jira [create | <KEY>]',  desc: 'Open create-ticket modal, or unfurl an issue.' },
-  { name: 'gh',         usage: '/gh <owner/repo#N>',      desc: 'Unfurl a GitHub issue or PR.' },
+  { name: 'ai',         usage: '/ai <question>',           desc: 'Ask the configured AI provider; the answer is posted as a teammate-visible message.' },
+  { name: 'ai-ticket',  usage: '/ai-ticket <description>', desc: 'AI structures the description into a Jira ticket and creates it in your default project.', aliases: ['ait'] },
+  { name: 'summarize',  usage: '/summarize',               desc: 'Summarize the last few messages in this channel.', aliases: ['summary'] },
+  { name: 'jira',       usage: '/jira',                    desc: 'Open the Jira create-ticket modal.', extras: [
+      { usage: '/jira create <summary>', desc: 'Open the create-ticket modal pre-filled with a summary.' },
+      { usage: '/jira <KEY>',            desc: 'Post the issue URL — auto-unfurls into a status card for everyone.' },
+  ] },
+  { name: 'gh',         usage: '/gh <owner/repo#N>',       desc: 'Post a GitHub issue or PR URL — auto-unfurls into a status card.', aliases: ['github'] },
 ];
+window.SLASH_COMMANDS = SLASH_COMMANDS;
 
 class ChatView {
   constructor({ huddle, els, hooks }) {
@@ -89,6 +107,13 @@ class ChatView {
     // join/leave cycle, so without this the host elements (composer,
     // document, etc.) accumulate stale handlers.
     this._listenerCtrl = new AbortController();
+
+    // Slash-command autocomplete state. Initialized here so any code
+    // path that touches it (the keydown handler in particular) can't
+    // observe an undefined _slashFiltered before the first refresh.
+    this._slashOpen = false;
+    this._slashFiltered = [];
+    this._slashIndex = 0;
 
     this.typingClock = setInterval(() => this._refreshTyping(), 800);
     this._wireDom();
@@ -280,7 +305,10 @@ class ChatView {
   // top suggestion as the user types.
   _refreshSlashSuggest() {
     const value = this.els.composer.value;
-    const m = /^\/([a-zA-Z-]*)$/.exec(value);
+    // Allow digits in command names (e.g., a future /k8s) — the
+    // dispatch in _maybeRunSlash also accepts \w, so they stay in
+    // sync. Hyphens stay supported for /ai-ticket.
+    const m = /^\/([a-zA-Z0-9-]*)$/.exec(value);
     if (!m) { this._hideSlashSuggest(); return; }
     const partial = m[1].toLowerCase();
     const matches = SLASH_COMMANDS.filter((c) => c.name.startsWith(partial));
@@ -299,6 +327,7 @@ class ChatView {
       const row = document.createElement('div');
       row.className = 'slash-suggest-item' + (i === this._slashIndex ? ' selected' : '');
       row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', i === this._slashIndex ? 'true' : 'false');
       const code = document.createElement('code');
       code.textContent = cmd.usage;
       const desc = document.createElement('span');
@@ -327,29 +356,28 @@ class ChatView {
   // Returns true iff the keypress was handled here (caller bails out).
   _handleSlashKeydown(e) {
     if (!this._slashOpen) return false;
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      this._slashIndex = (this._slashIndex + 1) % this._slashFiltered.length;
-      this._renderSlashSuggest();
-      return true;
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        this._slashIndex = (this._slashIndex + 1) % this._slashFiltered.length;
+        this._renderSlashSuggest();
+        return true;
+      case 'ArrowUp':
+        e.preventDefault();
+        this._slashIndex = (this._slashIndex - 1 + this._slashFiltered.length) % this._slashFiltered.length;
+        this._renderSlashSuggest();
+        return true;
+      case 'Tab':
+        e.preventDefault();
+        this._fillSlashSuggest(this._slashIndex);
+        return true;
+      case 'Escape':
+        e.preventDefault();
+        this._hideSlashSuggest();
+        return true;
+      default:
+        return false;
     }
-    if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      this._slashIndex = (this._slashIndex - 1 + this._slashFiltered.length) % this._slashFiltered.length;
-      this._renderSlashSuggest();
-      return true;
-    }
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      this._fillSlashSuggest(this._slashIndex);
-      return true;
-    }
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      this._hideSlashSuggest();
-      return true;
-    }
-    return false;
   }
 
   _fillSlashSuggest(index) {
