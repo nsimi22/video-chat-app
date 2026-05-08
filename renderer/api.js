@@ -808,40 +808,50 @@
         || this.peerInfo.get(otherUserId)?.name
         || (await this._fetchDisplayName(otherUserId))
         || 'unknown';
-      const { data: existing } = await this.supabase.from('channels').select('*').eq('team_id', this.team.id).eq('id', id).maybeSingle();
-      if (existing) {
-        const meta = this._marshalChannel(existing);
-        meta.members = [this.name, displayName];
-        return meta;
-      }
-      // Don't chain .select() on the insert: channels_read RLS gates
-      // type='dm' rows on `is_channel_member(team_id, id)`, but the
+      // Idempotent channel upsert: ignoreDuplicates keeps a
+      // pre-existing row from tripping channels_pkey, and we don't
+      // chain .select() because on the fresh-insert path the
       // on_channel_after_insert trigger that adds the creator to
-      // channel_members hasn't fired yet at RETURNING time. The insert
-      // itself succeeds (WITH CHECK passes) but RETURNING throws
-      // "new row violates row-level security policy for table channels"
-      // — the catch then blocks the next two statements (the explicit
-      // channel_members rows for both DM participants), so the channel
-      // exists in the DB with no members and is invisible to either
-      // user next session. Same gotcha as team-create.
-      const { error } = await this.supabase.from('channels').insert({
+      // channel_members hasn't fired yet at RETURNING time —
+      // channels_read RLS gates type='dm' on membership and would
+      // throw "row violates row-level security policy".
+      const { error } = await this.supabase.from('channels').upsert({
         team_id: this.team.id, id, name: displayName, topic: '',
         type: 'dm', protected: false, created_by: this.peerId,
-      });
+      }, { onConflict: 'team_id,id', ignoreDuplicates: true });
       if (error) throw error;
-      // Trigger added the creator (a). Add the other side explicitly so
-      // both participants can see the DM. Surface failures: silently
-      // swallowing leaves the DM in the DB with only one member, which
-      // makes it disappear for both sides on reload.
-      const { error: memErr } = await this.supabase.from('channel_members').upsert([
-        { team_id: this.team.id, channel_id: id, user_id: a },
-        { team_id: this.team.id, channel_id: id, user_id: b },
-      ]);
-      if (memErr) throw memErr;
-      return {
-        id, name: displayName, topic: '', type: 'dm', protected: false,
-        createdBy: this.peerId, members: [this.name, displayName],
-      };
+      // Add OUR membership unconditionally. channel_members'
+      // insert_self policy permits inserting your own row, so this
+      // works whether the channel was just created (no-op against
+      // the trigger-added row) or pre-existed with us missing
+      // (the legacy bad state we're repairing). On the no-op path
+      // the upsert returns success.
+      const { error: meErr } = await this.supabase.from('channel_members').upsert(
+        { team_id: this.team.id, channel_id: id, user_id: a }
+      );
+      if (meErr) throw meErr;
+      // Re-fetch through RLS now that we're a member. Gives us
+      // the persisted created_by value — needed below.
+      const { data: ch, error: selErr } = await this.supabase
+        .from('channels').select('*')
+        .eq('team_id', this.team.id).eq('id', id).single();
+      if (selErr) throw selErr;
+      // Counterparty: only upsert when WE created the channel
+      // (the only path where channel_members' insert_self policy
+      // lets us insert another user's row, via the
+      // `channels.created_by = auth.uid()` branch). If somebody
+      // else created it, B was added by the trigger when they
+      // did, so a no-op here is fine; trying anyway would fail
+      // RLS and break this whole flow.
+      if (ch.created_by === a) {
+        const { error: peerErr } = await this.supabase.from('channel_members').upsert(
+          { team_id: this.team.id, channel_id: id, user_id: b }
+        );
+        if (peerErr) throw peerErr;
+      }
+      const meta = this._marshalChannel(ch);
+      meta.members = [this.name, displayName];
+      return meta;
     }
 
     async deleteChannel(channelId) {

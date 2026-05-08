@@ -1906,7 +1906,8 @@ function makeTile({ key, label, kind, userId }) {
     const inPopoutCall = document.body.classList.contains('popout-call');
     if (kind === 'screen' && !inPopoutCall) {
       const annotate = document.createElement('button');
-      annotate.textContent = '✏️ Annotate';
+      annotate.className = 'tile-action-annotate';
+      annotate.innerHTML = `${window.HuddleIcons.edit}<span>Annotate</span>`;
       annotate.onclick = () => toggleAnnotate(tile.dataset.streamId);
       actions.appendChild(annotate);
     }
@@ -2293,7 +2294,7 @@ function renderMemberPicker(container) {
     row.append(dot, lbl, check);
     row.onclick = () => {
       const selected = row.classList.toggle('selected');
-      check.textContent = selected ? '✓' : '';
+      check.innerHTML = selected ? window.HuddleIcons.check : '';
     };
     attachProfileTrigger(lbl, m.id);
     container.appendChild(row);
