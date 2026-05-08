@@ -319,7 +319,7 @@ input:focus, textarea:focus {
 /* Wrapped in a label so the whole row toggles the checkbox.
    Selector must beat `.modal label { display: block }` on
    specificity, otherwise the flex layout never lands. */
-label.cc-private-row {
+.modal label.cc-private-row {
   display: flex; align-items: center; gap: 8px; margin-top: 14px;
   font-size: 13px; color: var(--text);
 }
