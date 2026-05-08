@@ -546,8 +546,15 @@ async function bootCallPopout(cfg) {
     b.id = id; b.className = cls; b.textContent = label;
     return b;
   };
+  // Mic / Cam start disabled — startPopoutCall enables them once
+  // the MeshClient is wired and joinCall has resolved. Without
+  // this, clicking either button during the brief handoff gap
+  // (state.mesh still null) silently no-ops and the user thinks
+  // the popout is broken.
   const btnMic = mkBtn('popout-btn-mic', '🎤 Mic');
+  btnMic.disabled = true;
   const btnCam = mkBtn('popout-btn-cam', '📷 Cam');
+  btnCam.disabled = true;
   const btnLeave = mkBtn('popout-btn-leave', '⏹ Leave call', 'ctrl danger');
   bar.append(btnMic, btnCam, btnLeave);
   wrap.appendChild(bar);
@@ -579,6 +586,11 @@ async function bootCallPopout(cfg) {
     if (!state.mesh) return;
     const on = state.mesh.toggleMic();
     btnMic.classList.toggle('muted', !on);
+    // Mirror the main-window behaviour: the self-cam tile gets a
+    // .muted class so the CSS strike-through overlay tracks the
+    // actual mic state.
+    const tile = state.tilesByKey.get('self-cam');
+    if (tile) tile.classList.toggle('muted', !on);
   };
   btnCam.onclick = () => {
     if (!state.mesh) return;
@@ -629,6 +641,10 @@ async function startPopoutCall(channelId) {
   }
   state.mesh = mesh;
   state.inCallChannelId = channelId;
+  // The mic/cam controls were disabled in bootCallPopout; flip
+  // them on now that mesh.toggle{Mic,Cam} have something to act on.
+  els.btnMic.disabled = false;
+  els.btnCam.disabled = false;
   mesh.bootstrapExistingPeers();
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
@@ -1566,7 +1582,12 @@ function makeTile({ key, label, kind, userId }) {
   if (kind === 'screen' || kind === 'whiteboard') {
     const actions = document.createElement('div');
     actions.className = 'tile-actions';
-    if (kind === 'screen') {
+    // Annotate spawns the draw toolbar (#draw-toolbar) which lives
+    // in the main window's #app and is hidden in popout mode. Skip
+    // the button there so we don't render a click target that does
+    // nothing visible.
+    const inPopoutCall = document.body.classList.contains('popout-call');
+    if (kind === 'screen' && !inPopoutCall) {
       const annotate = document.createElement('button');
       annotate.textContent = '✏️ Annotate';
       annotate.onclick = () => toggleAnnotate(tile.dataset.streamId);
