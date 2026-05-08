@@ -255,12 +255,14 @@ class ChatView {
     this._on(this.els.composer, 'paste', (e) => this._onPaste(e));
     this._on(this.els.emojiBtn, 'click', (e) => {
       e.stopPropagation();
+      this._resetEmojiPickerAnchor();
       this.els.emojiPicker.classList.toggle('hidden');
       this._emojiPickerMode = 'compose';
     });
     this._on(document, 'click', (e) => {
       if (!this.els.emojiPicker.contains(e.target) && e.target !== this.els.emojiBtn) {
         this.els.emojiPicker.classList.add('hidden');
+        this._resetEmojiPickerAnchor();
       }
     });
     if (this.els.attachBtn) {
@@ -651,7 +653,8 @@ class ChatView {
       const txt = document.createElement('span');
       txt.textContent = a.file.name + (a.status === 'uploading' ? ' …' : a.status === 'failed' ? ' (failed)' : '');
       const x = document.createElement('button');
-      x.textContent = '✕';
+      x.title = 'Remove'; x.setAttribute('aria-label', 'Remove');
+      x.innerHTML = window.HuddleIcons.x;
       x.onclick = () => {
         this.composerAttachments = this.composerAttachments.filter((c) => c !== a);
         this._renderAttachmentChips();
@@ -670,11 +673,19 @@ class ChatView {
       if (info.until > now) live.push(info.name);
       else this.typingUsers.delete(id);
     }
-    let text = live.length === 0 ? ''
+    const text = live.length === 0 ? ''
       : live.length === 1 ? `${live[0]} is typing…`
       : `${live.slice(0, -1).join(', ')} and ${live.at(-1)} are typing…`;
-    if (this._aiThinkingCount > 0) text = (text ? text + ' · ' : '') + '🤖 AI is thinking…';
+    // Names go through textContent first so any HTML-ish chars are
+    // escaped; we only inject our trusted AI-thinking SVG via innerHTML.
     this.els.typing.textContent = text;
+    if (this._aiThinkingCount > 0) {
+      const sep = text ? ' · ' : '';
+      const ai = document.createElement('span');
+      ai.className = 'typing-ai';
+      ai.innerHTML = `${window.HuddleIcons.robot}<span>AI is thinking…</span>`;
+      this.els.typing.append(sep, ai);
+    }
   }
 
   // Track AI requests in flight as a counter, not a boolean — otherwise
@@ -831,7 +842,7 @@ class ChatView {
     if (m.aiGenerated) {
       // Robot icon avatar; same size as the human ones so the grid stays aligned.
       avatar.style.background = '#3a3f47';
-      avatar.textContent = '🤖';
+      avatar.innerHTML = window.HuddleIcons.robot;
     } else {
       avatar.style.background = m.authorColor || '#666';
       avatar.textContent = initials;
@@ -920,7 +931,9 @@ class ChatView {
           link.target = '_blank';
           link.rel = 'noopener noreferrer';
           link.className = 'attachment-chip';
-          link.textContent = `📎 ${a.name}${a.size ? ` (${formatBytes(a.size)})` : ''}`;
+          const sizeLabel = a.size ? ` (${formatBytes(a.size)})` : '';
+          link.innerHTML = `${window.HuddleIcons.paperclip}<span></span>`;
+          link.querySelector('span').textContent = `${a.name}${sizeLabel}`;
           attachmentsEl.appendChild(link);
         }
       }
@@ -1024,6 +1037,7 @@ class ChatView {
             this.els.composer.focus();
           }
           p.classList.add('hidden');
+          this._resetEmojiPickerAnchor();
         };
         p.appendChild(b);
       }
@@ -1034,7 +1048,35 @@ class ChatView {
     ev.stopPropagation();
     this._emojiPickerMode = 'react';
     this._emojiPickerTarget = messageId;
-    this.els.emojiPicker.classList.remove('hidden');
+    const p = this.els.emojiPicker;
+    // Position the picker next to the clicked react button instead of
+    // the default composer-anchored slot. Use position: fixed (set via
+    // [data-anchor=react]) and align the picker's right edge with the
+    // button's right edge, opening downward by default and flipping
+    // upward when there isn't room below.
+    const btn = ev.currentTarget;
+    const rect = btn.getBoundingClientRect();
+    p.classList.remove('hidden');
+    p.dataset.anchor = 'react';
+    const margin = 8;
+    const w = p.offsetWidth || 296;
+    const h = p.offsetHeight || 340;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let left = Math.min(Math.max(margin, rect.right - w), vw - w - margin);
+    let top = rect.bottom + 6;
+    if (top + h > vh - margin) top = Math.max(margin, rect.top - h - 6);
+    p.style.left = `${left}px`;
+    p.style.top = `${top}px`;
+    p.style.right = 'auto';
+    p.style.bottom = 'auto';
+  }
+
+  _resetEmojiPickerAnchor() {
+    const p = this.els.emojiPicker;
+    if (p.dataset.anchor === 'react') {
+      delete p.dataset.anchor;
+      p.style.left = p.style.top = p.style.right = p.style.bottom = '';
+    }
   }
 
   // --- GIF picker (Giphy) -------------------------------------------------

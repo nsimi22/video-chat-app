@@ -700,9 +700,11 @@ async function bootCallPopout(cfg) {
   wrap.appendChild(tiles);
   const bar = document.createElement('div');
   bar.className = 'popout-call-bar';
-  const mkBtn = (id, label, cls = 'ctrl') => {
+  const mkIconBtn = (id, iconName, title, cls = 'ctrl icon-only') => {
     const b = document.createElement('button');
-    b.id = id; b.className = cls; b.textContent = label;
+    b.id = id; b.className = cls;
+    b.title = title; b.setAttribute('aria-label', title);
+    b.innerHTML = window.HuddleIcons[iconName];
     return b;
   };
   // Mic / Cam start disabled — startPopoutCall enables them once
@@ -710,14 +712,29 @@ async function bootCallPopout(cfg) {
   // this, clicking either button during the brief handoff gap
   // (state.mesh still null) silently no-ops and the user thinks
   // the popout is broken.
-  const btnMic = mkBtn('popout-btn-mic', '🎤 Mic');
+  const btnMic = mkIconBtn('popout-btn-mic', 'mic', 'Toggle microphone');
   btnMic.disabled = true;
-  const btnCam = mkBtn('popout-btn-cam', '📷 Cam');
+  const btnCam = mkIconBtn('popout-btn-cam', 'cam', 'Toggle camera');
   btnCam.disabled = true;
-  const btnLeave = mkBtn('popout-btn-leave', '⏹ Leave call', 'ctrl danger');
-  bar.append(btnMic, btnCam, btnLeave);
+  const btnShare = mkIconBtn('popout-btn-share', 'screen', 'Share a screen');
+  btnShare.disabled = true;
+  const btnLeave = document.createElement('button');
+  btnLeave.id = 'popout-btn-leave';
+  btnLeave.className = 'ctrl danger';
+  btnLeave.title = 'Leave call';
+  btnLeave.innerHTML = `${window.HuddleIcons.phoneDown}<span>Leave</span>`;
+  bar.append(btnMic, btnCam, btnShare, btnLeave);
   wrap.appendChild(bar);
   stage.appendChild(wrap);
+
+  // Move the draw-toolbar (which lives inside #app, hidden by
+  // body.popout) into the popout-stage so the Annotate flow on a
+  // shared-screen tile can show + use it. The toolbar wires its
+  // own data-tool buttons in setupListeners, so the move just
+  // reparents an already-bound DOM node.
+  if (els.drawToolbar && els.drawToolbar.parentElement !== stage) {
+    stage.appendChild(els.drawToolbar);
+  }
 
   // Redirect els refs so the existing helpers (makeTile, syncTilesVisibility,
   // renderCallHeader, etc.) operate on the popout's DOM. We supply
@@ -726,13 +743,13 @@ async function bootCallPopout(cfg) {
   els.tiles = tiles;
   els.btnMic = btnMic;
   els.btnCam = btnCam;
+  els.btnShare = btnShare;
   els.btnLeave = btnLeave;
   // Anything not visible in the popout: replace with a detached node
   // so toggleClass(...) / textContent assignments don't throw.
   const stub = () => document.createElement('div');
   els.btnStartCall = stub();
   els.btnJoinCall = stub();
-  els.btnShare = stub();
   els.btnJira = stub();
   els.btnPopoutCall = stub();
   els.channelName = stub();
@@ -756,10 +773,18 @@ async function bootCallPopout(cfg) {
     const on = state.mesh.toggleCam();
     btnCam.classList.toggle('muted', !on);
   };
+  btnShare.onclick = () => { if (state.mesh) openSourcePicker(); };
   btnLeave.onclick = async () => {
     try { await leaveCall(); }
     finally { window.close(); }
   };
+  // setupListeners() runs only on the main window; wire the bits the
+  // popout reuses (source picker cancel, draw-toolbar tool buttons)
+  // here so screen-share + annotate work end-to-end.
+  if (els.sourceCancel) {
+    els.sourceCancel.onclick = () => els.sourcePicker.classList.add('hidden');
+  }
+  wireDrawToolbar();
 
   // Wait for the main window to have left the call before joining,
   // so the call channel doesn't carry duplicate presence under the
@@ -800,10 +825,11 @@ async function startPopoutCall(channelId) {
   }
   state.mesh = mesh;
   state.inCallChannelId = channelId;
-  // The mic/cam controls were disabled in bootCallPopout; flip
-  // them on now that mesh.toggle{Mic,Cam} have something to act on.
+  // The mic/cam/share controls were disabled in bootCallPopout; flip
+  // them on now that mesh.toggle{Mic,Cam}/addScreen have something to act on.
   els.btnMic.disabled = false;
   els.btnCam.disabled = false;
+  if (els.btnShare) els.btnShare.disabled = false;
   mesh.bootstrapExistingPeers();
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
@@ -1508,7 +1534,8 @@ function appendChannelToSidebar(channel, makeActive) {
     const del = document.createElement('button');
     del.className = 'ch-delete';
     del.title = isDm ? 'Close DM' : 'Delete channel';
-    del.textContent = '✕';
+    del.setAttribute('aria-label', del.title);
+    del.innerHTML = window.HuddleIcons.x;
     del.onclick = async (e) => {
       e.stopPropagation();
       const verb = isDm ? 'Close' : 'Delete';
@@ -1899,12 +1926,7 @@ function makeTile({ key, label, kind, userId }) {
   if (kind === 'screen' || kind === 'whiteboard') {
     const actions = document.createElement('div');
     actions.className = 'tile-actions';
-    // Annotate spawns the draw toolbar (#draw-toolbar) which lives
-    // in the main window's #app and is hidden in popout mode. Skip
-    // the button there so we don't render a click target that does
-    // nothing visible.
-    const inPopoutCall = document.body.classList.contains('popout-call');
-    if (kind === 'screen' && !inPopoutCall) {
+    if (kind === 'screen') {
       const annotate = document.createElement('button');
       annotate.className = 'tile-action-annotate';
       annotate.innerHTML = `${window.HuddleIcons.edit}<span>Annotate</span>`;
@@ -1941,7 +1963,9 @@ function addLocalScreenTile(stream, label) {
   tile.querySelector('video').srcObject = stream;
   attachDrawingLayer(tile, stream.id, /*owner*/ true);
   const stopBtn = document.createElement('button');
-  stopBtn.textContent = '⏹ Stop';
+  stopBtn.className = 'tile-action-stop';
+  stopBtn.title = 'Stop sharing'; stopBtn.setAttribute('aria-label', 'Stop sharing');
+  stopBtn.innerHTML = `${window.HuddleIcons.stop}<span>Stop</span>`;
   stopBtn.onclick = () => state.mesh.removeScreen(stream.id);
   tile.querySelector('.tile-actions').appendChild(stopBtn);
 }
@@ -2193,7 +2217,13 @@ function wireControls() {
   els.addDm.onclick = openDmPicker;
   els.dmCancel.onclick = () => els.dmPicker.classList.add('hidden');
 
-  // Drawing toolbar
+  wireDrawToolbar();
+}
+
+// Drawing toolbar wiring. Extracted out of setupListeners so the
+// call popout (which doesn't run setupListeners) can call it after
+// reparenting #draw-toolbar into popout-stage.
+function wireDrawToolbar() {
   els.drawToolbar.querySelectorAll('[data-tool]').forEach((b) => {
     b.onclick = () => {
       els.drawToolbar.querySelectorAll('[data-tool]').forEach((x) => x.classList.remove('active'));
@@ -2472,7 +2502,8 @@ async function openWhiteboard() {
   // clearing). The pop-out button was already inserted above; this
   // appends Close after it.
   const closeBtn = document.createElement('button');
-  closeBtn.textContent = '✕ Close';
+  closeBtn.title = 'Close whiteboard'; closeBtn.setAttribute('aria-label', 'Close whiteboard');
+  closeBtn.innerHTML = `${window.HuddleIcons.x}<span>Close</span>`;
   closeBtn.onclick = () => closeWhiteboard(wb.id);
   actions.appendChild(closeBtn);
 

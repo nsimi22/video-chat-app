@@ -819,7 +819,13 @@
         team_id: this.team.id, id, name: displayName, topic: '',
         type: 'dm', protected: false, created_by: this.peerId,
       }, { onConflict: 'team_id,id', ignoreDuplicates: true });
-      if (error) throw error;
+      // Belt + braces: ignoreDuplicates should turn the conflict into a
+      // no-op via Prefer: resolution=ignore-duplicates, but the 23505
+      // has been seen in the wild on bundles where that header is
+      // dropped. Treat unique-violation on the channels pkey as a
+      // success so the membership repair below still runs and the user
+      // gets their DM.
+      if (error && error.code !== '23505') throw error;
       // Add OUR membership unconditionally. channel_members'
       // insert_self policy permits inserting your own row, so this
       // works whether the channel was just created (no-op against
