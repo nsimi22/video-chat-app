@@ -255,12 +255,14 @@ class ChatView {
     this._on(this.els.composer, 'paste', (e) => this._onPaste(e));
     this._on(this.els.emojiBtn, 'click', (e) => {
       e.stopPropagation();
+      this._resetEmojiPickerAnchor();
       this.els.emojiPicker.classList.toggle('hidden');
       this._emojiPickerMode = 'compose';
     });
     this._on(document, 'click', (e) => {
       if (!this.els.emojiPicker.contains(e.target) && e.target !== this.els.emojiBtn) {
         this.els.emojiPicker.classList.add('hidden');
+        this._resetEmojiPickerAnchor();
       }
     });
     if (this.els.attachBtn) {
@@ -1035,6 +1037,7 @@ class ChatView {
             this.els.composer.focus();
           }
           p.classList.add('hidden');
+          this._resetEmojiPickerAnchor();
         };
         p.appendChild(b);
       }
@@ -1045,7 +1048,35 @@ class ChatView {
     ev.stopPropagation();
     this._emojiPickerMode = 'react';
     this._emojiPickerTarget = messageId;
-    this.els.emojiPicker.classList.remove('hidden');
+    const p = this.els.emojiPicker;
+    // Position the picker next to the clicked react button instead of
+    // the default composer-anchored slot. Use position: fixed (set via
+    // [data-anchor=react]) and align the picker's right edge with the
+    // button's right edge, opening downward by default and flipping
+    // upward when there isn't room below.
+    const btn = ev.currentTarget;
+    const rect = btn.getBoundingClientRect();
+    p.classList.remove('hidden');
+    p.dataset.anchor = 'react';
+    const margin = 8;
+    const w = p.offsetWidth || 296;
+    const h = p.offsetHeight || 340;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let left = Math.min(Math.max(margin, rect.right - w), vw - w - margin);
+    let top = rect.bottom + 6;
+    if (top + h > vh - margin) top = Math.max(margin, rect.top - h - 6);
+    p.style.left = `${left}px`;
+    p.style.top = `${top}px`;
+    p.style.right = 'auto';
+    p.style.bottom = 'auto';
+  }
+
+  _resetEmojiPickerAnchor() {
+    const p = this.els.emojiPicker;
+    if (p.dataset.anchor === 'react') {
+      delete p.dataset.anchor;
+      p.style.left = p.style.top = p.style.right = p.style.bottom = '';
+    }
   }
 
   // --- GIF picker (Giphy) -------------------------------------------------
