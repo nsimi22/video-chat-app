@@ -213,7 +213,19 @@ const STREAM_DECISION_MS = 1500;
   //   session + profile, 0 teams  -> team picker
   //   session + profile + teams   -> auto-rejoin the last team (or the
   //                                  only team if just one), no clicks
-  const session = await window.huddleApi.getActiveSession();
+  //
+  // getActiveSession can throw on a cold-start network blip or a
+  // misconfigured Supabase URL. Without a try/catch the boot
+  // loader (default-visible step) sticks forever — the user sees a
+  // spinning circle with no way out. Fall through to the email
+  // step on any failure; sign-in still works once the network
+  // recovers.
+  let session = null;
+  try {
+    session = await window.huddleApi.getActiveSession();
+  } catch (err) {
+    console.warn('boot: getActiveSession failed', err);
+  }
   if (!session?.user?.email) {
     showStep('email');
     return;
@@ -1899,7 +1911,12 @@ async function saveSettings() {
       host: els.setJiraHost.value.trim().replace(/^https?:\/\//, '').replace(/\/$/, ''),
       email: els.setJiraEmail.value.trim(),
       token: els.setJiraToken.value,
-      defaultProject: els.setJiraProject.value.trim().toUpperCase(),
+      // Project keys are bare (DAP), not issue keys (DAP-123). If
+      // a user pastes an issue key the leftover "-123" prevents
+      // the find() in openTicketModal from matching, and the
+      // pre-select silently falls back to projects[0]. Take
+      // everything before the first hyphen so DAP-123 → DAP.
+      defaultProject: els.setJiraProject.value.trim().toUpperCase().split('-')[0],
     },
     ai: {
       provider: els.setAiProvider.value,

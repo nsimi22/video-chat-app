@@ -114,6 +114,7 @@ class ChatView {
     this._slashOpen = false;
     this._slashFiltered = [];
     this._slashIndex = 0;
+    this._slashBlurTimer = null;
 
     this.typingClock = setInterval(() => this._refreshTyping(), 800);
     this._wireDom();
@@ -210,8 +211,15 @@ class ChatView {
     });
     this._on(this.els.composer, 'blur', () => {
       // Slight delay so a click on a suggestion can fire before we
-      // tear down the popup.
-      setTimeout(() => this._hideSlashSuggest(), 80);
+      // tear down the popup. Tracked so destroy() can clear the
+      // timer — without it, a teardown within 80ms of a blur
+      // (e.g. signing out while the composer was just focused)
+      // fires _hideSlashSuggest on a torn-down ChatView whose
+      // listener controller is already null.
+      this._slashBlurTimer = setTimeout(() => {
+        this._slashBlurTimer = null;
+        this._hideSlashSuggest();
+      }, 80);
     });
     this._on(this.els.composer, 'paste', (e) => this._onPaste(e));
     this._on(this.els.emojiBtn, 'click', (e) => {
@@ -292,6 +300,8 @@ class ChatView {
     this.typingClock = null;
     if (this._gifSearchTimer) clearTimeout(this._gifSearchTimer);
     this._gifSearchTimer = null;
+    if (this._slashBlurTimer) clearTimeout(this._slashBlurTimer);
+    this._slashBlurTimer = null;
     this._listenerCtrl?.abort();
     this._listenerCtrl = null;
   }
@@ -385,9 +395,15 @@ class ChatView {
     if (!cmd) return;
     // Replace the partial with `/<name> ` so the user can keep
     // typing the argument. The trailing space also closes the
-    // popup (input handler matches /^\/[a-zA-Z-]*$/, which fails
+    // popup (input handler matches /^\/[a-zA-Z0-9-]*$/, which fails
     // once a space is present).
     this.els.composer.value = `/${cmd.name} `;
+    // Programmatic value assignments don't fire `input`, so the
+    // composer's auto-resize logic — which lives in the input
+    // listener — never runs and the textarea height drifts. Run
+    // the same recompute inline.
+    this.els.composer.style.height = 'auto';
+    this.els.composer.style.height = Math.min(160, this.els.composer.scrollHeight) + 'px';
     this.els.composer.focus();
     this._hideSlashSuggest();
   }
@@ -1062,12 +1078,20 @@ class ChatView {
     }
     const url = jira.issueUrl(issue.key);
     const body = `Created **${issue.key}** (${parsed.issueType || 'Task'}): ${parsed.summary}\n\n${url}`;
-    await this.mesh.sendAiMessage({
-      channelId: this.currentChannel,
-      parentId: this.threadParentId,
-      text: body,
-      model: aiResult.model,
-    });
+    try {
+      await this.mesh.sendAiMessage({
+        channelId: this.currentChannel,
+        parentId: this.threadParentId,
+        text: body,
+        model: aiResult.model,
+      });
+    } catch (err) {
+      // Ticket exists in Jira at this point; we just couldn't post
+      // about it. Tell the user explicitly with the key + URL so
+      // they don't think nothing happened.
+      console.warn('[ai-ticket] post failed', err);
+      alert(`Created ${issue.key} but couldn't post to chat: ${err?.message || err}\n\n${url}`);
+    }
     return true;
   }
 
