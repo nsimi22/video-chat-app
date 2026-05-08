@@ -13,11 +13,18 @@ ipcRenderer.on('popout-event', (_e, msg) => {
 
 // huddle:// protocol URL delivery. main.js sends a `protocol-url`
 // IPC whenever the OS hands the app a deep link (cold-start,
-// open-url on macOS, second-instance on Windows/Linux). The set
-// is shared so multiple subscribers stay supported, though in
-// practice the main renderer registers one.
+// open-url on macOS, second-instance on Windows/Linux). The
+// renderer's onProtocolUrl callback only registers AFTER its
+// IIFE boots (which awaits getActiveSession), so URLs delivered
+// in the meantime would otherwise be silently dropped — buffer
+// them here and flush on the first add().
 const protocolListeners = new Set();
+const pendingProtocolUrls = [];
 ipcRenderer.on('protocol-url', (_e, url) => {
+  if (protocolListeners.size === 0) {
+    pendingProtocolUrls.push(url);
+    return;
+  }
   for (const cb of protocolListeners) {
     try { cb(url); } catch {}
   }
@@ -42,10 +49,16 @@ contextBridge.exposeInMainWorld('huddle', {
   },
 
   // huddle:// protocol URLs. Renderer subscribes once at boot;
-  // every URL the OS hands us flows through here. Returns an
+  // every URL the OS hands us flows through here. Drains any
+  // URLs that arrived before this call so cold-start clicks
+  // can't slip through the registration gap. Returns an
   // unsubscribe function for symmetry with onPopoutEvent.
   onProtocolUrl: (cb) => {
     protocolListeners.add(cb);
+    while (pendingProtocolUrls.length) {
+      const url = pendingProtocolUrls.shift();
+      try { cb(url); } catch {}
+    }
     return () => protocolListeners.delete(cb);
   },
 });

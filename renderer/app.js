@@ -939,6 +939,29 @@ async function handleProtocolUrl(url) {
     console.warn('handleProtocolUrl: unparseable', url);
     return;
   }
+  // Re-entrancy guard. handleProtocolUrl awaits teardownTeam +
+  // joinTeamAndStart on the different-team path; a second URL
+  // arriving mid-await would race the first. Buffer concurrent
+  // calls and let them drain after the in-flight one settles.
+  if (state._handlingProtocolUrl) {
+    state.pendingProtocolUrl = url;
+    return;
+  }
+  state._handlingProtocolUrl = true;
+  try {
+    await _routeProtocolUrl(parsed, url);
+  } finally {
+    state._handlingProtocolUrl = false;
+    // Drain a buffered URL queued during the await. Defer one tick
+    // so the in-flight workflow's onWelcome / showStep callbacks
+    // have a chance to run before we kick off the next.
+    if (state.pendingProtocolUrl) {
+      setTimeout(() => drainPendingProtocolUrl(), 0);
+    }
+  }
+}
+
+async function _routeProtocolUrl(parsed, url) {
   // Bring the window forward — the OS may have launched us in the
   // background.
   try { window.focus(); } catch {}
@@ -983,6 +1006,8 @@ async function handleProtocolUrl(url) {
     stepJoinViaLink();
     return;
   }
+  // Buffer for showStep('team') drain or onWelcome drain to pick up
+  // once the user is past login.
   state.pendingProtocolUrl = url;
 }
 
@@ -1187,6 +1212,10 @@ async function teardownTeam() {
   // mid-load). Otherwise the next sign-in's onWelcome would jump
   // somebody else's session into a stale channel.
   state.pendingInviteHop = null;
+  // Same reasoning for buffered protocol URLs: a deep link that was
+  // waiting on an active session is stale once we've torn the team
+  // down (e.g. user explicitly switched teams via the picker).
+  state.pendingProtocolUrl = null;
   state.channelMeta.clear();
   state.unread.clear();
   updateUnreadTitle();

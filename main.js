@@ -41,10 +41,9 @@ if (!gotLock) {
   app.on('second-instance', (_event, argv) => {
     const url = argv.find((a) => typeof a === 'string' && a.startsWith(`${HUDDLE_PROTOCOL}://`));
     if (url) deliverProtocolUrl(url);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
+    // Window-focus is centralised in deliverProtocolUrl so a URL
+    // arriving via open-url (macOS) or pending-buffer drain gets
+    // the same restore + focus treatment.
   });
 }
 
@@ -73,12 +72,20 @@ const initialUrl = process.argv.find((a) => typeof a === 'string' && a.startsWit
 if (initialUrl) pendingProtocolUrls.push(initialUrl);
 
 function deliverProtocolUrl(url) {
-  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isLoading()) {
-    try { mainWindow.webContents.send('protocol-url', url); }
-    catch { pendingProtocolUrls.push(url); }
-  } else {
-    pendingProtocolUrls.push(url);
+  // Bring the main window forward whenever a URL is delivered so
+  // the user sees the result of their click — applies to every
+  // entry point (open-url on macOS, second-instance on Win/Linux,
+  // cold-start argv flush). Done before send() so even buffered
+  // URLs that fire after did-finish-load focus correctly.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    try { mainWindow.focus(); } catch {}
+    if (mainWindow.webContents && !mainWindow.webContents.isLoading()) {
+      try { mainWindow.webContents.send('protocol-url', url); return; }
+      catch (err) { console.warn('deliverProtocolUrl: send failed', err); }
+    }
   }
+  pendingProtocolUrls.push(url);
 }
 
 function createWindow() {
@@ -137,8 +144,11 @@ function createWindow() {
   // Flush any huddle:// URLs that arrived before the renderer was
   // ready (cold-start case). did-finish-load fires after both the
   // initial HTML load and renderer-side scripts have run, so the
-  // preload's IPC subscriber is in place.
-  mainWindow.webContents.once('did-finish-load', () => {
+  // preload's IPC subscriber is in place. Use `on` not `once` so
+  // a Cmd-R reload (or any other navigation that re-fires
+  // did-finish-load) still drains URLs that arrived during the
+  // load gap.
+  mainWindow.webContents.on('did-finish-load', () => {
     while (pendingProtocolUrls.length) {
       try { mainWindow.webContents.send('protocol-url', pendingProtocolUrls.shift()); }
       catch { break; }
