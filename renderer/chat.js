@@ -64,7 +64,7 @@ function parseTicketJson(raw) {
 //   extras    — optional list of {usage, desc} variants to show in
 //                Settings only (e.g., /jira create vs /jira <KEY>).
 const SLASH_COMMANDS = [
-  { name: 'ai',         usage: '/ai <question>',           desc: 'Ask the configured AI provider; the answer is posted as a teammate-visible message.' },
+  { name: 'ai',         usage: '/ai <question>',           desc: 'Ask the configured AI provider; the answer is posted as a teammate-visible message. When Jira is configured, the AI can read tickets, post comments, update fields, and trigger transitions on its own.' },
   { name: 'ai-ticket',  usage: '/ai-ticket <description>', desc: 'AI structures the description into a Jira ticket and creates it in your default project.', aliases: ['ait'] },
   { name: 'summarize',  usage: '/summarize',               desc: 'Summarize the last few messages in this channel.', aliases: ['summary'] },
   { name: 'jira',       usage: '/jira',                    desc: 'Open the Jira create-ticket modal.', extras: [
@@ -683,7 +683,11 @@ class ChatView {
       const sep = text ? ' · ' : '';
       const ai = document.createElement('span');
       ai.className = 'typing-ai';
-      ai.innerHTML = `${window.HuddleIcons.robot}<span>AI is thinking…</span>`;
+      const label = this._aiThinkingNote
+        ? `AI is using ${this._aiThinkingNote}…`
+        : 'AI is thinking…';
+      ai.innerHTML = `${window.HuddleIcons.robot}<span></span>`;
+      ai.querySelector('span').textContent = label;
       this.els.typing.append(sep, ai);
     }
   }
@@ -692,7 +696,11 @@ class ChatView {
   // overlapping `/ai` and `/summarize` would have the first one's `finally`
   // hide the indicator while the second is still running.
   _beginAiThinking() { this._aiThinkingCount = (this._aiThinkingCount || 0) + 1; this._refreshTyping(); }
-  _endAiThinking()   { this._aiThinkingCount = Math.max(0, (this._aiThinkingCount || 0) - 1); this._refreshTyping(); }
+  _endAiThinking() {
+    this._aiThinkingCount = Math.max(0, (this._aiThinkingCount || 0) - 1);
+    if (this._aiThinkingCount === 0) this._aiThinkingNote = null;
+    this._refreshTyping();
+  }
 
   _messages() { return this.byChannel.get(this.currentChannel) || []; }
 
@@ -1234,9 +1242,24 @@ class ChatView {
     this.els.composer.value = '';
     this.els.composer.style.height = 'auto';
     this._beginAiThinking();
+    // Wire any configured integrations as tools so the AI can answer
+    // ticket/repo questions without the user having to copy-paste
+    // context. The system prompt nudges the model to call them when
+    // the user names a Jira key or asks for an update; otherwise it
+    // falls through to plain chat.
+    const jira = this.hooks.getJira?.();
+    const tools = window.HuddleAiTools ? window.HuddleAiTools.buildJiraTools(jira) : [];
+    const system = tools.length
+      ? 'You are a helpful assistant inside a team chat app. When the user references a Jira ticket key (e.g. "FOO-123") or asks to update / comment on / transition a ticket, use the Jira tools to fetch context first and then act. Be concise — bullet points for summaries, single-line confirmations after edits. Always state the ticket key + a one-line summary of what you did.'
+      : undefined;
     let result;
     try {
-      result = await ai.chat({ messages: [{ role: 'user', content: prompt }] });
+      result = await ai.chat({
+        system,
+        messages: [{ role: 'user', content: prompt }],
+        tools: tools.length ? tools : undefined,
+        onToolUse: (name, input) => this._noteAiToolUse(name, input),
+      });
     } catch (err) {
       alert('AI request failed: ' + (err.message || err));
       return true;
@@ -1245,8 +1268,16 @@ class ChatView {
     }
     // Wrap the response so the team has context: include the human's question
     // as a markdown blockquote at the top and the AI response below. Single
-    // message, single bubble.
-    const body = `> ${prompt.replace(/\n/g, '\n> ')}\n\n${result.text || '(no response)'}`;
+    // message, single bubble. When the AI used tools, append a small
+    // footnote so the team can see what mutated — no surprise edits.
+    let body = `> ${prompt.replace(/\n/g, '\n> ')}\n\n${result.text || '(no response)'}`;
+    if (result.toolUses?.length) {
+      const summary = result.toolUses.map((tu) => {
+        const arg = tu.input?.key || tu.input?.jql || '';
+        return arg ? `${tu.name}(${arg})` : tu.name;
+      }).join(', ');
+      body += `\n\n_via ${summary}_`;
+    }
     await this.mesh.sendAiMessage({
       channelId: this.currentChannel,
       parentId: this.threadParentId,
@@ -1254,6 +1285,14 @@ class ChatView {
       model: result.model,
     });
     return true;
+  }
+
+  // Tool-use progress: surface the most recent tool name in the
+  // "AI is thinking…" indicator so users can see when a slow Jira
+  // call is in flight (otherwise the indicator looks stuck).
+  _noteAiToolUse(name) {
+    this._aiThinkingNote = name;
+    this._refreshTyping();
   }
 
   // /ai-ticket <description> — let the AI structure a freeform

@@ -39,72 +39,170 @@
      * @param {string} [args.system] — system prompt
      * @param {Array<{role:'user'|'assistant',content:string}>} args.messages
      * @param {string} [args.model] — override default model
-     * @returns {Promise<{text:string, model:string, usage:Object}>}
+     * @param {Array<{name:string,description:string,input_schema:object,run:Function}>} [args.tools]
+     *   Tools follow Anthropic's shape; `run(input)` is called when the
+     *   model asks to invoke the tool. Each `run` returns either a
+     *   string or a JSON-serializable object — both are stringified
+     *   before being sent back as a tool_result.
+     * @param {(name:string,input:object)=>void} [args.onToolUse] — fired each
+     *   time the model calls a tool, before `run` executes. Useful for
+     *   typing-indicator UI ("AI is fetching FOO-123…").
+     * @param {number} [args.maxIterations=8] — cap on tool-use rounds to
+     *   stop runaway loops.
+     * @returns {Promise<{text:string, model:string, usage:Object, toolUses:Array}>}
      */
-    async chat({ system, messages, model }) {
+    async chat({ system, messages, model, tools, onToolUse, maxIterations = 8 }) {
       if (!this.isConfigured()) {
         throw new Error('AI provider not configured — open Settings to add an API key.');
       }
       const effectiveModel = model || this.defaultModel;
-      return this.provider === 'anthropic'
-        ? this._anthropicChat({ system, messages, model: effectiveModel })
-        : this._openrouterChat({ system, messages, model: effectiveModel });
+      // Empty arrays trip Anthropic's "tools must contain at least 1
+      // entry" validator — treat empty/undefined the same way and skip
+      // the tool-use loop entirely.
+      const realTools = Array.isArray(tools) && tools.length > 0 ? tools : null;
+      const args = { system, messages: messages.slice(), model: effectiveModel, tools: realTools, onToolUse, maxIterations };
+      return this.provider === 'anthropic' ? this._anthropicChat(args) : this._openrouterChat(args);
     }
 
-    async _anthropicChat({ system, messages, model }) {
+    async _anthropicChat({ system, messages, model, tools, onToolUse, maxIterations }) {
       // Adaptive thinking: model decides how much to think per request.
       // 16k max_tokens keeps non-streaming responses under SDK timeouts.
-      const body = {
-        model,
-        max_tokens: 16000,
-        thinking: { type: 'adaptive' },
-        messages,
-        ...(system ? { system } : {}),
-      };
-      const res = await window.huddle.fetchProxy({
-        url: 'https://api.anthropic.com/v1/messages',
-        method: 'POST',
-        headers: {
-          'x-api-key': this.anthropicKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
-      if (!res || !res.ok) {
-        throw new Error(`Anthropic ${res?.status || 0}: ${parseProviderError(res?.body) || res?.error || 'request failed'}`);
+      // Tool-use loop: when `tools` is provided, each /v1/messages call
+      // can return tool_use blocks instead of text. Execute them, append
+      // a {role:'user', content:[tool_result …]} message, repeat until
+      // the model returns end_turn (or we hit maxIterations).
+      const apiTools = tools ? tools.map(({ name, description, input_schema }) => ({ name, description, input_schema })) : null;
+      const usage = { input_tokens: 0, output_tokens: 0 };
+      const toolUses = [];
+      const convo = messages.slice();
+      for (let i = 0; i < maxIterations; i++) {
+        const body = {
+          model,
+          max_tokens: 16000,
+          thinking: { type: 'adaptive' },
+          messages: convo,
+          ...(system ? { system } : {}),
+          ...(apiTools ? { tools: apiTools } : {}),
+        };
+        const res = await window.huddle.fetchProxy({
+          url: 'https://api.anthropic.com/v1/messages',
+          method: 'POST',
+          headers: {
+            'x-api-key': this.anthropicKey,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        });
+        if (!res || !res.ok) {
+          throw new Error(`Anthropic ${res?.status || 0}: ${parseProviderError(res?.body) || res?.error || 'request failed'}`);
+        }
+        const json = JSON.parse(res.body);
+        if (json.usage) {
+          usage.input_tokens += json.usage.input_tokens || 0;
+          usage.output_tokens += json.usage.output_tokens || 0;
+        }
+        const blocks = json.content || [];
+        // No tools or model said end_turn → done. Anthropic distinguishes
+        // these via stop_reason, but checking for tool_use blocks is
+        // equivalent and avoids depending on the literal value.
+        const toolBlocks = blocks.filter((b) => b.type === 'tool_use');
+        if (!apiTools || toolBlocks.length === 0) {
+          const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+          return { text, model, usage, toolUses };
+        }
+        // Append the assistant's full content (text + tool_use) as-is
+        // so the next turn has the matching tool_use ids the API
+        // requires. Then run each tool and emit a tool_result block per
+        // call inside a single user message, in the same order.
+        convo.push({ role: 'assistant', content: blocks });
+        const results = [];
+        for (const tu of toolBlocks) {
+          const toolDef = tools.find((t) => t.name === tu.name);
+          let resultText, isError = false;
+          try {
+            if (!toolDef) throw new Error(`unknown tool: ${tu.name}`);
+            onToolUse?.(tu.name, tu.input || {});
+            toolUses.push({ name: tu.name, input: tu.input || {} });
+            const out = await toolDef.run(tu.input || {});
+            resultText = typeof out === 'string' ? out : JSON.stringify(out);
+          } catch (err) {
+            resultText = String(err?.message || err);
+            isError = true;
+          }
+          results.push({ type: 'tool_result', tool_use_id: tu.id, content: resultText, ...(isError ? { is_error: true } : {}) });
+        }
+        convo.push({ role: 'user', content: results });
       }
-      const json = JSON.parse(res.body);
-      const text = (json.content || [])
-        .filter((b) => b.type === 'text')
-        .map((b) => b.text)
-        .join('\n');
-      return { text, model, usage: json.usage || null };
+      // Hit the iteration cap — surface what we have rather than silently
+      // dropping the run. Caller can decide whether to retry or escalate.
+      throw new Error(`AI tool-use loop exceeded ${maxIterations} iterations`);
     }
 
-    async _openrouterChat({ system, messages, model }) {
-      const fullMessages = system ? [{ role: 'system', content: system }, ...messages] : messages;
-      const body = { model, messages: fullMessages };
-      const res = await window.huddle.fetchProxy({
-        url: 'https://openrouter.ai/api/v1/chat/completions',
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.openrouterKey}`,
-          'content-type': 'application/json',
-          // X-Title surfaces the app name on OpenRouter's dashboard. We
-          // intentionally don't send HTTP-Referer — it's optional, and
-          // hardcoding any URL here would either leak a fork's source repo
-          // or misrepresent the deployment.
-          'X-Title': 'Huddle',
-        },
-        body: JSON.stringify(body),
-      });
-      if (!res || !res.ok) {
-        throw new Error(`OpenRouter ${res?.status || 0}: ${parseProviderError(res?.body) || res?.error || 'request failed'}`);
+    async _openrouterChat({ system, messages, model, tools, onToolUse, maxIterations }) {
+      // OpenAI-style function calling. Translate Anthropic-shaped tool
+      // defs (`name/description/input_schema`) into the OpenAI shape
+      // (`type:function, function:{name,description,parameters}`) so
+      // callers ship one definition for both providers.
+      const apiTools = tools ? tools.map((t) => ({
+        type: 'function',
+        function: { name: t.name, description: t.description, parameters: t.input_schema },
+      })) : null;
+      const usage = { prompt_tokens: 0, completion_tokens: 0 };
+      const toolUses = [];
+      const convo = system ? [{ role: 'system', content: system }, ...messages] : messages.slice();
+      for (let i = 0; i < maxIterations; i++) {
+        const body = { model, messages: convo, ...(apiTools ? { tools: apiTools } : {}) };
+        const res = await window.huddle.fetchProxy({
+          url: 'https://openrouter.ai/api/v1/chat/completions',
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${this.openrouterKey}`,
+            'content-type': 'application/json',
+            // X-Title surfaces the app name on OpenRouter's dashboard. We
+            // intentionally don't send HTTP-Referer — it's optional, and
+            // hardcoding any URL here would either leak a fork's source repo
+            // or misrepresent the deployment.
+            'X-Title': 'Huddle',
+          },
+          body: JSON.stringify(body),
+        });
+        if (!res || !res.ok) {
+          throw new Error(`OpenRouter ${res?.status || 0}: ${parseProviderError(res?.body) || res?.error || 'request failed'}`);
+        }
+        const json = JSON.parse(res.body);
+        if (json.usage) {
+          usage.prompt_tokens += json.usage.prompt_tokens || 0;
+          usage.completion_tokens += json.usage.completion_tokens || 0;
+        }
+        const message = json.choices?.[0]?.message || {};
+        const calls = message.tool_calls || [];
+        if (!apiTools || calls.length === 0) {
+          return { text: message.content || '', model, usage, toolUses };
+        }
+        // Echo the assistant's tool_calls back so the next request has
+        // matching ids. The OpenAI schema requires a tool message per
+        // tool_call_id with the result string.
+        convo.push({ role: 'assistant', content: message.content || '', tool_calls: calls });
+        for (const call of calls) {
+          const name = call.function?.name;
+          let input = {};
+          try { input = call.function?.arguments ? JSON.parse(call.function.arguments) : {}; } catch { input = {}; }
+          const toolDef = tools.find((t) => t.name === name);
+          let resultText;
+          try {
+            if (!toolDef) throw new Error(`unknown tool: ${name}`);
+            onToolUse?.(name, input);
+            toolUses.push({ name, input });
+            const out = await toolDef.run(input);
+            resultText = typeof out === 'string' ? out : JSON.stringify(out);
+          } catch (err) {
+            resultText = `error: ${err?.message || err}`;
+          }
+          convo.push({ role: 'tool', tool_call_id: call.id, content: resultText });
+        }
       }
-      const json = JSON.parse(res.body);
-      const text = json.choices?.[0]?.message?.content || '';
-      return { text, model, usage: json.usage || null };
+      throw new Error(`AI tool-use loop exceeded ${maxIterations} iterations`);
     }
 
     // Convenience: build a system+user prompt from a list of recent chat
