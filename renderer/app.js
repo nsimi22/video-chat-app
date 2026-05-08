@@ -112,6 +112,7 @@ const els = {
   setJiraHost: $('#set-jira-host'),
   setJiraEmail: $('#set-jira-email'),
   setJiraToken: $('#set-jira-token'),
+  setJiraProject: $('#set-jira-project'),
   setAiProvider: $('#set-ai-provider'),
   setAnthropicKey: $('#set-anthropic-key'),
   setAnthropicModel: $('#set-anthropic-model'),
@@ -527,6 +528,7 @@ async function joinTeamAndStart(teamId) {
       onMessage: (m) => onChatMessage(m),
       getGiphyKey,
       getJira: () => state.jira,
+      getDefaultJiraProject: () => state.settings?.jira?.defaultProject || '',
       openTicketModal: (preset) => openTicketModal(preset),
       getAi: () => state.ai,
       getGitHub: () => state.github,
@@ -1787,6 +1789,7 @@ async function openSettings() {
   els.setJiraHost.value = s.jira?.host || '';
   els.setJiraEmail.value = s.jira?.email || '';
   els.setJiraToken.value = s.jira?.token || '';
+  els.setJiraProject.value = s.jira?.defaultProject || '';
   els.setAiProvider.value = s.ai?.provider || 'anthropic';
   els.setAnthropicKey.value = s.ai?.anthropicKey || '';
   els.setAnthropicModel.value = s.ai?.anthropicModel || '';
@@ -1814,6 +1817,11 @@ async function openSettings() {
 
 function openSettingsToProfile() {
   openSettings().then(() => {
+    // Profile is wrapped in a <details> accordion. If the user
+    // collapsed it previously, force-open it before scrolling so the
+    // body is actually visible.
+    const section = document.getElementById('settings-profile-section');
+    if (section) section.open = true;
     els.settingsProfileAnchor?.scrollIntoView({ block: 'start' });
   });
 }
@@ -1852,6 +1860,7 @@ async function saveSettings() {
       host: els.setJiraHost.value.trim().replace(/^https?:\/\//, '').replace(/\/$/, ''),
       email: els.setJiraEmail.value.trim(),
       token: els.setJiraToken.value,
+      defaultProject: els.setJiraProject.value.trim().toUpperCase(),
     },
     ai: {
       provider: els.setAiProvider.value,
@@ -1948,7 +1957,18 @@ async function openTicketModal({ summary = '', description = '' } = {}) {
       els.ticketProject.add(opt);
     }
     els.ticketProject.onchange = () => loadIssueTypes(els.ticketProject.value);
-    if (projects.length) await loadIssueTypes(projects[0].key);
+    // Prefer the per-user default project (Settings → Jira →
+    // "Default project"). Falls back to the first project the
+    // account has access to if the configured key isn't visible
+    // (revoked, mistyped, etc.).
+    const preferred = (state.settings?.jira?.defaultProject || '').toUpperCase();
+    const initial = (preferred && projects.find((p) => p.key.toUpperCase() === preferred))
+      ? preferred
+      : (projects[0]?.key || '');
+    if (initial) {
+      els.ticketProject.value = initial;
+      await loadIssueTypes(initial);
+    }
   } catch (err) {
     showTicketStatus('Could not load projects: ' + err.message, 'error');
     els.ticketCreate.disabled = true;

@@ -9,6 +9,37 @@
 // Per-channel state lives on `byChannel` (messages) and `paginationByChannel`
 // (`{hasMore, oldestTs}`). View-only state (`nodeById`, `_currentLabel`) is
 // reset on channel/thread switches.
+
+// System prompt for /ai-ticket. The AI is instructed to emit ONE
+// JSON object with no preamble, no markdown fences, no commentary.
+// Schema is small + opinionated — anything beyond the documented
+// keys is dropped, defaults pick up the rest.
+const TICKET_SYSTEM_PROMPT = `You convert freeform descriptions into Jira tickets.
+Output ONLY a single JSON object with this shape — no preamble, no markdown fences, no commentary:
+{
+  "summary": "short, imperative title in sentence case (≤80 chars)",
+  "description": "longer markdown description with context, repro steps, acceptance criteria — optional",
+  "issueType": "Task" | "Bug" | "Story"
+}
+Pick "Bug" only when the description is clearly about something broken. Default to "Task". Use "Story" for net-new feature work or larger pieces of scope.
+Output the JSON object and nothing else.`;
+
+// Tolerant JSON extractor: tries plain JSON.parse, then looks for
+// the first {...} block (in case the AI wrapped the JSON in
+// commentary or fenced code despite the instructions). Throws on
+// total failure so the caller can surface a clean error.
+function parseTicketJson(raw) {
+  if (!raw) throw new Error('empty AI response');
+  const trimmed = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
+  try { return JSON.parse(trimmed); } catch {}
+  const first = trimmed.indexOf('{');
+  const last = trimmed.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    try { return JSON.parse(trimmed.slice(first, last + 1)); } catch {}
+  }
+  throw new Error('response was not valid JSON');
+}
+
 class ChatView {
   constructor({ huddle, els, hooks }) {
     // ChatView used to take a MeshClient (`mesh`); the MeshClient was
@@ -746,6 +777,7 @@ class ChatView {
     const cmd = m[1].toLowerCase();
     const arg = (m[2] || '').trim();
     if (cmd === 'ai') return this._runSlashAi(arg);
+    if (cmd === 'ai-ticket' || cmd === 'ait') return this._runSlashAiTicket(arg);
     if (cmd === 'summarize' || cmd === 'summary') return this._runSlashSummarize();
     if (cmd === 'gh' || cmd === 'github') return this._runSlashGh(arg);
     if (cmd === 'jira') {
@@ -814,6 +846,80 @@ class ChatView {
       parentId: this.threadParentId,
       text: body,
       model: result.model,
+    });
+    return true;
+  }
+
+  // /ai-ticket <description> — let the AI structure a freeform
+  // description into {summary, description, issueType} and create
+  // the Jira ticket directly. Uses the default project from
+  // Settings → Jira → Default project. Posts the resulting issue
+  // URL into chat where the existing /jira unfurl handles the
+  // status card.
+  async _runSlashAiTicket(prompt) {
+    const ai = this.hooks.getAi?.();
+    const jira = this.hooks.getJira?.();
+    if (!ai?.isConfigured()) {
+      alert('No AI provider configured. Open Settings (⚙) → AI assistant.');
+      return true;
+    }
+    if (!jira?.isConfigured()) {
+      alert('Jira is not configured. Open Settings (⚙) → Jira.');
+      return true;
+    }
+    const projectKey = (this.hooks.getDefaultJiraProject?.() || '').toUpperCase();
+    if (!projectKey) {
+      alert('No default Jira project set. Open Settings (⚙) → Jira → Default project.');
+      return true;
+    }
+    if (!prompt) {
+      alert('Usage: /ai-ticket <description>');
+      return true;
+    }
+    this.els.composer.value = '';
+    this.els.composer.style.height = 'auto';
+    this._beginAiThinking();
+    let aiResult;
+    try {
+      aiResult = await ai.chat({
+        system: TICKET_SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: prompt }],
+      });
+    } catch (err) {
+      this._endAiThinking();
+      alert('AI request failed: ' + (err?.message || err));
+      return true;
+    }
+    this._endAiThinking();
+    let parsed;
+    try { parsed = parseTicketJson(aiResult.text); }
+    catch (err) {
+      alert('AI returned an unparseable response: ' + err.message);
+      return true;
+    }
+    if (!parsed.summary) {
+      alert('AI did not produce a ticket summary. Try rephrasing the description.');
+      return true;
+    }
+    let issue;
+    try {
+      issue = await jira.createIssue({
+        projectKey,
+        summary: parsed.summary.slice(0, 240),
+        description: parsed.description || '',
+        issueType: parsed.issueType || 'Task',
+      });
+    } catch (err) {
+      alert('Could not create Jira ticket: ' + (err?.message || err));
+      return true;
+    }
+    const url = jira.issueUrl(issue.key);
+    const body = `Created **${issue.key}** (${parsed.issueType || 'Task'}): ${parsed.summary}\n\n${url}`;
+    await this.mesh.sendAiMessage({
+      channelId: this.currentChannel,
+      parentId: this.threadParentId,
+      text: body,
+      model: aiResult.model,
     });
     return true;
   }
@@ -910,14 +1016,20 @@ class ChatView {
     for (const ref of refs) {
       const el = document.createElement('div');
       el.className = 'gh-unfurl';
-      const loading = document.createElement('div');
-      loading.className = 'gh-loading';
-      loading.textContent = `Loading ${ref.owner}/${ref.repo}#${ref.number}…`;
-      el.appendChild(loading);
+      this._paintGhLoading(el, ref);
       out.push(el);
       this._lookupGhAndPaint(ref, el, gh);
     }
     return out;
+  }
+
+  _paintGhLoading(el, ref) {
+    el.classList.remove('error');
+    el.replaceChildren();
+    const loading = document.createElement('div');
+    loading.className = 'gh-loading';
+    loading.textContent = `Loading ${ref.owner}/${ref.repo}#${ref.number}…`;
+    el.appendChild(loading);
   }
 
   async _lookupGhAndPaint(ref, el, gh) {
@@ -967,7 +1079,15 @@ class ChatView {
     const statusKind = state === 'closed' ? (issue.merged ? 'merged' : 'closed') : 'open';
     stat.className = `gh-status ${statusKind}`;
     stat.textContent = statusKind;
-    top.append(link, stat);
+    // Reload — busts the cache and re-fetches so the user can pull
+    // the latest status without re-running /gh. Await the lookup so
+    // the button's disabled state covers the whole refetch.
+    const reload = this._buildReloadButton(async () => {
+      this._ghCache.delete(cacheKey);
+      this._paintGhLoading(el, ref);
+      await this._lookupGhAndPaint(ref, el, gh);
+    });
+    top.append(link, stat, reload);
     const sumRow = document.createElement('div');
     sumRow.className = 'gh-summary';
     sumRow.textContent = issue.title || '';
@@ -981,6 +1101,23 @@ class ChatView {
 
   // --- Jira unfurl --------------------------------------------------------
 
+  // Small ↻ button reused by both unfurl renderers. Disables itself
+  // for the duration of the click handler so a double-click doesn't
+  // fire two refetches.
+  _buildReloadButton(onClick) {
+    const btn = document.createElement('button');
+    btn.className = 'unfurl-reload';
+    btn.title = 'Reload latest status';
+    btn.setAttribute('aria-label', 'Reload latest status');
+    btn.textContent = '↻';
+    btn.onclick = async (e) => {
+      e.preventDefault();
+      btn.disabled = true;
+      try { await onClick(); } finally { btn.disabled = false; }
+    };
+    return btn;
+  }
+
   // Returns an array of <div class="jira-unfurl"> elements (possibly empty)
   // for the message text. Cards start in a "loading" state; the lookup is
   // fired off async and the DOM mutated in place when it returns.
@@ -993,14 +1130,20 @@ class ChatView {
     for (const { key } of matches) {
       const el = document.createElement('div');
       el.className = 'jira-unfurl';
-      const loading = document.createElement('div');
-      loading.className = 'jira-loading';
-      loading.textContent = `Loading ${key}…`;
-      el.appendChild(loading);
+      this._paintJiraLoading(el, key);
       out.push(el);
       this._lookupAndPaint(key, el, jira);
     }
     return out;
+  }
+
+  _paintJiraLoading(el, key) {
+    el.classList.remove('error');
+    el.replaceChildren();
+    const loading = document.createElement('div');
+    loading.className = 'jira-loading';
+    loading.textContent = `Loading ${key}…`;
+    el.appendChild(loading);
   }
 
   async _lookupAndPaint(key, el, jira) {
@@ -1034,7 +1177,15 @@ class ChatView {
       const stat = document.createElement('span');
       stat.className = `jira-status ${statusClass}`;
       stat.textContent = status;
-      top.append(link, stat);
+      // Reload — busts the cache and re-fetches the latest status
+      // without re-pasting the issue key into chat. Await the lookup
+      // so the button stays disabled for the whole refetch.
+      const reload = this._buildReloadButton(async () => {
+        this._jiraCache.delete(key);
+        this._paintJiraLoading(el, key);
+        await this._lookupAndPaint(key, el, jira);
+      });
+      top.append(link, stat, reload);
 
       const sumRow = document.createElement('div');
       sumRow.className = 'jira-summary';
