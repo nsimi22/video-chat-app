@@ -403,6 +403,12 @@
     <!-- Toast container — used for "Link copied" / "Joined …" feedback. -->
     <div id="toasts" class="toasts" aria-live="polite"></div>
 
+    <!-- Popout child windows mount their focused view here.
+         body.popout CSS hides the rest of the chrome (login modal,
+         workspace, etc.) so the popout starts blank and the JS
+         fills this stage. -->
+    <div id="popout-stage" class="popout-stage"></div>
+
     <script src="vendor/supabase.js"></script>
     <script src="emojis.js"></script>
     <script src="markdown.js"></script>

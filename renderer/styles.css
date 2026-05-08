@@ -814,3 +814,20 @@ button.ctrl.muted.icon-only::after {
   animation: spin 720ms linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Popout child windows. body.popout hides the regular workspace
+   chrome (login modal, sidebar, chat) so the popout-stage div can
+   take over the viewport. */
+body.popout #login,
+body.popout #app,
+body.popout #toasts { display: none !important; }
+body.popout .popout-stage { display: block; }
+.popout-stage { display: none; width: 100vw; height: 100vh; }
+.popout-whiteboard {
+  width: 100%; height: 100%;
+  display: flex; align-items: stretch; justify-content: stretch;
+  padding: 12px;
+}
+.popout-tile {
+  flex: 1; min-height: 0; min-width: 0;
+}
