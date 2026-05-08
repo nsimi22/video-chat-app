@@ -103,6 +103,19 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
   padding: 12px 14px 4px; letter-spacing: .5px;
 }
 .section-header-row { display: flex; align-items: center; justify-content: space-between; }
+.section-header-controls { display: flex; gap: 2px; }
+
+/* Per-channel muted state — sidebar row dim + the channel-header
+   bell button shows a strikethrough when muted. */
+.channel-list li.muted { opacity: 0.6; }
+.channel-list li.muted .ch-name::after {
+  content: ' 🔕';
+  font-size: 10px;
+  opacity: 0.7;
+}
+#mute-channel-btn.muted {
+  color: var(--bad);
+}
 .section-header-row button.ghost {
   background: transparent; border: none; color: var(--text-dim);
   font-size: 16px; line-height: 1; padding: 0 4px; cursor: pointer;
@@ -885,6 +898,20 @@ body.popout .popout-stage { display: block; }
 .shortcut-table tr:last-child td { border-bottom: none; }
 .shortcut-table td:first-child { width: 40%; color: var(--text); }
 .shortcut-table td:last-child  { color: var(--text-dim); }
+/* Empty channel state — shown when a channel has zero messages
+   AND the initial history fetch has resolved. Centred in the
+   message list area. */
+.channel-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px;
+  padding: 60px 24px;
+  text-align: center;
+  color: var(--text-dim);
+}
+.channel-empty-icon { font-size: 36px; line-height: 1; }
+.channel-empty-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.channel-empty-hint { font-size: 13px; max-width: 360px; }
+
 .shortcut-table kbd {
   background: var(--bg-3); border: 1px solid var(--line);
   border-radius: 4px;
