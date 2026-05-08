@@ -16,10 +16,13 @@
 // Plus stand-alone helpers: extractKeys/parseJiraUrl for auto-unfurl.
 
 (function () {
-  // ISSUE_FIELDS: the read fields the renderer surfaces (status card,
-  // unfurl, AI tools). description was added so AI summarize/triage
-  // tools can read the body of a ticket; labels for filtering hints.
-  const ISSUE_FIELDS = 'summary,status,assignee,issuetype,priority,reporter,description,labels,updated,created';
+  // Two field lists. Brief is what the unfurl card + status pills
+  // need; full adds description / labels / timestamps for the AI
+  // tools. Splitting keeps every chat unfurl from pulling a full
+  // ticket body, which is wasteful on tickets with long ADF
+  // descriptions (10x payload on the bad cases).
+  const ISSUE_FIELDS_BRIEF = 'summary,status,assignee,issuetype,priority,reporter';
+  const ISSUE_FIELDS_FULL  = `${ISSUE_FIELDS_BRIEF},description,labels,updated,created`;
 
   class JiraClient {
     constructor(settings) {
@@ -55,11 +58,16 @@
       try { return JSON.parse(res.body); } catch { return null; }
     }
 
-    getIssue(key) {
-      return this._request(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=${encodeURIComponent(ISSUE_FIELDS)}`);
+    // `full: true` pulls description + labels + timestamps for AI
+    // consumption; the unfurl path leaves it false to keep the
+    // payload tiny on every chat-render lookup.
+    getIssue(key, { full = false } = {}) {
+      const fields = full ? ISSUE_FIELDS_FULL : ISSUE_FIELDS_BRIEF;
+      return this._request(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=${encodeURIComponent(fields)}`);
     }
-    searchIssues(jql, max = 20) {
-      const q = `jql=${encodeURIComponent(jql)}&maxResults=${max}&fields=${encodeURIComponent(ISSUE_FIELDS)}`;
+    searchIssues(jql, max = 20, { full = false } = {}) {
+      const fields = full ? ISSUE_FIELDS_FULL : ISSUE_FIELDS_BRIEF;
+      const q = `jql=${encodeURIComponent(jql)}&maxResults=${max}&fields=${encodeURIComponent(fields)}`;
       return this._request(`/rest/api/3/search?${q}`);
     }
     listProjects() {

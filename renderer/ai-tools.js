@@ -55,7 +55,7 @@
         },
         async run({ key }) {
           if (!key) throw new Error('key is required');
-          const issue = await jira.getIssue(key);
+          const issue = await jira.getIssue(key, { full: true });
           return marshalIssue(issue, jira.host);
         },
       },
@@ -71,7 +71,7 @@
           required: ['jql'],
         },
         async run({ jql, max }) {
-          const r = await jira.searchIssues(jql, Math.min(Number(max) || 10, 25));
+          const r = await jira.searchIssues(jql, Math.min(Number(max) || 10, 25), { full: true });
           const issues = (r?.issues || []).map((i) => marshalIssue(i, jira.host));
           return { total: r?.total ?? issues.length, issues };
         },
