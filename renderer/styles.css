@@ -156,7 +156,9 @@ input:focus, textarea:focus {
   letter-spacing: -0.02em;
 }
 .modal label { display:block; font-size: 12px; color: var(--text-dim); margin: 12px 0 6px; font-weight: 500; }
-.modal input { width: 100%; }
+/* Stretch text-style inputs only — checkboxes/radios keep their
+   intrinsic size so they sit cleanly next to their label text. */
+.modal input:not([type=checkbox]):not([type=radio]) { width: 100%; }
 /* Solo modal CTAs (no paired Cancel) opt-in via .btn-block on the button. */
 
 /* Layout */
@@ -314,7 +316,10 @@ input:focus, textarea:focus {
 }
 .member-picker .row .check svg { width: 14px; height: 14px; display: block; }
 .member-picker .empty { color: var(--text-dim); padding: 12px; font-size: 12px; text-align: center; }
-.cc-private-row {
+/* Wrapped in a label so the whole row toggles the checkbox.
+   Selector must beat `.modal label { display: block }` on
+   specificity, otherwise the flex layout never lands. */
+label.cc-private-row {
   display: flex; align-items: center; gap: 8px; margin-top: 14px;
   font-size: 13px; color: var(--text);
 }
@@ -1017,7 +1022,13 @@ button.ctrl.muted.icon-only::after {
    gutter for the hover-time, hides the head row, tightens the
    vertical rhythm so a multi-line burst reads as one block. */
 .msg-followup { padding-top: 1px; padding-bottom: 1px; }
-.msg-followup .avatar { display: none; }
+/* Hide the avatar but keep it in the grid, otherwise the body
+   div auto-flows into the 36px column and every word wraps. */
+.msg-followup .avatar {
+  visibility: hidden;
+  height: 0; min-height: 0;
+  box-shadow: none;
+}
 .msg-followup .msg-head { display: none; }
 .msg-followup .msg-time-hover {
   position: absolute; left: 0; top: 4px;
