@@ -831,3 +831,24 @@ body.popout .popout-stage { display: block; }
 .popout-tile {
   flex: 1; min-height: 0; min-width: 0;
 }
+
+/* Popout call window: tile grid fills the top, control bar pins
+   to the bottom. Uses the same .tiles grid CSS as the main window
+   so makeTile + onTrack + addLocalCameraTile work unmodified. */
+.popout-call {
+  display: flex; flex-direction: column;
+  width: 100vw; height: 100vh;
+}
+.popout-call .popout-tiles {
+  flex: 1; min-height: 0;
+  /* Override .tiles' max-height: 55vh from the main-window grid —
+     the popout has nothing else competing for vertical space. */
+  max-height: none;
+}
+.popout-call-bar {
+  display: flex; gap: 8px; justify-content: center;
+  padding: 10px;
+  background: var(--bg-2);
+  border-top: 1px solid var(--line);
+}
+.popout-call-bar .ctrl.muted { background: var(--bad); border-color: var(--bad); }
