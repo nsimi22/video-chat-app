@@ -910,14 +910,20 @@ class ChatView {
     for (const ref of refs) {
       const el = document.createElement('div');
       el.className = 'gh-unfurl';
-      const loading = document.createElement('div');
-      loading.className = 'gh-loading';
-      loading.textContent = `Loading ${ref.owner}/${ref.repo}#${ref.number}…`;
-      el.appendChild(loading);
+      this._paintGhLoading(el, ref);
       out.push(el);
       this._lookupGhAndPaint(ref, el, gh);
     }
     return out;
+  }
+
+  _paintGhLoading(el, ref) {
+    el.classList.remove('error');
+    el.replaceChildren();
+    const loading = document.createElement('div');
+    loading.className = 'gh-loading';
+    loading.textContent = `Loading ${ref.owner}/${ref.repo}#${ref.number}…`;
+    el.appendChild(loading);
   }
 
   async _lookupGhAndPaint(ref, el, gh) {
@@ -967,7 +973,14 @@ class ChatView {
     const statusKind = state === 'closed' ? (issue.merged ? 'merged' : 'closed') : 'open';
     stat.className = `gh-status ${statusKind}`;
     stat.textContent = statusKind;
-    top.append(link, stat);
+    // Reload — busts the cache and re-fetches so the user can pull
+    // the latest status without re-running /gh.
+    const reload = this._buildReloadButton(() => {
+      this._ghCache.delete(cacheKey);
+      this._paintGhLoading(el, ref);
+      this._lookupGhAndPaint(ref, el, gh);
+    });
+    top.append(link, stat, reload);
     const sumRow = document.createElement('div');
     sumRow.className = 'gh-summary';
     sumRow.textContent = issue.title || '';
@@ -980,6 +993,23 @@ class ChatView {
   }
 
   // --- Jira unfurl --------------------------------------------------------
+
+  // Small ↻ button reused by both unfurl renderers. Disables itself
+  // for the duration of the click handler so a double-click doesn't
+  // fire two refetches.
+  _buildReloadButton(onClick) {
+    const btn = document.createElement('button');
+    btn.className = 'unfurl-reload';
+    btn.title = 'Reload latest status';
+    btn.setAttribute('aria-label', 'Reload latest status');
+    btn.textContent = '↻';
+    btn.onclick = async (e) => {
+      e.preventDefault();
+      btn.disabled = true;
+      try { await onClick(); } finally { btn.disabled = false; }
+    };
+    return btn;
+  }
 
   // Returns an array of <div class="jira-unfurl"> elements (possibly empty)
   // for the message text. Cards start in a "loading" state; the lookup is
@@ -1034,7 +1064,19 @@ class ChatView {
       const stat = document.createElement('span');
       stat.className = `jira-status ${statusClass}`;
       stat.textContent = status;
-      top.append(link, stat);
+      // Reload — busts the cache and re-fetches the latest status
+      // without re-pasting the issue key into chat.
+      const reload = this._buildReloadButton(() => {
+        this._jiraCache.delete(key);
+        el.classList.remove('error');
+        el.replaceChildren();
+        const loading = document.createElement('div');
+        loading.className = 'jira-loading';
+        loading.textContent = `Loading ${key}…`;
+        el.appendChild(loading);
+        this._lookupAndPaint(key, el, jira);
+      });
+      top.append(link, stat, reload);
 
       const sumRow = document.createElement('div');
       sumRow.className = 'jira-summary';

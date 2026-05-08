@@ -1814,6 +1814,11 @@ async function openSettings() {
 
 function openSettingsToProfile() {
   openSettings().then(() => {
+    // Profile is wrapped in a <details> accordion. If the user
+    // collapsed it previously, force-open it before scrolling so the
+    // body is actually visible.
+    const section = document.getElementById('settings-profile-section');
+    if (section) section.open = true;
     els.settingsProfileAnchor?.scrollIntoView({ block: 'start' });
   });
 }

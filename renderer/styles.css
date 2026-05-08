@@ -311,6 +311,77 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
 .jira-unfurl .jira-loading { color: var(--text-dim); font-size: 12px; font-style: italic; }
 .jira-unfurl.error { border-left-color: var(--bad); }
 
+/* Reload button (↻) shared by jira/gh unfurl headers. Sits on the
+   end of the top row so the link + status stay anchored at the
+   left. ghost-style — invisible until hovered so the unfurl reads
+   the same as before for static viewers. */
+.jira-unfurl .jira-row,
+.gh-unfurl .gh-row { gap: 8px; }
+.unfurl-reload {
+  margin-left: auto;
+  background: transparent; border: none; color: var(--text-dim);
+  cursor: pointer; padding: 0 4px; min-height: auto;
+  font-size: 14px; line-height: 1;
+}
+.unfurl-reload:hover { color: var(--text); }
+.unfurl-reload:disabled { opacity: 0.5; cursor: wait; }
+
+/* Settings accordion — each section is a <details>/<summary>. The
+   summary is a button-like header; expanded sections show a body
+   block beneath it. */
+.settings-section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  margin-top: 10px;
+  overflow: hidden;
+}
+.settings-section > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  padding: 10px 14px;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.settings-section > summary::-webkit-details-marker { display: none; }
+.settings-section > summary::after {
+  content: '▸';
+  color: var(--text-dim);
+  font-size: 12px;
+  transition: transform 120ms ease;
+}
+.settings-section[open] > summary::after { transform: rotate(90deg); }
+.settings-section > summary:hover { background: rgba(255,255,255,.04); }
+.settings-section-body {
+  padding: 4px 14px 14px;
+  border-top: 1px solid var(--line);
+}
+
+/* Slash-commands explainer list inside the Settings modal. */
+.slash-list { list-style: none; padding: 0; margin: 4px 0 0; }
+.slash-list li {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  align-items: baseline;
+}
+.slash-list li:last-child { border-bottom: none; }
+.slash-list li code {
+  background: rgba(255,255,255,.08);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.slash-list li span { color: var(--text-dim); }
+
 /* GitHub unfurls — same shape as Jira, different accent. */
 .gh-unfurl {
   display: flex; flex-direction: column; gap: 4px;
