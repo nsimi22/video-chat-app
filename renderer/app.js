@@ -12,6 +12,7 @@ const $ = (sel) => document.querySelector(sel);
 const els = {
   // Auth: email step
   login: $('#login'),
+  bootStep: $('#boot-step'),
   authEmailStep: $('#auth-email-step'),
   authOtpStep: $('#auth-otp-step'),
   authEmail: $('#auth-email'),
@@ -247,6 +248,7 @@ const STREAM_DECISION_MS = 1500;
 // --- Step navigation -----------------------------------------------------
 function showStep(step) {
   els.loginError.classList.add('hidden');
+  els.bootStep.classList.toggle('hidden', step !== 'boot');
   els.authEmailStep.classList.toggle('hidden', step !== 'email');
   els.authOtpStep.classList.toggle('hidden', step !== 'otp');
   els.profileStep.classList.toggle('hidden', step !== 'profile');
