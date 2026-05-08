@@ -13,8 +13,18 @@
       <div class="modal">
         <h2>Welcome to Huddle</h2>
 
+        <!-- Boot step: shown by default while we resolve the
+             persisted session (auth + profile + last team) so the
+             user doesn't see the email form flash on restart. The
+             auth flow flips this off and reveals the appropriate
+             step once boot resume completes. -->
+        <div id="boot-step" class="boot-step">
+          <div class="spinner" aria-hidden="true"></div>
+          <p class="hint">Loading…</p>
+        </div>
+
         <!-- Step 1: email -->
-        <div id="auth-email-step">
+        <div id="auth-email-step" class="hidden">
           <p class="hint">We'll email you a verification code to sign you in.</p>
           <label>Email</label>
           <input id="auth-email" type="email" autocomplete="email" placeholder="you@team.com" />
