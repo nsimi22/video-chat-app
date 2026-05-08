@@ -249,6 +249,10 @@ class WhiteboardSession {
     };
     handle.addEventListener('mousedown', (e) => {
       if (e.target.classList.contains('wb-note-close')) return;
+      // Defer to the canvas's pan mode if Space is held — otherwise
+      // both note drag and canvas pan would track the same gesture
+      // and the note would shoot off across the world.
+      if (this.canvas?._panMode) return;
       e.preventDefault();
       const vp = this.canvas?.getViewport() || { scale: 1 };
       dragStart = {

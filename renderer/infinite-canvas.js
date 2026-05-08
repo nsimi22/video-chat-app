@@ -269,7 +269,7 @@
         });
       });
       const end = (e) => {
-        if (this._panning) { this._endPan(); return; }
+        if (this._panning) { this._endPan(e); return; }
         if (!this._currentStroke) return;
         const p = e ? this._clientToWorld(e.clientX, e.clientY) : null;
         if (p) {
@@ -282,6 +282,13 @@
         this.strokes.push(this._currentStroke);
         const finished = this._currentStroke;
         this._currentStroke = null;
+        // Release the pointer capture set in pointerdown so other
+        // elements can take pointer events again. Implicit release
+        // happens on pointerup, but pointercancel/pointerleave
+        // paths benefit from being explicit.
+        if (e?.pointerId != null) {
+          try { this.canvas.releasePointerCapture(e.pointerId); } catch {}
+        }
         // (Eraser segments now apply destination-out incrementally
         // in _renderIncrementalSegment, so no post-stroke
         // full-render fixup is needed.)
@@ -312,9 +319,12 @@
       this._render();
       this._dispatchViewport();
     }
-    _endPan() {
+    _endPan(e) {
       this._panning = null;
       this.canvas.style.cursor = '';
+      if (e?.pointerId != null) {
+        try { this.canvas.releasePointerCapture(e.pointerId); } catch {}
+      }
     }
 
     _wireKeyboardPan() {
