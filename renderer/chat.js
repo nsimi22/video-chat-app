@@ -419,6 +419,13 @@ class ChatView {
         this._renderSlashSuggest();
         return true;
       case 'Tab':
+      case 'Enter':
+        // Both keys commit the highlighted suggestion. Enter is the
+        // most-discovered completion key (users reach for it before
+        // Tab); since the slash popup intercepts before the
+        // composer's own Enter-sends handler, this doesn't conflict
+        // with sending. The user just hits Enter again on the
+        // filled-in `/<cmd> ` to send.
         e.preventDefault();
         this._fillSlashSuggest(this._slashIndex);
         return true;
