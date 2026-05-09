@@ -1419,7 +1419,6 @@ button.ctrl.muted.icon-only::after {
    hints are centered. */
 .login-modal label,
 .login-modal input { text-align: left; }
-.login-modal h2 { text-align: center; }
 .login-modal .hint { text-align: center; }
 .login-hero {
   display: flex; flex-direction: column; align-items: center;
