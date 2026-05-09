@@ -171,6 +171,7 @@ const state = {
   drawLayers: new Map(),
   channelMeta: new Map(),
   activeAnnotation: null,
+  spotlightKey: null,
   pendingStreams: new Map(),
   unread: new Map(), // channelId -> { count, mentions } both ints
   _email: null,
@@ -1296,6 +1297,7 @@ async function leaveCall() {
   for (const p of state.pendingStreams.values()) clearTimeout(p.timer);
   state.pendingStreams.clear();
   closeAnnotate();
+  clearSpotlight();
   syncTilesVisibility();
   try { await state.huddle?.leaveCall(); } catch {}
   // joinCall dropped the lurker for this channel when we became a
@@ -1563,6 +1565,7 @@ async function teardownTeam() {
   for (const p of state.pendingStreams.values()) clearTimeout(p.timer);
   state.pendingStreams.clear();
   closeAnnotate();
+  clearSpotlight();
   syncTilesVisibility();
   els.app.classList.add('hidden');
 }
@@ -2169,6 +2172,11 @@ function makeTile({ key, label, kind, userId }) {
       annotate.onclick = () => toggleAnnotate(tile.dataset.streamId);
       actions.appendChild(annotate);
     }
+    const spotlight = document.createElement('button');
+    spotlight.className = 'tile-action-spotlight';
+    spotlight.innerHTML = `${window.HuddleIcons.spotlight}<span>Spotlight</span>`;
+    spotlight.onclick = () => toggleSpotlight(key);
+    actions.appendChild(spotlight);
     tile.appendChild(actions);
   }
   els.tiles.appendChild(tile);
@@ -2184,7 +2192,32 @@ function removeTile(key) {
   const tile = state.tilesByKey.get(key);
   if (tile) tile.remove();
   state.tilesByKey.delete(key);
+  if (state.spotlightKey === key) clearSpotlight();
   syncTilesVisibility();
+}
+
+// Spotlight: stage one screen/whiteboard tile in the main column with the
+// rest stacked in a side rail. Local UI state only — no broadcast, since
+// each viewer chooses their own focus.
+function toggleSpotlight(key) {
+  if (state.spotlightKey === key) { clearSpotlight(); return; }
+  if (state.spotlightKey) {
+    const prev = state.tilesByKey.get(state.spotlightKey);
+    if (prev) prev.classList.remove('spotlighted');
+  }
+  const tile = state.tilesByKey.get(key);
+  if (!tile) return;
+  tile.classList.add('spotlighted');
+  els.tiles.classList.add('has-spotlight');
+  state.spotlightKey = key;
+}
+
+function clearSpotlight() {
+  if (!state.spotlightKey) return;
+  const tile = state.tilesByKey.get(state.spotlightKey);
+  if (tile) tile.classList.remove('spotlighted');
+  els.tiles.classList.remove('has-spotlight');
+  state.spotlightKey = null;
 }
 
 function addLocalCameraTile(stream, name) {
