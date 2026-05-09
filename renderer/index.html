@@ -375,6 +375,8 @@
             <input id="set-jira-token" type="password" autocomplete="off" />
             <label>Default project <span class="hint-inline">(project key — pre-selected when you open the create-ticket modal)</span></label>
             <input id="set-jira-project" type="text" placeholder="DAP" maxlength="20" />
+            <label>AI ticket context <span class="hint-inline">(prepended to every <code>/ai-ticket</code> system prompt — describe your product, terminology, tone, what's in scope)</span></label>
+            <textarea id="set-ai-ticket-context" rows="6" maxlength="4000" placeholder="e.g. Slack-style desktop app on Supabase. Small team. Tickets should reference existing modules (chat.js, webrtc.js, app.js). Default to 'Bug' only when there's a clear repro path; otherwise 'Task'."></textarea>
           </div>
         </details>
 
@@ -435,7 +437,7 @@
           <label>Issue type</label>
           <select id="ticket-issuetype"></select>
           <label>Summary</label>
-          <input id="ticket-summary" type="text" placeholder="One-line title" maxlength="240" />
+          <input id="ticket-summary" type="text" placeholder="One-line title" maxlength="250" />
           <label>Description</label>
           <textarea id="ticket-description" rows="5" placeholder="What needs to happen?"></textarea>
           <label class="cc-private-row">

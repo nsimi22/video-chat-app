@@ -141,6 +141,7 @@ const els = {
   setAnthropicModel: $('#set-anthropic-model'),
   setOpenrouterKey: $('#set-openrouter-key'),
   setOpenrouterModel: $('#set-openrouter-model'),
+  setAiTicketContext: $('#set-ai-ticket-context'),
   setGithubToken: $('#set-github-token'),
   setGiphyKey: $('#set-giphy-key'),
   settingsStatus: $('#settings-status'),
@@ -1241,6 +1242,7 @@ async function joinTeamAndStart(teamId) {
       getGiphyKey,
       getJira: () => state.jira,
       getDefaultJiraProject: () => state.settings?.jira?.defaultProject || '',
+      getAiTicketContext: () => state.settings?.aiTicket?.context || '',
       openTicketModal: (preset) => openTicketModal(preset),
       getAi: () => state.ai,
       getGitHub: () => state.github,
@@ -3235,6 +3237,7 @@ async function openSettings() {
   els.setAnthropicModel.value = s.ai?.anthropicModel || '';
   els.setOpenrouterKey.value = s.ai?.openrouterKey || '';
   els.setOpenrouterModel.value = s.ai?.openrouterModel || '';
+  els.setAiTicketContext.value = s.aiTicket?.context || '';
   els.setGithubToken.value = s.github?.token || '';
   els.setGiphyKey.value = s.giphy?.key || '';
   els.settingsStatus.classList.add('hidden');
@@ -3316,6 +3319,12 @@ async function saveSettings() {
       anthropicModel: els.setAnthropicModel.value.trim(),
       openrouterKey: els.setOpenrouterKey.value,
       openrouterModel: els.setOpenrouterModel.value.trim(),
+    },
+    aiTicket: {
+      // Free-form project/team context the user wants every /ai-ticket
+      // call to consider — described domain, codebase areas, terminology,
+      // tone preferences. Trimmed but otherwise stored verbatim.
+      context: els.setAiTicketContext.value.trim(),
     },
     github: { token: els.setGithubToken.value },
     giphy: { key: els.setGiphyKey.value.trim() },
