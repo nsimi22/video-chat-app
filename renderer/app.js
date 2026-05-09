@@ -3063,6 +3063,10 @@ function showTicketStatus(msg, kind) {
 }
 
 async function openSourcePicker() {
+  if (state.mesh && state.mesh.activeScreenCount >= window.MAX_CONCURRENT_SCREENS) {
+    showCallError(`Only ${window.MAX_CONCURRENT_SCREENS} screens can be shared at once. Ask someone to stop sharing first.`);
+    return;
+  }
   const sources = await window.huddle.getScreenSources();
   els.sourceGrid.replaceChildren();
   for (const s of sources) {

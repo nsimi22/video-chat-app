@@ -25,6 +25,11 @@ const ICE_SERVERS = [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
 ];
 
+// Cap concurrent screen shares across the call (local + remote combined).
+// Enforced optimistically per-client; a brief overshoot is possible if two
+// peers start sharing simultaneously, which is acceptable for a soft limit.
+const MAX_CONCURRENT_SCREENS = 3;
+
 class PeerConn {
   constructor({ remoteId, signal, polite, onTrack, onScreenStop }) {
     this.remoteId = remoteId;
@@ -93,6 +98,7 @@ class MeshClient extends EventTarget {
     this.peers = new Map();             // remoteId -> PeerConn
     this.cameraStream = null;
     this._screenStreams = new Map();    // streamId -> { stream, label }
+    this._pendingScreens = 0;           // shares awaiting getUserMedia, counted toward the cap
 
     // Track bound handlers so disconnect() can detach them — calls are
     // on-demand now, so a new MeshClient is constructed every time the
@@ -219,17 +225,32 @@ class MeshClient extends EventTarget {
     if (!t) return false; t.enabled = !t.enabled; return t.enabled;
   }
 
+  get activeScreenCount() {
+    return this._screenStreams.size + this._pendingScreens + this.huddle.remoteScreenLabels.size;
+  }
+
   async addScreen(sourceId, label) {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        mandatory: {
-          chromeMediaSource: 'desktop',
-          chromeMediaSourceId: sourceId,
-          maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30,
+    if (this.activeScreenCount >= MAX_CONCURRENT_SCREENS) {
+      throw new Error(`Screen-share limit reached (${MAX_CONCURRENT_SCREENS} max).`);
+    }
+    // Reserve a slot before awaiting getUserMedia so rapid concurrent calls
+    // (e.g. double-clicks on picker tiles) can't all pass the check.
+    this._pendingScreens++;
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          mandatory: {
+            chromeMediaSource: 'desktop',
+            chromeMediaSourceId: sourceId,
+            maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30,
+          },
         },
-      },
-    });
+      });
+    } finally {
+      this._pendingScreens--;
+    }
     this._screenStreams.set(stream.id, { stream, label });
     this.huddle.sendScreenAnnounce(stream.id, label);
     for (const conn of this.peers.values()) conn.addStream(stream);
@@ -276,3 +297,4 @@ class MeshClient extends EventTarget {
 }
 
 window.MeshClient = MeshClient;
+window.MAX_CONCURRENT_SCREENS = MAX_CONCURRENT_SCREENS;
