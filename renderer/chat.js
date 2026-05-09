@@ -1287,7 +1287,11 @@ class ChatView {
   // Returns `true` if the command was consumed (no chat message should go
   // out); `false` if the input should be sent verbatim.
   async _maybeRunSlash(text) {
-    const m = /^\/(\w+)(?:\s+([\s\S]+))?$/.exec(text);
+    // [a-zA-Z0-9_-]+ keeps this in sync with _refreshSlashSuggest's
+    // autocomplete regex — `\w` doesn't include hyphens, so the old
+    // pattern silently rejected any hyphenated command (notably
+    // /ai-ticket) and the dispatch fell through to a plain message.
+    const m = /^\/([a-zA-Z0-9_-]+)(?:\s+([\s\S]+))?$/.exec(text);
     if (!m) return false;
     const cmd = m[1].toLowerCase();
     const arg = (m[2] || '').trim();
