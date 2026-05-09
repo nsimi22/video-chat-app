@@ -1140,10 +1140,11 @@ async function _routeProtocolUrl(parsed, url) {
     if (parsed.channelId && state.channelMeta.has(parsed.channelId)) {
       focusChannel(parsed.channelId);
       if (parsed.joinCall) setTimeout(() => startCall(parsed.channelId), 0);
-      // Defer scrolling: the channel switch repaints messages async via
-      // setChannel + loadHistory, so the message node may not exist
-      // yet. Try shortly after the focus event resolves.
-      if (parsed.messageId) setTimeout(() => state.chat?.scrollToMessage(parsed.messageId), 250);
+      // setChannel + loadHistory render messages asynchronously, so the
+      // target node usually doesn't exist yet. scrollToMessage polls
+      // for it with a short backoff (giving up after ~3s) so we don't
+      // race a fixed setTimeout against the history fetch.
+      if (parsed.messageId) state.chat?.scrollToMessage(parsed.messageId);
     } else if (parsed.channelId) {
       showCallError(`Channel #${parsed.channelId} isn't available on this team.`);
     }
@@ -2484,11 +2485,11 @@ function renderPinnedDrawer(messages, onPick) {
     head.textContent = `${m.authorName} · ${new Date(m.ts).toLocaleString()}`;
     const body = document.createElement('div');
     body.className = 'pinned-item-body';
-    // Always route through renderMarkdown — it sanitizes HTML. The
-    // fallback path used to write raw m.text into innerHTML, which
-    // would have been an XSS vector if the dependency ever loaded
-    // out of order.
-    body.innerHTML = window.renderMarkdown(m.text || '');
+    // renderMarkdown sanitizes HTML, so prefer it. If the dependency
+    // ever loaded out of order, fall back to textContent — never raw
+    // innerHTML — so a malformed message body can't ship an XSS payload.
+    if (window.renderMarkdown) body.innerHTML = window.renderMarkdown(m.text || '');
+    else body.textContent = m.text || '';
     row.append(head, body);
     row.onclick = () => onPick?.(m.id);
     els.pinnedList.appendChild(row);
@@ -2504,12 +2505,12 @@ function closePinnedDrawer() {
 }
 
 // Update the channel-header pin chip with the current pinned count.
-// Cheap query (indexed predicate) — fired from focusChannel + on
-// chat-update so pin/unpin keeps the badge accurate without a full reload.
+// Cheap count-only query (indexed partial scan) — fired from focusChannel
+// + on chat-update so pin/unpin keeps the badge accurate without
+// fetching full message rows.
 async function refreshPinnedCount() {
   if (!els.pinnedBtn || !state.chat?.currentChannel || !state.huddle) return;
-  const list = await state.huddle.loadPinnedMessages(state.chat.currentChannel);
-  const n = list.length;
+  const n = await state.huddle.pinnedMessageCount(state.chat.currentChannel);
   els.pinnedBtn.classList.toggle('hidden', n === 0);
   els.pinnedCount.textContent = String(n);
 }

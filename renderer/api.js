@@ -772,6 +772,19 @@
       return (data || []).map((m) => this._marshalMessage(m));
     }
 
+    // Count-only query for the channel-header pin chip. Avoids round-
+    // tripping (and marshalling) up to 50 full message rows just to
+    // surface a number, and stays accurate past the 50-row cap that
+    // loadPinnedMessages applies for drawer rendering.
+    async pinnedMessageCount(channelId) {
+      const { count, error } = await this.supabase
+        .from('messages').select('id', { count: 'exact', head: true })
+        .eq('team_id', this.team.id).eq('channel_id', channelId)
+        .not('pinned_at', 'is', null);
+      if (error) { console.warn('pinnedMessageCount failed', error); return 0; }
+      return count || 0;
+    }
+
     // Reactions live on a jsonb column. We read-modify-write under a
     // optimistic concurrency model; collisions are rare and self-healing.
     async toggleReaction(messageId, emoji) {

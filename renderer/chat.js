@@ -645,17 +645,40 @@ class ChatView {
   // Find a rendered message node in the active channel pane and scroll
   // it into view with a brief flash. Used by the protocol-URL handler
   // and by clicks in the pinned drawer.
-  scrollToMessage(messageId) {
-    const node = this.els.messages.querySelector(`.msg[data-message-id="${CSS.escape(messageId)}"]`);
-    if (!node) return false;
-    node.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    node.classList.remove('msg-flash');
-    // Re-apply on next frame so the keyframe restarts even when the
-    // class was already applied by a prior scrollToMessage.
-    void node.offsetWidth;
-    node.classList.add('msg-flash');
-    setTimeout(() => node.classList.remove('msg-flash'), 1800);
-    return true;
+  //
+  // The protocol-URL path arrives mid-channel-switch — history is still
+  // loading and the target node may not exist yet. Poll briefly with
+  // backoff instead of accepting a fixed setTimeout race; give up after
+  // ~3s. Returns a Promise<boolean> so callers can await/observe success.
+  scrollToMessage(messageId, { timeoutMs = 3000 } = {}) {
+    const flash = (node) => {
+      node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      node.classList.remove('msg-flash');
+      // Force reflow so the keyframe restarts even when the class was
+      // already on the node from a prior scrollToMessage call.
+      void node.offsetWidth;
+      node.classList.add('msg-flash');
+      setTimeout(() => node.classList.remove('msg-flash'), 1800);
+    };
+    const find = () => this.els.messages.querySelector(`.msg[data-message-id="${CSS.escape(messageId)}"]`);
+    const immediate = find();
+    if (immediate) { flash(immediate); return Promise.resolve(true); }
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const interval = setInterval(() => {
+        const node = find();
+        if (node) {
+          clearInterval(interval);
+          flash(node);
+          resolve(true);
+          return;
+        }
+        if (Date.now() - start >= timeoutMs) {
+          clearInterval(interval);
+          resolve(false);
+        }
+      }, 100);
+    });
   }
 
   async openPinnedDrawer() {
