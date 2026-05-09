@@ -186,6 +186,9 @@ const state = {
   // Local hand-raised state (mirrored from huddle.raisedHands when remote
   // peers toggle, written here when the local user toggles).
   raisedHands: new Set(),
+  // Teardown for the React popover's document-level listeners. Cleared on
+  // teardownTeam so re-joining a team doesn't accumulate handlers.
+  reactPopoverCleanup: null,
   pendingStreams: new Map(),
   unread: new Map(), // channelId -> { count, mentions } both ints
   _email: null,
@@ -761,13 +764,7 @@ async function bootCallPopout(cfg) {
   reactPopover.className = 'react-popover hidden';
   reactPopover.setAttribute('role', 'menu');
   reactPopover.setAttribute('aria-label', 'Quick reactions');
-  for (const emoji of ['👍', '❤️', '😂', '🎉']) {
-    const e = document.createElement('button');
-    e.className = 'react-emoji';
-    e.dataset.emoji = emoji;
-    e.textContent = emoji;
-    reactPopover.appendChild(e);
-  }
+  // Children are populated by wireReactPopover from the REACTION_EMOJI constant.
   const btnLeave = document.createElement('button');
   btnLeave.id = 'popout-btn-leave';
   btnLeave.className = 'ctrl danger';
@@ -828,7 +825,8 @@ async function bootCallPopout(cfg) {
     btnCam.classList.toggle('muted', !on);
   };
   btnShare.onclick = () => { if (state.mesh) openSourcePicker(); };
-  wireReactPopover(btnReact, reactPopover);
+  state.reactPopoverCleanup?.();
+  state.reactPopoverCleanup = wireReactPopover(btnReact, reactPopover);
   btnHand.onclick = toggleSelfHand;
   btnLeave.onclick = async () => {
     try { await leaveCall(); }
@@ -1335,18 +1333,7 @@ async function leaveCall() {
   state.mesh.disconnect();
   state.mesh = null;
   state.inCallChannelId = null;
-  for (const tile of state.tilesByKey.values()) tile.remove();
-  state.tilesByKey.clear();
-  state.drawLayers.clear();
-  for (const p of state.pendingStreams.values()) clearTimeout(p.timer);
-  state.pendingStreams.clear();
-  closeAnnotate();
-  clearSpotlight();
-  stopSpeakerPolling();
-  state.raisedHands.clear();
-  if (els.btnHand) els.btnHand.classList.remove('active');
-  clearAllReactions();
-  syncTilesVisibility();
+  resetCallEphemera();
   try { await state.huddle?.leaveCall(); } catch {}
   // joinCall dropped the lurker for this channel when we became a
   // full participant. After leaveCall, the user is still viewing the
@@ -1607,18 +1594,12 @@ async function teardownTeam() {
   // screen of the next session.
   els.toasts?.replaceChildren();
   els.reconnectBanner?.classList.add('hidden');
-  for (const tile of state.tilesByKey.values()) tile.remove();
-  state.tilesByKey.clear();
-  state.drawLayers.clear();
-  for (const p of state.pendingStreams.values()) clearTimeout(p.timer);
-  state.pendingStreams.clear();
-  closeAnnotate();
-  clearSpotlight();
-  stopSpeakerPolling();
-  state.raisedHands.clear();
-  if (els.btnHand) els.btnHand.classList.remove('active');
-  clearAllReactions();
-  syncTilesVisibility();
+  resetCallEphemera();
+  // The React-popover document listeners are re-registered every time
+  // wireControls runs; tear them down here so a different team's
+  // wireControls call doesn't pile up handlers on the same document.
+  state.reactPopoverCleanup?.();
+  state.reactPopoverCleanup = null;
   els.app.classList.add('hidden');
 }
 
@@ -2310,6 +2291,16 @@ function stopSpeakerPolling() {
 
 async function pollActiveSpeaker() {
   if (!state.mesh) return;
+  // Re-entrancy guard: a slow getStats() round (large mesh, busy machine)
+  // can take longer than the poll interval. Two overlapping passes would
+  // race to call setSpeakingPeer with stale snapshots and produce flicker.
+  if (state._speakerPollInFlight) return;
+  state._speakerPollInFlight = true;
+  try { await collectSpeakerSamples(); }
+  finally { state._speakerPollInFlight = false; }
+}
+
+async function collectSpeakerSamples() {
   const samples = []; // [peerId, level]
   // Local mic level via any peer connection's outbound audio media-source.
   const someConn = state.mesh.peers.values().next().value;
@@ -2321,7 +2312,7 @@ async function pollActiveSpeaker() {
           samples.push([state.huddle.peerId, r.audioLevel]);
         }
       });
-    } catch {}
+    } catch (err) { console.warn('[speaker-poll] local stats failed', err); }
   }
   // Remote peers via each pc's inbound audio.
   for (const [peerId, conn] of state.mesh.peers) {
@@ -2332,7 +2323,7 @@ async function pollActiveSpeaker() {
           samples.push([peerId, r.audioLevel]);
         }
       });
-    } catch {}
+    } catch (err) { console.warn('[speaker-poll] peer stats failed', err); }
   }
   if (samples.length === 0) { setSpeakingPeer(null); return; }
   samples.sort((a, b) => b[1] - a[1]);
@@ -2385,10 +2376,16 @@ function onRemoteRaiseHand({ from, raised }) {
   setHandRaised(from, !!raised);
 }
 
-// Reactions: ephemeral floating emoji over the sender's tile. Auto-clears
-// after the CSS animation settles; the timeout is mirrored in JS so a
-// rapid follow-up reaction on the same tile cancels the prior cleanup.
+// Reactions: ephemeral floating emoji over the sender's tile. Each reaction
+// has its own independent timer (rapid follow-ups intentionally coexist —
+// the CSS jitter offsets them so they don't perfectly stack). The Map keeps
+// the active timer ids so leaveCall can bulk-cancel them.
 const REACTION_TTL_MS = 2400;
+// Single source of truth for the quick-reaction emoji set; both the main-
+// window popover (built in wireReactPopover) and the popout-window popover
+// (built in bootCallPopout) iterate this list. Keep the order — that's the
+// order they render in the chip.
+const REACTION_EMOJI = ['👍', '❤️', '😂', '🎉'];
 
 function showReaction(peerId, emoji) {
   const tile = tileForPeer(peerId);
@@ -2396,12 +2393,9 @@ function showReaction(peerId, emoji) {
   const node = document.createElement('div');
   node.className = 'tile-reaction';
   node.textContent = emoji;
-  // Slight horizontal jitter so back-to-back reactions don't perfectly
-  // overlap.
+  // Slight horizontal jitter so back-to-back reactions don't perfectly overlap.
   node.style.setProperty('--rx-offset', `${Math.floor(Math.random() * 40 - 20)}px`);
   tile.appendChild(node);
-  const prev = state.reactionTimers.get(node);
-  if (prev) clearTimeout(prev);
   state.reactionTimers.set(node, setTimeout(() => {
     node.remove();
     state.reactionTimers.delete(node);
@@ -2418,9 +2412,42 @@ function clearAllReactions() {
   for (const node of els.tiles.querySelectorAll('.tile-reaction')) node.remove();
 }
 
+// Drop everything that lives only for the duration of an active call:
+// the tile grid and all of its overlays/state. Shared between leaveCall
+// (call ends, team stays) and teardownTeam (whole team session torn
+// down) so both surfaces tear down identically.
+function resetCallEphemera() {
+  for (const tile of state.tilesByKey.values()) tile.remove();
+  state.tilesByKey.clear();
+  state.drawLayers.clear();
+  for (const p of state.pendingStreams.values()) clearTimeout(p.timer);
+  state.pendingStreams.clear();
+  closeAnnotate();
+  clearSpotlight();
+  stopSpeakerPolling();
+  state.raisedHands.clear();
+  if (els.btnHand) els.btnHand.classList.remove('active');
+  clearAllReactions();
+  syncTilesVisibility();
+}
+
 // Tiny popover anchored to the React button. Click outside or press
-// Escape to dismiss; selecting an emoji sends + closes.
+// Escape to dismiss; selecting an emoji sends + closes. Returns a
+// teardown function that removes the document-level listeners — joining
+// a different team re-runs wireControls, so without this the listeners
+// would accumulate across team switches.
 function wireReactPopover(btn, popover) {
+  // Build (or rebuild) the emoji buttons from the single source-of-truth
+  // list so the main window and popout always render the same set.
+  popover.replaceChildren();
+  for (const emoji of REACTION_EMOJI) {
+    const e = document.createElement('button');
+    e.className = 'react-emoji';
+    e.dataset.emoji = emoji;
+    e.setAttribute('aria-label', emoji);
+    e.textContent = emoji;
+    popover.appendChild(e);
+  }
   const close = () => popover.classList.add('hidden');
   btn.onclick = (e) => {
     e.stopPropagation();
@@ -2432,12 +2459,18 @@ function wireReactPopover(btn, popover) {
     if (state.mesh) state.mesh.sendReaction(tgt.dataset.emoji);
     close();
   };
-  document.addEventListener('click', (e) => {
+  const onDocClick = (e) => {
     if (popover.classList.contains('hidden')) return;
     if (popover.contains(e.target) || btn.contains(e.target)) return;
     close();
-  });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('click', onDocClick);
+  document.addEventListener('keydown', onKey);
+  return () => {
+    document.removeEventListener('click', onDocClick);
+    document.removeEventListener('keydown', onKey);
+  };
 }
 
 function addLocalCameraTile(stream, name) {
@@ -2624,7 +2657,10 @@ function wireControls() {
   els.btnLeave.onclick = leaveCall;
   els.btnPopoutCall.onclick = popOutCurrentCall;
   if (els.btnHand) els.btnHand.onclick = toggleSelfHand;
-  if (els.btnReact && els.reactPopover) wireReactPopover(els.btnReact, els.reactPopover);
+  if (els.btnReact && els.reactPopover) {
+    state.reactPopoverCleanup?.();
+    state.reactPopoverCleanup = wireReactPopover(els.btnReact, els.reactPopover);
+  }
   els.sourceCancel.onclick = () => els.sourcePicker.classList.add('hidden');
 
   // Invite links — workspace header (team) + channel header (call).
