@@ -209,11 +209,18 @@ ipcMain.handle('open-popout', (_event, opts) => {
   if (opts?.title) params.set('title', opts.title);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'), { search: '?' + params.toString() });
   popouts.set(target, win);
+  // Capture the contents id BEFORE 'closed' — by the time the event
+  // fires Electron has invalidated win.webContents, and reading .id
+  // off a destroyed contents throws "Object has been destroyed",
+  // which would prevent fanoutPopoutEvent from broadcasting and
+  // leave state.poppedOutCalls in the main renderer permanently
+  // stuck on the popped-out channel.
+  const senderId = win.webContents.id;
   win.on('closed', () => {
     if (popouts.get(target) === win) popouts.delete(target);
     // Notify any remaining window that a popout closed so they can
     // re-render headers (e.g., show "Pop out" button again).
-    fanoutPopoutEvent(win.webContents.id, { event: 'popout-closed', target });
+    fanoutPopoutEvent(senderId, { event: 'popout-closed', target });
   });
   return { ok: true };
 });
