@@ -81,6 +81,9 @@ const els = {
   btnShare: $('#btn-share'),
   btnLeave: $('#btn-leave'),
   btnPopoutCall: $('#btn-popout-call'),
+  btnHand: $('#btn-hand'),
+  btnReact: $('#btn-react'),
+  reactPopover: $('#react-popover'),
   btnCc: $('#btn-cc'),
   captions: $('#captions'),
   captionsList: $('#captions-list'),
@@ -172,6 +175,17 @@ const state = {
   channelMeta: new Map(),
   activeAnnotation: null,
   spotlightKey: null,
+  // Active speaker = the peerId whose audio level is highest right now,
+  // sampled by an interval poll. null when no one is audibly speaking.
+  speakingPeer: null,
+  speakerPollTimer: null,
+  // Outstanding setTimeout ids for floating reactions, keyed by tile so
+  // back-to-back reactions on the same tile can clear the prior timer
+  // and not leak stale DOM.
+  reactionTimers: new Map(),
+  // Local hand-raised state (mirrored from huddle.raisedHands when remote
+  // peers toggle, written here when the local user toggles).
+  raisedHands: new Set(),
   pendingStreams: new Map(),
   unread: new Map(), // channelId -> { count, mentions } both ints
   _email: null,
@@ -738,13 +752,30 @@ async function bootCallPopout(cfg) {
   btnCam.disabled = true;
   const btnShare = mkIconBtn('popout-btn-share', 'screen', 'Share a screen');
   btnShare.disabled = true;
+  const btnHand = mkIconBtn('popout-btn-hand', 'hand', 'Raise hand');
+  btnHand.disabled = true;
+  const btnReact = mkIconBtn('popout-btn-react', 'smile', 'Send a reaction');
+  btnReact.disabled = true;
+  const reactPopover = document.createElement('div');
+  reactPopover.id = 'popout-react-popover';
+  reactPopover.className = 'react-popover hidden';
+  reactPopover.setAttribute('role', 'menu');
+  reactPopover.setAttribute('aria-label', 'Quick reactions');
+  for (const emoji of ['👍', '❤️', '😂', '🎉']) {
+    const e = document.createElement('button');
+    e.className = 'react-emoji';
+    e.dataset.emoji = emoji;
+    e.textContent = emoji;
+    reactPopover.appendChild(e);
+  }
   const btnLeave = document.createElement('button');
   btnLeave.id = 'popout-btn-leave';
   btnLeave.className = 'ctrl danger';
   btnLeave.title = 'Leave call';
   btnLeave.innerHTML = `${window.HuddleIcons.phoneDown}<span>Leave</span>`;
-  bar.append(btnMic, btnCam, btnShare, btnLeave);
+  bar.append(btnMic, btnCam, btnShare, btnHand, btnReact, btnLeave);
   wrap.appendChild(bar);
+  wrap.appendChild(reactPopover);
   stage.appendChild(wrap);
 
   // Move the draw-toolbar (which lives inside #app, hidden by
@@ -764,6 +795,9 @@ async function bootCallPopout(cfg) {
   els.btnMic = btnMic;
   els.btnCam = btnCam;
   els.btnShare = btnShare;
+  els.btnHand = btnHand;
+  els.btnReact = btnReact;
+  els.reactPopover = reactPopover;
   els.btnLeave = btnLeave;
   // Anything not visible in the popout: replace with a detached node
   // so toggleClass(...) / textContent assignments don't throw.
@@ -794,6 +828,8 @@ async function bootCallPopout(cfg) {
     btnCam.classList.toggle('muted', !on);
   };
   btnShare.onclick = () => { if (state.mesh) openSourcePicker(); };
+  wireReactPopover(btnReact, reactPopover);
+  btnHand.onclick = toggleSelfHand;
   btnLeave.onclick = async () => {
     try { await leaveCall(); }
     finally { window.close(); }
@@ -836,6 +872,8 @@ async function startPopoutCall(channelId) {
   mesh.addEventListener('screen-stop', (e) => onScreenStop(e.detail));
   mesh.addEventListener('remote-stream-ended', (e) => onScreenStop(e.detail));
   mesh.addEventListener('draw', (e) => onRemoteDraw(e.detail));
+  mesh.addEventListener('raise-hand', (e) => onRemoteRaiseHand(e.detail));
+  mesh.addEventListener('reaction', (e) => onRemoteReaction(e.detail));
   try {
     await huddle.joinCall(channelId);
   } catch (err) {
@@ -845,11 +883,14 @@ async function startPopoutCall(channelId) {
   }
   state.mesh = mesh;
   state.inCallChannelId = channelId;
+  startSpeakerPolling();
   // The mic/cam/share controls were disabled in bootCallPopout; flip
   // them on now that mesh.toggle{Mic,Cam}/addScreen have something to act on.
   els.btnMic.disabled = false;
   els.btnCam.disabled = false;
   if (els.btnShare) els.btnShare.disabled = false;
+  if (els.btnHand) els.btnHand.disabled = false;
+  if (els.btnReact) els.btnReact.disabled = false;
   mesh.bootstrapExistingPeers();
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
@@ -1233,6 +1274,8 @@ async function startCall(channelId) {
   mesh.addEventListener('screen-stop', (e) => onScreenStop(e.detail));
   mesh.addEventListener('remote-stream-ended', (e) => onScreenStop(e.detail));
   mesh.addEventListener('draw', (e) => onRemoteDraw(e.detail));
+  mesh.addEventListener('raise-hand', (e) => onRemoteRaiseHand(e.detail));
+  mesh.addEventListener('reaction', (e) => onRemoteReaction(e.detail));
   try {
     await state.huddle.joinCall(channelId);
   } catch (err) {
@@ -1250,6 +1293,7 @@ async function startCall(channelId) {
   }
   state.mesh = mesh;
   state.inCallChannelId = channelId;
+  startSpeakerPolling();
   // Belt + suspenders: also bootstrap from the snapshot HuddleClient
   // already has, in case the presence-sync handler fired before our
   // listener attached during the joinCall handshake. _ensurePeer is
@@ -1298,6 +1342,10 @@ async function leaveCall() {
   state.pendingStreams.clear();
   closeAnnotate();
   clearSpotlight();
+  stopSpeakerPolling();
+  state.raisedHands.clear();
+  if (els.btnHand) els.btnHand.classList.remove('active');
+  clearAllReactions();
   syncTilesVisibility();
   try { await state.huddle?.leaveCall(); } catch {}
   // joinCall dropped the lurker for this channel when we became a
@@ -1566,6 +1614,10 @@ async function teardownTeam() {
   state.pendingStreams.clear();
   closeAnnotate();
   clearSpotlight();
+  stopSpeakerPolling();
+  state.raisedHands.clear();
+  if (els.btnHand) els.btnHand.classList.remove('active');
+  clearAllReactions();
   syncTilesVisibility();
   els.app.classList.add('hidden');
 }
@@ -1636,6 +1688,9 @@ function renderCallHeader() {
   els.btnMic.classList.toggle('hidden', !inCallHere);
   els.btnCam.classList.toggle('hidden', !inCallHere);
   els.btnShare.classList.toggle('hidden', !inCallHere);
+  els.btnHand?.classList.toggle('hidden', !inCallHere);
+  els.btnReact?.classList.toggle('hidden', !inCallHere);
+  if (!inCallHere) els.reactPopover?.classList.add('hidden');
   els.btnJira.classList.toggle('hidden', !inCallHere);
   // CC visible only when in a call AND the runtime exposes Web Speech.
   // We hide outside calls so the post-call summary doesn't show the
@@ -1661,6 +1716,8 @@ function onCallPeerLeft(peerId) {
 
 function removePersonFromCall(peerId) {
   removeTile(`peer:${peerId}`);
+  state.raisedHands.delete(peerId);
+  if (state.speakingPeer === peerId) setSpeakingPeer(null);
   // Drop any screen tiles owned by this peer too.
   for (const [key, tile] of state.tilesByKey.entries()) {
     if (key.startsWith('screen:') && tile.dataset.fromId === peerId) {
@@ -2220,6 +2277,169 @@ function clearSpotlight() {
   state.spotlightKey = null;
 }
 
+// ---------------------------------------------------------------------------
+// In-call presence: active speaker, raise hand, reactions
+// ---------------------------------------------------------------------------
+
+// Resolve a peerId to its camera tile. The local user shows up as
+// `self-cam` rather than `peer:<id>`, so callers don't have to special-case.
+function tileForPeer(peerId) {
+  if (peerId === state.huddle?.peerId) return state.tilesByKey.get('self-cam');
+  return state.tilesByKey.get(`peer:${peerId}`);
+}
+
+const SPEAKER_POLL_MS = 750;
+// audioLevel is reported in [0, 1]. Empirically anything below ~0.05 is
+// room noise / breath; staying above the threshold is what we treat as
+// "talking" rather than picking the nominal max regardless.
+const SPEAKER_LEVEL_THRESHOLD = 0.05;
+
+// Walk every peer connection's inbound audio receiver, plus the local
+// audio sender's media-source, and surface the loudest peer. Cheap
+// (one stats fetch per pc per tick) and entirely local — no signaling.
+function startSpeakerPolling() {
+  stopSpeakerPolling();
+  state.speakerPollTimer = setInterval(pollActiveSpeaker, SPEAKER_POLL_MS);
+}
+
+function stopSpeakerPolling() {
+  if (state.speakerPollTimer) clearInterval(state.speakerPollTimer);
+  state.speakerPollTimer = null;
+  setSpeakingPeer(null);
+}
+
+async function pollActiveSpeaker() {
+  if (!state.mesh) return;
+  const samples = []; // [peerId, level]
+  // Local mic level via any peer connection's outbound audio media-source.
+  const someConn = state.mesh.peers.values().next().value;
+  if (someConn) {
+    try {
+      const stats = await someConn.pc.getStats();
+      stats.forEach((r) => {
+        if (r.type === 'media-source' && r.kind === 'audio' && typeof r.audioLevel === 'number') {
+          samples.push([state.huddle.peerId, r.audioLevel]);
+        }
+      });
+    } catch {}
+  }
+  // Remote peers via each pc's inbound audio.
+  for (const [peerId, conn] of state.mesh.peers) {
+    try {
+      const stats = await conn.pc.getStats();
+      stats.forEach((r) => {
+        if (r.type === 'inbound-rtp' && r.kind === 'audio' && typeof r.audioLevel === 'number') {
+          samples.push([peerId, r.audioLevel]);
+        }
+      });
+    } catch {}
+  }
+  if (samples.length === 0) { setSpeakingPeer(null); return; }
+  samples.sort((a, b) => b[1] - a[1]);
+  const [peerId, level] = samples[0];
+  setSpeakingPeer(level >= SPEAKER_LEVEL_THRESHOLD ? peerId : null);
+}
+
+function setSpeakingPeer(peerId) {
+  if (state.speakingPeer === peerId) return;
+  if (state.speakingPeer) {
+    const prev = tileForPeer(state.speakingPeer);
+    if (prev) prev.classList.remove('speaking');
+  }
+  state.speakingPeer = peerId;
+  if (peerId) {
+    const tile = tileForPeer(peerId);
+    if (tile) tile.classList.add('speaking');
+  }
+}
+
+// Raise hand: maintained as a Set of peerIds locally. Self toggles via the
+// control-bar button; remote peers emit raise-hand broadcasts that flow in
+// here. The DOM badge attaches to the peer's camera tile (or self-cam).
+function setHandRaised(peerId, raised) {
+  if (raised) state.raisedHands.add(peerId);
+  else state.raisedHands.delete(peerId);
+  const tile = tileForPeer(peerId);
+  if (!tile) return;
+  let badge = tile.querySelector('.tile-hand');
+  if (raised && !badge) {
+    badge = document.createElement('div');
+    badge.className = 'tile-hand';
+    badge.textContent = '✋';
+    tile.appendChild(badge);
+  } else if (!raised && badge) {
+    badge.remove();
+  }
+}
+
+function toggleSelfHand() {
+  if (!state.mesh) return;
+  const peerId = state.huddle.peerId;
+  const next = !state.raisedHands.has(peerId);
+  setHandRaised(peerId, next);
+  state.mesh.sendRaiseHand(next);
+  els.btnHand.classList.toggle('active', next);
+}
+
+function onRemoteRaiseHand({ from, raised }) {
+  setHandRaised(from, !!raised);
+}
+
+// Reactions: ephemeral floating emoji over the sender's tile. Auto-clears
+// after the CSS animation settles; the timeout is mirrored in JS so a
+// rapid follow-up reaction on the same tile cancels the prior cleanup.
+const REACTION_TTL_MS = 2400;
+
+function showReaction(peerId, emoji) {
+  const tile = tileForPeer(peerId);
+  if (!tile) return;
+  const node = document.createElement('div');
+  node.className = 'tile-reaction';
+  node.textContent = emoji;
+  // Slight horizontal jitter so back-to-back reactions don't perfectly
+  // overlap.
+  node.style.setProperty('--rx-offset', `${Math.floor(Math.random() * 40 - 20)}px`);
+  tile.appendChild(node);
+  const prev = state.reactionTimers.get(node);
+  if (prev) clearTimeout(prev);
+  state.reactionTimers.set(node, setTimeout(() => {
+    node.remove();
+    state.reactionTimers.delete(node);
+  }, REACTION_TTL_MS));
+}
+
+function onRemoteReaction({ from, emoji }) {
+  showReaction(from, emoji);
+}
+
+function clearAllReactions() {
+  for (const t of state.reactionTimers.values()) clearTimeout(t);
+  state.reactionTimers.clear();
+  for (const node of els.tiles.querySelectorAll('.tile-reaction')) node.remove();
+}
+
+// Tiny popover anchored to the React button. Click outside or press
+// Escape to dismiss; selecting an emoji sends + closes.
+function wireReactPopover(btn, popover) {
+  const close = () => popover.classList.add('hidden');
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    popover.classList.toggle('hidden');
+  };
+  popover.onclick = (e) => {
+    const tgt = e.target.closest('[data-emoji]');
+    if (!tgt) return;
+    if (state.mesh) state.mesh.sendReaction(tgt.dataset.emoji);
+    close();
+  };
+  document.addEventListener('click', (e) => {
+    if (popover.classList.contains('hidden')) return;
+    if (popover.contains(e.target) || btn.contains(e.target)) return;
+    close();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+}
+
 function addLocalCameraTile(stream, name) {
   const tile = makeTile({ key: 'self-cam', label: `${name} (you)`, kind: 'self', userId: state.huddle.peerId });
   tile.querySelector('video').srcObject = stream;
@@ -2256,6 +2476,8 @@ function commitStreamAsCamera(streamId) {
   const peer = state.huddle.peerInfo.get(pending.fromId);
   const tile = makeTile({ key, label: peer ? peer.name : 'guest', kind: 'remote', userId: pending.fromId });
   tile.querySelector('video').srcObject = pending.stream;
+  // Catch up on hand-raised state in case the broadcast arrived before the tile.
+  if (state.raisedHands.has(pending.fromId)) setHandRaised(pending.fromId, true);
 }
 
 function renderRemoteScreen(stream, screen) {
@@ -2401,6 +2623,8 @@ function wireControls() {
   // team" is in the sidebar's sign-out menu.
   els.btnLeave.onclick = leaveCall;
   els.btnPopoutCall.onclick = popOutCurrentCall;
+  if (els.btnHand) els.btnHand.onclick = toggleSelfHand;
+  if (els.btnReact && els.reactPopover) wireReactPopover(els.btnReact, els.reactPopover);
   els.sourceCancel.onclick = () => els.sourcePicker.classList.add('hidden');
 
   // Invite links — workspace header (team) + channel header (call).

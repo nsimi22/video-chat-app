@@ -903,6 +903,94 @@ button.ctrl.muted.icon-only::after {
   grid-row: 1 / span 99;
   min-height: 0;
 }
+/* Active speaker: soft accent ring driven by JS audio-level polling.
+   Transitions ease in/out so quick volume bursts don't strobe. */
+.tile.speaking {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+  box-shadow: 0 0 0 6px var(--accent-soft);
+  transition: outline-color var(--t-base), box-shadow var(--t-base);
+}
+
+/* Raised-hand badge: small chip in the top-left, mirrors .tile-label
+   positioning so it doesn't collide with the name pill at bottom-left. */
+.tile-hand {
+  position: absolute; left: 10px; top: 10px;
+  background: rgba(255, 196, 0, 0.95);
+  color: #1a1300;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  font-size: 16px; line-height: 1;
+  box-shadow: var(--shadow-2);
+  animation: hand-bounce 1.6s ease-in-out infinite;
+  z-index: 25;
+}
+@keyframes hand-bounce {
+  0%, 100% { transform: translateY(0) rotate(-6deg); }
+  50%      { transform: translateY(-3px) rotate(8deg); }
+}
+
+/* Floating reaction emoji over a tile. Anchored bottom-center, drifts
+   up + fades out. JS removes the node when the timer fires; the
+   animation only handles visuals. */
+.tile-reaction {
+  position: absolute;
+  left: 50%; bottom: 20%;
+  transform: translateX(calc(-50% + var(--rx-offset, 0px)));
+  font-size: 56px; line-height: 1;
+  pointer-events: none;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  animation: reaction-float 2.4s ease-out forwards;
+  z-index: 26;
+}
+@keyframes reaction-float {
+  0%   { opacity: 0; transform: translateX(calc(-50% + var(--rx-offset, 0px))) translateY(20px) scale(0.6); }
+  15%  { opacity: 1; transform: translateX(calc(-50% + var(--rx-offset, 0px))) translateY(0)    scale(1.1); }
+  30%  { transform: translateX(calc(-50% + var(--rx-offset, 0px))) translateY(-10px) scale(1); }
+  100% { opacity: 0; transform: translateX(calc(-50% + var(--rx-offset, 0px))) translateY(-160px) scale(0.9); }
+}
+
+/* React popover: small chip of preset emojis anchored under the toolbar
+   button. Z-index sits above the call header but below modal overlays. */
+.react-popover {
+  position: absolute;
+  display: flex; gap: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line-strong);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: var(--r-pill);
+  padding: 4px;
+  box-shadow: var(--shadow-2);
+  z-index: 40;
+  /* Anchor near the bottom of the call-control row in the main window;
+     the popout positions its own copy via .popout-call-bar context. */
+  right: 20px; top: 64px;
+}
+.react-popover.hidden { display: none; }
+.react-popover .react-emoji {
+  background: transparent; border: none;
+  font-size: 22px; line-height: 1;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  min-height: auto;
+  transition: transform var(--t-fast), background var(--t-fast);
+}
+.react-popover .react-emoji:hover {
+  background: rgba(255, 255, 255, 0.08);
+  transform: scale(1.2);
+}
+
+/* Toolbar Hand button gets an active-state highlight when our hand is up. */
+#btn-hand.active,
+#popout-btn-hand.active {
+  background: rgba(255, 196, 0, 0.18);
+  color: #ffc400;
+}
+
+.popout-call .react-popover { right: 16px; bottom: 76px; top: auto; }
+
 .tile.muted::before {
   content: "🔇";
   position: absolute; top: 10px; left: 10px;
@@ -1551,6 +1639,7 @@ body.popout .popout-stage { display: block; }
 .popout-call {
   display: flex; flex-direction: column;
   width: 100vw; height: 100vh;
+  position: relative; /* anchors the .react-popover absolute positioning */
 }
 .popout-call .popout-tiles {
   flex: 1; min-height: 0;

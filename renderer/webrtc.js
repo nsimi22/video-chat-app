@@ -131,6 +131,7 @@ class MeshClient extends EventTarget {
     const FORWARD = [
       'welcome', 'connected', 'peer-joined', 'peer-left',
       'screen-announce', 'screen-stop', 'draw', 'typing',
+      'raise-hand', 'reaction',
       'chat-message', 'chat-update', 'chat-message-deleted',
       'chat-channel-added', 'chat-channel-removed',
     ];
@@ -185,6 +186,7 @@ class MeshClient extends EventTarget {
   get teamMeta() { return this.huddle.team; }
   get url() { return this.huddle.url; }
   get screenStreams() { return this._screenStreams; }
+  get raisedHands() { return this.huddle.raisedHands; }
 
   // --- Chat passthroughs --------------------------------------------------
   sendMessage(args)        { return this.huddle.sendMessage(args); }
@@ -339,6 +341,9 @@ class MeshClient extends EventTarget {
 
   // Signaling for drawing strokes; renderer calls this as it strokes.
   sendDraw(streamId, stroke) { this.huddle.sendDraw(streamId, stroke); }
+
+  sendRaiseHand(raised) { this.huddle.sendRaiseHand(raised); }
+  sendReaction(emoji) { this.huddle.sendReaction(emoji); }
 
   // Drops the WebRTC + media surface only. Leaving a call must not
   // tear down the HuddleClient (chat realtime, team presence, etc.) —

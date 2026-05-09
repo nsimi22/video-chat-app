@@ -87,6 +87,9 @@
       this.roster = new Map();
       this.remoteScreenLabels = new Map();
       this.activeScreens = new Map(); // streamId -> { from, label, owner: bool }
+      // Peer ids whose hand is currently raised. Cleared when the peer
+      // lowers their hand or leaves the call.
+      this.raisedHands = new Set();
       this.url = _config.url;
       this._teamChannel = null;
       this._screenChannels = new Map();     // streamId -> RealtimeChannel
@@ -243,6 +246,7 @@
         for (const id of [...this._callPeerInfo.keys()]) {
           if (!seen.has(id)) {
             this._callPeerInfo.delete(id);
+            this.raisedHands.delete(id);
             this.dispatchEvent(new CustomEvent('peer-left', { detail: id }));
           }
         }
@@ -270,6 +274,17 @@
         }
         this.dispatchEvent(new CustomEvent('screen-stop', { detail: payload }));
       });
+      ch.on('broadcast', { event: 'raise-hand' }, ({ payload }) => {
+        if (payload.raised) this.raisedHands.add(payload.from);
+        else this.raisedHands.delete(payload.from);
+        this.dispatchEvent(new CustomEvent('raise-hand', { detail: payload }));
+      });
+      // Reactions are ephemeral; receivers render a floating emoji on
+      // the sender's tile and let it auto-clear locally — no DB row.
+      ch.on('broadcast', { event: 'reaction' }, ({ payload }) => {
+        this.dispatchEvent(new CustomEvent('reaction', { detail: payload }));
+      });
+
       // Live call captions: transcript lines are ephemeral broadcasts
       // (no DB row) so they don't pollute message history. Each peer
       // who has captions on locally broadcasts their own final SR
@@ -338,6 +353,7 @@
         this.dispatchEvent(new CustomEvent('peer-left', { detail: id }));
       }
       this._callPeerInfo.clear();
+      this.raisedHands.clear();
       this._callChannel = null;
       this._callChannelId = null;
       // Await the call channel + every per-screen channel before clearing
@@ -612,6 +628,17 @@
       // screen tile when we stop sharing. Mirror what a remote peer
       // would receive.
       this.dispatchEvent(new CustomEvent('screen-stop', { detail: { from: this.peerId, streamId } }));
+    }
+    sendRaiseHand(raised) {
+      if (raised) this.raisedHands.add(this.peerId);
+      else this.raisedHands.delete(this.peerId);
+      this._callChannel?.send({ type: 'broadcast', event: 'raise-hand', payload: { from: this.peerId, raised: !!raised } });
+    }
+    sendReaction(emoji) {
+      this._callChannel?.send({ type: 'broadcast', event: 'reaction', payload: { from: this.peerId, emoji } });
+      // Call channel is { broadcast: { self: false } }; mirror locally so
+      // the sender sees their own reaction without a round-trip.
+      this.dispatchEvent(new CustomEvent('reaction', { detail: { from: this.peerId, emoji } }));
     }
     sendTranscriptLine(text, ts) {
       // Broadcast a final SR segment to other call participants. Skipped
