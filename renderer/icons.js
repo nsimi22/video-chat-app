@@ -30,6 +30,7 @@
     x: `<svg ${A}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
     paperclip: `<svg ${A}><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`,
     robot: `<svg ${A}><rect x="3" y="8" width="18" height="12" rx="2"/><circle cx="9" cy="14" r="1.4"/><circle cx="15" cy="14" r="1.4"/><line x1="12" y1="3" x2="12" y2="8"/><circle cx="12" cy="2.5" r="1"/></svg>`,
+    spotlight: `<svg ${A}><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`,
   };
   window.HuddleIcons = Object.assign(
     {

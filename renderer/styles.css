@@ -876,10 +876,33 @@ button.ctrl.muted.icon-only::after {
   min-height: auto;
 }
 .tile-actions button:hover { background: rgba(0, 0, 0, 0.75); }
-.tile-action-annotate {
+.tile-action-annotate,
+.tile-action-spotlight {
   display: inline-flex; align-items: center; gap: 6px;
 }
-.tile-action-annotate svg { width: 14px; height: 14px; }
+.tile-action-annotate svg,
+.tile-action-spotlight svg { width: 14px; height: 14px; }
+.tile.spotlighted .tile-action-spotlight { background: rgba(255, 255, 255, 0.18); }
+
+/* Spotlight layout: pin one tile to a wide left column, stack the rest in
+   a side rail on the right. The spotlighted tile spans every implicit row
+   so it fills the available height regardless of how many rail tiles
+   exist. Falls back gracefully when only the spotlighted tile is present
+   (column 2 stays empty). */
+.tiles.has-spotlight {
+  grid-template-columns: minmax(0, 1fr) 260px;
+  grid-auto-flow: row dense;
+  max-height: 70vh;
+}
+.tiles.has-spotlight .tile {
+  grid-column: 2;
+  min-height: 140px;
+}
+.tiles.has-spotlight .tile.spotlighted {
+  grid-column: 1;
+  grid-row: 1 / span 99;
+  min-height: 0;
+}
 .tile.muted::before {
   content: "🔇";
   position: absolute; top: 10px; left: 10px;
