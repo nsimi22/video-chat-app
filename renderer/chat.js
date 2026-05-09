@@ -10,24 +10,58 @@
 // (`{hasMore, oldestTs}`). View-only state (`nodeById`, `_currentLabel`) is
 // reset on channel/thread switches.
 
-// System prompt for /ai-ticket. The AI is instructed to emit ONE
-// JSON object with no preamble, no markdown fences, no commentary.
 // Composer auto-resize cap. Values larger than this scroll
 // internally instead of growing the textarea, so the message list
 // stays mostly visible while you draft a long message.
 const MAX_COMPOSER_HEIGHT = 160;
 
-// Schema is small + opinionated — anything beyond the documented
-// keys is dropped, defaults pick up the rest.
-const TICKET_SYSTEM_PROMPT = `You convert freeform descriptions into Jira tickets.
-Output ONLY a single JSON object with this shape — no preamble, no markdown fences, no commentary:
+// Voice + structure are tuned to read like a senior PM authored the
+// ticket — context, problem statement, testable acceptance criteria,
+// non-goals when applicable. A user-supplied "project context" string
+// (from Settings → AI ticket context) is appended at runtime so the
+// model knows what product/team it's writing for.
+const TICKET_SYSTEM_PROMPT = `You are a senior product manager. Turn the user's freeform input into a Jira ticket as a thoughtful senior PM would write it.
+
+Output ONLY a single JSON object — no preamble, no markdown fences, no commentary outside the JSON. Shape:
 {
-  "summary": "short, imperative title in sentence case (≤80 chars)",
-  "description": "longer markdown description with context, repro steps, acceptance criteria — optional",
+  "summary": "concise imperative title (clear and complete)",
+  "description": "rich markdown body with the structure below",
   "issueType": "Task" | "Bug" | "Story"
 }
-Pick "Bug" only when the description is clearly about something broken. Default to "Task". Use "Story" for net-new feature work or larger pieces of scope.
+
+A senior-PM description includes the sections below. Omit any that don't apply to the input — don't pad. Use these literal H2 headings.
+
+## Background
+One to three sentences of context: why this matters now, what triggered it, who is affected.
+
+## Problem
+For bugs: precise statement of what's broken, where, and the user-visible impact.
+For net-new work: write "## Goal" instead and state the outcome we want.
+
+## Acceptance criteria
+Bulleted, individually testable, written as observable behaviors. Use the "- [ ] " checkbox prefix.
+
+## Out of scope
+Optional. List anything that is intentionally not part of this ticket.
+
+## Notes
+Optional. Constraints, dependencies, related tickets, open questions.
+
+Pick "Bug" only when the input is clearly about something broken. Default to "Task". Use "Story" for net-new feature work or larger scope.
+
+Do not artificially shorten the description. Be thorough where the input warrants it, terse where it doesn't. Cut filler, keep clarity.
+
 Output the JSON object and nothing else.`;
+
+// Compose the system prompt with optional user-supplied project context.
+// Stable context goes at the top so the model treats it as background
+// rather than instructions; the per-ticket prompt arrives as the user
+// message, untouched.
+function buildTicketSystemPrompt(projectContext) {
+  const ctx = (projectContext || '').trim();
+  if (!ctx) return TICKET_SYSTEM_PROMPT;
+  return `## Project context (always applies)\n${ctx}\n\n---\n\n${TICKET_SYSTEM_PROMPT}`;
+}
 
 // Tolerant JSON extractor: tries plain JSON.parse, then looks for
 // the first {...} block (in case the AI wrapped the JSON in
@@ -1464,7 +1498,7 @@ class ChatView {
     let aiResult;
     try {
       aiResult = await ai.chat({
-        system: TICKET_SYSTEM_PROMPT,
+        system: buildTicketSystemPrompt(this.hooks.getAiTicketContext?.()),
         messages: [{ role: 'user', content: prompt }],
       });
     } catch (err) {
@@ -1483,11 +1517,16 @@ class ChatView {
       alert('AI did not produce a ticket summary. Try rephrasing the description.');
       return true;
     }
+    // Jira's summary field is hard-capped to 255 chars by the API; the
+    // 250 slice is just a safety net so an unusually verbose AI summary
+    // still creates the ticket instead of erroring out at the Jira call.
+    // The description has effectively no length limit.
+    const summary = parsed.summary.length > 250 ? parsed.summary.slice(0, 250) : parsed.summary;
     let issue;
     try {
       issue = await jira.createIssue({
         projectKey,
-        summary: parsed.summary.slice(0, 240),
+        summary,
         description: parsed.description || '',
         issueType: parsed.issueType || 'Task',
       });
