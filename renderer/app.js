@@ -196,6 +196,9 @@ const state = {
   // Teardown for the React popover's document-level listeners. Cleared on
   // teardownTeam so re-joining a team doesn't accumulate handlers.
   reactPopoverCleanup: null,
+  // Same pattern for the Escape-to-close handler shared by the pinned
+  // drawer + image lightbox; wireControls re-runs across team switches.
+  overlayKeyCleanup: null,
   pendingStreams: new Map(),
   unread: new Map(), // channelId -> { count, mentions } both ints
   _email: null,
@@ -1617,6 +1620,8 @@ async function teardownTeam() {
   // wireControls call doesn't pile up handlers on the same document.
   state.reactPopoverCleanup?.();
   state.reactPopoverCleanup = null;
+  state.overlayKeyCleanup?.();
+  state.overlayKeyCleanup = null;
   // Close any team-scoped overlays so they don't bleed into the next
   // team's session.
   closePinnedDrawer();
@@ -2479,7 +2484,11 @@ function renderPinnedDrawer(messages, onPick) {
     head.textContent = `${m.authorName} · ${new Date(m.ts).toLocaleString()}`;
     const body = document.createElement('div');
     body.className = 'pinned-item-body';
-    body.innerHTML = window.renderMarkdown ? window.renderMarkdown(m.text || '') : (m.text || '');
+    // Always route through renderMarkdown — it sanitizes HTML. The
+    // fallback path used to write raw m.text into innerHTML, which
+    // would have been an XSS vector if the dependency ever loaded
+    // out of order.
+    body.innerHTML = window.renderMarkdown(m.text || '');
     row.append(head, body);
     row.onclick = () => onPick?.(m.id);
     els.pinnedList.appendChild(row);
@@ -2759,11 +2768,16 @@ function wireControls() {
       if (e.target === els.imageLightbox) closeImageLightbox();
     };
   }
-  document.addEventListener('keydown', (e) => {
+  // Drop a previous registration first so wireControls re-running on a
+  // team switch can't pile up handlers on the document.
+  state.overlayKeyCleanup?.();
+  const onOverlayKey = (e) => {
     if (e.key !== 'Escape') return;
     if (els.imageLightbox && !els.imageLightbox.classList.contains('hidden')) closeImageLightbox();
     else if (els.pinnedDrawer && !els.pinnedDrawer.classList.contains('hidden')) closePinnedDrawer();
-  });
+  };
+  document.addEventListener('keydown', onOverlayKey);
+  state.overlayKeyCleanup = () => document.removeEventListener('keydown', onOverlayKey);
   if (els.btnReact && els.reactPopover) {
     state.reactPopoverCleanup?.();
     state.reactPopoverCleanup = wireReactPopover(els.btnReact, els.reactPopover);
