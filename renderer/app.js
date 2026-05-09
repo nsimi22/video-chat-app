@@ -206,6 +206,7 @@ const state = {
     unsub: null,
     lastInterim: '',      // local interim, redrawn over the panel tail
     forChannelId: null,   // channel the buffer belongs to (for summary post)
+    _finalizing: false,   // guards finalizeCallTranscript against re-entry
   },
 };
 
@@ -1275,12 +1276,13 @@ async function startCall(channelId) {
 // into the team. The HuddleClient keeps chat realtime running.
 async function leaveCall() {
   if (!state.mesh) return;
-  // Finalise captions BEFORE disconnect: the AI summary post needs
-  // the huddle.sendAiMessage path, which depends on the team
-  // realtime channel — that's still up at this point. We don't
-  // await here on errors; the helper is best-effort and swallows
-  // its own throws so the rest of the teardown always runs.
-  try { await finalizeCallTranscript(); } catch {}
+  // Snapshot + clear the captions buffer synchronously, then
+  // dispatch the AI summary as a background task. We don't await
+  // because the AI round-trip can take several seconds; blocking
+  // here would keep the WebRTC mesh up + the UI frozen until the
+  // recap returns. finalizeCallTranscript handles the team-channel
+  // outliving leaveCall (mesh.disconnect doesn't close it).
+  finalizeCallTranscript();
   // stop() is async (flushes pending note-save timers); await all
   // sessions in parallel so a slow DB write doesn't block the rest.
   await Promise.allSettled([...state.whiteboardSessions.values()].map((s) => s.stop()));
@@ -1339,14 +1341,20 @@ function startCaptions() {
   const mgr = new window.HuddleTranscript.TranscriptManager();
   state.cc.manager = mgr;
   mgr.onFinal((text) => {
+    // SR fires asynchronously, so teardownTeam may have nulled
+    // state.huddle between the time we started capturing and this
+    // callback resolving. Bail rather than crash the renderer
+    // dereferencing peerId / name on null.
+    const huddle = state.huddle;
+    if (!huddle) return;
     const line = {
-      from: state.huddle.peerId, fromName: state.huddle.name,
+      from: huddle.peerId, fromName: huddle.name,
       text, ts: Date.now(),
     };
     appendCaptionLine(line);
     state.cc.lastInterim = '';
     renderInterim();
-    try { state.huddle.sendTranscriptLine(text, line.ts); } catch {}
+    try { huddle.sendTranscriptLine(text, line.ts); } catch {}
   });
   mgr.onInterim((text) => {
     state.cc.lastInterim = text;
@@ -1429,56 +1437,67 @@ function renderInterim() {
 function showCaptionsPanel() { els.captions?.classList.remove('hidden'); }
 function hideCaptionsPanel() { els.captions?.classList.add('hidden'); }
 
-// Called from leaveCall before mesh.disconnect(): if the local user
-// had captions on, summarise the buffer via the configured AI
-// provider and post the summary as an AI message in the channel
-// the call belonged to. Best-effort — failures don't block the
-// teardown of the call.
-async function finalizeCallTranscript() {
+// Called from leaveCall: if the local user had captions on,
+// summarise the buffer via the configured AI provider and post
+// the recap as an AI message in the channel. The synchronous
+// part of this function snapshots the buffer + clears the
+// shared state immediately; the AI round-trip runs in the
+// background so leaveCall can disconnect the mesh + return
+// without blocking the UI for several seconds.
+function finalizeCallTranscript() {
+  // Re-entrancy + cross-call safety. Without _finalizing, double-
+  // clicking Leave (or leaveCall→startCall on a new channel before
+  // the AI returns) would spawn parallel recaps and would also
+  // clear cc.lines AFTER the await — wiping the next call's
+  // freshly-accumulating buffer.
+  if (state.cc._finalizing) return;
   if (!state.cc.on && state.cc.lines.length === 0) return;
+  state.cc._finalizing = true;
+
+  // Snapshot + reset shared state synchronously so a follow-up
+  // call accumulates into a fresh buffer with no chance of being
+  // cleared by an in-flight summary belonging to the previous one.
   const lines = state.cc.lines.slice();
   const channelId = state.cc.forChannelId;
-  // Stop SR + listener immediately, but keep the buffer for the
-  // summary post below.
+  state.cc.lines = [];
+  state.cc.forChannelId = null;
   stopCaptions({ keepBuffer: true });
+
   if (!channelId || lines.length === 0) {
-    state.cc.lines = []; state.cc.forChannelId = null;
+    state.cc._finalizing = false;
     return;
   }
   const ai = state.ai;
   if (!ai || !ai.isConfigured()) {
-    state.cc.lines = []; state.cc.forChannelId = null;
+    state.cc._finalizing = false;
     return;
   }
-  // Format the transcript for the model: speaker tags + chronological
-  // order. Lines are sorted by ts because mesh broadcasts can arrive
-  // out of order on lossy networks.
-  lines.sort((a, b) => (a.ts || 0) - (b.ts || 0));
-  const transcript = lines.map((l) => `${l.fromName || 'someone'}: ${l.text}`).join('\n');
-  const system = "You are summarising a live call transcript captured via the browser's speech-to-text. Produce a concise recap (under 200 words) in markdown: 2-3 bullets of the main points discussed, then a 'Decisions' section if any were made, then 'Action items' (with owners if you can infer them). The transcript is rough — fix obvious recognition errors silently and don't quote raw lines.";
-  let result;
-  try {
-    result = await ai.chat({
-      system,
-      messages: [{ role: 'user', content: transcript }],
-    });
-  } catch (err) {
-    console.warn('call summary failed', err);
-    state.cc.lines = []; state.cc.forChannelId = null;
-    return;
-  }
-  const body = `**📞 Call recap**\n\n${result.text || '(no recap produced)'}`;
-  try {
-    await state.huddle?.sendAiMessage({
-      channelId,
-      parentId: null,
-      text: body,
-      model: result.model,
-    });
-  } catch (err) {
-    console.warn('failed to post call recap', err);
-  }
-  state.cc.lines = []; state.cc.forChannelId = null;
+
+  // Background path: don't block the leaveCall teardown on the AI
+  // round-trip. The team realtime channel survives mesh.disconnect
+  // (only the per-call channel closes), so sendAiMessage still
+  // works after the await. If teardownTeam has run by the time
+  // the chat resolves, state.huddle?.sendAiMessage no-ops cleanly.
+  (async () => {
+    lines.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    const transcript = lines.map((l) => `${l.fromName || 'someone'}: ${l.text}`).join('\n');
+    const system = "You are summarising a live call transcript captured via the browser's speech-to-text. Produce a concise recap (under 200 words) in markdown: 2-3 bullets of the main points discussed, then a 'Decisions' section if any were made, then 'Action items' (with owners if you can infer them). The transcript is rough — fix obvious recognition errors silently and don't quote raw lines.";
+    let result;
+    try {
+      result = await ai.chat({ system, messages: [{ role: 'user', content: transcript }] });
+    } catch (err) {
+      console.warn('call summary failed', err);
+      return;
+    }
+    const body = `**📞 Call recap**\n\n${result.text || '(no recap produced)'}`;
+    try {
+      await state.huddle?.sendAiMessage({
+        channelId, parentId: null, text: body, model: result.model,
+      });
+    } catch (err) {
+      console.warn('failed to post call recap', err);
+    }
+  })().finally(() => { state.cc._finalizing = false; });
 }
 
 async function teardownTeam() {
