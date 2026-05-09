@@ -1518,10 +1518,12 @@ class ChatView {
       return true;
     }
     // Jira's summary field is hard-capped to 255 chars by the API; the
-    // 250 slice is just a safety net so an unusually verbose AI summary
+    // 250 slice is a safety net so an unusually verbose AI summary
     // still creates the ticket instead of erroring out at the Jira call.
-    // The description has effectively no length limit.
-    const summary = parsed.summary.length > 250 ? parsed.summary.slice(0, 250) : parsed.summary;
+    // slice() is a no-op when the string is already shorter, so no
+    // conditional is needed. The description has effectively no length
+    // limit and stays untouched.
+    const summary = parsed.summary.slice(0, 250);
     let issue;
     try {
       issue = await jira.createIssue({
