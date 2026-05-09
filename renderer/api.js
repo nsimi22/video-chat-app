@@ -270,6 +270,14 @@
         }
         this.dispatchEvent(new CustomEvent('screen-stop', { detail: payload }));
       });
+      // Live call captions: transcript lines are ephemeral broadcasts
+      // (no DB row) so they don't pollute message history. Each peer
+      // who has captions on locally broadcasts their own final SR
+      // segments here; receivers render them in the in-call captions
+      // panel and accumulate them for the post-call AI summary.
+      ch.on('broadcast', { event: 'transcript-line' }, ({ payload }) => {
+        this.dispatchEvent(new CustomEvent('transcript-line', { detail: payload }));
+      });
 
       await new Promise((resolve, reject) => {
         // Every failure path must unsubscribe before rejecting,
@@ -604,6 +612,16 @@
       // screen tile when we stop sharing. Mirror what a remote peer
       // would receive.
       this.dispatchEvent(new CustomEvent('screen-stop', { detail: { from: this.peerId, streamId } }));
+    }
+    sendTranscriptLine(text, ts) {
+      // Broadcast a final SR segment to other call participants. Skipped
+      // when no call is active — captions are call-scoped, so there's
+      // no team-channel fallback. ts lets receivers stitch together
+      // out-of-order arrivals at summary time.
+      this._callChannel?.send({
+        type: 'broadcast', event: 'transcript-line',
+        payload: { from: this.peerId, fromName: this.name, text, ts: ts || Date.now() },
+      });
     }
     sendTyping(channelId, parentId) {
       this._teamChannel?.send({

@@ -182,6 +182,9 @@
             <button id="btn-jira" class="ctrl icon-only hidden" title="Create a Jira ticket" aria-label="Create a Jira ticket">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7" cy="7" r="1"/></svg>
             </button>
+            <button id="btn-cc" class="ctrl icon-only hidden" title="Live captions + post-call AI summary" aria-label="Toggle captions">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M7 14h3"/><path d="M14 14h3"/><path d="M7 11h3"/><path d="M14 11h3"/></svg>
+            </button>
             <button id="btn-popout-call" class="ctrl icon-only hidden" title="Move call to a separate window" aria-label="Pop out call">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3h7v7"/><path d="M10 14L21 3"/><path d="M21 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h6"/></svg>
             </button>
@@ -194,6 +197,21 @@
 
         <!-- Tile grid: cameras + active screen shares. Hidden until you're in a call. -->
         <section id="tiles" class="tiles hidden"></section>
+
+        <!-- Live captions panel. Visible only while CC is on locally.
+             Final transcript-line broadcasts arrive via the call channel
+             and are appended here in arrival order; the latest interim
+             phrase from the local recogniser tails the panel for
+             responsiveness. -->
+        <section id="captions" class="captions hidden" aria-live="polite">
+          <div class="captions-header">
+            <span>Live captions</span>
+            <button id="captions-close" class="ghost icon-only" title="Hide captions panel" aria-label="Hide captions panel">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div id="captions-list" class="captions-list"></div>
+        </section>
 
         <!-- Drawing toolbar appears when a screen tile is focused for annotation. -->
         <div id="draw-toolbar" class="draw-toolbar hidden">
@@ -484,6 +502,7 @@
     <script src="drawing.js"></script>
     <script src="api.js"></script>
     <script src="ai.js"></script>
+    <script src="transcript.js"></script>
     <script src="jira.js"></script>
     <script src="ai-tools.js"></script>
     <script src="github.js"></script>

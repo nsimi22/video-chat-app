@@ -81,6 +81,10 @@ const els = {
   btnShare: $('#btn-share'),
   btnLeave: $('#btn-leave'),
   btnPopoutCall: $('#btn-popout-call'),
+  btnCc: $('#btn-cc'),
+  captions: $('#captions'),
+  captionsList: $('#captions-list'),
+  captionsClose: $('#captions-close'),
   drawToolbar: $('#draw-toolbar'),
   drawTargetName: $('#draw-target-name'),
   drawColor: $('#draw-color'),
@@ -189,6 +193,21 @@ const state = {
   // rejoin in the main window and become a duplicate participant.
   // Cleared when the corresponding popout-closed event arrives.
   poppedOutCalls: new Set(),
+  // Live captions / post-call summary. cc.manager wraps Web Speech;
+  // cc.lines is the rolling buffer of every final segment we've
+  // captured locally OR received from another peer for the current
+  // call, used both to render the panel and to feed the post-call
+  // AI summary. cc.unsub disposes the mesh transcript-line listener
+  // when captions are switched off or the call ends.
+  cc: {
+    manager: null,
+    on: false,
+    lines: [],            // [{ from, fromName, text, ts }]
+    unsub: null,
+    lastInterim: '',      // local interim, redrawn over the panel tail
+    forChannelId: null,   // channel the buffer belongs to (for summary post)
+    _finalizing: false,   // guards finalizeCallTranscript against re-entry
+  },
 };
 
 // Whether the OS window is currently focused. Used to gate desktop
@@ -1257,6 +1276,13 @@ async function startCall(channelId) {
 // into the team. The HuddleClient keeps chat realtime running.
 async function leaveCall() {
   if (!state.mesh) return;
+  // Snapshot + clear the captions buffer synchronously, then
+  // dispatch the AI summary as a background task. We don't await
+  // because the AI round-trip can take several seconds; blocking
+  // here would keep the WebRTC mesh up + the UI frozen until the
+  // recap returns. finalizeCallTranscript handles the team-channel
+  // outliving leaveCall (mesh.disconnect doesn't close it).
+  finalizeCallTranscript();
   // stop() is async (flushes pending note-save timers); await all
   // sessions in parallel so a slow DB write doesn't block the rest.
   await Promise.allSettled([...state.whiteboardSessions.values()].map((s) => s.stop()));
@@ -1284,8 +1310,210 @@ async function leaveCall() {
   renderCallHeader();
 }
 
+// ---------------------------------------------------------------------------
+// Live call captions (Web Speech API) + post-call AI summary
+// ---------------------------------------------------------------------------
+//
+// startCaptions() flips local SR on, broadcasts each final segment to
+// other call participants, and shows the captions panel. Remote
+// transcript-line events feed the same buffer so every peer's panel
+// shows the unified call transcript. stopCaptions() (called from the
+// CC toggle, leaveCall, or popout-handoff) tears down the SR + the
+// mesh listener but keeps the buffer around long enough for
+// finalizeCallTranscript() to summarise it.
+function startCaptions() {
+  if (state.cc.on) return;
+  if (!window.HuddleTranscript?.TranscriptManager?.isSupported()) {
+    showCallError("This build's runtime doesn't expose the Web Speech API; live captions aren't available.");
+    return;
+  }
+  if (!state.mesh || !state.huddle) return;
+  state.cc.on = true;
+  state.cc.forChannelId = state.inCallChannelId;
+  els.btnCc?.classList.add('active');
+  showCaptionsPanel();
+
+  // Receive lines from peers (and from this peer's local SR via the
+  // self: false call channel — those go straight into the buffer
+  // without the network round-trip).
+  state.cc.unsub = bindTranscriptLines();
+
+  const mgr = new window.HuddleTranscript.TranscriptManager();
+  state.cc.manager = mgr;
+  mgr.onFinal((text) => {
+    // SR fires asynchronously, so teardownTeam may have nulled
+    // state.huddle between the time we started capturing and this
+    // callback resolving. Bail rather than crash the renderer
+    // dereferencing peerId / name on null.
+    const huddle = state.huddle;
+    if (!huddle) return;
+    const line = {
+      from: huddle.peerId, fromName: huddle.name,
+      text, ts: Date.now(),
+    };
+    appendCaptionLine(line);
+    state.cc.lastInterim = '';
+    renderInterim();
+    try { huddle.sendTranscriptLine(text, line.ts); } catch {}
+  });
+  mgr.onInterim((text) => {
+    state.cc.lastInterim = text;
+    renderInterim();
+  });
+  mgr.start();
+}
+
+function stopCaptions({ keepBuffer = false } = {}) {
+  state.cc.on = false;
+  els.btnCc?.classList.remove('active');
+  state.cc.manager?.stop();
+  state.cc.manager = null;
+  state.cc.unsub?.();
+  state.cc.unsub = null;
+  state.cc.lastInterim = '';
+  if (!keepBuffer) {
+    state.cc.lines = [];
+    state.cc.forChannelId = null;
+    // Full reset — also clear the in-flight lock so a previous
+    // recap that's mid-await on AI doesn't keep the next team's
+    // leaveCall from spawning its own finalize. The IIFE's
+    // .finally would clear this eventually, but the gap can swallow
+    // the next call's recap if leaveCall fires during it.
+    state.cc._finalizing = false;
+    if (els.captionsList) els.captionsList.replaceChildren();
+    hideCaptionsPanel();
+  } else {
+    // Buffer persists for the post-call summary; panel hides anyway
+    // since the call is over.
+    hideCaptionsPanel();
+  }
+}
+
+function bindTranscriptLines() {
+  if (!state.huddle) return () => {};
+  const handler = (e) => {
+    const d = e.detail || {};
+    if (!d.text) return;
+    appendCaptionLine({ from: d.from, fromName: d.fromName, text: d.text, ts: d.ts || Date.now() });
+  };
+  state.huddle.addEventListener('transcript-line', handler);
+  return () => state.huddle?.removeEventListener('transcript-line', handler);
+}
+
+function appendCaptionLine(line) {
+  state.cc.lines.push(line);
+  if (!els.captionsList) return;
+  const row = document.createElement('div');
+  row.className = 'caption-line' + (line.from === state.huddle?.peerId ? ' caption-self' : '');
+  const who = document.createElement('span');
+  who.className = 'caption-from';
+  who.textContent = line.fromName || 'someone';
+  const what = document.createElement('span');
+  what.className = 'caption-text';
+  what.textContent = line.text;
+  row.append(who, what);
+  // Strip a trailing interim node before appending so finals always
+  // sit below interim flicker.
+  const interim = els.captionsList.querySelector('.caption-interim');
+  if (interim) interim.remove();
+  els.captionsList.appendChild(row);
+  if (state.cc.lastInterim) renderInterim();
+  els.captionsList.scrollTop = els.captionsList.scrollHeight;
+}
+
+function renderInterim() {
+  if (!els.captionsList) return;
+  let row = els.captionsList.querySelector('.caption-interim');
+  if (!state.cc.lastInterim) { row?.remove(); return; }
+  if (!row) {
+    row = document.createElement('div');
+    row.className = 'caption-line caption-self caption-interim';
+    const who = document.createElement('span');
+    who.className = 'caption-from';
+    who.textContent = state.huddle?.name || 'you';
+    const what = document.createElement('span');
+    what.className = 'caption-text';
+    row.append(who, what);
+    els.captionsList.appendChild(row);
+  }
+  row.querySelector('.caption-text').textContent = state.cc.lastInterim;
+  els.captionsList.scrollTop = els.captionsList.scrollHeight;
+}
+
+function showCaptionsPanel() { els.captions?.classList.remove('hidden'); }
+function hideCaptionsPanel() { els.captions?.classList.add('hidden'); }
+
+// Called from leaveCall: if the local user had captions on,
+// summarise the buffer via the configured AI provider and post
+// the recap as an AI message in the channel. The synchronous
+// part of this function snapshots the buffer + clears the
+// shared state immediately; the AI round-trip runs in the
+// background so leaveCall can disconnect the mesh + return
+// without blocking the UI for several seconds.
+function finalizeCallTranscript() {
+  // Re-entrancy + cross-call safety. Without _finalizing, double-
+  // clicking Leave (or leaveCall→startCall on a new channel before
+  // the AI returns) would spawn parallel recaps and would also
+  // clear cc.lines AFTER the await — wiping the next call's
+  // freshly-accumulating buffer.
+  if (state.cc._finalizing) return;
+  if (!state.cc.on && state.cc.lines.length === 0) return;
+  state.cc._finalizing = true;
+
+  // Snapshot + reset shared state synchronously so a follow-up
+  // call accumulates into a fresh buffer with no chance of being
+  // cleared by an in-flight summary belonging to the previous one.
+  const lines = state.cc.lines.slice();
+  const channelId = state.cc.forChannelId;
+  state.cc.lines = [];
+  state.cc.forChannelId = null;
+  stopCaptions({ keepBuffer: true });
+
+  if (!channelId || lines.length === 0) {
+    state.cc._finalizing = false;
+    return;
+  }
+  const ai = state.ai;
+  if (!ai || !ai.isConfigured()) {
+    state.cc._finalizing = false;
+    return;
+  }
+
+  // Background path: don't block the leaveCall teardown on the AI
+  // round-trip. The team realtime channel survives mesh.disconnect
+  // (only the per-call channel closes), so sendAiMessage still
+  // works after the await. If teardownTeam has run by the time
+  // the chat resolves, state.huddle?.sendAiMessage no-ops cleanly.
+  (async () => {
+    lines.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    const transcript = lines.map((l) => `${l.fromName || 'someone'}: ${l.text}`).join('\n');
+    const system = "You are summarising a live call transcript captured via the browser's speech-to-text. Produce a concise recap (under 200 words) in markdown: 2-3 bullets of the main points discussed, then a 'Decisions' section if any were made, then 'Action items' (with owners if you can infer them). The transcript is rough — fix obvious recognition errors silently and don't quote raw lines.";
+    let result;
+    try {
+      result = await ai.chat({ system, messages: [{ role: 'user', content: transcript }] });
+    } catch (err) {
+      console.warn('call summary failed', err);
+      return;
+    }
+    const body = `**📞 Call recap**\n\n${result.text || '(no recap produced)'}`;
+    try {
+      await state.huddle?.sendAiMessage({
+        channelId, parentId: null, text: body, model: result.model,
+      });
+    } catch (err) {
+      console.warn('failed to post call recap', err);
+    }
+  })().finally(() => { state.cc._finalizing = false; });
+}
+
 async function teardownTeam() {
   if (state.mesh) {
+    // Captions ride the team realtime channel for the post-call
+    // recap; tear them down (without trying to summarise — the
+    // huddle is about to be stop()-ed below) before the channel
+    // goes away so the SR session doesn't keep firing into a
+    // null mesh.
+    stopCaptions();
     await Promise.allSettled([...state.whiteboardSessions.values()].map((s) => s.stop()));
     state.whiteboardSessions.clear();
     state.mesh.disconnect();
@@ -1406,6 +1634,11 @@ function renderCallHeader() {
   els.btnCam.classList.toggle('hidden', !inCallHere);
   els.btnShare.classList.toggle('hidden', !inCallHere);
   els.btnJira.classList.toggle('hidden', !inCallHere);
+  // CC visible only when in a call AND the runtime exposes Web Speech.
+  // We hide outside calls so the post-call summary doesn't show the
+  // toggle while there's nothing to caption.
+  const ccSupported = !!window.HuddleTranscript?.TranscriptManager?.isSupported();
+  els.btnCc?.classList.toggle('hidden', !inCallHere || !ccSupported);
   els.btnPopoutCall.classList.toggle('hidden', !inCallHere);
   els.btnLeave.classList.toggle('hidden', !inCallHere);
 }
@@ -2124,6 +2357,13 @@ function wireControls() {
     els.btnCam.classList.toggle('muted', !on);
   };
   els.btnShare.onclick = openSourcePicker;
+  // CC button + the panel's X both toggle captions off so the panel
+  // visibility and the capture state stay in sync — otherwise you'd
+  // get the awkward "X hid the panel but my mic is still being
+  // transcribed and broadcast" mode.
+  const toggleCaptions = () => (state.cc.on ? stopCaptions() : startCaptions());
+  els.btnCc && (els.btnCc.onclick = toggleCaptions);
+  els.captionsClose && (els.captionsClose.onclick = () => stopCaptions());
   // Leave the call (drop media + tile grid, keep chat). Held-down "Leave
   // team" is in the sidebar's sign-out menu.
   els.btnLeave.onclick = leaveCall;

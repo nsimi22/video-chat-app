@@ -1002,6 +1002,58 @@ button.ctrl.muted.icon-only::after {
 }
 .draw-toolbar input[type=range] { width: 88px; }
 
+/* Live captions panel. Sits between the tile grid and the messages
+   list so it can soak up vertical space without competing with the
+   composer. Bottom border separates it from the chat. The panel is
+   only visible when CC is on locally (the toggle adds/removes
+   .hidden), and only visible when a call is in this channel — the
+   #captions element doesn't render outside the call stage anyway. */
+.captions {
+  margin: 8px 16px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  display: flex; flex-direction: column;
+  max-height: 220px; min-height: 80px;
+  overflow: hidden;
+}
+.captions-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px; color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600;
+}
+.captions-list {
+  flex: 1; overflow-y: auto;
+  padding: 8px 12px;
+  font-size: 13px; line-height: 1.5;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.caption-line { display: flex; gap: 8px; }
+.caption-from {
+  flex: none; min-width: 80px; max-width: 120px;
+  color: var(--text-dim); font-weight: 600; text-align: right;
+  font-size: 12px;
+}
+.caption-text { color: var(--text); flex: 1; }
+.caption-self .caption-from { color: var(--accent-2); }
+/* Interim row is the latest in-flight phrase from the local
+   recogniser, redrawn over each interim event so the transcript
+   tail flickers as the user speaks. Lighter so committed lines
+   stay the visual anchor. */
+.caption-interim .caption-text { color: var(--text-dim); font-style: italic; }
+/* The CC button uses the same .ctrl chrome as the other call
+   toggles but adds an "active" state — accent fill when captions
+   are live so users can see at a glance whether their voice is
+   being shipped to peers. */
+#btn-cc.active {
+  background: var(--accent);
+  color: white;
+}
+
 /* Chat — chat now lives inside .stage. The standalone column was
    removed when stage and chat merged. */
 .messages {
