@@ -366,10 +366,11 @@ class ChatView {
   // top suggestion as the user types.
   _refreshSlashSuggest() {
     const value = this.els.composer.value;
-    // Allow digits in command names (e.g., a future /k8s) — the
-    // dispatch in _maybeRunSlash also accepts \w, so they stay in
-    // sync. Hyphens stay supported for /ai-ticket.
-    const m = /^\/([a-zA-Z0-9-]*)$/.exec(value);
+    // [\w-]* matches _maybeRunSlash's dispatch regex, so anything that
+    // would actually run as a slash command also surfaces in the
+    // suggester (incl. hyphenated /ai-ticket and any future underscore
+    // command). The asterisk lets a bare "/" open the picker.
+    const m = /^\/([\w-]*)$/.exec(value);
     if (!m) { this._hideSlashSuggest(); return; }
     const partial = m[1].toLowerCase();
     const matches = SLASH_COMMANDS.filter((c) => c.name.startsWith(partial));
@@ -1287,11 +1288,11 @@ class ChatView {
   // Returns `true` if the command was consumed (no chat message should go
   // out); `false` if the input should be sent verbatim.
   async _maybeRunSlash(text) {
-    // [a-zA-Z0-9_-]+ keeps this in sync with _refreshSlashSuggest's
-    // autocomplete regex — `\w` doesn't include hyphens, so the old
-    // pattern silently rejected any hyphenated command (notably
-    // /ai-ticket) and the dispatch fell through to a plain message.
-    const m = /^\/([a-zA-Z0-9_-]+)(?:\s+([\s\S]+))?$/.exec(text);
+    // [\w-]+ = [A-Za-z0-9_-], matching _refreshSlashSuggest's autocomplete
+    // regex. `\w` alone doesn't include hyphens, so the old pattern
+    // silently rejected any hyphenated command (notably /ai-ticket) and
+    // the dispatch fell through to a plain message.
+    const m = /^\/([\w-]+)(?:\s+([\s\S]+))?$/.exec(text);
     if (!m) return false;
     const cmd = m[1].toLowerCase();
     const arg = (m[2] || '').trim();
