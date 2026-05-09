@@ -1406,14 +1406,19 @@ button.ctrl.muted.icon-only::after {
 }
 .login-modal {
   min-width: 400px;
+  /* Cap height + scroll so the team-step (variable-length list) +
+     hero can't run off the bottom of small viewports. body has
+     overflow: hidden so any clipping would be permanent. */
+  max-height: 90vh;
+  overflow-y: auto;
   padding: 28px 32px 26px;
   text-align: center;
 }
-/* Reset any inherited left-aligned form chrome inside the login.
-   .modal label / input come back to left-align inside each step
-   because labels read better that way; the heading + hints stay
-   centered to anchor the hero. */
-.login-modal label { text-align: left; }
+/* Form fields read better left-aligned: labels and the typed input
+   text both stay flush-left even though the surrounding hero +
+   hints are centered. */
+.login-modal label,
+.login-modal input { text-align: left; }
 .login-modal h2 { text-align: center; }
 .login-modal .hint { text-align: center; }
 .login-hero {
@@ -1422,6 +1427,9 @@ button.ctrl.muted.icon-only::after {
   margin-bottom: 18px;
 }
 .login-logo {
+  /* SVG defaults to overflow: hidden, which clips the drop-shadow
+     blur in some engines. Let the glow extend past the 56x56 box. */
+  overflow: visible;
   filter: drop-shadow(0 4px 18px rgba(10, 132, 255, 0.35));
 }
 .login-title {
