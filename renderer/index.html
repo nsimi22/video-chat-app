@@ -154,6 +154,10 @@
             <button id="search-btn" class="icon-only ghost" title="Search messages" aria-label="Search messages">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </button>
+            <button id="pinned-btn" class="ghost pinned-chip hidden" title="Pinned messages" aria-label="Pinned messages">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14l-1.5-2.5V7l1.5-2H5l1.5 2v7.5z"/></svg>
+              <span id="pinned-count" class="count">0</span>
+            </button>
             <button id="chat-thread-back" class="hidden">← Back to channel</button>
             <span class="header-spacer"></span>
             <button id="copy-call-link" class="icon-only ghost" title="Copy a join-call link" aria-label="Copy a join-call link">
@@ -501,6 +505,25 @@
          workspace, etc.) so the popout starts blank and the JS
          fills this stage. -->
     <div id="popout-stage" class="popout-stage"></div>
+
+    <!-- Pinned messages drawer: lightweight modal-style panel that the
+         channel header's 📌 chip toggles open. Populated by chat.js
+         from huddle.loadPinnedMessages(channelId). -->
+    <div id="pinned-drawer" class="pinned-drawer hidden" aria-hidden="true">
+      <div class="pinned-drawer-head">
+        <span>Pinned messages</span>
+        <button id="pinned-close" class="icon-only ghost" title="Close" aria-label="Close pinned messages">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div id="pinned-list" class="pinned-list"></div>
+    </div>
+
+    <!-- Image lightbox: click any inline image attachment to expand it
+         here. Click the backdrop or press Escape to close. -->
+    <div id="image-lightbox" class="image-lightbox hidden" aria-hidden="true">
+      <img id="image-lightbox-img" alt="" />
+    </div>
 
     <script src="vendor/supabase.js"></script>
     <script src="emojis.js"></script>

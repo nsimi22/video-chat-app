@@ -193,6 +193,9 @@ class MeshClient extends EventTarget {
   sendAiMessage(args)      { return this.huddle.sendAiMessage(args); }
   editMessage(id, text)    { return this.huddle.editMessage(id, text); }
   deleteMessage(id)        { return this.huddle.deleteMessage(id); }
+  pinMessage(id, pin)      { return this.huddle.pinMessage(id, pin); }
+  loadPinnedMessages(c)    { return this.huddle.loadPinnedMessages(c); }
+  pinnedMessageCount(c)    { return this.huddle.pinnedMessageCount(c); }
   toggleReaction(id, e)    { return this.huddle.toggleReaction(id, e); }
   sendTyping(c, p)         { return this.huddle.sendTyping(c, p); }
   loadHistory(c, opts)     { return this.huddle.loadHistory(c, opts); }
