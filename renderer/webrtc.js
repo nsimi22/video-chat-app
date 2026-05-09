@@ -30,6 +30,21 @@ const ICE_SERVERS = [
 // peers start sharing simultaneously, which is acceptable for a soft limit.
 const MAX_CONCURRENT_SCREENS = 3;
 
+// Outbound screen-share quality tiers. The mesh duplicates each share's
+// upload once per viewer, so per-peer caps multiply quickly — these tiers
+// throttle each copy as the call grows. Cameras are left at their default
+// encodings; faces benefit from steady quality and don't dominate the wire
+// the way 1080p screen content does.
+const SCREEN_ENCODING_TIERS = [
+  { maxPeers: 1,        maxBitrate: 2_500_000, maxFramerate: 30 },
+  { maxPeers: 3,        maxBitrate: 1_200_000, maxFramerate: 24 },
+  { maxPeers: Infinity, maxBitrate:   600_000, maxFramerate: 15 },
+];
+
+function pickScreenEncoding(peerCount) {
+  return SCREEN_ENCODING_TIERS.find((t) => peerCount <= t.maxPeers);
+}
+
 class PeerConn {
   constructor({ remoteId, signal, polite, onTrack, onScreenStop }) {
     this.remoteId = remoteId;
@@ -134,9 +149,13 @@ class MeshClient extends EventTarget {
       this._ensurePeer(e.detail.id, /*polite*/ true).then((conn) => {
         if (this.cameraStream) conn.addStream(this.cameraStream);
         for (const { stream } of this._screenStreams.values()) conn.addStream(stream);
+        this._applyScreenEncodings();
       });
     });
-    wire('peer-left', (e) => this._dropPeer(e.detail));
+    wire('peer-left', (e) => {
+      this._dropPeer(e.detail);
+      this._applyScreenEncodings();
+    });
   }
 
   // Bootstrap WebRTC peer connections to everyone already in the call
@@ -152,6 +171,7 @@ class MeshClient extends EventTarget {
       this._ensurePeer(peer.id, /*polite*/ true).then((conn) => {
         if (this.cameraStream) conn.addStream(this.cameraStream);
         for (const { stream } of this._screenStreams.values()) conn.addStream(stream);
+        this._applyScreenEncodings();
       });
     }
   }
@@ -254,6 +274,7 @@ class MeshClient extends EventTarget {
     this._screenStreams.set(stream.id, { stream, label });
     this.huddle.sendScreenAnnounce(stream.id, label);
     for (const conn of this.peers.values()) conn.addStream(stream);
+    this._applyScreenEncodings();
     const v = stream.getVideoTracks()[0];
     if (v) v.addEventListener('ended', () => this.removeScreen(stream.id));
     else this.removeScreen(stream.id);
@@ -266,6 +287,34 @@ class MeshClient extends EventTarget {
     for (const conn of this.peers.values()) conn.removeStream(entry.stream);
     this._screenStreams.delete(streamId);
     this.huddle.sendScreenStop(streamId);
+  }
+
+  // Walk every peer connection and set the outbound bitrate/framerate
+  // cap for each screen-share track sender to match the current viewer
+  // count. Cameras are skipped — the per-tier matching uses identity on
+  // the screen tracks themselves. Best-effort: if setParameters rejects
+  // (e.g. negotiation hasn't completed yet on a brand-new peer) we log
+  // and move on; the next call to this method will retry.
+  async _applyScreenEncodings() {
+    if (this._screenStreams.size === 0 || this.peers.size === 0) return;
+    const tier = pickScreenEncoding(this.peers.size);
+    const screenTracks = new Set();
+    for (const { stream } of this._screenStreams.values()) {
+      for (const t of stream.getTracks()) screenTracks.add(t);
+    }
+    for (const conn of this.peers.values()) {
+      for (const sender of conn.pc.getSenders()) {
+        if (!sender.track || !screenTracks.has(sender.track)) continue;
+        let params;
+        try { params = sender.getParameters(); }
+        catch (err) { console.warn('[screen-quality] getParameters failed', err); continue; }
+        if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+        params.encodings[0].maxBitrate = tier.maxBitrate;
+        params.encodings[0].maxFramerate = tier.maxFramerate;
+        try { await sender.setParameters(params); }
+        catch (err) { console.warn('[screen-quality] setParameters failed', err); }
+      }
+    }
   }
 
   // Signaling for drawing strokes; renderer calls this as it strokes.
