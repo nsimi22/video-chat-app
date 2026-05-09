@@ -294,27 +294,47 @@ class MeshClient extends EventTarget {
   // count. Cameras are skipped — the per-tier matching uses identity on
   // the screen tracks themselves. Best-effort: if setParameters rejects
   // (e.g. negotiation hasn't completed yet on a brand-new peer) we log
-  // and move on; the next call to this method will retry.
-  async _applyScreenEncodings() {
-    if (this._screenStreams.size === 0 || this.peers.size === 0) return;
-    const tier = pickScreenEncoding(this.peers.size);
-    const screenTracks = new Set();
-    for (const { stream } of this._screenStreams.values()) {
-      for (const t of stream.getTracks()) screenTracks.add(t);
-    }
-    for (const conn of this.peers.values()) {
-      for (const sender of conn.pc.getSenders()) {
-        if (!sender.track || !screenTracks.has(sender.track)) continue;
-        let params;
-        try { params = sender.getParameters(); }
-        catch (err) { console.warn('[screen-quality] getParameters failed', err); continue; }
-        if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
-        params.encodings[0].maxBitrate = tier.maxBitrate;
-        params.encodings[0].maxFramerate = tier.maxFramerate;
-        try { await sender.setParameters(params); }
-        catch (err) { console.warn('[screen-quality] setParameters failed', err); }
+  // and move on; the next event-driven call will retry.
+  //
+  // Coalesce synchronous bursts (e.g. bootstrapExistingPeers fires once
+  // per peer) into a single microtask so we don't fan out N concurrent
+  // setParameters calls per sender — those race on transactionId and
+  // emit spurious warnings.
+  _applyScreenEncodings() {
+    if (this._encodingApplyPending) return;
+    this._encodingApplyPending = Promise.resolve().then(async () => {
+      this._encodingApplyPending = null;
+      if (this._screenStreams.size === 0 || this.peers.size === 0) return;
+      const tier = pickScreenEncoding(this.peers.size);
+      // Video tracks only. Screen captures are created with audio:false today,
+      // but filtering defensively here means a future change to capture audio
+      // can't accidentally feed an audio sender bitrate caps it doesn't honor.
+      const screenTracks = new Set();
+      for (const { stream } of this._screenStreams.values()) {
+        for (const t of stream.getVideoTracks()) screenTracks.add(t);
       }
-    }
+      const updates = [];
+      for (const conn of this.peers.values()) {
+        for (const sender of conn.pc.getSenders()) {
+          if (!sender.track || !screenTracks.has(sender.track)) continue;
+          updates.push((async () => {
+            let params;
+            try { params = sender.getParameters(); }
+            catch (err) { console.warn('[screen-quality] getParameters failed', err); return; }
+            // Per spec the number of encodings is fixed at sender-create time;
+            // adding to an empty list throws InvalidModificationError. Pre-
+            // negotiation getParameters() can briefly return an empty list,
+            // so just skip and let the next event-driven call retry.
+            if (!params.encodings || params.encodings.length === 0) return;
+            params.encodings[0].maxBitrate = tier.maxBitrate;
+            params.encodings[0].maxFramerate = tier.maxFramerate;
+            try { await sender.setParameters(params); }
+            catch (err) { console.warn('[screen-quality] setParameters failed', err); }
+          })());
+        }
+      }
+      await Promise.allSettled(updates);
+    });
   }
 
   // Signaling for drawing strokes; renderer calls this as it strokes.
