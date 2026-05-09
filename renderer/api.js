@@ -914,8 +914,16 @@
       // the trigger-added row) or pre-existed with us missing
       // (the legacy bad state we're repairing). On the no-op path
       // the upsert returns success.
+      //
+      // ignoreDuplicates is critical: supabase-js's default upsert
+      // sends ON CONFLICT DO UPDATE, but channel_members has no
+      // UPDATE policy (there's nothing legitimately updatable on a
+      // membership row), so the conflict path fails RLS with
+      // "USING expression for table channel_members". DO NOTHING
+      // sidesteps the UPDATE branch entirely.
       const { error: meErr } = await this.supabase.from('channel_members').upsert(
-        { team_id: this.team.id, channel_id: id, user_id: a }
+        { team_id: this.team.id, channel_id: id, user_id: a },
+        { onConflict: 'team_id,channel_id,user_id', ignoreDuplicates: true },
       );
       if (meErr) throw meErr;
       // Re-fetch through RLS now that we're a member. Gives us
@@ -932,8 +940,10 @@
       // did, so a no-op here is fine; trying anyway would fail
       // RLS and break this whole flow.
       if (ch.created_by === a) {
+        // Same DO-NOTHING dance as the self-upsert above — see comment there.
         const { error: peerErr } = await this.supabase.from('channel_members').upsert(
-          { team_id: this.team.id, channel_id: id, user_id: b }
+          { team_id: this.team.id, channel_id: id, user_id: b },
+          { onConflict: 'team_id,channel_id,user_id', ignoreDuplicates: true },
         );
         if (peerErr) throw peerErr;
       }
