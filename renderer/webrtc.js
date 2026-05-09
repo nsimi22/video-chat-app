@@ -25,6 +25,11 @@ const ICE_SERVERS = [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
 ];
 
+// Cap concurrent screen shares across the call (local + remote combined).
+// Enforced optimistically per-client; a brief overshoot is possible if two
+// peers start sharing simultaneously, which is acceptable for a soft limit.
+const MAX_CONCURRENT_SCREENS = 3;
+
 class PeerConn {
   constructor({ remoteId, signal, polite, onTrack, onScreenStop }) {
     this.remoteId = remoteId;
@@ -219,7 +224,14 @@ class MeshClient extends EventTarget {
     if (!t) return false; t.enabled = !t.enabled; return t.enabled;
   }
 
+  get activeScreenCount() {
+    return this._screenStreams.size + this.huddle.remoteScreenLabels.size;
+  }
+
   async addScreen(sourceId, label) {
+    if (this.activeScreenCount >= MAX_CONCURRENT_SCREENS) {
+      throw new Error(`Screen-share limit reached (${MAX_CONCURRENT_SCREENS} max).`);
+    }
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
@@ -276,3 +288,4 @@ class MeshClient extends EventTarget {
 }
 
 window.MeshClient = MeshClient;
+window.MAX_CONCURRENT_SCREENS = MAX_CONCURRENT_SCREENS;
