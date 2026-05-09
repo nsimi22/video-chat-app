@@ -1319,6 +1319,9 @@ async function teardownTeam() {
   state.inCallChannelId = null;
   state.lurkingChannelId = null;
   state.callStarting = false;
+  // Drop any popout-call markers — they're channel ids from the
+  // outgoing team and would otherwise hide Start/Join on rejoin.
+  state.poppedOutCalls.clear();
   els.channels.replaceChildren();
   els.dms.replaceChildren();
   els.people.replaceChildren();
@@ -2520,8 +2523,10 @@ async function closeWhiteboard(whiteboardId) {
   state.whiteboardSessions.delete(whiteboardId);
   if (session) await session.stop();
   state.drawLayers.delete(whiteboardId);
-  state.tilesByKey.delete(`whiteboard:${whiteboardId}`);
-  syncTilesVisibility();
+  // removeTile yanks the DOM node + clears the tilesByKey entry +
+  // re-runs syncTilesVisibility. Plain Map.delete used to leave the
+  // tile DOM node orphaned in #tiles forever.
+  removeTile(`whiteboard:${whiteboardId}`);
   if (state.activeAnnotation === whiteboardId) {
     state.activeAnnotation = null;
     els.drawToolbar.classList.add('hidden');
