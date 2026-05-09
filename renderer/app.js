@@ -1374,6 +1374,12 @@ function stopCaptions({ keepBuffer = false } = {}) {
   if (!keepBuffer) {
     state.cc.lines = [];
     state.cc.forChannelId = null;
+    // Full reset — also clear the in-flight lock so a previous
+    // recap that's mid-await on AI doesn't keep the next team's
+    // leaveCall from spawning its own finalize. The IIFE's
+    // .finally would clear this eventually, but the gap can swallow
+    // the next call's recap if leaveCall fires during it.
+    state.cc._finalizing = false;
     if (els.captionsList) els.captionsList.replaceChildren();
     hideCaptionsPanel();
   } else {
