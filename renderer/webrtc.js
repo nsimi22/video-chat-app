@@ -98,6 +98,7 @@ class MeshClient extends EventTarget {
     this.peers = new Map();             // remoteId -> PeerConn
     this.cameraStream = null;
     this._screenStreams = new Map();    // streamId -> { stream, label }
+    this._pendingScreens = 0;           // shares awaiting getUserMedia, counted toward the cap
 
     // Track bound handlers so disconnect() can detach them — calls are
     // on-demand now, so a new MeshClient is constructed every time the
@@ -225,23 +226,31 @@ class MeshClient extends EventTarget {
   }
 
   get activeScreenCount() {
-    return this._screenStreams.size + this.huddle.remoteScreenLabels.size;
+    return this._screenStreams.size + this._pendingScreens + this.huddle.remoteScreenLabels.size;
   }
 
   async addScreen(sourceId, label) {
     if (this.activeScreenCount >= MAX_CONCURRENT_SCREENS) {
       throw new Error(`Screen-share limit reached (${MAX_CONCURRENT_SCREENS} max).`);
     }
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        mandatory: {
-          chromeMediaSource: 'desktop',
-          chromeMediaSourceId: sourceId,
-          maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30,
+    // Reserve a slot before awaiting getUserMedia so rapid concurrent calls
+    // (e.g. double-clicks on picker tiles) can't all pass the check.
+    this._pendingScreens++;
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          mandatory: {
+            chromeMediaSource: 'desktop',
+            chromeMediaSourceId: sourceId,
+            maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30,
+          },
         },
-      },
-    });
+      });
+    } finally {
+      this._pendingScreens--;
+    }
     this._screenStreams.set(stream.id, { stream, label });
     this.huddle.sendScreenAnnounce(stream.id, label);
     for (const conn of this.peers.values()) conn.addStream(stream);
