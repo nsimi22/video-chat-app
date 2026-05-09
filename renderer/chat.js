@@ -302,8 +302,16 @@ class ChatView {
       const m = e.detail.message;
       const arr = this.byChannel.get(m.channelId) || [];
       const idx = arr.findIndex((x) => x.id === m.id);
+      const prev = idx >= 0 ? arr[idx] : null;
       if (idx >= 0) arr[idx] = m;
       if (m.channelId === this.currentChannel) this._replaceNode(m);
+      // Pin/unpin updates flow through the standard chat-update channel
+      // (the RPC writes pinned_at + pinned_by, which the realtime
+      // subscription broadcasts as a row UPDATE). Surface a hook so
+      // the channel-header chip refreshes its count without polling.
+      if (m.channelId === this.currentChannel && (!prev || !!prev.pinnedAt !== !!m.pinnedAt)) {
+        this.hooks.onPinChanged?.(m.channelId);
+      }
     });
     on('chat-message-deleted', (e) => {
       const { channelId, messageId } = e.detail;
@@ -610,6 +618,55 @@ class ChatView {
     this.mesh.deleteMessage(messageId);
   }
 
+  // --- Pinning + permalinks -----------------------------------------------
+
+  async _togglePin(messageId, pin) {
+    try { await this.mesh.pinMessage(messageId, pin); }
+    catch (err) { alert('Could not pin: ' + (err?.message || err)); }
+  }
+
+  // Build a huddle:// permalink for a message and shove it on the
+  // clipboard. The link encodes team + channel + message id; the
+  // app.js protocol handler scrolls to the row on open.
+  async _copyMessageLink(messageId) {
+    const teamId = this.mesh.teamMeta?.id;
+    const channelId = this.currentChannel;
+    if (!teamId || !channelId) return;
+    const url = `huddle://team/${encodeURIComponent(teamId)}/channel/${encodeURIComponent(channelId)}?msg=${encodeURIComponent(messageId)}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      this.hooks.toast?.('Message link copied');
+    } catch (err) {
+      console.warn('copy link failed', err);
+      this.hooks.toast?.('Could not copy link');
+    }
+  }
+
+  // Find a rendered message node in the active channel pane and scroll
+  // it into view with a brief flash. Used by the protocol-URL handler
+  // and by clicks in the pinned drawer.
+  scrollToMessage(messageId) {
+    const node = this.els.messages.querySelector(`.msg[data-message-id="${CSS.escape(messageId)}"]`);
+    if (!node) return false;
+    node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    node.classList.remove('msg-flash');
+    // Re-apply on next frame so the keyframe restarts even when the
+    // class was already applied by a prior scrollToMessage.
+    void node.offsetWidth;
+    node.classList.add('msg-flash');
+    setTimeout(() => node.classList.remove('msg-flash'), 1800);
+    return true;
+  }
+
+  async openPinnedDrawer() {
+    if (!this.currentChannel) return;
+    const list = await this.mesh.loadPinnedMessages(this.currentChannel);
+    this.hooks.renderPinnedDrawer?.(list, (id) => {
+      this.hooks.closePinnedDrawer?.();
+      this.scrollToMessage(id);
+    });
+  }
+
   // --- File uploads -------------------------------------------------------
 
   _onPaste(e) {
@@ -819,10 +876,12 @@ class ChatView {
   _renderMessage(m, all, prev) {
     const wrap = document.createElement('div');
     wrap.className = 'msg';
+    wrap.dataset.messageId = m.id;
     const myName = this.mesh.name;
     const isMine = m.authorName === myName;
     const mentionsMe = Array.isArray(m.mentions) && m.mentions.includes(myName);
     if (mentionsMe) wrap.classList.add('msg-mentions-me');
+    if (m.pinnedAt) wrap.classList.add('msg-pinned');
     // Slack-style consecutive grouping: same author within 5 minutes
     // collapses the head + reuses the avatar slot. Threads keep the
     // full chrome on each reply (always shown in a thread pane).
@@ -931,7 +990,7 @@ class ChatView {
           img.src = a.url;
           img.alt = a.name;
           img.className = 'msg-image';
-          img.onclick = () => window.open(a.url, '_blank');
+          img.onclick = () => this.hooks.openImageLightbox?.(a.url, a.name);
           attachmentsEl.appendChild(img);
         } else {
           const link = document.createElement('a');
@@ -980,6 +1039,25 @@ class ChatView {
       thread.onclick = () => this.openThread(m.id);
       actions.appendChild(thread);
     }
+    // Pin / unpin: any channel member can toggle. The RPC enforces
+    // channel membership; the realtime UPDATE re-renders the row with
+    // (or without) the pinned class on every viewer's screen.
+    const pin = document.createElement('button');
+    pin.className = 'msg-action' + (m.pinnedAt ? ' active' : '');
+    pin.innerHTML = window.HuddleIcons.pin;
+    pin.title = m.pinnedAt ? 'Unpin message' : 'Pin message';
+    pin.setAttribute('aria-label', pin.title);
+    pin.onclick = () => this._togglePin(m.id, !m.pinnedAt);
+    actions.appendChild(pin);
+    // Copy-link: share a deep link straight to this message. The
+    // permalink is decoded by app.js parseInviteLink + scrollToMessage.
+    const link = document.createElement('button');
+    link.className = 'msg-action';
+    link.innerHTML = window.HuddleIcons.link;
+    link.title = 'Copy link to message';
+    link.setAttribute('aria-label', 'Copy link to message');
+    link.onclick = () => this._copyMessageLink(m.id);
+    actions.appendChild(link);
     if (isMine) {
       const edit = document.createElement('button');
       edit.className = 'msg-action';
@@ -1190,6 +1268,8 @@ class ChatView {
     if (!m) return false;
     const cmd = m[1].toLowerCase();
     const arg = (m[2] || '').trim();
+    if (cmd === 'me') return this._runSlashMe(arg);
+    if (cmd === 'shrug') return this._runSlashShrug(arg);
     if (cmd === 'ai') return this._runSlashAi(arg);
     if (cmd === 'ai-ticket' || cmd === 'ait') return this._runSlashAiTicket(arg);
     if (cmd === 'summarize' || cmd === 'summary') return this._runSlashSummarize();
@@ -1221,6 +1301,40 @@ class ChatView {
       return true;
     }
     return false;
+  }
+
+  // --- Local slash commands -----------------------------------------------
+
+  // /me <action> — italicized third-person line ("Alice waves").
+  // The author name is added on the receiver side from the row's
+  // author_name (set by the messages_set_author trigger), so we just
+  // post the action wrapped in markdown italics; receivers will see
+  // "Alice" + the action just like any other message header + body.
+  async _runSlashMe(action) {
+    const text = (action || '').trim();
+    if (!text) return true;
+    await this.mesh.sendMessage({
+      channelId: this.currentChannel,
+      parentId: this.threadParentId,
+      text: `_${text}_`,
+      attachments: [],
+    });
+    return true;
+  }
+
+  // /shrug [text] — appends the classic ASCII shrug to whatever the
+  // user typed (or sends just the shrug if no text was given). Doubled
+  // backslash because the literal contains a single backslash.
+  async _runSlashShrug(text) {
+    const body = (text || '').trim();
+    const shrug = '¯\\_(ツ)_/¯';
+    await this.mesh.sendMessage({
+      channelId: this.currentChannel,
+      parentId: this.threadParentId,
+      text: body ? `${body} ${shrug}` : shrug,
+      attachments: [],
+    });
+    return true;
   }
 
   // --- AI slash commands --------------------------------------------------

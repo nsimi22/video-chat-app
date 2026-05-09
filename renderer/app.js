@@ -84,6 +84,13 @@ const els = {
   btnHand: $('#btn-hand'),
   btnReact: $('#btn-react'),
   reactPopover: $('#react-popover'),
+  pinnedBtn: $('#pinned-btn'),
+  pinnedCount: $('#pinned-count'),
+  pinnedDrawer: $('#pinned-drawer'),
+  pinnedList: $('#pinned-list'),
+  pinnedClose: $('#pinned-close'),
+  imageLightbox: $('#image-lightbox'),
+  imageLightboxImg: $('#image-lightbox-img'),
   btnCc: $('#btn-cc'),
   captions: $('#captions'),
   captionsList: $('#captions-list'),
@@ -932,12 +939,13 @@ function parseInviteLink(raw) {
   const parts = path.split('/').filter(Boolean);
   if (parts[0] !== 'team' || !parts[1]) return null;
   const teamId = decodeURIComponent(parts[1]);
-  let channelId = null, joinCall = false;
+  let channelId = null, joinCall = false, messageId = null;
   if (parts[2] === 'channel' && parts[3]) {
     channelId = decodeURIComponent(parts[3]);
     joinCall = url.searchParams.get('call') === '1';
+    messageId = url.searchParams.get('msg');
   }
-  return { teamId, channelId, joinCall };
+  return { teamId, channelId, joinCall, messageId };
 }
 
 async function copyToClipboard(text) {
@@ -1129,6 +1137,10 @@ async function _routeProtocolUrl(parsed, url) {
     if (parsed.channelId && state.channelMeta.has(parsed.channelId)) {
       focusChannel(parsed.channelId);
       if (parsed.joinCall) setTimeout(() => startCall(parsed.channelId), 0);
+      // Defer scrolling: the channel switch repaints messages async via
+      // setChannel + loadHistory, so the message node may not exist
+      // yet. Try shortly after the focus event resolves.
+      if (parsed.messageId) setTimeout(() => state.chat?.scrollToMessage(parsed.messageId), 250);
     } else if (parsed.channelId) {
       showCallError(`Channel #${parsed.channelId} isn't available on this team.`);
     }
@@ -1229,6 +1241,11 @@ async function joinTeamAndStart(teamId) {
       getAi: () => state.ai,
       getGitHub: () => state.github,
       attachProfileTrigger: (el, userId) => attachProfileTrigger(el, userId),
+      openImageLightbox: (url, name) => openImageLightbox(url, name),
+      toast: (msg) => showToast(msg),
+      renderPinnedDrawer: (msgs, onPick) => renderPinnedDrawer(msgs, onPick),
+      closePinnedDrawer: () => closePinnedDrawer(),
+      onPinChanged: () => refreshPinnedCount(),
     },
   });
   wireControls();
@@ -1600,6 +1617,11 @@ async function teardownTeam() {
   // wireControls call doesn't pile up handlers on the same document.
   state.reactPopoverCleanup?.();
   state.reactPopoverCleanup = null;
+  // Close any team-scoped overlays so they don't bleed into the next
+  // team's session.
+  closePinnedDrawer();
+  closeImageLightbox();
+  if (els.pinnedBtn) els.pinnedBtn.classList.add('hidden');
   els.app.classList.add('hidden');
 }
 
@@ -1842,6 +1864,8 @@ function focusChannel(channelId) {
   const li = list.querySelector(`[data-id="${cssEscape(channel.id)}"]`);
   if (li) li.classList.add('active');
   state.chat.setChannel(channel.id, channel.topic, displayLabelFor(channel));
+  refreshPinnedCount();
+  closePinnedDrawer();
   // Swap call-presence lurker subscriptions so the header reflects
   // whether someone's already in this channel's call. We unsubscribe
   // the previously-watched channel to avoid an unbounded fan-out; the
@@ -2412,6 +2436,75 @@ function clearAllReactions() {
   for (const node of els.tiles.querySelectorAll('.tile-reaction')) node.remove();
 }
 
+// ---------------------------------------------------------------------------
+// Pinned drawer + image lightbox
+// ---------------------------------------------------------------------------
+
+function openImageLightbox(url, alt) {
+  if (!els.imageLightbox || !els.imageLightboxImg) return;
+  els.imageLightboxImg.src = url;
+  els.imageLightboxImg.alt = alt || '';
+  els.imageLightbox.classList.remove('hidden');
+  els.imageLightbox.setAttribute('aria-hidden', 'false');
+}
+
+function closeImageLightbox() {
+  if (!els.imageLightbox) return;
+  els.imageLightbox.classList.add('hidden');
+  els.imageLightbox.setAttribute('aria-hidden', 'true');
+  // Drop the src so a closed lightbox doesn't keep a large image in
+  // memory. Setting to '' triggers a load error in some browsers; use
+  // the 1×1 transparent PNG instead.
+  els.imageLightboxImg.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+}
+
+// Render the pinned-messages drawer. Each row reuses the markdown
+// renderer for body content but stays read-only — clicking a row
+// scrolls the main pane to the original message and flashes it.
+function renderPinnedDrawer(messages, onPick) {
+  if (!els.pinnedDrawer || !els.pinnedList) return;
+  els.pinnedList.replaceChildren();
+  if (messages.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'pinned-empty';
+    empty.textContent = 'No pinned messages in this channel yet.';
+    els.pinnedList.appendChild(empty);
+  }
+  for (const m of messages) {
+    const row = document.createElement('button');
+    row.className = 'pinned-item';
+    row.type = 'button';
+    const head = document.createElement('div');
+    head.className = 'pinned-item-head';
+    head.textContent = `${m.authorName} · ${new Date(m.ts).toLocaleString()}`;
+    const body = document.createElement('div');
+    body.className = 'pinned-item-body';
+    body.innerHTML = window.renderMarkdown ? window.renderMarkdown(m.text || '') : (m.text || '');
+    row.append(head, body);
+    row.onclick = () => onPick?.(m.id);
+    els.pinnedList.appendChild(row);
+  }
+  els.pinnedDrawer.classList.remove('hidden');
+  els.pinnedDrawer.setAttribute('aria-hidden', 'false');
+}
+
+function closePinnedDrawer() {
+  if (!els.pinnedDrawer) return;
+  els.pinnedDrawer.classList.add('hidden');
+  els.pinnedDrawer.setAttribute('aria-hidden', 'true');
+}
+
+// Update the channel-header pin chip with the current pinned count.
+// Cheap query (indexed predicate) — fired from focusChannel + on
+// chat-update so pin/unpin keeps the badge accurate without a full reload.
+async function refreshPinnedCount() {
+  if (!els.pinnedBtn || !state.chat?.currentChannel || !state.huddle) return;
+  const list = await state.huddle.loadPinnedMessages(state.chat.currentChannel);
+  const n = list.length;
+  els.pinnedBtn.classList.toggle('hidden', n === 0);
+  els.pinnedCount.textContent = String(n);
+}
+
 // Drop everything that lives only for the duration of an active call:
 // the tile grid and all of its overlays/state. Shared between leaveCall
 // (call ends, team stays) and teardownTeam (whole team session torn
@@ -2657,6 +2750,20 @@ function wireControls() {
   els.btnLeave.onclick = leaveCall;
   els.btnPopoutCall.onclick = popOutCurrentCall;
   if (els.btnHand) els.btnHand.onclick = toggleSelfHand;
+  if (els.pinnedBtn) els.pinnedBtn.onclick = () => state.chat?.openPinnedDrawer();
+  if (els.pinnedClose) els.pinnedClose.onclick = closePinnedDrawer;
+  if (els.imageLightbox) {
+    els.imageLightbox.onclick = (e) => {
+      // Click on the backdrop (not the image itself) closes; the image
+      // gets pointer-events:auto via CSS and stops propagation when clicked.
+      if (e.target === els.imageLightbox) closeImageLightbox();
+    };
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (els.imageLightbox && !els.imageLightbox.classList.contains('hidden')) closeImageLightbox();
+    else if (els.pinnedDrawer && !els.pinnedDrawer.classList.contains('hidden')) closePinnedDrawer();
+  });
   if (els.btnReact && els.reactPopover) {
     state.reactPopoverCleanup?.();
     state.reactPopoverCleanup = wireReactPopover(els.btnReact, els.reactPopover);

@@ -748,6 +748,30 @@
       if (error) console.warn('deleteMessage failed', error);
     }
 
+    // Pin / unpin a message. Routed through a security-definer RPC so any
+    // channel member can pin (the messages_update_own RLS policy only
+    // permits the author to mutate their own row otherwise). The existing
+    // realtime UPDATE subscription on messages broadcasts the change to
+    // everyone — chat.js re-renders the row's pin badge from chat-update.
+    async pinMessage(messageId, pin) {
+      const { error } = await this.supabase.rpc('set_message_pin', {
+        p_message_id: messageId,
+        p_pin: !!pin,
+      });
+      if (error) { console.warn('pinMessage failed', error); throw error; }
+    }
+
+    async loadPinnedMessages(channelId) {
+      const { data, error } = await this.supabase
+        .from('messages').select('*')
+        .eq('team_id', this.team.id).eq('channel_id', channelId)
+        .not('pinned_at', 'is', null)
+        .order('pinned_at', { ascending: false })
+        .limit(50);
+      if (error) { console.warn('loadPinnedMessages failed', error); return []; }
+      return (data || []).map((m) => this._marshalMessage(m));
+    }
+
     // Reactions live on a jsonb column. We read-modify-write under a
     // optimistic concurrency model; collisions are rare and self-healing.
     async toggleReaction(messageId, emoji) {
@@ -1191,6 +1215,8 @@
         mentions: row.mentions || [],
         ts: new Date(row.ts).getTime(),
         editedTs: row.edited_ts ? new Date(row.edited_ts).getTime() : null,
+        pinnedAt: row.pinned_at ? new Date(row.pinned_at).getTime() : null,
+        pinnedBy: row.pinned_by || null,
         aiGenerated: !!row.ai_generated,
         aiModel: row.ai_model || null,
       };

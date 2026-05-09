@@ -32,6 +32,8 @@
     robot: `<svg ${A}><rect x="3" y="8" width="18" height="12" rx="2"/><circle cx="9" cy="14" r="1.4"/><circle cx="15" cy="14" r="1.4"/><line x1="12" y1="3" x2="12" y2="8"/><circle cx="12" cy="2.5" r="1"/></svg>`,
     spotlight: `<svg ${A}><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`,
     hand: `<svg ${A}><path d="M9 11V5.5a1.5 1.5 0 0 1 3 0V11"/><path d="M12 11V4.5a1.5 1.5 0 0 1 3 0V11"/><path d="M15 11V6.5a1.5 1.5 0 0 1 3 0V14"/><path d="M9 11V8.5a1.5 1.5 0 0 0-3 0v6.5a7 7 0 0 0 12 5l3-4a3 3 0 0 0-1-4"/></svg>`,
+    pin: `<svg ${A}><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14l-1.5-2.5V7l1.5-2H5l1.5 2v7.5z"/></svg>`,
+    link: `<svg ${A}><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
   };
   window.HuddleIcons = Object.assign(
     {
