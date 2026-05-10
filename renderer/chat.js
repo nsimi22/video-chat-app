@@ -1525,12 +1525,16 @@ class ChatView {
       }).join(', ');
       body += `\n\n_via ${summary}_`;
     }
-    await this.mesh.sendAiMessage({
-      channelId: this.currentChannel,
-      parentId: this.threadParentId,
-      text: body,
-      model: result.model,
-    });
+    try {
+      await this.mesh.sendAiMessage({
+        channelId: this.currentChannel,
+        parentId: this.threadParentId,
+        text: body,
+        model: result.model,
+      });
+    } catch (err) {
+      alert('AI answered but could not post to chat: ' + (err?.message || err));
+    }
     return true;
   }
 
@@ -1676,12 +1680,16 @@ class ChatView {
     catch (err) { alert('Summarize failed: ' + (err.message || err)); return true; }
     finally { this._endAiThinking(); }
     const body = `🧠 **Summary of recent messages**\n\n${result.text || '(no summary)'}`;
-    await this.mesh.sendAiMessage({
-      channelId: this.currentChannel,
-      parentId: this.threadParentId,
-      text: body,
-      model: result.model,
-    });
+    try {
+      await this.mesh.sendAiMessage({
+        channelId: this.currentChannel,
+        parentId: this.threadParentId,
+        text: body,
+        model: result.model,
+      });
+    } catch (err) {
+      alert('Summary failed to post to chat: ' + (err?.message || err));
+    }
     return true;
   }
 
