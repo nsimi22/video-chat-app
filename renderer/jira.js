@@ -245,8 +245,13 @@
         continue;
       }
 
-      // Ordered list
+      // Ordered list. Honor the first item's number as the starting
+      // index so `3. foo\n4. bar` renders as 3, 4 in Jira instead of
+      // resetting to 1 (matters for partial-list snippets the AI
+      // sometimes emits when extending an existing numbered section).
       if (/^\s*\d+\.\s+/.test(line)) {
+        const startMatch = /^\s*(\d+)\.\s+/.exec(line);
+        const start = startMatch ? parseInt(startMatch[1], 10) || 1 : 1;
         const items = [];
         while (i < lines.length) {
           const m = /^\s*\d+\.\s+(.+)$/.exec(lines[i]);
@@ -254,7 +259,7 @@
           items.push({ type: 'listItem', content: [{ type: 'paragraph', content: parseInline(m[1]) }] });
           i++;
         }
-        blocks.push({ type: 'orderedList', attrs: { order: 1 }, content: items });
+        blocks.push({ type: 'orderedList', attrs: { order: start }, content: items });
         continue;
       }
 
@@ -348,12 +353,18 @@
         }
       }
 
-      // [text](url)
+      // [text](url) — recurse into the bracket contents so nested
+      // marks survive (e.g. `[**foo** _bar_](url)` renders as a link
+      // whose visible text mixes bold + italic, instead of literal
+      // asterisks/underscores).
       if (ch === '[') {
         const m = /^\[([^\]\n]+)\]\(([^)\s]+)\)/.exec(text.slice(i));
         if (m) {
           flush();
-          out.push({ type: 'text', text: m[1], marks: [{ type: 'link', attrs: { href: m[2] } }] });
+          const linkMark = { type: 'link', attrs: { href: m[2] } };
+          for (const node of parseInlineImpl(m[1])) {
+            out.push(withMark(node, linkMark));
+          }
           i += m[0].length;
           continue;
         }
