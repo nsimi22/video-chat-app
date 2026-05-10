@@ -110,6 +110,11 @@
             </button>
           </div>
         </div>
+        <button id="open-saved" class="sidebar-quick-link" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+          <span>Saved</span>
+          <span id="saved-count" class="count">0</span>
+        </button>
         <div class="section-header section-header-row">
           <span>Channels</span>
           <span class="section-header-controls">
@@ -527,6 +532,36 @@
          here. Click the backdrop or press Escape to close. -->
     <div id="image-lightbox" class="image-lightbox hidden" aria-hidden="true">
       <img id="image-lightbox-img" alt="" />
+    </div>
+
+    <!-- Saved messages drawer: per-user bookmarks with label-chip
+         filtering. Click a row to focus the channel + scroll to the
+         message. Click the bookmark in the row to unsave. -->
+    <div id="saved-drawer" class="saved-drawer hidden" aria-hidden="true">
+      <div class="saved-drawer-head">
+        <span>Saved</span>
+        <button id="saved-close" class="icon-only ghost" title="Close" aria-label="Close saved messages">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div id="saved-labels" class="saved-labels"></div>
+      <div id="saved-list" class="saved-list"></div>
+    </div>
+
+    <!-- Save / edit-labels popover: anchored to the bookmark button in
+         a message's hover-actions strip. Lets the user toggle save
+         state and edit the labels on the row. -->
+    <div id="save-popover" class="save-popover hidden" role="dialog" aria-label="Save message">
+      <div class="save-popover-head">Save to labels</div>
+      <div id="save-popover-labels" class="save-popover-labels"></div>
+      <div class="save-popover-input-row">
+        <input id="save-popover-new" type="text" placeholder="Add a label…" maxlength="40" />
+        <button id="save-popover-add" class="ctrl primary" type="button">Add</button>
+      </div>
+      <div class="save-popover-actions">
+        <button id="save-popover-unsave" class="ctrl danger" type="button">Unsave</button>
+        <button id="save-popover-done" class="ctrl primary" type="button">Done</button>
+      </div>
     </div>
 
     <script src="vendor/supabase.js"></script>

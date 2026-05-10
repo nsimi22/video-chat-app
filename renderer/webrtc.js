@@ -134,6 +134,7 @@ class MeshClient extends EventTarget {
       'raise-hand', 'reaction',
       'chat-message', 'chat-update', 'chat-message-deleted',
       'chat-channel-added', 'chat-channel-removed',
+      'saved-message-added', 'saved-message-updated', 'saved-message-removed',
     ];
     for (const ev of FORWARD) {
       wire(ev, (e) => this.dispatchEvent(new CustomEvent(ev, { detail: e.detail })));
@@ -196,6 +197,9 @@ class MeshClient extends EventTarget {
   pinMessage(id, pin)      { return this.huddle.pinMessage(id, pin); }
   loadPinnedMessages(c)    { return this.huddle.loadPinnedMessages(c); }
   pinnedMessageCount(c)    { return this.huddle.pinnedMessageCount(c); }
+  saveMessage(args)        { return this.huddle.saveMessage(args); }
+  unsaveMessage(id)        { return this.huddle.unsaveMessage(id); }
+  loadSavedMessages(opts)  { return this.huddle.loadSavedMessages(opts); }
   toggleReaction(id, e)    { return this.huddle.toggleReaction(id, e); }
   sendTyping(c, p)         { return this.huddle.sendTyping(c, p); }
   loadHistory(c, opts)     { return this.huddle.loadHistory(c, opts); }
