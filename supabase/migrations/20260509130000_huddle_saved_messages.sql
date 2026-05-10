@@ -24,8 +24,13 @@ create table if not exists public.saved_messages (
 
 create index if not exists saved_messages_user_recent_idx
   on public.saved_messages(user_id, saved_at desc);
-create index if not exists saved_messages_user_labels_gin
-  on public.saved_messages using gin (user_id, labels);
+-- GIN on labels only — composite GIN with `user_id` would need the
+-- btree_gin extension to provide a uuid operator class, which we don't
+-- want to take a hard dependency on. The recency btree above narrows
+-- to a single user; the planner intersects that with this GIN's
+-- contains-label result for the labels filter.
+create index if not exists saved_messages_labels_gin
+  on public.saved_messages using gin (labels);
 
 alter table public.saved_messages enable row level security;
 

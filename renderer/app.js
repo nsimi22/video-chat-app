@@ -1665,6 +1665,10 @@ async function teardownTeam() {
   closeImageLightbox();
   closeSavedDrawer();
   closeSavePopover();
+  if (state._savedDrawerRefreshTimer) {
+    clearTimeout(state._savedDrawerRefreshTimer);
+    state._savedDrawerRefreshTimer = null;
+  }
   state.savedById.clear();
   refreshSavedSidebarCount();
   if (els.pinnedBtn) els.pinnedBtn.classList.add('hidden');
@@ -2595,11 +2599,17 @@ function onSavedMessageChange(kind, payload) {
   }
   refreshSavedSidebarCount();
   // The bookmark in the message hover-actions is read from
-  // hooks.isMessageSaved at render time, so refresh the affected row(s)
-  // — and the open drawer + popover in case they're showing this id.
+  // hooks.isMessageSaved at render time, so refresh the affected row(s).
   if (state.chat) state.chat.refreshMessageById?.(payload.messageId);
+  // Coalesce drawer re-renders. Bursty events (bulk unsave, label
+  // refile across many rows) would otherwise trigger one re-fetch per
+  // row; a single trailing render after the burst is sufficient.
   if (els.savedDrawer && !els.savedDrawer.classList.contains('hidden')) {
-    renderSavedDrawer();
+    if (state._savedDrawerRefreshTimer) clearTimeout(state._savedDrawerRefreshTimer);
+    state._savedDrawerRefreshTimer = setTimeout(() => {
+      state._savedDrawerRefreshTimer = null;
+      renderSavedDrawer();
+    }, 100);
   }
   if (state.savePopoverTarget === payload.messageId) {
     renderSavePopoverLabels();
@@ -2623,9 +2633,21 @@ function closeSavedDrawer() {
 // Re-fetches from the DB so labels removed elsewhere disappear from
 // the rail; the row list comes back filtered by state.savedActiveLabel
 // when one is selected.
+// Distinct label set across the cached saves. Replaces the round-trip
+// loadSavedLabels query — we already keep the full save corpus in
+// state.savedById (seeded with limit:500 on welcome and kept current
+// by realtime), so a Set computed locally is faster and zero-network.
+function distinctSavedLabels() {
+  const set = new Set();
+  for (const save of state.savedById.values()) {
+    for (const l of save.labels || []) set.add(l);
+  }
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
 async function renderSavedDrawer() {
   if (!state.huddle) return;
-  const labels = await state.huddle.loadSavedLabels();
+  const labels = distinctSavedLabels();
   els.savedLabels.replaceChildren();
   const all = document.createElement('button');
   all.type = 'button';
@@ -2653,25 +2675,38 @@ async function renderSavedDrawer() {
     return;
   }
   for (const { save, message } of rows) {
+    // The row itself is the click target (role=button + tabindex). The
+    // body holds rendered markdown which can include block-level
+    // elements (<p>, <pre>, etc.); putting that inside a real <button>
+    // would violate HTML's phrasing-content rule, so the row stays a
+    // <div> with explicit accessibility attrs.
     const row = document.createElement('div');
     row.className = 'saved-item';
+    row.setAttribute('role', 'button');
+    row.setAttribute('tabindex', '0');
+    const goToMessage = () => {
+      closeSavedDrawer();
+      focusChannel(save.channelId);
+      state.chat?.scrollToMessage(message.id);
+    };
+    row.onclick = (ev) => {
+      // Don't navigate when the user clicked one of the inline action
+      // buttons (Labels / Unsave) — those bubble through to the row.
+      if (ev.target.closest('.saved-item-edit, .saved-item-unsave')) return;
+      goToMessage();
+    };
+    row.onkeydown = (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); goToMessage(); }
+    };
     const head = document.createElement('div');
     head.className = 'saved-item-head';
     const channelLabel = state.channelMeta.get(save.channelId);
     const channelText = channelLabel ? displayLabelFor(channelLabel) : `#${save.channelId}`;
     head.textContent = `${message.authorName} · ${channelText} · ${new Date(message.ts).toLocaleString()}`;
-    const body = document.createElement('button');
-    body.type = 'button';
+    const body = document.createElement('div');
     body.className = 'saved-item-body';
-    body.innerHTML = window.renderMarkdown
-      ? window.renderMarkdown(message.text || '')
-      : '';
-    if (!window.renderMarkdown) body.textContent = message.text || '';
-    body.onclick = () => {
-      closeSavedDrawer();
-      focusChannel(save.channelId);
-      state.chat?.scrollToMessage(message.id);
-    };
+    if (window.renderMarkdown) body.innerHTML = window.renderMarkdown(message.text || '');
+    else body.textContent = message.text || '';
     const meta = document.createElement('div');
     meta.className = 'saved-item-meta';
     for (const label of save.labels || []) {
@@ -2741,11 +2776,13 @@ function closeSavePopover() {
 // Render the labels list inside the popover. Each existing label has a
 // remove (×) chip; the user's full label corpus gets rendered as
 // togglable chips below so they can stack many tags without typing.
-async function renderSavePopoverLabels() {
+function renderSavePopoverLabels() {
   if (!state.savePopoverTarget || !state.huddle) return;
   const messageId = state.savePopoverTarget;
   const current = new Set(state.savedById.get(messageId)?.labels || []);
-  const corpus = new Set(await state.huddle.loadSavedLabels());
+  // Suggestion corpus comes from the local cache, same as the drawer's
+  // chip rail. Avoids a round-trip per popover open.
+  const corpus = new Set(distinctSavedLabels());
   els.savePopoverLabels.replaceChildren();
   // Currently-applied labels, with × to remove. These render as filled
   // chips so the "applied" state is visually distinct from the corpus.

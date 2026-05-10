@@ -1156,25 +1156,24 @@ button.ctrl.muted.icon-only::after {
   padding: 10px 12px;
   border-radius: var(--r-sm);
   margin-bottom: 6px;
+  cursor: pointer;
   transition: background var(--t-fast), border-color var(--t-fast);
 }
 .saved-item:hover {
   background: rgba(255, 255, 255, 0.05);
   border-color: var(--line);
 }
+.saved-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .saved-item-head {
   font-size: 11px; color: var(--text-faint);
   margin-bottom: 4px;
 }
 .saved-item-body {
-  display: block; width: 100%;
-  background: transparent; border: none;
-  text-align: left;
-  font: inherit; color: inherit;
   font-size: 13px;
-  cursor: pointer;
   white-space: pre-wrap; word-wrap: break-word;
-  padding: 0;
 }
 .saved-item-meta {
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px;

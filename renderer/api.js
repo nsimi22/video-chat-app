@@ -872,19 +872,11 @@
       })).filter((x) => x.message);
     }
 
-    // Distinct label set across the caller's saves — used to render
-    // the chip rail at the top of the saved panel. Pulls all rows'
-    // labels and dedupes client-side; postgres has no native distinct-
-    // unnest helper exposed via PostgREST without an RPC, and the user's
-    // own save list is small enough to dedupe in the renderer.
-    async loadSavedLabels() {
-      const { data, error } = await this.supabase.from('saved_messages')
-        .select('labels').eq('user_id', this.peerId);
-      if (error) { console.warn('loadSavedLabels failed', error); return []; }
-      const set = new Set();
-      for (const row of data || []) for (const l of row.labels || []) set.add(l);
-      return [...set].sort((a, b) => a.localeCompare(b));
-    }
+    // (No loadSavedLabels here — the renderer derives the distinct
+    // label set from its in-memory savedById cache, which is seeded
+    // from loadSavedMessages and kept current by the realtime fan-in.
+    // That avoids a second round-trip just to compute a Set on data
+    // we already loaded.)
 
     // Reactions live on a jsonb column. We read-modify-write under a
     // optimistic concurrency model; collisions are rare and self-healing.

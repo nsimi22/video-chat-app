@@ -200,7 +200,6 @@ class MeshClient extends EventTarget {
   saveMessage(args)        { return this.huddle.saveMessage(args); }
   unsaveMessage(id)        { return this.huddle.unsaveMessage(id); }
   loadSavedMessages(opts)  { return this.huddle.loadSavedMessages(opts); }
-  loadSavedLabels()        { return this.huddle.loadSavedLabels(); }
   toggleReaction(id, e)    { return this.huddle.toggleReaction(id, e); }
   sendTyping(c, p)         { return this.huddle.sendTyping(c, p); }
   loadHistory(c, opts)     { return this.huddle.loadHistory(c, opts); }
