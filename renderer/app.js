@@ -91,6 +91,18 @@ const els = {
   pinnedClose: $('#pinned-close'),
   imageLightbox: $('#image-lightbox'),
   imageLightboxImg: $('#image-lightbox-img'),
+  openSaved: $('#open-saved'),
+  savedCount: $('#saved-count'),
+  savedDrawer: $('#saved-drawer'),
+  savedClose: $('#saved-close'),
+  savedLabels: $('#saved-labels'),
+  savedList: $('#saved-list'),
+  savePopover: $('#save-popover'),
+  savePopoverLabels: $('#save-popover-labels'),
+  savePopoverNew: $('#save-popover-new'),
+  savePopoverAdd: $('#save-popover-add'),
+  savePopoverUnsave: $('#save-popover-unsave'),
+  savePopoverDone: $('#save-popover-done'),
   btnCc: $('#btn-cc'),
   captions: $('#captions'),
   captionsList: $('#captions-list'),
@@ -201,6 +213,19 @@ const state = {
   // Same pattern for the Escape-to-close handler shared by the pinned
   // drawer + image lightbox; wireControls re-runs across team switches.
   overlayKeyCleanup: null,
+  // Cleanup for the save popover's outside-click handler, captured
+  // from wireControls — torn down on teardownTeam.
+  savePopoverDocCleanup: null,
+  // Personal saved-messages cache: messageId -> save row. Populated on
+  // welcome and kept in sync by the saved-message-* realtime events
+  // dispatched from HuddleClient. Drives the bookmark indicator on
+  // message rows and the count badge on the sidebar Saved entry.
+  savedById: new Map(),
+  // Currently-active label chip in the saved drawer, or null for "All".
+  savedActiveLabel: null,
+  // Active save-popover target (messageId being edited) — used by the
+  // popover input handlers to know which row to mutate.
+  savePopoverTarget: null,
   pendingStreams: new Map(),
   unread: new Map(), // channelId -> { count, mentions } both ints
   _email: null,
@@ -1215,6 +1240,9 @@ async function joinTeamAndStart(teamId) {
   huddle.addEventListener('chat-channel-added', (e) => onChannelAdded(e.detail.channel));
   huddle.addEventListener('chat-channel-removed', (e) => onChannelRemoved(e.detail.channelId));
   huddle.addEventListener('call-presence', (e) => onCallPresence(e.detail));
+  huddle.addEventListener('saved-message-added', (e) => onSavedMessageChange('add', e.detail.save));
+  huddle.addEventListener('saved-message-updated', (e) => onSavedMessageChange('update', e.detail.save));
+  huddle.addEventListener('saved-message-removed', (e) => onSavedMessageChange('remove', { messageId: e.detail.messageId }));
 
   // Construct ChatView + assign state BEFORE huddle.start(), because
   // start() dispatches `welcome` synchronously at the end of its
@@ -1254,6 +1282,8 @@ async function joinTeamAndStart(teamId) {
       renderPinnedDrawer: (msgs, onPick) => renderPinnedDrawer(msgs, onPick),
       closePinnedDrawer: () => closePinnedDrawer(),
       onPinChanged: () => refreshPinnedCount(),
+      isMessageSaved: (id) => state.savedById.has(id),
+      openSavePopover: (args) => openSavePopover(args),
     },
   });
   wireControls();
@@ -1627,10 +1657,16 @@ async function teardownTeam() {
   state.reactPopoverCleanup = null;
   state.overlayKeyCleanup?.();
   state.overlayKeyCleanup = null;
+  state.savePopoverDocCleanup?.();
+  state.savePopoverDocCleanup = null;
   // Close any team-scoped overlays so they don't bleed into the next
   // team's session.
   closePinnedDrawer();
   closeImageLightbox();
+  closeSavedDrawer();
+  closeSavePopover();
+  state.savedById.clear();
+  refreshSavedSidebarCount();
   if (els.pinnedBtn) els.pinnedBtn.classList.add('hidden');
   els.app.classList.add('hidden');
 }
@@ -1763,6 +1799,10 @@ function onWelcome({ peers, channels }) {
   // welcome dispatched, so render the full list here. Online status
   // is overlaid from peerInfo (which `peers` is the snapshot of).
   renderRoster();
+  // Seed the saved-message cache once we know the team is up. The
+  // sidebar count + bookmark indicators read from this; realtime keeps
+  // it current after the first load.
+  refreshSavedCache().catch((err) => console.warn('saved cache seed failed', err));
   // If we just redeemed an invite link with a channel/call hop,
   // jump straight there instead of landing on #general. Falls back
   // to the normal default-channel logic if the target isn't visible
@@ -2519,6 +2559,258 @@ async function refreshPinnedCount() {
   els.pinnedCount.textContent = String(n);
 }
 
+// ---------------------------------------------------------------------------
+// Saved messages: per-user bookmarks with arbitrary labels
+// ---------------------------------------------------------------------------
+
+// Seed the local cache + sidebar count from the DB on welcome. Realtime
+// keeps it current after that.
+async function refreshSavedCache() {
+  if (!state.huddle) return;
+  state.savedById.clear();
+  const rows = await state.huddle.loadSavedMessages({ limit: 500 });
+  for (const r of rows) state.savedById.set(r.save.messageId, r.save);
+  refreshSavedSidebarCount();
+  // Re-render any visible message rows so their bookmark indicators
+  // catch up to the now-populated cache.
+  if (state.chat) state.chat.refreshAllMessages?.();
+}
+
+function refreshSavedSidebarCount() {
+  if (!els.savedCount) return;
+  const n = state.savedById.size;
+  els.savedCount.textContent = String(n);
+}
+
+// Realtime fan-in. The HuddleClient dispatches one of three events per
+// row mutation; mirror them into state.savedById and refresh the
+// surfaces that read from it. Keeping the local cache + DOM in lockstep
+// here means the renderer never has to await a roundtrip when toggling
+// a save from the popover.
+function onSavedMessageChange(kind, payload) {
+  if (kind === 'add' || kind === 'update') {
+    state.savedById.set(payload.messageId, payload);
+  } else if (kind === 'remove') {
+    state.savedById.delete(payload.messageId);
+  }
+  refreshSavedSidebarCount();
+  // The bookmark in the message hover-actions is read from
+  // hooks.isMessageSaved at render time, so refresh the affected row(s)
+  // — and the open drawer + popover in case they're showing this id.
+  if (state.chat) state.chat.refreshMessageById?.(payload.messageId);
+  if (els.savedDrawer && !els.savedDrawer.classList.contains('hidden')) {
+    renderSavedDrawer();
+  }
+  if (state.savePopoverTarget === payload.messageId) {
+    renderSavePopoverLabels();
+  }
+}
+
+async function openSavedDrawer() {
+  state.savedActiveLabel = null;
+  await renderSavedDrawer();
+  els.savedDrawer.classList.remove('hidden');
+  els.savedDrawer.setAttribute('aria-hidden', 'false');
+}
+
+function closeSavedDrawer() {
+  if (!els.savedDrawer) return;
+  els.savedDrawer.classList.add('hidden');
+  els.savedDrawer.setAttribute('aria-hidden', 'true');
+}
+
+// Render the chip rail (label filters) and the list of saved rows.
+// Re-fetches from the DB so labels removed elsewhere disappear from
+// the rail; the row list comes back filtered by state.savedActiveLabel
+// when one is selected.
+async function renderSavedDrawer() {
+  if (!state.huddle) return;
+  const labels = await state.huddle.loadSavedLabels();
+  els.savedLabels.replaceChildren();
+  const all = document.createElement('button');
+  all.type = 'button';
+  all.className = 'saved-label-chip' + (state.savedActiveLabel == null ? ' active' : '');
+  all.textContent = `All (${state.savedById.size})`;
+  all.onclick = () => { state.savedActiveLabel = null; renderSavedDrawer(); };
+  els.savedLabels.appendChild(all);
+  for (const label of labels) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'saved-label-chip' + (state.savedActiveLabel === label ? ' active' : '');
+    chip.textContent = label;
+    chip.onclick = () => { state.savedActiveLabel = label; renderSavedDrawer(); };
+    els.savedLabels.appendChild(chip);
+  }
+  const rows = await state.huddle.loadSavedMessages({ label: state.savedActiveLabel || undefined, limit: 200 });
+  els.savedList.replaceChildren();
+  if (rows.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'pinned-empty';
+    empty.textContent = state.savedActiveLabel
+      ? `No saves under "${state.savedActiveLabel}".`
+      : 'No saved messages yet. Hover a message and click the bookmark to save it.';
+    els.savedList.appendChild(empty);
+    return;
+  }
+  for (const { save, message } of rows) {
+    const row = document.createElement('div');
+    row.className = 'saved-item';
+    const head = document.createElement('div');
+    head.className = 'saved-item-head';
+    const channelLabel = state.channelMeta.get(save.channelId);
+    const channelText = channelLabel ? displayLabelFor(channelLabel) : `#${save.channelId}`;
+    head.textContent = `${message.authorName} · ${channelText} · ${new Date(message.ts).toLocaleString()}`;
+    const body = document.createElement('button');
+    body.type = 'button';
+    body.className = 'saved-item-body';
+    body.innerHTML = window.renderMarkdown
+      ? window.renderMarkdown(message.text || '')
+      : '';
+    if (!window.renderMarkdown) body.textContent = message.text || '';
+    body.onclick = () => {
+      closeSavedDrawer();
+      focusChannel(save.channelId);
+      state.chat?.scrollToMessage(message.id);
+    };
+    const meta = document.createElement('div');
+    meta.className = 'saved-item-meta';
+    for (const label of save.labels || []) {
+      const chip = document.createElement('span');
+      chip.className = 'saved-item-label';
+      chip.textContent = label;
+      meta.appendChild(chip);
+    }
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'ghost saved-item-edit';
+    edit.title = 'Edit labels';
+    edit.innerHTML = `${window.HuddleIcons.tag}<span>Labels</span>`;
+    edit.onclick = (ev) => openSavePopover({
+      messageId: message.id,
+      teamId: save.teamId,
+      channelId: save.channelId,
+      anchor: ev.currentTarget,
+    });
+    const unsave = document.createElement('button');
+    unsave.type = 'button';
+    unsave.className = 'ghost saved-item-unsave';
+    unsave.title = 'Unsave';
+    unsave.innerHTML = window.HuddleIcons.bookmark;
+    unsave.onclick = async () => {
+      try { await state.huddle.unsaveMessage(message.id); }
+      catch (err) { showCallError('Could not unsave: ' + (err?.message || err)); }
+    };
+    meta.appendChild(edit);
+    meta.appendChild(unsave);
+    row.append(head, body, meta);
+    els.savedList.appendChild(row);
+  }
+}
+
+// Save popover: anchored to the bookmark button in a message's
+// hover-actions strip, OR to the Edit-labels chip in the saved drawer.
+// Uses the same UI for both because the operation is the same: replace
+// this message's saved row with a new label set (or remove it).
+function openSavePopover({ messageId, teamId, channelId, anchor }) {
+  if (!els.savePopover) return;
+  state.savePopoverTarget = messageId;
+  state.savePopoverTeamId = teamId || state.huddle?.team?.id;
+  state.savePopoverChannelId = channelId;
+  // Position the popover near the anchor, clamped to the viewport so a
+  // hover-action button at the top of the stage doesn't push it off-
+  // screen. Width is fixed-ish (260px) — the height grows with labels.
+  const r = anchor?.getBoundingClientRect?.();
+  if (r) {
+    const top = Math.min(window.innerHeight - 320, Math.max(8, r.bottom + 6));
+    const left = Math.min(window.innerWidth - 280, Math.max(8, r.left - 200));
+    els.savePopover.style.top = `${top}px`;
+    els.savePopover.style.left = `${left}px`;
+  }
+  renderSavePopoverLabels();
+  els.savePopover.classList.remove('hidden');
+  els.savePopoverNew.value = '';
+  els.savePopoverNew.focus();
+}
+
+function closeSavePopover() {
+  if (!els.savePopover) return;
+  els.savePopover.classList.add('hidden');
+  state.savePopoverTarget = null;
+}
+
+// Render the labels list inside the popover. Each existing label has a
+// remove (×) chip; the user's full label corpus gets rendered as
+// togglable chips below so they can stack many tags without typing.
+async function renderSavePopoverLabels() {
+  if (!state.savePopoverTarget || !state.huddle) return;
+  const messageId = state.savePopoverTarget;
+  const current = new Set(state.savedById.get(messageId)?.labels || []);
+  const corpus = new Set(await state.huddle.loadSavedLabels());
+  els.savePopoverLabels.replaceChildren();
+  // Currently-applied labels, with × to remove. These render as filled
+  // chips so the "applied" state is visually distinct from the corpus.
+  for (const label of current) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'saved-popover-chip applied';
+    chip.innerHTML = `<span></span><span aria-hidden="true">×</span>`;
+    chip.querySelector('span').textContent = label;
+    chip.onclick = () => applyLabelChange(messageId, label, false);
+    els.savePopoverLabels.appendChild(chip);
+  }
+  // Suggested labels from the user's corpus that aren't currently
+  // applied. Click to add. Skipped entirely when the user has none yet.
+  const suggestable = [...corpus].filter((l) => !current.has(l)).sort();
+  if (suggestable.length) {
+    const sep = document.createElement('div');
+    sep.className = 'saved-popover-sep';
+    sep.textContent = 'Suggestions';
+    els.savePopoverLabels.appendChild(sep);
+    for (const label of suggestable) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'saved-popover-chip';
+      chip.textContent = label;
+      chip.onclick = () => applyLabelChange(messageId, label, true);
+      els.savePopoverLabels.appendChild(chip);
+    }
+  }
+}
+
+async function applyLabelChange(messageId, label, add) {
+  const cur = state.savedById.get(messageId);
+  const next = new Set(cur?.labels || []);
+  if (add) next.add(label); else next.delete(label);
+  try {
+    await state.huddle.saveMessage({
+      teamId: state.savePopoverTeamId,
+      channelId: state.savePopoverChannelId,
+      messageId,
+      labels: [...next],
+    });
+  } catch (err) {
+    showCallError('Could not update labels: ' + (err?.message || err));
+  }
+}
+
+async function addNewLabelFromPopover() {
+  const raw = (els.savePopoverNew.value || '').trim();
+  if (!raw) return;
+  els.savePopoverNew.value = '';
+  await applyLabelChange(state.savePopoverTarget, raw, true);
+}
+
+async function unsaveFromPopover() {
+  const messageId = state.savePopoverTarget;
+  if (!messageId) return;
+  try {
+    await state.huddle.unsaveMessage(messageId);
+  } catch (err) {
+    showCallError('Could not unsave: ' + (err?.message || err));
+  }
+  closeSavePopover();
+}
+
 // Drop everything that lives only for the duration of an active call:
 // the tile grid and all of its overlays/state. Shared between leaveCall
 // (call ends, team stays) and teardownTeam (whole team session torn
@@ -2766,6 +3058,28 @@ function wireControls() {
   if (els.btnHand) els.btnHand.onclick = toggleSelfHand;
   if (els.pinnedBtn) els.pinnedBtn.onclick = () => state.chat?.openPinnedDrawer();
   if (els.pinnedClose) els.pinnedClose.onclick = closePinnedDrawer;
+  if (els.openSaved) els.openSaved.onclick = openSavedDrawer;
+  if (els.savedClose) els.savedClose.onclick = closeSavedDrawer;
+  if (els.savePopoverAdd) els.savePopoverAdd.onclick = addNewLabelFromPopover;
+  if (els.savePopoverNew) els.savePopoverNew.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addNewLabelFromPopover(); } };
+  if (els.savePopoverDone) els.savePopoverDone.onclick = closeSavePopover;
+  if (els.savePopoverUnsave) els.savePopoverUnsave.onclick = unsaveFromPopover;
+  // Click outside the popover closes it. Captured in state so
+  // teardownTeam can detach it on team-switch instead of accumulating
+  // (same shape as state.reactPopoverCleanup / state.overlayKeyCleanup).
+  state.savePopoverDocCleanup?.();
+  const onDocClickForSave = (e) => {
+    if (!els.savePopover || els.savePopover.classList.contains('hidden')) return;
+    if (els.savePopover.contains(e.target)) return;
+    // The bookmark / labels-edit buttons toggle the popover via their
+    // own onclick; let those open the popover without this outside-
+    // click handler racing the open and immediately closing it.
+    if (e.target.closest('.msg-action')) return;
+    if (e.target.closest('.saved-item-edit')) return;
+    closeSavePopover();
+  };
+  document.addEventListener('click', onDocClickForSave);
+  state.savePopoverDocCleanup = () => document.removeEventListener('click', onDocClickForSave);
   if (els.imageLightbox) {
     els.imageLightbox.onclick = (e) => {
       // Click on the backdrop (not the image itself) closes; the image
@@ -2779,6 +3093,8 @@ function wireControls() {
   const onOverlayKey = (e) => {
     if (e.key !== 'Escape') return;
     if (els.imageLightbox && !els.imageLightbox.classList.contains('hidden')) closeImageLightbox();
+    else if (els.savePopover && !els.savePopover.classList.contains('hidden')) closeSavePopover();
+    else if (els.savedDrawer && !els.savedDrawer.classList.contains('hidden')) closeSavedDrawer();
     else if (els.pinnedDrawer && !els.pinnedDrawer.classList.contains('hidden')) closePinnedDrawer();
   };
   document.addEventListener('keydown', onOverlayKey);

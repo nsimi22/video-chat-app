@@ -973,6 +973,16 @@ class ChatView {
     if (this._isInCurrentView(m)) this._replaceNodeById(m.id);
   }
 
+  // Public refresh hooks, wired from app.js when state outside the
+  // chat (saved-message cache, profile renames, etc.) changes shape
+  // without producing a chat-update event we'd otherwise listen for.
+  refreshMessageById(id) {
+    if (id && this.nodeById.has(id)) this._replaceNodeById(id);
+  }
+  refreshAllMessages() {
+    for (const id of [...this.nodeById.keys()]) this._replaceNodeById(id);
+  }
+
   _replaceNodeById(id) {
     const old = this.nodeById.get(id);
     if (!old) return;
@@ -1175,6 +1185,23 @@ class ChatView {
     pin.setAttribute('aria-label', pin.title);
     pin.onclick = () => this._togglePin(m.id, !m.pinnedAt);
     actions.appendChild(pin);
+    // Save: per-user bookmark with optional labels. Click toggles a
+    // popover; saved state lives in the renderer's `state.savedById`
+    // map and the bookmark stays filled while the message has a row
+    // in saved_messages. Distinct from pin (which is channel-public).
+    const isSaved = !!this.hooks.isMessageSaved?.(m.id);
+    const save = document.createElement('button');
+    save.className = 'msg-action' + (isSaved ? ' active' : '');
+    save.innerHTML = window.HuddleIcons.bookmark;
+    save.title = isSaved ? 'Edit save / labels' : 'Save message';
+    save.setAttribute('aria-label', save.title);
+    save.onclick = (ev) => this.hooks.openSavePopover?.({
+      messageId: m.id,
+      teamId: this.mesh.teamMeta?.id,
+      channelId: this.currentChannel,
+      anchor: ev.currentTarget,
+    });
+    actions.appendChild(save);
     // Copy-link: share a deep link straight to this message. The
     // permalink is decoded by app.js parseInviteLink + scrollToMessage.
     const link = document.createElement('button');

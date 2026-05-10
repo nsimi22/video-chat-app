@@ -548,6 +548,17 @@
           }
           this.dispatchEvent(new CustomEvent('chat-channel-added', { detail: { channel: meta } }));
         });
+      // Saved-messages mutations. RLS on saved_messages restricts the
+      // payload to the caller's own rows so we don't need an auth-side
+      // filter here. The renderer keeps a local copy of the user's
+      // saves and reconciles via these events.
+      const saveFilter = `user_id=eq.${this.peerId}`;
+      ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'saved_messages', filter: saveFilter },
+        (p) => this.dispatchEvent(new CustomEvent('saved-message-added', { detail: { save: this._marshalSavedRow(p.new) } })));
+      ch.on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'saved_messages', filter: saveFilter },
+        (p) => this.dispatchEvent(new CustomEvent('saved-message-updated', { detail: { save: this._marshalSavedRow(p.new) } })));
+      ch.on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'saved_messages', filter: saveFilter },
+        (p) => this.dispatchEvent(new CustomEvent('saved-message-removed', { detail: { messageId: p.old.message_id } })));
       await new Promise((resolve, reject) => {
         ch.subscribe((status, err) => {
           if (status === 'SUBSCRIBED') resolve();
@@ -783,6 +794,96 @@
         .not('pinned_at', 'is', null);
       if (error) { console.warn('pinnedMessageCount failed', error); return 0; }
       return count || 0;
+    }
+
+    // --- Saved messages -----------------------------------------------------
+    //
+    // Per-user bookmarks with arbitrary user-defined labels. The save row
+    // carries the team/channel/message ids needed to render the saved-
+    // panel without re-joining to the message author each time, plus the
+    // labels array the user has tagged this save with. RLS restricts
+    // every read/write to the saver, so we don't need to gate further
+    // here — wire the user's id into the row and trust the policy.
+
+    _marshalSavedRow(row) {
+      return {
+        userId: row.user_id,
+        teamId: row.team_id,
+        channelId: row.channel_id,
+        messageId: row.message_id,
+        labels: Array.isArray(row.labels) ? row.labels : [],
+        savedAt: row.saved_at ? new Date(row.saved_at).getTime() : Date.now(),
+      };
+    }
+
+    // Save a message for the current user. Idempotent: re-saving an
+    // already-saved message replaces its labels (this is the editing
+    // path called by the labels popover). ON CONFLICT DO UPDATE works
+    // here because the saved_messages_update policy permits self-
+    // updates — unlike channel_members where there is no UPDATE policy.
+    async saveMessage({ teamId, channelId, messageId, labels = [] }) {
+      const cleanLabels = (labels || []).map((s) => String(s).trim()).filter(Boolean);
+      const { error } = await this.supabase.from('saved_messages').upsert(
+        {
+          user_id: this.peerId,
+          team_id: teamId || this.team.id,
+          channel_id: channelId,
+          message_id: messageId,
+          labels: cleanLabels,
+          // saved_at default keeps the original save timestamp on
+          // re-save; updating labels via this path bumps `saved_at`
+          // so the item resurfaces at the top of the panel — that
+          // matches Slack's "I just refiled this" mental model.
+          saved_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id,message_id' },
+      );
+      if (error) { console.warn('saveMessage failed', error); throw error; }
+    }
+
+    async unsaveMessage(messageId) {
+      const { error } = await this.supabase.from('saved_messages')
+        .delete().eq('user_id', this.peerId).eq('message_id', messageId);
+      if (error) { console.warn('unsaveMessage failed', error); throw error; }
+    }
+
+    // Load the caller's saved rows joined to the underlying messages,
+    // newest first. Optional label filter narrows to rows whose labels
+    // array contains the given label. Limit kept generous because the
+    // panel loads incrementally and pinning the cap server-side avoids
+    // a runaway query when a user has thousands of saves.
+    async loadSavedMessages({ label, limit = 200 } = {}) {
+      let q = this.supabase
+        .from('saved_messages')
+        .select('user_id, team_id, channel_id, message_id, labels, saved_at, messages!inner(*)')
+        .eq('user_id', this.peerId)
+        .order('saved_at', { ascending: false })
+        .limit(limit);
+      if (label) q = q.contains('labels', [label]);
+      const { data, error } = await q;
+      if (error) { console.warn('loadSavedMessages failed', error); return []; }
+      return (data || []).map((row) => ({
+        save: this._marshalSavedRow(row),
+        // PostgREST embed: messages!inner returns the joined row inline.
+        // RLS on messages still applies — a save pointing at a row the
+        // user can no longer see (e.g. they were removed from a private
+        // channel) just won't include the embedded message.
+        message: row.messages ? this._marshalMessage(row.messages) : null,
+      })).filter((x) => x.message);
+    }
+
+    // Distinct label set across the caller's saves — used to render
+    // the chip rail at the top of the saved panel. Pulls all rows'
+    // labels and dedupes client-side; postgres has no native distinct-
+    // unnest helper exposed via PostgREST without an RPC, and the user's
+    // own save list is small enough to dedupe in the renderer.
+    async loadSavedLabels() {
+      const { data, error } = await this.supabase.from('saved_messages')
+        .select('labels').eq('user_id', this.peerId);
+      if (error) { console.warn('loadSavedLabels failed', error); return []; }
+      const set = new Set();
+      for (const row of data || []) for (const l of row.labels || []) set.add(l);
+      return [...set].sort((a, b) => a.localeCompare(b));
     }
 
     // Reactions live on a jsonb column. We read-modify-write under a
