@@ -377,6 +377,8 @@
             <input id="set-jira-project" type="text" placeholder="DAP" maxlength="20" />
             <label>AI ticket context <span class="hint-inline">(prepended to every <code>/ai-ticket</code> system prompt — describe your product, terminology, tone, what's in scope)</span></label>
             <textarea id="set-ai-ticket-context" rows="6" maxlength="4000" placeholder="e.g. Slack-style desktop app on Supabase. Small team. Tickets should reference existing modules (chat.js, webrtc.js, app.js). Default to 'Bug' only when there's a clear repro path; otherwise 'Task'."></textarea>
+            <label>AI ticket GitHub repo <span class="hint-inline">(<code>owner/name</code> — when set, <code>/ai-ticket</code> can search code, read files, scan issues, and list recent commits before drafting. Requires a GitHub token in the section below.)</span></label>
+            <input id="set-ai-ticket-repo" type="text" placeholder="acme/web" maxlength="120" />
           </div>
         </details>
 

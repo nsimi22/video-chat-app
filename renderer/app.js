@@ -142,6 +142,7 @@ const els = {
   setOpenrouterKey: $('#set-openrouter-key'),
   setOpenrouterModel: $('#set-openrouter-model'),
   setAiTicketContext: $('#set-ai-ticket-context'),
+  setAiTicketRepo: $('#set-ai-ticket-repo'),
   setGithubToken: $('#set-github-token'),
   setGiphyKey: $('#set-giphy-key'),
   settingsStatus: $('#settings-status'),
@@ -1243,6 +1244,7 @@ async function joinTeamAndStart(teamId) {
       getJira: () => state.jira,
       getDefaultJiraProject: () => state.settings?.jira?.defaultProject || '',
       getAiTicketContext: () => state.settings?.aiTicket?.context || '',
+      getAiTicketRepo: () => state.settings?.aiTicket?.githubRepo || '',
       openTicketModal: (preset) => openTicketModal(preset),
       getAi: () => state.ai,
       getGitHub: () => state.github,
@@ -3238,6 +3240,7 @@ async function openSettings() {
   els.setOpenrouterKey.value = s.ai?.openrouterKey || '';
   els.setOpenrouterModel.value = s.ai?.openrouterModel || '';
   els.setAiTicketContext.value = s.aiTicket?.context || '';
+  els.setAiTicketRepo.value = s.aiTicket?.githubRepo || '';
   els.setGithubToken.value = s.github?.token || '';
   els.setGiphyKey.value = s.giphy?.key || '';
   els.settingsStatus.classList.add('hidden');
@@ -3325,6 +3328,10 @@ async function saveSettings() {
       // call to consider — described domain, codebase areas, terminology,
       // tone preferences. Trimmed but otherwise stored verbatim.
       context: els.setAiTicketContext.value.trim(),
+      // Optional GitHub repo (`owner/name`) the AI can search/read while
+      // drafting a ticket. Empty string disables the tool loop and keeps
+      // /ai-ticket as a single-shot prompt call.
+      githubRepo: els.setAiTicketRepo.value.trim(),
     },
     github: { token: els.setGithubToken.value },
     giphy: { key: els.setGiphyKey.value.trim() },

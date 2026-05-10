@@ -61,6 +61,96 @@
       return this._request('/user/repos?per_page=100&sort=pushed');
     }
 
+    // --- Repo introspection (used by the /ai-ticket tool loop) ----------
+    //
+    // These four methods give the AI a tight, indexed view of a repo:
+    // search code by keyword, search issues/PRs, read a specific file,
+    // list recent commits. All are scoped to a single repo passed in as
+    // `owner/name`; bad shapes throw before issuing the request so the
+    // tool surface fails loudly during prompt-engineering rather than
+    // returning an opaque GitHub 422.
+
+    static parseRepoSlug(slug) {
+      const m = /^([a-zA-Z0-9._-]+)\/([a-zA-Z0-9._-]+)$/.exec((slug || '').trim());
+      if (!m) throw new Error(`bad repo slug "${slug}" — expected "owner/name"`);
+      return { owner: m[1], repo: m[2] };
+    }
+
+    // GitHub code search; results are file-level. q is a raw search
+    // expression — we add `repo:owner/name` ourselves so callers can
+    // pass plain keywords. Returns up to `limit` of {path, snippet}.
+    async searchCode(slug, q, { limit = 8 } = {}) {
+      const { owner, repo } = GitHubClient.parseRepoSlug(slug);
+      const query = encodeURIComponent(`${q} repo:${owner}/${repo}`);
+      const json = await this._request(`/search/code?q=${query}&per_page=${limit}`);
+      return (json?.items || []).slice(0, limit).map((it) => ({
+        path: it.path,
+        url: it.html_url,
+        // text_matches isn't returned by default; we ask for it via the
+        // Accept header. As a fallback, surface the file name + path so
+        // the model has something to act on.
+        snippet: (it.text_matches?.[0]?.fragment || it.name || '').slice(0, 240),
+      }));
+    }
+
+    // /search/issues spans both issues and PRs (PRs have a pull_request
+    // key in the result). Useful for the AI to spot duplicate or related
+    // tickets before drafting a new one.
+    async searchIssues(slug, q, { limit = 8 } = {}) {
+      const { owner, repo } = GitHubClient.parseRepoSlug(slug);
+      const query = encodeURIComponent(`${q} repo:${owner}/${repo}`);
+      const json = await this._request(`/search/issues?q=${query}&per_page=${limit}`);
+      return (json?.items || []).slice(0, limit).map((it) => ({
+        number: it.number,
+        title: it.title,
+        state: it.state,
+        kind: it.pull_request ? 'pull_request' : 'issue',
+        url: it.html_url,
+        body: (it.body || '').slice(0, 400),
+      }));
+    }
+
+    // GET /repos/{o}/{r}/contents/{path} returns the file as
+    // base64-encoded `content`. We decode + line-slice here so the
+    // tool result stays inside a token budget regardless of file size.
+    async readFile(slug, path, { lineStart, lineEnd, maxLines = 200 } = {}) {
+      const { owner, repo } = GitHubClient.parseRepoSlug(slug);
+      const safePath = (path || '').replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/');
+      const json = await this._request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${safePath}`);
+      if (!json || json.type !== 'file' || typeof json.content !== 'string') {
+        throw new Error(`not a file: ${path}`);
+      }
+      const decoded = atob(json.content.replace(/\n/g, ''));
+      const lines = decoded.split('\n');
+      let start = Math.max(1, lineStart || 1);
+      let end = Math.min(lines.length, lineEnd || start + maxLines - 1);
+      if (end - start + 1 > maxLines) end = start + maxLines - 1;
+      const slice = lines.slice(start - 1, end).join('\n');
+      const truncated = end < lines.length || start > 1;
+      return {
+        path: json.path,
+        sha: json.sha,
+        totalLines: lines.length,
+        rangeStart: start,
+        rangeEnd: end,
+        truncated,
+        content: slice,
+      };
+    }
+
+    async listRecentCommits(slug, { limit = 10, path } = {}) {
+      const { owner, repo } = GitHubClient.parseRepoSlug(slug);
+      const params = new URLSearchParams({ per_page: String(Math.min(limit, 25)) });
+      if (path) params.set('path', path);
+      const json = await this._request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits?${params.toString()}`);
+      return (json || []).map((c) => ({
+        sha: c.sha?.slice(0, 8) || '',
+        message: (c.commit?.message || '').split('\n', 1)[0].slice(0, 200),
+        author: c.commit?.author?.name || c.author?.login || '',
+        date: c.commit?.author?.date || '',
+      }));
+    }
+
     htmlUrl(owner, repo, number) {
       return `https://github.com/${owner}/${repo}/issues/${number}`;
     }
