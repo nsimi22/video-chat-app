@@ -84,11 +84,14 @@
     // pass plain keywords. Returns up to `limit` of {path, snippet}.
     async searchCode(slug, q, { limit = 8 } = {}) {
       const { owner, repo } = GitHubClient.parseRepoSlug(slug);
-      const query = encodeURIComponent(`${q} repo:${owner}/${repo}`);
+      // URLSearchParams handles the percent-encoding rules correctly —
+      // GitHub also accepts the over-encoded `repo%3Afoo%2Fbar` shape,
+      // but the cleaner form keeps the URL grep-friendly in proxy logs.
+      const params = new URLSearchParams({ q: `${q} repo:${owner}/${repo}`, per_page: String(limit) });
       // text-match media type is required for `text_matches` to populate;
       // without it GitHub returns just file metadata and the AI has to
       // burn a read_file call per result to see if a hit is meaningful.
-      const json = await this._request(`/search/code?q=${query}&per_page=${limit}`, {
+      const json = await this._request(`/search/code?${params.toString()}`, {
         accept: 'application/vnd.github.text-match+json',
       });
       return (json?.items || []).slice(0, limit).map((it) => ({
@@ -103,8 +106,8 @@
     // tickets before drafting a new one.
     async searchIssues(slug, q, { limit = 8 } = {}) {
       const { owner, repo } = GitHubClient.parseRepoSlug(slug);
-      const query = encodeURIComponent(`${q} repo:${owner}/${repo}`);
-      const json = await this._request(`/search/issues?q=${query}&per_page=${limit}`);
+      const params = new URLSearchParams({ q: `${q} repo:${owner}/${repo}`, per_page: String(limit) });
+      const json = await this._request(`/search/issues?${params.toString()}`);
       return (json?.items || []).slice(0, limit).map((it) => ({
         number: it.number,
         title: it.title,
@@ -120,7 +123,16 @@
     // tool result stays inside a token budget regardless of file size.
     async readFile(slug, path, { lineStart, lineEnd, maxLines = 200 } = {}) {
       const { owner, repo } = GitHubClient.parseRepoSlug(slug);
-      const safePath = (path || '').replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/');
+      const segments = (path || '').replace(/^\/+/, '').split('/').filter(Boolean);
+      // Reject `..` segments outright. GitHub normalizes them server-
+      // side and either 404s or returns a different file, both of
+      // which surface as opaque tool errors. Failing here returns a
+      // clear message the model can correct.
+      if (segments.length === 0) throw new Error('empty path');
+      if (segments.some((s) => s === '..' || s === '.')) {
+        throw new Error(`path "${path}" contains traversal segments — pass a repo-relative path`);
+      }
+      const safePath = segments.map(encodeURIComponent).join('/');
       const json = await this._request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${safePath}`);
       if (!json || json.type !== 'file' || typeof json.content !== 'string') {
         throw new Error(`not a file: ${path}`);
@@ -137,7 +149,12 @@
       let end = Math.min(lines.length, lineEnd || start + maxLines - 1);
       if (end - start + 1 > maxLines) end = start + maxLines - 1;
       const slice = lines.slice(start - 1, end).join('\n');
-      const truncated = end < lines.length || start > 1;
+      // truncated = "we omitted content the caller might have wanted".
+      // A user-supplied range is intentional, so leading/trailing skip
+      // there isn't truncation. Only flag when the cap actually hit OR
+      // when the file extends past the end we returned without an
+      // explicit lineEnd request.
+      const truncated = end < lines.length && lineEnd == null;
       return {
         path: json.path,
         sha: json.sha,
