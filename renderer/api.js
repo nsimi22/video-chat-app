@@ -731,7 +731,10 @@
         body: text || '', attachments: attachments || [], reactions: {}, mentions,
         ai_generated: true, ai_model: model || null,
       });
-      if (error) console.warn('sendAiMessage failed', error);
+      // Throw on failure so callers (notably /ai-ticket) can surface the
+      // problem to the user — silently warning here meant a successful
+      // Jira ticket would never appear in chat with no visible error.
+      if (error) throw error;
     }
 
     async editMessage(messageId, text) {

@@ -172,21 +172,209 @@
     return children;
   }
 
-  // Convert plain text -> Atlassian Document Format (the only description
-  // format Jira Cloud's v3 API accepts).
+  // Convert markdown -> Atlassian Document Format (the only description
+  // format Jira Cloud's v3 API accepts). The /ai-ticket flow ships rich
+  // markdown (## headings, - [ ] task lists, **bold**, [links](url)); the
+  // earlier paragraph-only converter rendered all of that as literal
+  // characters in the ticket. This handles the structures we actually
+  // emit — anything outside the supported set falls back to a paragraph
+  // with hardBreaks rather than throwing, so a malformed AI response
+  // still produces a usable ticket.
   function toAdf(text) {
-    const paragraphs = String(text).split(/\n{2,}/);
-    return {
-      type: 'doc',
-      version: 1,
-      content: paragraphs.map((p) => ({
-        type: 'paragraph',
-        content: p.split('\n').flatMap((line, i, arr) => {
-          const seg = line ? [{ type: 'text', text: line }] : [];
-          return i < arr.length - 1 ? [...seg, { type: 'hardBreak' }] : seg;
-        }),
-      })),
-    };
+    const lines = String(text == null ? '' : text).split('\n');
+    const blocks = [];
+    let i = 0;
+    let idSeq = 0;
+    const nextId = () => `huddle-${Date.now().toString(36)}-${++idSeq}`;
+
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!line.trim()) { i++; continue; }
+
+      // ATX heading: # … ###### (cap level at 6 per ADF spec)
+      const h = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+      if (h) {
+        blocks.push({ type: 'heading', attrs: { level: h[1].length }, content: parseInline(h[2]) });
+        i++; continue;
+      }
+
+      // Fenced code block: ```lang\n…\n```
+      const fence = /^```(\w+)?\s*$/.exec(line);
+      if (fence) {
+        const lang = fence[1] || null;
+        const buf = [];
+        i++;
+        while (i < lines.length && !/^```\s*$/.test(lines[i])) { buf.push(lines[i]); i++; }
+        if (i < lines.length) i++; // skip closing fence
+        blocks.push({
+          type: 'codeBlock',
+          ...(lang ? { attrs: { language: lang } } : {}),
+          content: buf.length ? [{ type: 'text', text: buf.join('\n') }] : [],
+        });
+        continue;
+      }
+
+      // Task list: consecutive `- [ ]` / `- [x]` lines (one taskList per run)
+      if (/^\s*[-*]\s+\[[ xX]\]\s+/.test(line)) {
+        const items = [];
+        while (i < lines.length) {
+          const m = /^\s*[-*]\s+\[([ xX])\]\s+(.+)$/.exec(lines[i]);
+          if (!m) break;
+          items.push({
+            type: 'taskItem',
+            attrs: { localId: nextId(), state: m[1].toLowerCase() === 'x' ? 'DONE' : 'TODO' },
+            content: parseInline(m[2]),
+          });
+          i++;
+        }
+        blocks.push({ type: 'taskList', attrs: { localId: nextId() }, content: items });
+        continue;
+      }
+
+      // Bullet list (ignores task-list lines; those were caught above)
+      if (/^\s*[-*]\s+/.test(line)) {
+        const items = [];
+        while (i < lines.length) {
+          if (/^\s*[-*]\s+\[[ xX]\]\s+/.test(lines[i])) break;
+          const m = /^\s*[-*]\s+(.+)$/.exec(lines[i]);
+          if (!m) break;
+          items.push({ type: 'listItem', content: [{ type: 'paragraph', content: parseInline(m[1]) }] });
+          i++;
+        }
+        blocks.push({ type: 'bulletList', content: items });
+        continue;
+      }
+
+      // Ordered list. Honor the first item's number as the starting
+      // index so `3. foo\n4. bar` renders as 3, 4 in Jira instead of
+      // resetting to 1 (matters for partial-list snippets the AI
+      // sometimes emits when extending an existing numbered section).
+      if (/^\s*\d+\.\s+/.test(line)) {
+        const startMatch = /^\s*(\d+)\.\s+/.exec(line);
+        const start = startMatch ? parseInt(startMatch[1], 10) || 1 : 1;
+        const items = [];
+        while (i < lines.length) {
+          const m = /^\s*\d+\.\s+(.+)$/.exec(lines[i]);
+          if (!m) break;
+          items.push({ type: 'listItem', content: [{ type: 'paragraph', content: parseInline(m[1]) }] });
+          i++;
+        }
+        blocks.push({ type: 'orderedList', attrs: { order: start }, content: items });
+        continue;
+      }
+
+      // Paragraph: collect contiguous non-blank, non-block-starter lines.
+      // Single newlines inside the run become hardBreaks (so a multi-line
+      // sentence reads as one paragraph in Jira, matching how it reads
+      // in the source).
+      const para = [];
+      while (i < lines.length) {
+        const ln = lines[i];
+        if (!ln.trim()) break;
+        if (/^(#{1,6}\s+|```|\s*[-*]\s+|\s*\d+\.\s+)/.test(ln)) break;
+        para.push(ln);
+        i++;
+      }
+      const inline = [];
+      para.forEach((p, idx) => {
+        if (idx > 0) inline.push({ type: 'hardBreak' });
+        inline.push(...parseInline(p));
+      });
+      blocks.push({ type: 'paragraph', content: inline });
+    }
+
+    // Jira accepts an empty doc, but every ADF parser we hit prefers at
+    // least a placeholder paragraph — emit one so an empty description
+    // still round-trips cleanly.
+    if (blocks.length === 0) blocks.push({ type: 'paragraph', content: [] });
+    return { type: 'doc', version: 1, content: blocks };
+  }
+
+  // Inline tokenizer for ADF marks. Recognized: `code`, **bold**, *italic*,
+  // [text](url). Walks left-to-right, claiming the first match at each
+  // position so `**foo**` doesn't get partially eaten by the italic rule.
+  // Marks compose: **`foo`** stacks `code` + `strong` on the same text
+  // node. Unknown punctuation is plain text.
+  function parseInline(text) {
+    if (!text) return [];
+    return parseInlineImpl(String(text), []);
+  }
+
+  function withMark(node, mark) {
+    if (node.type !== 'text') return node;
+    const marks = (node.marks || []).slice();
+    if (!marks.some((m) => m.type === mark.type)) marks.push(mark);
+    return { ...node, marks };
+  }
+
+  function parseInlineImpl(text, _depth) {
+    const out = [];
+    let buf = '';
+    const flush = () => { if (buf) { out.push({ type: 'text', text: buf }); buf = ''; } };
+    let i = 0;
+    while (i < text.length) {
+      const ch = text[i];
+
+      // `code` — literal, no nested parsing
+      if (ch === '`') {
+        const end = text.indexOf('`', i + 1);
+        if (end > i + 1) {
+          flush();
+          out.push({ type: 'text', text: text.slice(i + 1, end), marks: [{ type: 'code' }] });
+          i = end + 1;
+          continue;
+        }
+      }
+
+      // **bold** — must be at least one char between, and the closing **
+      // can't be the start of a longer ****…
+      if (ch === '*' && text[i + 1] === '*') {
+        const end = text.indexOf('**', i + 2);
+        if (end > i + 2) {
+          flush();
+          for (const node of parseInlineImpl(text.slice(i + 2, end))) {
+            out.push(withMark(node, { type: 'strong' }));
+          }
+          i = end + 2;
+          continue;
+        }
+      }
+
+      // *italic* — single asterisk, but not part of ** (handled above first)
+      if (ch === '*') {
+        const end = text.indexOf('*', i + 1);
+        if (end > i + 1 && text[end + 1] !== '*') {
+          flush();
+          for (const node of parseInlineImpl(text.slice(i + 1, end))) {
+            out.push(withMark(node, { type: 'em' }));
+          }
+          i = end + 1;
+          continue;
+        }
+      }
+
+      // [text](url) — recurse into the bracket contents so nested
+      // marks survive (e.g. `[**foo** _bar_](url)` renders as a link
+      // whose visible text mixes bold + italic, instead of literal
+      // asterisks/underscores).
+      if (ch === '[') {
+        const m = /^\[([^\]\n]+)\]\(([^)\s]+)\)/.exec(text.slice(i));
+        if (m) {
+          flush();
+          const linkMark = { type: 'link', attrs: { href: m[2] } };
+          for (const node of parseInlineImpl(m[1])) {
+            out.push(withMark(node, linkMark));
+          }
+          i += m[0].length;
+          continue;
+        }
+      }
+
+      buf += ch;
+      i++;
+    }
+    flush();
+    return out;
   }
 
   // -------------------------------------------------------------------------
