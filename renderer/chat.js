@@ -34,6 +34,9 @@ A senior-PM description includes the sections below. Omit any that don't apply t
 ## Background
 One to three sentences of context: why this matters now, what triggered it, who is affected.
 
+## User story
+Required for "Story". Strongly preferred for "Task" / "Bug" when there's a real user persona to point at. Single line in the form: "As a <persona>, I want <capability>, so that <benefit>." Skip only when the work is purely internal (e.g., a build-system fix nobody outside engineering experiences).
+
 ## Problem
 For bugs: precise statement of what's broken, where, and the user-visible impact.
 For net-new work: write "## Goal" instead and state the outcome we want.
@@ -1625,12 +1628,16 @@ class ChatView {
       return true;
     }
     const url = jira.issueUrl(issue.key);
-    const body = `Created **${issue.key}** (${parsed.issueType || 'Task'}): ${parsed.summary}\n\n${url}`;
+    // Post the bare URL so the existing Jira unfurl renders the same
+    // status card the user gets from `/jira <KEY>`. The AI badge on the
+    // message (sendAiMessage sets ai_generated) is the "this was
+    // auto-created" signal — a duplicate prefix line just clutters the
+    // card.
     try {
       await this.mesh.sendAiMessage({
         channelId: this.currentChannel,
         parentId: this.threadParentId,
-        text: body,
+        text: url,
         model: aiResult.model,
       });
     } catch (err) {
