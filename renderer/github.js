@@ -21,7 +21,7 @@
 
     isConfigured() { return !!this.token; }
 
-    async _request(path, { method = 'GET', body = null } = {}) {
+    async _request(path, { method = 'GET', body = null, accept } = {}) {
       if (!this.isConfigured()) {
         throw new Error('GitHub is not configured. Open Settings and add a Personal Access Token.');
       }
@@ -30,7 +30,10 @@
         method,
         headers: {
           'Authorization': `Bearer ${this.token}`,
-          'Accept': 'application/vnd.github+json',
+          // `accept` lets specific endpoints opt into media types like
+          // `application/vnd.github.text-match+json` (search highlighting)
+          // without flipping the default for every other call.
+          'Accept': accept || 'application/vnd.github+json',
           'X-GitHub-Api-Version': '2022-11-28',
           ...(body ? { 'content-type': 'application/json' } : {}),
         },
@@ -82,13 +85,15 @@
     async searchCode(slug, q, { limit = 8 } = {}) {
       const { owner, repo } = GitHubClient.parseRepoSlug(slug);
       const query = encodeURIComponent(`${q} repo:${owner}/${repo}`);
-      const json = await this._request(`/search/code?q=${query}&per_page=${limit}`);
+      // text-match media type is required for `text_matches` to populate;
+      // without it GitHub returns just file metadata and the AI has to
+      // burn a read_file call per result to see if a hit is meaningful.
+      const json = await this._request(`/search/code?q=${query}&per_page=${limit}`, {
+        accept: 'application/vnd.github.text-match+json',
+      });
       return (json?.items || []).slice(0, limit).map((it) => ({
         path: it.path,
         url: it.html_url,
-        // text_matches isn't returned by default; we ask for it via the
-        // Accept header. As a fallback, surface the file name + path so
-        // the model has something to act on.
         snippet: (it.text_matches?.[0]?.fragment || it.name || '').slice(0, 240),
       }));
     }
@@ -120,7 +125,13 @@
       if (!json || json.type !== 'file' || typeof json.content !== 'string') {
         throw new Error(`not a file: ${path}`);
       }
-      const decoded = atob(json.content.replace(/\n/g, ''));
+      // atob alone treats each base64-decoded byte as one character, so
+      // UTF-8 multi-byte sequences (anything non-ASCII in comments or
+      // strings) end up mangled. Round-trip via Uint8Array → TextDecoder
+      // so the AI sees the file the way the editor would.
+      const binary = atob(json.content.replace(/\n/g, ''));
+      const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+      const decoded = new TextDecoder().decode(bytes);
       const lines = decoded.split('\n');
       let start = Math.max(1, lineStart || 1);
       let end = Math.min(lines.length, lineEnd || start + maxLines - 1);
