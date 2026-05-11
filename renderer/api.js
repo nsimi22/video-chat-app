@@ -1367,6 +1367,27 @@
     return data.session;
   }
 
+  // Password sign-in for users who have one set. Errors with "Invalid
+  // login credentials" for a wrong password OR an unknown email — we
+  // surface a single generic message rather than leaking which.
+  async function signInWithPassword(email, password) {
+    const sb = await getSupabase();
+    const { data, error } = await sb.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+    return data.session;
+  }
+
+  // Account creation with a password. Returns the active session when the
+  // project has "Confirm email" disabled; otherwise `data.session` is null
+  // and the user must confirm via email before the account is usable —
+  // the caller surfaces that distinction.
+  async function signUpWithPassword(email, password) {
+    const sb = await getSupabase();
+    const { data, error } = await sb.auth.signUp({ email, password });
+    if (error) throw error;
+    return data.session; // null when email confirmation is still required
+  }
+
   async function ensureProfile(name, color) {
     const sb = await getSupabase();
     const { data: { user } } = await sb.auth.getUser();
@@ -1461,7 +1482,7 @@
 
   window.huddleApi = {
     getSupabase,
-    sendOtp, verifyOtp, ensureProfile,
+    sendOtp, verifyOtp, signInWithPassword, signUpWithPassword, ensureProfile,
     listMyTeams, joinOrCreateTeam, startHuddle,
     signOut, getActiveSession,
     loadSettings, saveSettings,
