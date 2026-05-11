@@ -7,10 +7,12 @@ const path = require('path');
 
 // Windows shows toast notifications under an "AppUserModelID"; without an
 // explicit one, renderer `new Notification()` calls are silently dropped on
-// Windows. Use the packaged appId so the notifications wire up to the
-// installed Start-menu shortcut. No-op on macOS/Linux. Called before app
-// `ready` per Electron's guidance.
-app.setAppUserModelId(require('./package.json').build.appId);
+// Windows. No-op on macOS/Linux. Called before app `ready` per Electron's
+// guidance. NOTE: must stay in sync with `build.appId` in package.json — we
+// can't read it back from package.json at runtime because electron-builder
+// strips the `build` block out of the packaged app's package.json.
+const APP_ID = 'com.huddle.app';
+app.setAppUserModelId(APP_ID);
 
 // Defaults point at the project I provisioned. Override either via env vars
 // (HUDDLE_SUPABASE_URL / HUDDLE_SUPABASE_KEY) for self-hosted Supabase.
