@@ -93,6 +93,8 @@
       this._erasing = false; // true while an eraser drag is in progress
       this._lastErasePt = null; // previous eraser-nib position, so a fast drag covers the path
       this._bboxCache = new WeakMap(); // stroke -> [minX,minY,maxX,maxY], for the eraser's cheap reject
+      this._selected = null;  // stroke object currently selected by the select tool, or null
+      this._selDrag = null;   // { lastX, lastY, moved } while dragging the selection
 
       this.canvas = document.createElement('canvas');
       this.canvas.className = 'infinite-canvas';
@@ -116,12 +118,18 @@
 
     setTool(t) {
       this.tool = t;
+      // Leaving the select tool drops any active selection (and its overlay).
+      if (t !== 'select' && this._selected) { this._selected = null; this._selDrag = null; this._render(); }
       if (!this._panning && !this._panMode) this.canvas.style.cursor = this._toolCursor();
     }
     setColor(c) { this.color = c; }
     setSize(s) { this.size = s; }
     // Idle cursor for the current tool (pan gestures override this while active).
-    _toolCursor() { return this.tool === 'eraser' ? ERASER_CURSOR : 'crosshair'; }
+    _toolCursor() {
+      if (this.tool === 'eraser') return ERASER_CURSOR;
+      if (this.tool === 'select') return 'default';
+      return 'crosshair';
+    }
     // DrawingLayer parity: toggleAnnotate calls .setActive() to
     // gate pointer events. InfiniteCanvas owns its own canvas
     // element with pointer events always live; the call is a
@@ -151,6 +159,16 @@
     // the local emit: { action, x, y, tool, color, size, uuid }.
     applyRemote(stroke) {
       if (stroke.action === 'clear') { this.strokes = []; this._render(); return; }
+      // A peer moved a stroke with the select tool — translate our copy.
+      if (stroke.action === 'move-stroke') {
+        const s = this.strokes.find((x) => x.uuid === stroke.uuid);
+        if (s) {
+          for (const pt of s.points) { pt[0] += stroke.dx; pt[1] += stroke.dy; }
+          this._bboxCache.delete(s);
+          this._render();
+        }
+        return;
+      }
       if (stroke.action === 'begin') {
         this._remoteStrokes.set(stroke.uuid, {
           uuid: stroke.uuid,
@@ -248,6 +266,30 @@
       // sees their own ink while drawing.
       if (this._currentStroke) this._drawStroke(this._currentStroke);
       this.ctx.restore();
+      this._drawSelectionOverlay();
+    }
+
+    // Dashed box around the selected stroke (select tool). Drawn in
+    // screen space — outside the world transform — so the dash and
+    // line width stay a constant size at any zoom. Drops a stale
+    // selection if the stroke has since been removed (e.g. remotely).
+    _drawSelectionOverlay() {
+      if (!this._selected) return;
+      if (!this.strokes.includes(this._selected)) { this._selected = null; return; }
+      const bb = this._strokeBbox(this._selected);
+      if (!isFinite(bb[0])) return;
+      const vp = this.viewport;
+      const pad = 6; // screen px
+      const x = (bb[0] - vp.x) * vp.scale - pad;
+      const y = (bb[1] - vp.y) * vp.scale - pad;
+      const w = (bb[2] - bb[0]) * vp.scale + pad * 2;
+      const h = (bb[3] - bb[1]) * vp.scale + pad * 2;
+      this.ctx.save();
+      this.ctx.strokeStyle = 'rgba(10, 132, 255, 0.95)';
+      this.ctx.lineWidth = 1.5;
+      this.ctx.setLineDash([5, 4]);
+      this.ctx.strokeRect(x, y, w, h);
+      this.ctx.restore();
     }
 
     _renderIncrementalSegment(stroke) {
@@ -260,6 +302,10 @@
       // full _render() instead.
       if (!stroke.points || stroke.points.length < 2) { this._render(); return; }
       if (isTwoPoint(stroke.tool)) { this._render(); return; }
+      // A selection overlay must stay on top — the incremental path
+      // can't redraw it, so fall back to a full render while something
+      // is selected.
+      if (this._selected) { this._render(); return; }
       const [a, b] = [stroke.points[stroke.points.length - 2], stroke.points[stroke.points.length - 1]];
       this.ctx.save();
       this.ctx.scale(this.viewport.scale, this.viewport.scale);
@@ -382,6 +428,20 @@
           this._eraseAlong(p.x, p.y, p.x, p.y);
           return;
         }
+        // Select tool: pick the topmost stroke under the cursor (and arm
+        // a drag-to-move on it); clicking empty space deselects.
+        if (this.tool === 'select') {
+          const hit = this._hitTopStroke(p.x, p.y);
+          this._selected = hit;
+          if (hit) {
+            this._selDrag = { lastX: p.x, lastY: p.y, moved: false };
+            this.canvas.setPointerCapture(e.pointerId);
+          } else {
+            this._selDrag = null;
+          }
+          this._render();
+          return;
+        }
         const uuid = (typeof crypto !== 'undefined' && crypto.randomUUID)
           ? crypto.randomUUID()
           : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -400,6 +460,19 @@
           const a = this._lastErasePt || [p.x, p.y];
           this._eraseAlong(a[0], a[1], p.x, p.y);
           this._lastErasePt = [p.x, p.y];
+          return;
+        }
+        if (this._selDrag) {
+          if (!this._selected || !this.strokes.includes(this._selected)) { this._selDrag = null; return; }
+          const p = this._clientToWorld(e.clientX, e.clientY);
+          const dx = p.x - this._selDrag.lastX, dy = p.y - this._selDrag.lastY;
+          if (dx || dy) {
+            this._selDrag.lastX = p.x; this._selDrag.lastY = p.y; this._selDrag.moved = true;
+            for (const pt of this._selected.points) { pt[0] += dx; pt[1] += dy; }
+            this._bboxCache.delete(this._selected);
+            this._render();
+            this.send?.({ action: 'move-stroke', uuid: this._selected.uuid, dx, dy });
+          }
           return;
         }
         if (!this._currentStroke) return;
@@ -428,6 +501,14 @@
           this._erasing = false;
           this._lastErasePt = null;
           if (e?.pointerId != null) { try { this.canvas.releasePointerCapture(e.pointerId); } catch {} }
+          return;
+        }
+        if (this._selDrag) {
+          const moved = this._selDrag.moved, sel = this._selected;
+          this._selDrag = null;
+          if (e?.pointerId != null) { try { this.canvas.releasePointerCapture(e.pointerId); } catch {} }
+          // Only a real drag re-persists (a plain click just selects).
+          if (moved && sel) { this._render(); this._strokeMoved?.(sel.uuid, sel); }
           return;
         }
         if (!this._currentStroke) return;
@@ -473,6 +554,20 @@
 
     onStrokeFinished(cb) { this._strokeFinished = cb; }
     onStrokeErased(cb) { this._strokeErased = cb; }
+    onStrokeMoved(cb) { this._strokeMoved = cb; }
+
+    // Topmost stroke under the world point, or null. Iterates back-to-
+    // front (last drawn sits on top) and allows a small screen-px slop so
+    // thin strokes are still clickable. Used by the select tool.
+    _hitTopStroke(wx, wy) {
+      const tol = 6 / this.viewport.scale;
+      for (let i = this.strokes.length - 1; i >= 0; i--) {
+        const s = this.strokes[i];
+        if (!s.uuid) continue;
+        if (this._strokeNear(s, wx, wy, tol + (s.size || 4) / 2)) return s;
+      }
+      return null;
+    }
 
     // Delete every stroke whose ink comes within the eraser nib of the
     // move path (ax,ay)→(bx,by). The path (not just the two endpoints) is
@@ -595,10 +690,22 @@
         }
       });
       const onKeyDown = (e) => {
-        if (e.code !== 'Space' || e.repeat) return;
-        if (!this._hovered) return;
         const tag = (document.activeElement?.tagName || '').toLowerCase();
         if (tag === 'textarea' || tag === 'input') return;
+        // Delete / Backspace removes the selected stroke (same path as the
+        // object eraser: drop locally + broadcast delete-stroke + DB
+        // delete). No _hovered gate — only one canvas ever holds a
+        // selection, so there's no ambiguity about which one should act.
+        if ((e.code === 'Delete' || e.code === 'Backspace') && this._selected) {
+          const uuid = this._selected.uuid;
+          this._selected = null;
+          this._selDrag = null;
+          if (uuid) { this.removeStroke(uuid); this._strokeErased?.(uuid); } else { this._render(); }
+          e.preventDefault();
+          return;
+        }
+        if (!this._hovered) return;
+        if (e.code !== 'Space' || e.repeat) return;
         this._panMode = true;
         this.canvas.style.cursor = 'grab';
         e.preventDefault();
