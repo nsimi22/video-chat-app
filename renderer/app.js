@@ -166,6 +166,10 @@ const els = {
   settingsCancel: $('#settings-cancel'),
   settingsSave: $('#settings-save'),
   settingsProfileAnchor: $('#settings-profile-anchor'),
+  setNewPassword: $('#set-new-password'),
+  setNewPasswordConfirm: $('#set-new-password-confirm'),
+  setPasswordStatus: $('#set-password-status'),
+  setPasswordUpdate: $('#set-password-update'),
   setProfileName: $('#set-profile-name'),
   setProfileBio: $('#set-profile-bio'),
   setAvatarFile: $('#set-avatar-file'),
@@ -3240,6 +3244,7 @@ function wireControls() {
   els.openSettings.onclick = openSettings;
   els.settingsCancel.onclick = closeSettingsAndDiscardPending;
   els.settingsSave.onclick = saveSettings;
+  els.setPasswordUpdate.onclick = updatePasswordFromSettings;
 
   // Avatar picker. The actual upload is deferred to saveSettings so
   // hitting Cancel after picking a file doesn't leave a half-saved
@@ -3678,6 +3683,10 @@ async function openSettings() {
   els.setGithubToken.value = s.github?.token || '';
   els.setGiphyKey.value = s.giphy?.key || '';
   els.settingsStatus.classList.add('hidden');
+  // Password fields are write-only — never prefilled, always cleared on open.
+  els.setNewPassword.value = '';
+  els.setNewPasswordConfirm.value = '';
+  els.setPasswordStatus.classList.add('hidden');
   // Pre-fill the profile fields from the current profile.
   els.setProfileName.value = state.huddle?.name || '';
   try {
@@ -3714,7 +3723,44 @@ function openSettingsToProfile() {
 function closeSettingsAndDiscardPending() {
   state._pendingAvatarFile = null;
   els.setAvatarFile.value = '';
+  els.setNewPassword.value = '';
+  els.setNewPasswordConfirm.value = '';
   els.settingsModal.classList.add('hidden');
+}
+
+// "Update password" button in Settings → Password. Independent of the
+// main Save button: a typed-but-not-submitted password never rides along
+// with an unrelated settings save, and the password fields are write-only
+// (cleared on open/close). Goes straight through Supabase Auth's
+// session-authenticated updateUser — no current-password prompt, no email.
+async function updatePasswordFromSettings() {
+  const status = els.setPasswordStatus;
+  const pw = els.setNewPassword.value;
+  const confirm = els.setNewPasswordConfirm.value;
+  status.classList.remove('hidden');
+  if (pw.length < 6) {
+    status.textContent = 'Password must be at least 6 characters.';
+    status.className = 'settings-status error';
+    return;
+  }
+  if (pw !== confirm) {
+    status.textContent = "The two passwords don't match.";
+    status.className = 'settings-status error';
+    return;
+  }
+  els.setPasswordUpdate.disabled = true;
+  try {
+    await window.huddleApi.updatePassword(pw);
+    els.setNewPassword.value = '';
+    els.setNewPasswordConfirm.value = '';
+    status.textContent = 'Password updated. Use it with "Sign in" on the login screen next time.';
+    status.className = 'settings-status success';
+  } catch (err) {
+    status.textContent = 'Could not update password: ' + (err?.message || err);
+    status.className = 'settings-status error';
+  } finally {
+    els.setPasswordUpdate.disabled = false;
+  }
 }
 
 function renderAvatarPreview(avatarUrl, color, name) {
