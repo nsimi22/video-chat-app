@@ -910,9 +910,13 @@ button.ctrl.muted.icon-only::after {
   grid-column: 1;
   grid-row: 1 / span 99;
   /* Floor the stage so a short rail (e.g. a single camera-off tile)
-     doesn't squeeze the spotlighted tile down to ~140px. The container's
-     max-height still caps the upper end. */
+     doesn't squeeze the spotlighted tile down to ~140px, and cap it so a
+     tall rail can't make it ~13000px+. The cap matters for whiteboard
+     tiles in particular: InfiniteCanvas resizes its canvas bitmap to the
+     tile on every ResizeObserver tick, and an unbounded tile means an
+     unbounded (and re-rendered-from-scratch) canvas. */
   min-height: 360px;
+  max-height: 70vh;
 }
 /* Active speaker: soft accent ring driven by JS audio-level polling.
    Transitions ease in/out so quick volume bursts don't strobe. */
