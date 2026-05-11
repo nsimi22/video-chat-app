@@ -40,12 +40,28 @@
           <p class="hint">Loading your workspace…</p>
         </div>
 
-        <!-- Step 1: email -->
+        <!-- Step 1: email — emailed code by default, or a password if set -->
         <div id="auth-email-step" class="hidden">
-          <p class="hint">We'll email you a verification code to sign you in.</p>
+          <p class="hint">We'll email you a verification code to sign you in — or use a password if you've set one.</p>
           <label>Email</label>
           <input id="auth-email" type="email" autocomplete="email" placeholder="you@team.com" />
           <button id="auth-send-otp" class="primary btn-block">Send code</button>
+          <button id="auth-show-password" class="subtle btn-block">Use a password instead</button>
+
+          <!-- Password sub-form: hidden until "Use a password instead". The
+               same field backs both sign-in (existing password) and account
+               creation (set a new one). Account creation only yields an
+               active session if the project has email confirmation disabled;
+               otherwise the user is told to confirm via email. -->
+          <div id="auth-password-block" class="hidden">
+            <label>Password</label>
+            <input id="auth-password" type="password" autocomplete="current-password" placeholder="••••••••" />
+            <div class="btn-row">
+              <button id="auth-password-signin" class="primary">Sign in</button>
+              <button id="auth-password-signup" class="subtle">Create account</button>
+            </div>
+            <p class="hint">No password yet? Type one (6+ characters) and hit "Create account".</p>
+          </div>
         </div>
 
         <!-- Step 2: OTP -->

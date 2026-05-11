@@ -17,6 +17,11 @@ const els = {
   authOtpStep: $('#auth-otp-step'),
   authEmail: $('#auth-email'),
   authSendOtp: $('#auth-send-otp'),
+  authShowPassword: $('#auth-show-password'),
+  authPasswordBlock: $('#auth-password-block'),
+  authPassword: $('#auth-password'),
+  authPasswordSignin: $('#auth-password-signin'),
+  authPasswordSignup: $('#auth-password-signup'),
   authOtp: $('#auth-otp'),
   authVerify: $('#auth-verify'),
   authBack: $('#auth-back'),
@@ -359,6 +364,16 @@ const STREAM_DECISION_MS = 1500;
   els.authBack.addEventListener('click', () => showStep('email'));
   els.authEmail.addEventListener('keydown', (e) => { if (e.key === 'Enter') stepSendOtp(); });
   els.authOtp.addEventListener('keydown', (e) => { if (e.key === 'Enter') stepVerifyOtp(); });
+  // Password sign-in: hidden behind a toggle so the emailed-code path
+  // stays the default. The Enter key in the password field signs in.
+  els.authShowPassword.addEventListener('click', () => {
+    els.authPasswordBlock.classList.remove('hidden');
+    els.authShowPassword.classList.add('hidden');
+    els.authPassword.focus();
+  });
+  els.authPasswordSignin.addEventListener('click', stepPasswordSignIn);
+  els.authPasswordSignup.addEventListener('click', stepPasswordSignUp);
+  els.authPassword.addEventListener('keydown', (e) => { if (e.key === 'Enter') stepPasswordSignIn(); });
   els.profileSave.addEventListener('click', stepSaveProfile);
   els.profileName.addEventListener('keydown', (e) => { if (e.key === 'Enter') stepSaveProfile(); });
   els.teamGo.addEventListener('click', stepJoinTeam);
@@ -1038,6 +1053,67 @@ async function stepVerifyOtp() {
   } finally { els.authVerify.disabled = false; }
 }
 
+async function stepPasswordSignIn() {
+  els.loginError.classList.add('hidden');
+  const email = els.authEmail.value.trim();
+  const password = els.authPassword.value;
+  if (!email) { showError('Enter your email first.'); return; }
+  if (!password) { showError('Enter your password.'); return; }
+  els.authPasswordSignin.disabled = true;
+  els.authPasswordSignup.disabled = true;
+  try {
+    await window.huddleApi.signInWithPassword(email, password);
+    state._email = email;
+    showStep('profile');
+    await prefillProfile();
+  } catch (err) {
+    // Supabase returns "Invalid login credentials" (HTTP 400) for both a
+    // wrong password and an unknown email — surface one generic hint for
+    // that case. Anything else (offline, 5xx) is reported as-is so the
+    // user isn't told to "check your password" when the server is at fault.
+    const msg = String(err?.message || err);
+    if (err?.status === 400 || /invalid login credentials/i.test(msg)) {
+      showError("Couldn't sign in with that email + password. Check both, or use an emailed code / create an account.");
+    } else {
+      showError('Could not sign in: ' + msg);
+    }
+  } finally {
+    els.authPasswordSignin.disabled = false;
+    els.authPasswordSignup.disabled = false;
+  }
+}
+
+async function stepPasswordSignUp() {
+  els.loginError.classList.add('hidden');
+  const email = els.authEmail.value.trim();
+  const password = els.authPassword.value;
+  if (!email) { showError('Enter your email first.'); return; }
+  if (password.length < 6) { showError('Password must be at least 6 characters.'); return; }
+  els.authPasswordSignin.disabled = true;
+  els.authPasswordSignup.disabled = true;
+  try {
+    const session = await window.huddleApi.signUpWithPassword(email, password);
+    if (!session) {
+      // "Confirm email" is enabled on the project, so the account exists
+      // but isn't usable until confirmed — and our email delivery is the
+      // thing we're routing around. Tell the user plainly.
+      showError('Account created, but it needs email confirmation before you can sign in. Ask an admin to disable email confirmation in the Supabase Auth settings, then try "Sign in".');
+      return;
+    }
+    state._email = email;
+    showStep('profile');
+    await prefillProfile();
+  } catch (err) {
+    const msg = String(err?.message || err);
+    showError(/registered|already/i.test(msg)
+      ? 'That email already has an account — use "Sign in" instead (or an emailed code).'
+      : ('Could not create the account: ' + msg));
+  } finally {
+    els.authPasswordSignin.disabled = false;
+    els.authPasswordSignup.disabled = false;
+  }
+}
+
 async function prefillProfile() {
   // Suggest the email's local-part as the display name on first sign-up.
   const sb = await window.huddleApi.getSupabase();
@@ -1704,6 +1780,11 @@ async function signOutFully() {
   state._email = null;
   if (els.authEmail) els.authEmail.value = '';
   if (els.authOtp) els.authOtp.value = '';
+  if (els.authPassword) els.authPassword.value = '';
+  // Re-collapse the password sub-form so the next sign-in starts on the
+  // emailed-code path (and the password field isn't lingering visible).
+  if (els.authPasswordBlock) els.authPasswordBlock.classList.add('hidden');
+  if (els.authShowPassword) els.authShowPassword.classList.remove('hidden');
   els.login.classList.remove('hidden');
   showStep('email');
 }
