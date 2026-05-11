@@ -86,6 +86,16 @@ You have read-only access to the GitHub repo \`${repoSlug}\` via tools (search_c
   return parts.join('\n\n---\n\n');
 }
 
+// System prompts for the /ai command (the general-purpose assistant, as
+// opposed to the Jira-specific /ai-ticket). /ai must answer anything —
+// jokes, explanations, code, brainstorming — and never deflect a request
+// just because it isn't about Jira (free OpenRouter models were
+// over-indexing on the old Jira-heavy prompt and refusing). When Jira
+// tools are wired up we use the *_WITH_JIRA variant, which notes the tools
+// exist but keeps Jira one optional capability rather than the AI's purpose.
+const AI_SYSTEM_PROMPT = 'You are a helpful, general-purpose AI assistant inside a team chat app. Answer whatever the user asks. Be concise.';
+const AI_SYSTEM_PROMPT_WITH_JIRA = 'You are a helpful, general-purpose AI assistant inside a team chat app. Answer whatever the user asks — questions, jokes, explanations, brainstorming, code, anything — like any capable chat assistant would; never refuse or redirect a request just because it is not about Jira. You also have Jira tools available: when the user names a Jira ticket key (e.g. "FOO-123") or asks to read / comment on / update / transition a ticket, call those tools to fetch context first and then act. Be concise — bullet points for summaries, and for any ticket changes give a single-line confirmation stating the ticket key plus a one-line summary of what you did.';
+
 // Tool definitions for the /ai-ticket loop. Built only when both a
 // GitHubClient and a configured repo slug are available; otherwise the
 // AI call stays a single-shot prompt with no tool surface. Each tool
@@ -1733,19 +1743,13 @@ class ChatView {
     this.els.composer.value = '';
     this.els.composer.style.height = 'auto';
     this._beginAiThinking();
-    // /ai is the general-purpose assistant — it should answer anything
-    // (jokes, explanations, code, brainstorming, …), not act like a
-    // Jira-only bot. We additionally wire any configured integrations
-    // as tools so it *can* read/act on tickets when the user asks, but
-    // the prompt is explicit that Jira is just one capability and that
-    // non-Jira requests must never be refused. (Free OpenRouter models
-    // were over-indexing on the old Jira-heavy prompt and declining to
-    // tell jokes.)
+    // /ai is the general-purpose assistant — it answers anything. We
+    // additionally wire any configured integrations as tools so it *can*
+    // read/act on Jira tickets when asked; the prompt (see AI_SYSTEM_PROMPT*
+    // near the top of this file) keeps Jira an optional capability.
     const jira = this.hooks.getJira?.();
     const tools = window.HuddleAiTools ? window.HuddleAiTools.buildJiraTools(jira) : [];
-    const system = tools.length
-      ? 'You are a helpful, general-purpose AI assistant inside a team chat app. Answer whatever the user asks — questions, jokes, explanations, brainstorming, code, anything — like any capable chat assistant would; never refuse or redirect a request just because it is not about Jira. You also have Jira tools available: when the user names a Jira ticket key (e.g. "FOO-123") or asks to read / comment on / update / transition a ticket, call those tools to fetch context first and then act. Be concise — bullet points for summaries, single-line confirmations after Jira edits, and when you change a ticket, state its key plus a one-line summary of what you did.'
-      : 'You are a helpful, general-purpose AI assistant inside a team chat app. Answer whatever the user asks. Be concise.';
+    const system = tools.length ? AI_SYSTEM_PROMPT_WITH_JIRA : AI_SYSTEM_PROMPT;
     let result;
     try {
       result = await ai.chat({
