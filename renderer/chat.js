@@ -395,11 +395,19 @@ class ChatView {
     const on = (event, fn) => this._on(this.mesh, event, fn);
     on('chat-message', (e) => {
       const m = e.detail.message;
-      const arr = this.byChannel.get(m.channelId) || [];
-      // Postgres realtime can deliver our own insert before the local fetch
-      // resolves; dedupe by id.
-      if (!arr.some((x) => x.id === m.id)) arr.push(m);
-      this.byChannel.set(m.channelId, arr);
+      const arr = this.byChannel.get(m.channelId);
+      // Postgres realtime can re-deliver a row we already have (our own
+      // insert racing the local fetch, a re-subscribe, …). Bail on the
+      // dupe BEFORE _appendIncremental — that helper unconditionally
+      // appends a fresh DOM node, so calling it for an id we've already
+      // rendered leaves two copies of the message on screen (and fires
+      // onMessage twice).
+      if (arr) {
+        if (arr.some((x) => x.id === m.id)) return;
+        arr.push(m);
+      } else {
+        this.byChannel.set(m.channelId, [m]);
+      }
       if (m.channelId === this.currentChannel) this._appendIncremental(m);
       this.hooks.onMessage?.(m);
     });
@@ -1017,7 +1025,13 @@ class ChatView {
     wrap.className = 'msg';
     wrap.dataset.messageId = m.id;
     const myName = this.mesh.name;
-    const isMine = m.authorName === myName;
+    // Ownership drives Edit/Delete. Match on author_id (set by the
+    // messages_set_author trigger, and what RLS gates on) rather than
+    // display name — two teammates can share a name, in which case a
+    // name match would show Edit/Delete on each other's messages and
+    // the Delete would no-op against RLS with no error surfaced. Fall
+    // back to name only for legacy rows that predate the trigger.
+    const isMine = m.authorId ? m.authorId === this.mesh.peerId : m.authorName === myName;
     const mentionsMe = Array.isArray(m.mentions) && m.mentions.includes(myName);
     if (mentionsMe) wrap.classList.add('msg-mentions-me');
     if (m.pinnedAt) wrap.classList.add('msg-pinned');

@@ -35,14 +35,20 @@ function renderMarkdown(text, { mentionNames, myName } = {}) {
     const i = inlines.push(c) - 1;
     return `${SENT}I${i}${SENT}`;
   });
+  // Autolinks (http/https only) — extracted to sentinels HERE, before the
+  // bold/italic/@mention passes, so those can't reach inside a URL. A path
+  // like https://x.com/@handle would otherwise have the @mention pass
+  // inject a <span> into the href, and a literal ** in a URL would get a
+  // <strong> mid-attribute — both produce broken markup and dead links.
+  const links = [];
+  s = s.replace(/\bhttps?:\/\/[^\s<]+[^\s<.,;:!?)]/g, (m) => {
+    const i = links.push(m) - 1;
+    return `${SENT}L${i}${SENT}`;
+  });
 
   // Bold then italic. Single-pass regexes — good enough for chat.
   s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>');
-
-  // Autolinks (http/https only).
-  s = s.replace(/\b(https?:\/\/[^\s<]+[^\s<.,;:!?)])/g, (m) =>
-    `<a href="${m}" target="_blank" rel="noopener noreferrer">${m}</a>`);
 
   // @mentions — render highlighted; the "self" mention gets an extra class.
   if (mentionNames && mentionNames.length) {
@@ -79,9 +85,11 @@ function renderMarkdown(text, { mentionNames, myName } = {}) {
   // Newlines -> <br/> (outside code, which used sentinel placeholders).
   s = s.replace(/\n/g, '<br/>');
 
-  // Reinsert preserved code spans/blocks.
+  // Reinsert preserved code spans/blocks + autolinks.
   s = s.replace(/\uE000I(\d+)\uE000/g, (_, i) => `<code>${inlines[+i]}</code>`);
   s = s.replace(/\uE000B(\d+)\uE000/g, (_, i) => `<pre><code>${blocks[+i]}</code></pre>`);
+  s = s.replace(/\uE000L(\d+)\uE000/g, (_, i) =>
+    `<a href="${links[+i]}" target="_blank" rel="noopener noreferrer">${links[+i]}</a>`);
 
   return s;
 }
