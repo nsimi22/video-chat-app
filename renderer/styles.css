@@ -891,6 +891,14 @@ button.ctrl.muted.icon-only::after {
    (column 2 stays empty). */
 .tiles.has-spotlight {
   grid-template-columns: minmax(0, 1fr) 260px;
+  /* Override the base `grid-auto-rows: minmax(200px, 1fr)` from .tiles.
+     Combined with the spotlighted tile's `grid-row: 1 / span 99` below, a
+     200px-per-row floor would conjure ~99 implicit rows ≈ 20000px of grid
+     height; the spotlighted tile then becomes that tall and its
+     `object-fit: contain` video gets centered ~10000px down — off-screen,
+     so the tile reads as solid black. `auto` lets the unused trailing rows
+     collapse so the tile is sized to the rail, not a phantom 99-row grid. */
+  grid-auto-rows: auto;
   grid-auto-flow: row dense;
   max-height: 70vh;
 }
@@ -901,7 +909,10 @@ button.ctrl.muted.icon-only::after {
 .tiles.has-spotlight .tile.spotlighted {
   grid-column: 1;
   grid-row: 1 / span 99;
-  min-height: 0;
+  /* Floor the stage so a short rail (e.g. a single camera-off tile)
+     doesn't squeeze the spotlighted tile down to ~140px. The container's
+     max-height still caps the upper end. */
+  min-height: 360px;
 }
 /* Active speaker: soft accent ring driven by JS audio-level polling.
    Transitions ease in/out so quick volume bursts don't strobe. */
