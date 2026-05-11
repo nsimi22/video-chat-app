@@ -151,13 +151,16 @@
 
     _fitCanvas() {
       const r = this.tile.getBoundingClientRect();
-      // Bail if the tile hasn't actually changed size — ResizeObserver
-      // can fire spuriously, and a realloc + full re-render here is not
-      // cheap on a busy board.
-      if (r.width === this._fitW && r.height === this._fitH) return;
+      const dpr = window.devicePixelRatio || 1;
+      // Bail if nothing that affects the canvas bitmap changed —
+      // ResizeObserver can fire spuriously, and a realloc + full
+      // re-render here is not cheap on a busy board. devicePixelRatio is
+      // in the comparison too: dragging the window to a denser monitor
+      // leaves the CSS size identical but needs a re-render to stay crisp.
+      if (r.width === this._fitW && r.height === this._fitH && dpr === this._fitDpr) return;
       this._fitW = r.width;
       this._fitH = r.height;
-      const dpr = window.devicePixelRatio || 1;
+      this._fitDpr = dpr;
       this.canvas.width = Math.max(1, Math.floor(r.width * dpr));
       this.canvas.height = Math.max(1, Math.floor(r.height * dpr));
       this.canvas.style.width = `${r.width}px`;
