@@ -24,6 +24,37 @@
   const MIN_SCALE = 0.1;
   const MAX_SCALE = 8;
   const ZOOM_STEP = 1.2;
+  // Eraser nib radius in *screen* pixels, so it feels the same at any zoom.
+  const ERASER_PX = 14;
+  // Cursor shown while the eraser tool is active — a ring the size of the
+  // nib, so you can see what you're about to delete (FigJam does this).
+  const ERASER_CURSOR =
+    "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='30' height='30'><circle cx='15' cy='15' r='14' fill='none' stroke='%23999' stroke-width='1.5'/></svg>\") 15 15, crosshair";
+
+  // Shortest distance from point (px,py) to the segment (ax,ay)→(bx,by).
+  function distToSeg(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) return Math.hypot(px - ax, py - ay);
+    let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  }
+
+  // Snap (px,py) onto the nearest 45° ray from (sx,sy), keeping the
+  // length — used while Shift is held during a line/arrow drag.
+  function snap45(sx, sy, px, py) {
+    const dx = px - sx, dy = py - sy;
+    const len = Math.hypot(dx, dy);
+    if (len === 0) return [px, py];
+    const step = Math.PI / 4;
+    const ang = Math.round(Math.atan2(dy, dx) / step) * step;
+    return [sx + len * Math.cos(ang), sy + len * Math.sin(ang)];
+  }
+
+  // Two-point shapes (straight line / arrow) carry exactly [start, end];
+  // pen/eraser strokes are open polylines of many points.
+  const isTwoPoint = (tool) => tool === 'line' || tool === 'arrow';
 
   class InfiniteCanvas {
     constructor({ tile, send, isOwner = true }) {
@@ -45,9 +76,11 @@
       this._remoteStrokes = new Map(); // uuid -> in-progress remote stroke
       this._panMode = false;
       this._panning = null;
+      this._erasing = false; // true while an eraser drag is in progress
 
       this.canvas = document.createElement('canvas');
       this.canvas.className = 'infinite-canvas';
+      this.canvas.style.cursor = 'crosshair';
       tile.appendChild(this.canvas);
       this.ctx = this.canvas.getContext('2d');
       this._fitCanvas();
@@ -65,9 +98,14 @@
       this._resizeObs.observe(tile);
     }
 
-    setTool(t) { this.tool = t; }
+    setTool(t) {
+      this.tool = t;
+      if (!this._panning && !this._panMode) this.canvas.style.cursor = this._toolCursor();
+    }
     setColor(c) { this.color = c; }
     setSize(s) { this.size = s; }
+    // Idle cursor for the current tool (pan gestures override this while active).
+    _toolCursor() { return this.tool === 'eraser' ? ERASER_CURSOR : 'crosshair'; }
     // DrawingLayer parity: toggleAnnotate calls .setActive() to
     // gate pointer events. InfiniteCanvas owns its own canvas
     // element with pointer events always live; the call is a
@@ -108,6 +146,13 @@
       if (stroke.action === 'move') {
         const cur = this._remoteStrokes.get(stroke.uuid);
         if (!cur) return;
+        if (isTwoPoint(cur.tool)) {
+          // Line/arrow: the live endpoint replaces the previous one.
+          if (cur.points.length < 2) cur.points.push([stroke.x, stroke.y]);
+          else cur.points[1] = [stroke.x, stroke.y];
+          this._render();
+          return;
+        }
         cur.points.push([stroke.x, stroke.y]);
         // Incremental render of just the new segment for liveness.
         this._renderIncrementalSegment(cur);
@@ -116,7 +161,12 @@
       if (stroke.action === 'end') {
         const cur = this._remoteStrokes.get(stroke.uuid);
         if (!cur) return;
-        cur.points.push([stroke.x, stroke.y]);
+        if (isTwoPoint(cur.tool)) {
+          if (cur.points.length < 2) cur.points.push([stroke.x, stroke.y]);
+          else cur.points[1] = [stroke.x, stroke.y];
+        } else {
+          cur.points.push([stroke.x, stroke.y]);
+        }
         this._remoteStrokes.delete(stroke.uuid);
         this.strokes.push(cur);
         this._render();
@@ -187,13 +237,13 @@
     _renderIncrementalSegment(stroke) {
       // Cheap path: when a single new point arrives, draw just that
       // segment instead of clearing + re-rendering the whole world.
-      // Eraser segments cut through existing pixels via
+      // Legacy eraser segments cut through existing pixels via
       // destination-out — same incremental cost as pen — so they
-      // share this fast path. Arrow's per-frame triangle redraw
-      // makes the cheap path inappropriate, so it falls through
-      // to a full _render().
+      // share this fast path. Line/arrow move the whole segment each
+      // frame (and arrow redraws its head), so they fall through to a
+      // full _render() instead.
       if (!stroke.points || stroke.points.length < 2) { this._render(); return; }
-      if (stroke.tool === 'arrow') { this._render(); return; }
+      if (isTwoPoint(stroke.tool)) { this._render(); return; }
       const [a, b] = [stroke.points[stroke.points.length - 2], stroke.points[stroke.points.length - 1]];
       this.ctx.save();
       this.ctx.scale(this.viewport.scale, this.viewport.scale);
@@ -268,11 +318,24 @@
 
     _wirePointerEvents() {
       this.canvas.addEventListener('pointerdown', (e) => {
-        if (this._panMode || e.button === 1 /* middle mouse */ || e.shiftKey) {
+        const lineish = isTwoPoint(this.tool);
+        // Pan via space-hold, middle mouse, or shift-drag — but Shift on a
+        // line/arrow means "constrain to 45°", so don't hijack it then.
+        if (this._panMode || e.button === 1 || (e.shiftKey && !lineish)) {
           this._startPan(e);
           return;
         }
         const p = this._clientToWorld(e.clientX, e.clientY);
+        // Object eraser (FigJam-style): the eraser is not a stroke — it
+        // deletes whole strokes its nib passes over. We remove + re-render
+        // here; the host broadcasts + persists the deletion via the
+        // onStrokeErased callback.
+        if (this.tool === 'eraser') {
+          this._erasing = true;
+          this.canvas.setPointerCapture(e.pointerId);
+          this._eraseAt(p.x, p.y);
+          return;
+        }
         const uuid = (typeof crypto !== 'undefined' && crypto.randomUUID)
           ? crypto.randomUUID()
           : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -286,8 +349,24 @@
       });
       this.canvas.addEventListener('pointermove', (e) => {
         if (this._panning) { this._continuePan(e); return; }
+        if (this._erasing) {
+          const p = this._clientToWorld(e.clientX, e.clientY);
+          this._eraseAt(p.x, p.y);
+          return;
+        }
         if (!this._currentStroke) return;
         const p = this._clientToWorld(e.clientX, e.clientY);
+        if (isTwoPoint(this._currentStroke.tool)) {
+          const s = this._currentStroke.points[0];
+          const end = e.shiftKey ? snap45(s[0], s[1], p.x, p.y) : [p.x, p.y];
+          this._currentStroke.points = [s, end];
+          this._render();
+          this.send?.({
+            action: 'move', uuid: this._currentStroke.uuid,
+            x: end[0], y: end[1], tool: this._currentStroke.tool, color: this.color, size: this.size,
+          });
+          return;
+        }
         this._currentStroke.points.push([p.x, p.y]);
         this._renderIncrementalSegment(this._currentStroke);
         this.send?.({
@@ -297,14 +376,30 @@
       });
       const end = (e) => {
         if (this._panning) { this._endPan(e); return; }
+        if (this._erasing) {
+          this._erasing = false;
+          if (e?.pointerId != null) { try { this.canvas.releasePointerCapture(e.pointerId); } catch {} }
+          return;
+        }
         if (!this._currentStroke) return;
+        const lineish = isTwoPoint(this._currentStroke.tool);
         const p = e ? this._clientToWorld(e.clientX, e.clientY) : null;
         if (p) {
-          this._currentStroke.points.push([p.x, p.y]);
-          this.send?.({
-            action: 'end', uuid: this._currentStroke.uuid,
-            x: p.x, y: p.y, tool: this.tool, color: this.color, size: this.size,
-          });
+          if (lineish) {
+            const s = this._currentStroke.points[0];
+            const fin = e.shiftKey ? snap45(s[0], s[1], p.x, p.y) : [p.x, p.y];
+            this._currentStroke.points = [s, fin];
+            this.send?.({
+              action: 'end', uuid: this._currentStroke.uuid,
+              x: fin[0], y: fin[1], tool: this._currentStroke.tool, color: this.color, size: this.size,
+            });
+          } else {
+            this._currentStroke.points.push([p.x, p.y]);
+            this.send?.({
+              action: 'end', uuid: this._currentStroke.uuid,
+              x: p.x, y: p.y, tool: this.tool, color: this.color, size: this.size,
+            });
+          }
         }
         this.strokes.push(this._currentStroke);
         const finished = this._currentStroke;
@@ -316,9 +411,9 @@
         if (e?.pointerId != null) {
           try { this.canvas.releasePointerCapture(e.pointerId); } catch {}
         }
-        // (Eraser segments now apply destination-out incrementally
-        // in _renderIncrementalSegment, so no post-stroke
-        // full-render fixup is needed.)
+        // Line/arrow: re-render once so the committed straight segment
+        // (which was tracked via _render during the drag) is clean.
+        if (lineish) this._render();
         // Notify the host so it can persist the polyline.
         this._strokeFinished?.(finished);
       };
@@ -328,6 +423,35 @@
     }
 
     onStrokeFinished(cb) { this._strokeFinished = cb; }
+    onStrokeErased(cb) { this._strokeErased = cb; }
+
+    // Delete every stroke whose ink passes within the eraser nib of the
+    // world point (wx,wy). Removes locally + re-renders, then hands each
+    // deleted uuid to the host (broadcast + DB delete).
+    _eraseAt(wx, wy) {
+      if (!this.strokes.length) return;
+      const radius = ERASER_PX / this.viewport.scale;
+      const hit = [];
+      for (const s of this.strokes) {
+        if (!s.uuid) continue;
+        if (this._strokeNear(s, wx, wy, radius + (s.size || 4) / 2)) hit.push(s.uuid);
+      }
+      if (!hit.length) return;
+      const gone = new Set(hit);
+      this.strokes = this.strokes.filter((s) => !gone.has(s.uuid));
+      this._render();
+      for (const uuid of hit) this._strokeErased?.(uuid);
+    }
+
+    _strokeNear(stroke, wx, wy, r) {
+      const pts = stroke.points;
+      if (!pts || !pts.length) return false;
+      if (pts.length === 1) return Math.hypot(wx - pts[0][0], wy - pts[0][1]) <= r;
+      for (let i = 1; i < pts.length; i++) {
+        if (distToSeg(wx, wy, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]) <= r) return true;
+      }
+      return false;
+    }
 
     _startPan(e) {
       this._panning = {
@@ -348,7 +472,7 @@
     }
     _endPan(e) {
       this._panning = null;
-      this.canvas.style.cursor = '';
+      this.canvas.style.cursor = this._panMode ? 'grab' : this._toolCursor();
       if (e?.pointerId != null) {
         try { this.canvas.releasePointerCapture(e.pointerId); } catch {}
       }
@@ -366,7 +490,7 @@
         this._hovered = false;
         if (this._panMode && !this._panning) {
           this._panMode = false;
-          this.canvas.style.cursor = '';
+          this.canvas.style.cursor = this._toolCursor();
         }
       });
       const onKeyDown = (e) => {
@@ -381,7 +505,7 @@
       const onKeyUp = (e) => {
         if (e.code === 'Space') {
           this._panMode = false;
-          if (!this._panning) this.canvas.style.cursor = '';
+          if (!this._panning) this.canvas.style.cursor = this._toolCursor();
         }
       };
       document.addEventListener('keydown', onKeyDown);

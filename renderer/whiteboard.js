@@ -58,6 +58,7 @@ class WhiteboardSession {
       send: (stroke) => this._onLocalStroke(stroke),
     });
     this.canvas.onStrokeFinished((polyline) => this._persistFinishedStroke(polyline));
+    this.canvas.onStrokeErased((uuid) => this._eraseStroke(uuid));
     this.canvas.onViewportChange(() => this._scheduleNoteReposition());
 
     // Sticky notes ride above the canvas in their own absolutely-
@@ -359,6 +360,25 @@ class WhiteboardSession {
       .catch((err) => console.warn('[whiteboard] persist failed', err))
       .finally(() => this._inflightPersists.delete(polyline.uuid));
     this._inflightPersists.set(polyline.uuid, p);
+  }
+
+  // The object eraser deleted a stroke from the canvas — it may be
+  // anyone's. Mirror undo()'s teardown: suppress replay of the uuid,
+  // drop it from our own undo stack if it's there, broadcast the
+  // delete so peers remove it too, wait out any in-flight INSERT for
+  // it, then DELETE the persisted row.
+  async _eraseStroke(uuid) {
+    if (!uuid) return;
+    this._paintedUuids.add(uuid);
+    if (this._undoStack) this._undoStack = this._undoStack.filter((u) => u !== uuid);
+    this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'delete-stroke', uuid });
+    try {
+      const inflight = this._inflightPersists?.get(uuid);
+      if (inflight) await inflight;
+      await this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid);
+    } catch (err) {
+      console.warn('[whiteboard] eraser persist-delete failed', err);
+    }
   }
 
   async clear() {
