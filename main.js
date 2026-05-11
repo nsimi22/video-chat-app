@@ -5,6 +5,13 @@
 const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell } = require('electron');
 const path = require('path');
 
+// Windows shows toast notifications under an "AppUserModelID"; without an
+// explicit one, renderer `new Notification()` calls are silently dropped on
+// Windows. Use the packaged appId so the notifications wire up to the
+// installed Start-menu shortcut. No-op on macOS/Linux. Called before app
+// `ready` per Electron's guidance.
+app.setAppUserModelId(require('./package.json').build.appId);
+
 // Defaults point at the project I provisioned. Override either via env vars
 // (HUDDLE_SUPABASE_URL / HUDDLE_SUPABASE_KEY) for self-hosted Supabase.
 const SUPABASE_URL = process.env.HUDDLE_SUPABASE_URL
