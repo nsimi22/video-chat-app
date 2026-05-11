@@ -54,7 +54,14 @@
       this._wirePointerEvents();
       this._wireKeyboardPan();
       this._wireWheelZoom();
-      this._resizeObs = new ResizeObserver(() => this._fitCanvas());
+      // Coalesce resize ticks to one _fitCanvas per frame — a layout
+      // transition (e.g. spotlighting the tile) can fire the observer
+      // several times in quick succession, and each _fitCanvas reallocs
+      // the canvas bitmap + re-renders every stroke.
+      this._resizeObs = new ResizeObserver(() => {
+        if (this._fitRaf) return;
+        this._fitRaf = requestAnimationFrame(() => { this._fitRaf = null; this._fitCanvas(); });
+      });
       this._resizeObs.observe(tile);
     }
 
@@ -144,6 +151,12 @@
 
     _fitCanvas() {
       const r = this.tile.getBoundingClientRect();
+      // Bail if the tile hasn't actually changed size — ResizeObserver
+      // can fire spuriously, and a realloc + full re-render here is not
+      // cheap on a busy board.
+      if (r.width === this._fitW && r.height === this._fitH) return;
+      this._fitW = r.width;
+      this._fitH = r.height;
       const dpr = window.devicePixelRatio || 1;
       this.canvas.width = Math.max(1, Math.floor(r.width * dpr));
       this.canvas.height = Math.max(1, Math.floor(r.height * dpr));
@@ -421,6 +434,7 @@
 
     destroy() {
       this._resizeObs?.disconnect();
+      if (this._fitRaf) cancelAnimationFrame(this._fitRaf);
       if (this._keyDown) document.removeEventListener('keydown', this._keyDown);
       if (this._keyUp) document.removeEventListener('keyup', this._keyUp);
       this.canvas.remove();
