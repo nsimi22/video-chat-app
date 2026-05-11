@@ -1900,7 +1900,9 @@ function onCallPresence({ channelId, count }) {
 function notifyCallStarted(channelId) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   const channel = state.channelMeta.get(channelId);
-  const where = channel?.type === 'dm' ? 'a DM' : `#${channel?.name || channelId}`;
+  // displayLabelFor gives "# general" / "🔒 secret" / "@ Alice" — the
+  // same labels the sidebar uses, so DM calls name the person.
+  const where = channel ? displayLabelFor(channel) : `#${channelId}`;
   try {
     const n = new Notification(`Call started in ${where}`, {
       body: 'Click to join.',
@@ -1982,14 +1984,15 @@ function consumePendingInviteHop() {
 
 function appendChannelToSidebar(channel, makeActive) {
   state.channelMeta.set(channel.id, channel);
-  // Watch every channel's call presence (idempotent — cached per topic)
-  // so a call starting anywhere can pop a desktop notification, not just
-  // in the channel you happen to be viewing. joinCall() drops the lurker
-  // for the channel you actually join; leaveCall() puts it back.
-  state.huddle?.watchCallPresence(channel.id).catch(() => {});
   const isDm = channel.type === 'dm';
   const list = isDm ? els.dms : els.channels;
   if (list.querySelector(`[data-id="${cssEscape(channel.id)}"]`)) return;
+  // First time we're rendering this channel: start a call-presence
+  // lurker for it (idempotent — cached per topic) so a call starting
+  // anywhere can pop a desktop notification, not just in the channel
+  // you happen to be viewing. joinCall() drops the lurker for the
+  // channel you actually join; leaveCall() puts it back.
+  state.huddle?.watchCallPresence(channel.id).catch(() => {});
 
   const li = document.createElement('li');
   li.dataset.id = channel.id;
