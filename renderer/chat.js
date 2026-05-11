@@ -209,6 +209,11 @@ class ChatView {
     this._gifFetchSeq = 0;
     this._gifSearchTimer = null;
     this._giphyKey = null;
+    // Last GIF posted (url + timestamp) — debounces the "didn't see it
+    // post, clicked the same one again" double-post while the realtime
+    // echo is still in flight.
+    this._lastGifUrl = null;
+    this._lastGifAt = 0;
     // In-flight AI requests — tracked as a counter so overlapping commands
     // don't prematurely hide the "thinking" indicator.
     this._aiThinkingCount = 0;
@@ -697,17 +702,30 @@ class ChatView {
       }
     }
 
-    await this.mesh.sendMessage({
-      channelId: this.currentChannel,
-      parentId: this.threadParentId,
-      text: window.replaceShortcodes(text),
-      attachments,
-    });
+    // Clear the composer up front — before the (sometimes laggy) send
+    // round-trip — so a second Enter while it's in flight can't re-fire
+    // and double-post. If the send actually throws, put the text +
+    // attachments back so nothing is lost.
+    const restoreAttachments = this.composerAttachments;
     this._clearDraft(this.currentChannel);
     this.els.composer.value = '';
     this.els.composer.style.height = 'auto';
     this.composerAttachments = [];
     this._renderAttachmentChips();
+    try {
+      await this.mesh.sendMessage({
+        channelId: this.currentChannel,
+        parentId: this.threadParentId,
+        text: window.replaceShortcodes(text),
+        attachments,
+      });
+    } catch (err) {
+      this.els.composer.value = text;
+      this._autoResizeComposer();
+      this.composerAttachments = restoreAttachments;
+      this._renderAttachmentChips();
+      alert("Couldn't send your message: " + (err?.message || err));
+    }
   }
 
   _beginEdit(messageId) {
@@ -2002,6 +2020,16 @@ class ChatView {
   }
 
   _postGif(url, result) {
+    // The same GIF URL re-clicked within a few seconds is a "didn't see
+    // it post, clicked again" double-post (the realtime echo hasn't
+    // landed yet), not intent to post it twice — swallow it.
+    const now = Date.now();
+    if (url === this._lastGifUrl && now - this._lastGifAt < 5000) {
+      this.els.gifPicker.classList.add('hidden');
+      return;
+    }
+    this._lastGifUrl = url;
+    this._lastGifAt = now;
     const images = result?.images || {};
     const size = parseInt(images.original?.size, 10) || 0;
     this.mesh.sendMessage({
