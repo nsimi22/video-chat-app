@@ -528,6 +528,26 @@
       const pts = stroke.points;
       if (!pts || !pts.length) return false;
       if (pts.length === 1) return Math.hypot(wx - pts[0][0], wy - pts[0][1]) <= r;
+      // Box-shapes are stored as just two opposite corners, so the
+      // polyline path is only their diagonal — hit-test the actual area
+      // (expanded by the nib) instead, otherwise they're nearly
+      // impossible to erase.
+      if (isShape(stroke.tool)) {
+        const a = pts[0], b = pts[pts.length - 1];
+        const x = Math.min(a[0], b[0]), y = Math.min(a[1], b[1]);
+        const w = Math.abs(b[0] - a[0]), h = Math.abs(b[1] - a[1]);
+        if (stroke.tool === 'rect') {
+          return wx >= x - r && wx <= x + w + r && wy >= y - r && wy <= y + h + r;
+        }
+        const rx = w / 2, ry = h / 2;
+        if (rx <= 0 || ry <= 0) return distToSeg(wx, wy, a[0], a[1], b[0], b[1]) <= r;
+        const dx = wx - (x + rx), dy = wy - (y + ry);
+        if (stroke.tool === 'ellipse') {
+          return (dx * dx) / ((rx + r) * (rx + r)) + (dy * dy) / ((ry + r) * (ry + r)) <= 1;
+        }
+        // diamond — point inside the (expanded) rhombus, L1 norm
+        return Math.abs(dx) / (rx + r) + Math.abs(dy) / (ry + r) <= 1;
+      }
       for (let i = 1; i < pts.length; i++) {
         if (distToSeg(wx, wy, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]) <= r) return true;
       }
