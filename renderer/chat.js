@@ -15,6 +15,13 @@
 // stays mostly visible while you draft a long message.
 const MAX_COMPOSER_HEIGHT = 160;
 
+// An `@<partial>` mention token sitting at the end of a string: `@`
+// preceded by start-of-text or a non-name char (the same boundary
+// extractMentions uses, so `foo@bar` doesn't count), then a run of
+// name chars with no whitespace. Capture group 1 is the partial. No
+// `g` flag — reused statelessly by the composer's mention popup.
+const MENTION_TOKEN_RE = /(?:^|[^a-zA-Z0-9_])@([a-zA-Z0-9_.-]*)$/;
+
 // Voice + structure are tuned to read like a senior PM authored the
 // ticket — context, problem statement, testable acceptance criteria,
 // non-goals when applicable. A user-supplied "project context" string
@@ -225,13 +232,14 @@ class ChatView {
     this._slashFiltered = [];
     this._slashIndex = 0;
     this._slashBlurTimer = null;
-    // @-mention autocomplete state. `_mentionStart` is the index of the
-    // `@` in the composer value that the popup is completing, so the fill
-    // can splice the right run out.
+    // @-mention autocomplete state.
     this._mentionOpen = false;
     this._mentionFiltered = [];
     this._mentionIndex = 0;
-    this._mentionStart = -1;
+    // name-lowercased -> { name, color } for everyone who has authored a
+    // loaded message. Built incrementally (see _noteMentionAuthor) so the
+    // mention popup never re-scans the whole message history per keystroke.
+    this._mentionDirectory = new Map();
     // Debounced draft persistence — see _scheduleDraftSave.
     this._draftSaveTimer = null;
     this._pendingDraft = null;
@@ -291,6 +299,7 @@ class ChatView {
     const ids = new Set(existing.map((m) => m.id));
     const merged = existing.slice();
     for (const m of incoming) if (!ids.has(m.id)) merged.unshift(m);
+    for (const m of incoming) this._noteMentionAuthor(m.authorName, m.authorColor);
     merged.sort((a, b) => a.ts - b.ts);
     this.byChannel.set(channelId, merged);
     const oldest = merged.length ? merged[0].ts : null;
@@ -423,6 +432,7 @@ class ChatView {
       } else {
         this.byChannel.set(m.channelId, [m]);
       }
+      this._noteMentionAuthor(m.authorName, m.authorColor);
       if (m.channelId === this.currentChannel) this._appendIncremental(m);
       this.hooks.onMessage?.(m);
     });
@@ -596,43 +606,46 @@ class ChatView {
 
   // --- @-mention autocomplete ---------------------------------------------
 
-  // Teammates that can be @-mentioned: presence peers + self + anyone who
-  // has posted in a loaded channel. Keyed by lower-cased display name so
-  // the same person from two sources collapses into one row. `color` is
-  // best-effort (the presence colour, falling back to a message's author
-  // colour) and only drives the little dot in the popup.
+  // Record a message author in the mention directory (first colour wins;
+  // colours are stable per user so it doesn't matter much). Called from
+  // history ingest + the live chat-message handler so _mentionCandidates
+  // never has to walk the message arrays.
+  _noteMentionAuthor(name, color) {
+    const n = (name || '').trim();
+    if (!n) return;
+    const k = n.toLowerCase();
+    if (!this._mentionDirectory.has(k)) this._mentionDirectory.set(k, { name: n, color: color || '#8a8f98' });
+  }
+
+  // Teammates that can be @-mentioned: everyone who has authored a loaded
+  // message (the directory) plus the current presence peers plus self.
+  // Deduped by lower-cased display name. Cost is O(directory + peers),
+  // both bounded by team size — independent of message count.
   _mentionCandidates() {
-    const byName = new Map();
-    const add = (name, color, userId) => {
+    const byName = new Map(this._mentionDirectory);
+    const add = (name, color) => {
       const n = (name || '').trim();
       if (!n) return;
       const k = n.toLowerCase();
-      if (!byName.has(k)) byName.set(k, { name: n, color: color || '#8a8f98', userId: userId || null });
+      if (!byName.has(k)) byName.set(k, { name: n, color: color || '#8a8f98' });
     };
-    add(this.mesh.name, this.mesh.color, this.mesh.peerId);
-    for (const p of this.mesh.peerInfo.values()) add(p.name, p.color, p.id);
-    for (const arr of this.byChannel.values()) for (const m of arr) add(m.authorName, m.authorColor, m.authorId);
+    add(this.mesh.name, this.mesh.color);
+    for (const p of this.mesh.peerInfo.values()) add(p.name, p.color);
     return [...byName.values()];
   }
 
   // Re-evaluate the @-mention popup against the caret. Shows it when the
-  // caret sits at the end of an `@<partial>` run (no whitespace inside,
-  // and the `@` preceded by start-of-text or a non-name char — same
-  // boundary the server-side-ish extractMentions uses) and at least one
-  // teammate matches the partial.
+  // caret sits at the end of an `@<partial>` token (see MENTION_TOKEN_RE)
+  // and at least one teammate matches the partial.
   _refreshMentionSuggest() {
     // The slash popup wins if it's up — a value that's a /command can't
     // also be on an @mention token, but bail defensively anyway.
     if (this._slashOpen) { this._hideMentionSuggest(); return; }
     const el = this.els.composer;
     const caret = el.selectionStart ?? el.value.length;
-    const before = el.value.slice(0, caret);
-    const m = /(?:^|[^a-zA-Z0-9_])@([a-zA-Z0-9_.-]*)$/.exec(before);
+    const m = MENTION_TOKEN_RE.exec(el.value.slice(0, caret));
     if (!m) { this._hideMentionSuggest(); return; }
-    const partial = m[1];
-    const atIdx = caret - partial.length - 1;
-    if (el.value[atIdx] !== '@') { this._hideMentionSuggest(); return; }
-    const q = partial.toLowerCase();
+    const q = m[1].toLowerCase();
     const matches = this._mentionCandidates()
       .filter((c) => !q || c.name.toLowerCase().includes(q))
       // Prefix matches first, then alphabetical — so `@al` floats "Alex"
@@ -646,7 +659,6 @@ class ChatView {
     if (!matches.length) { this._hideMentionSuggest(); return; }
     this._mentionFiltered = matches;
     this._mentionIndex = 0;
-    this._mentionStart = atIdx;
     this._mentionOpen = true;
     this._renderMentionSuggest();
   }
@@ -678,7 +690,6 @@ class ChatView {
     this._mentionOpen = false;
     this._mentionFiltered = [];
     this._mentionIndex = 0;
-    this._mentionStart = -1;
     this.els.mentionSuggest.classList.add('hidden');
   }
 
@@ -712,10 +723,17 @@ class ChatView {
 
   _fillMentionSuggest(index) {
     const cand = this._mentionFiltered[index];
-    if (!cand || this._mentionStart < 0) return;
+    if (!cand) return;
     const el = this.els.composer;
     const caret = el.selectionStart ?? el.value.length;
-    const head = el.value.slice(0, this._mentionStart); // up to (not incl.) the `@`
+    // Re-derive the token at the *current* caret rather than trusting a
+    // value captured when the popup opened: the caret can move (Left/Right
+    // arrow) without firing `input`, so a stale offset would splice into
+    // the wrong place. If the caret has moved off the token, just close.
+    const m = MENTION_TOKEN_RE.exec(el.value.slice(0, caret));
+    if (!m) { this._hideMentionSuggest(); return; }
+    const atIdx = caret - m[1].length - 1; // index of the `@`
+    const head = el.value.slice(0, atIdx);
     const tail = el.value.slice(caret);
     const insert = `@${cand.name} `;
     el.value = head + insert + tail;
