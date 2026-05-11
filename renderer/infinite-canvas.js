@@ -77,6 +77,8 @@
       this._panMode = false;
       this._panning = null;
       this._erasing = false; // true while an eraser drag is in progress
+      this._lastErasePt = null; // previous eraser-nib position, so a fast drag covers the path
+      this._bboxCache = new WeakMap(); // stroke -> [minX,minY,maxX,maxY], for the eraser's cheap reject
 
       this.canvas = document.createElement('canvas');
       this.canvas.className = 'infinite-canvas';
@@ -332,8 +334,9 @@
         // onStrokeErased callback.
         if (this.tool === 'eraser') {
           this._erasing = true;
+          this._lastErasePt = [p.x, p.y];
           this.canvas.setPointerCapture(e.pointerId);
-          this._eraseAt(p.x, p.y);
+          this._eraseAlong(p.x, p.y, p.x, p.y);
           return;
         }
         const uuid = (typeof crypto !== 'undefined' && crypto.randomUUID)
@@ -351,7 +354,9 @@
         if (this._panning) { this._continuePan(e); return; }
         if (this._erasing) {
           const p = this._clientToWorld(e.clientX, e.clientY);
-          this._eraseAt(p.x, p.y);
+          const a = this._lastErasePt || [p.x, p.y];
+          this._eraseAlong(a[0], a[1], p.x, p.y);
+          this._lastErasePt = [p.x, p.y];
           return;
         }
         if (!this._currentStroke) return;
@@ -378,6 +383,7 @@
         if (this._panning) { this._endPan(e); return; }
         if (this._erasing) {
           this._erasing = false;
+          this._lastErasePt = null;
           if (e?.pointerId != null) { try { this.canvas.releasePointerCapture(e.pointerId); } catch {} }
           return;
         }
@@ -425,22 +431,54 @@
     onStrokeFinished(cb) { this._strokeFinished = cb; }
     onStrokeErased(cb) { this._strokeErased = cb; }
 
-    // Delete every stroke whose ink passes within the eraser nib of the
-    // world point (wx,wy). Removes locally + re-renders, then hands each
-    // deleted uuid to the host (broadcast + DB delete).
-    _eraseAt(wx, wy) {
+    // Delete every stroke whose ink comes within the eraser nib of the
+    // move path (ax,ay)→(bx,by). The path (not just the two endpoints) is
+    // checked so a fast flick can't skip strokes between pointermove
+    // events — we sample it at ~one-nib steps. A per-stroke bounding-box
+    // reject keeps that cheap even on a busy board. Removes locally +
+    // re-renders, then hands each deleted uuid to the host (broadcast +
+    // DB delete).
+    _eraseAlong(ax, ay, bx, by) {
       if (!this.strokes.length) return;
       const radius = ERASER_PX / this.viewport.scale;
-      const hit = [];
+      const dist = Math.hypot(bx - ax, by - ay);
+      const steps = Math.max(1, Math.ceil(dist / Math.max(1e-3, radius)));
+      const pMinX = Math.min(ax, bx), pMaxX = Math.max(ax, bx);
+      const pMinY = Math.min(ay, by), pMaxY = Math.max(ay, by);
+      const gone = new Set();
       for (const s of this.strokes) {
-        if (!s.uuid) continue;
-        if (this._strokeNear(s, wx, wy, radius + (s.size || 4) / 2)) hit.push(s.uuid);
+        if (!s.uuid || gone.has(s.uuid)) continue;
+        const r = radius + (s.size || 4) / 2;
+        const bb = this._strokeBbox(s);
+        // Cheap reject: the move path's box (expanded by the nib) doesn't
+        // reach this stroke's box.
+        if (pMinX - r > bb[2] || pMaxX + r < bb[0] || pMinY - r > bb[3] || pMaxY + r < bb[1]) continue;
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps;
+          if (this._strokeNear(s, ax + t * (bx - ax), ay + t * (by - ay), r)) { gone.add(s.uuid); break; }
+        }
       }
-      if (!hit.length) return;
-      const gone = new Set(hit);
+      if (!gone.size) return;
       this.strokes = this.strokes.filter((s) => !gone.has(s.uuid));
       this._render();
-      for (const uuid of hit) this._strokeErased?.(uuid);
+      for (const uuid of gone) this._strokeErased?.(uuid);
+    }
+
+    // Memoised axis-aligned bounding box [minX, minY, maxX, maxY] of a
+    // stroke's points. WeakMap-keyed so it's dropped when the stroke is.
+    _strokeBbox(stroke) {
+      let bb = this._bboxCache.get(stroke);
+      if (bb) return bb;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const [x, y] of (stroke.points || [])) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      bb = [minX, minY, maxX, maxY];
+      this._bboxCache.set(stroke, bb);
+      return bb;
     }
 
     _strokeNear(stroke, wx, wy, r) {
