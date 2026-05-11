@@ -1057,7 +1057,8 @@ async function stepPasswordSignIn() {
   els.loginError.classList.add('hidden');
   const email = els.authEmail.value.trim();
   const password = els.authPassword.value;
-  if (!email || !password) return;
+  if (!email) { showError('Enter your email first.'); return; }
+  if (!password) { showError('Enter your password.'); return; }
   els.authPasswordSignin.disabled = true;
   els.authPasswordSignup.disabled = true;
   try {
@@ -1066,9 +1067,16 @@ async function stepPasswordSignIn() {
     showStep('profile');
     await prefillProfile();
   } catch (err) {
-    // Supabase returns the same error for wrong password and unknown
-    // email; nudge toward the emailed-code path or account creation.
-    showError("Couldn't sign in with that email + password. Check both, or use an emailed code / create an account.");
+    // Supabase returns "Invalid login credentials" (HTTP 400) for both a
+    // wrong password and an unknown email — surface one generic hint for
+    // that case. Anything else (offline, 5xx) is reported as-is so the
+    // user isn't told to "check your password" when the server is at fault.
+    const msg = String(err?.message || err);
+    if (err?.status === 400 || /invalid login credentials/i.test(msg)) {
+      showError("Couldn't sign in with that email + password. Check both, or use an emailed code / create an account.");
+    } else {
+      showError('Could not sign in: ' + msg);
+    }
   } finally {
     els.authPasswordSignin.disabled = false;
     els.authPasswordSignup.disabled = false;
@@ -1079,7 +1087,7 @@ async function stepPasswordSignUp() {
   els.loginError.classList.add('hidden');
   const email = els.authEmail.value.trim();
   const password = els.authPassword.value;
-  if (!email) return;
+  if (!email) { showError('Enter your email first.'); return; }
   if (password.length < 6) { showError('Password must be at least 6 characters.'); return; }
   els.authPasswordSignin.disabled = true;
   els.authPasswordSignup.disabled = true;
