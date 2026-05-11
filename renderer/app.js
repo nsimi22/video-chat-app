@@ -200,6 +200,7 @@ const state = {
   inCallChannelId: null,  // channel.id of the active call, if any
   callStarting: false,    // re-entrancy guard for startCall()
   lurkingChannelId: null, // channel.id we're watching call-presence on
+  callCounts: new Map(),  // channel.id -> last known call-participant count (for "call started" detection)
   chat: null,
   myName: '',
   tilesByKey: new Map(),
@@ -1535,6 +1536,10 @@ async function leaveCall() {
   const ch = state.chat?.currentChannel;
   if (ch && state.huddle) {
     state.lurkingChannelId = ch;
+    // Forget the cached count — while we were a participant the lurker
+    // was off, so it's stale. Dropping it makes the first post-leave
+    // presence sync read as an initial sync, not a 0→N "call started".
+    state.callCounts.delete(ch);
     try { await state.huddle.watchCallPresence(ch); } catch {}
   }
   renderCallHeader();
@@ -1930,7 +1935,39 @@ function onMemberOffline(peerId) {
 }
 
 function onCallPresence({ channelId, count }) {
+  // Track the previous count so we can spot a call going from nobody to
+  // somebody. The first event we see for a channel is its initial
+  // presence sync (or a post-leaveCall re-sync) — not a transition — so
+  // never treat that one as "a call started".
+  const known = state.callCounts.has(channelId);
+  const prev = state.callCounts.get(channelId) || 0;
+  state.callCounts.set(channelId, count);
   if (state.chat?.currentChannel === channelId) renderCallHeader();
+  const justStarted = known && prev === 0 && count > 0;
+  const active = state.chat?.currentChannel === channelId && windowFocused;
+  if (justStarted
+      && channelId !== state.inCallChannelId
+      && !state.poppedOutCalls.has(channelId)
+      && !isChannelMuted(channelId)
+      && !active) {
+    notifyCallStarted(channelId);
+  }
+}
+
+function notifyCallStarted(channelId) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const channel = state.channelMeta.get(channelId);
+  // displayLabelFor gives "# general" / "🔒 secret" / "@ Alice" — the
+  // same labels the sidebar uses, so DM calls name the person.
+  const where = channel ? displayLabelFor(channel) : `#${channelId}`;
+  try {
+    const n = new Notification(`Call started in ${where}`, {
+      body: 'Click to join.',
+      tag: `call:${channelId}`, // collapse repeat alerts for the same call
+      silent: false,
+    });
+    n.onclick = () => { window.focus(); focusChannel(channelId); n.close(); };
+  } catch (err) { console.warn('call notification failed', err); }
 }
 
 // ---------------------------------------------------------------------------
@@ -2007,6 +2044,12 @@ function appendChannelToSidebar(channel, makeActive) {
   const isDm = channel.type === 'dm';
   const list = isDm ? els.dms : els.channels;
   if (list.querySelector(`[data-id="${cssEscape(channel.id)}"]`)) return;
+  // First time we're rendering this channel: start a call-presence
+  // lurker for it (idempotent — cached per topic) so a call starting
+  // anywhere can pop a desktop notification, not just in the channel
+  // you happen to be viewing. joinCall() drops the lurker for the
+  // channel you actually join; leaveCall() puts it back.
+  state.huddle?.watchCallPresence(channel.id).catch(() => {});
 
   const li = document.createElement('li');
   li.dataset.id = channel.id;
@@ -2064,14 +2107,12 @@ function focusChannel(channelId) {
   state.chat.setChannel(channel.id, channel.topic, displayLabelFor(channel));
   refreshPinnedCount();
   closePinnedDrawer();
-  // Swap call-presence lurker subscriptions so the header reflects
-  // whether someone's already in this channel's call. We unsubscribe
-  // the previously-watched channel to avoid an unbounded fan-out; the
-  // active call (if any) keeps its own non-lurker subscription.
-  const prev = state.lurkingChannelId;
-  if (prev && prev !== channelId && prev !== state.inCallChannelId) {
-    state.huddle?.unwatchCallPresence(prev);
-  }
+  // Make sure this channel's call presence is being watched (it always
+  // should be — appendChannelToSidebar starts a lurker for every channel
+  // so call-started notifications work everywhere — but a freshly added
+  // channel or a post-leaveCall re-watch could be racing, and the call
+  // is idempotent). The active call (if any) keeps its own non-lurker
+  // subscription instead.
   if (state.huddle && channelId !== state.inCallChannelId) {
     state.lurkingChannelId = channelId;
     state.huddle.watchCallPresence(channelId).catch(() => {});
