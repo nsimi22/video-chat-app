@@ -376,6 +376,19 @@
         </details>
 
         <details class="settings-section">
+          <summary>Password</summary>
+          <div class="settings-section-body">
+            <p class="hint">Set or change the password for the "Sign in" option on the login screen. Leave this alone if you only ever use an emailed code — that keeps working either way.</p>
+            <label>New password <span class="hint-inline">(6+ characters)</span></label>
+            <input id="set-new-password" type="password" autocomplete="new-password" />
+            <label>Confirm new password</label>
+            <input id="set-new-password-confirm" type="password" autocomplete="new-password" />
+            <div id="set-password-status" class="settings-status hidden"></div>
+            <button id="set-password-update" class="primary">Update password</button>
+          </div>
+        </details>
+
+        <details class="settings-section">
           <summary>Slash commands</summary>
           <div class="settings-section-body">
             <p class="hint">Type these in any message composer to trigger an action. Configure the relevant integration below first.</p>

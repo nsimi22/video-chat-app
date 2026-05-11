@@ -1388,6 +1388,16 @@
     return data.session; // null when email confirmation is still required
   }
 
+  // Set or change the signed-in user's password. The active session is the
+  // proof of identity, so no current-password / email round-trip is needed.
+  // Works for OTP-only users too — this is how they pick up a password the
+  // first time.
+  async function updatePassword(newPassword) {
+    const sb = await getSupabase();
+    const { error } = await sb.auth.updateUser({ password: newPassword });
+    if (error) throw error;
+  }
+
   async function ensureProfile(name, color) {
     const sb = await getSupabase();
     const { data: { user } } = await sb.auth.getUser();
@@ -1482,7 +1492,7 @@
 
   window.huddleApi = {
     getSupabase,
-    sendOtp, verifyOtp, signInWithPassword, signUpWithPassword, ensureProfile,
+    sendOtp, verifyOtp, signInWithPassword, signUpWithPassword, updatePassword, ensureProfile,
     listMyTeams, joinOrCreateTeam, startHuddle,
     signOut, getActiveSession,
     loadSettings, saveSettings,
