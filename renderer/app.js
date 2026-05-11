@@ -133,6 +133,7 @@ const els = {
   typing: $('#typing-indicator'),
   composer: $('#composer-input'),
   slashSuggest: $('#slash-suggest'),
+  mentionSuggest: $('#mention-suggest'),
   send: $('#send-btn'),
   emojiBtn: $('#emoji-btn'),
   emojiPicker: $('#emoji-picker'),
