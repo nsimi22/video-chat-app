@@ -3734,10 +3734,13 @@ function closeSettingsAndDiscardPending() {
 // (cleared on open/close). Goes straight through Supabase Auth's
 // session-authenticated updateUser — no current-password prompt, no email.
 async function updatePasswordFromSettings() {
+  // Each terminal branch below sets `status.className` (without `hidden`),
+  // which both reveals the line and applies the right colour — so there's
+  // no need to un-hide it up front. Doing so would flash a stale message
+  // from a prior attempt while this one runs.
   const status = els.setPasswordStatus;
   const pw = els.setNewPassword.value;
   const confirm = els.setNewPasswordConfirm.value;
-  status.classList.remove('hidden');
   if (pw.length < 6) {
     status.textContent = 'Password must be at least 6 characters.';
     status.className = 'settings-status error';
