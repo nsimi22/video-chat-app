@@ -240,6 +240,17 @@ input:focus, textarea:focus {
 #mute-channel-btn.muted {
   color: var(--bad);
 }
+/* Per-channel "notify on everything" — header bell-plus button lights up
+   in the accent colour and the sidebar row gets a bell suffix. Mutually
+   exclusive with `.muted` (the JS clears one when you set the other). */
+#notify-all-btn.active {
+  color: var(--accent);
+}
+.channel-list li.notify-all .ch-name::after {
+  content: ' 🔔';
+  font-size: 10px;
+  opacity: 0.7;
+}
 .section-header-row button.ghost {
   background: transparent; border: none; color: var(--text-dim);
   font-size: 14px; line-height: 1; padding: 2px 6px; cursor: pointer;
