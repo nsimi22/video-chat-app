@@ -3244,7 +3244,10 @@ function wireControls() {
   // Avatar picker. The actual upload is deferred to saveSettings so
   // hitting Cancel after picking a file doesn't leave a half-saved
   // avatar lying around in storage.
-  els.setAvatarFile.addEventListener('change', () => {
+  // Plain assignment, not addEventListener — wireControls re-runs on every
+  // team (re)join, and addEventListener would stack a duplicate handler
+  // each time (so the Nth join fires this N times for one file pick).
+  els.setAvatarFile.onchange = () => {
     const file = els.setAvatarFile.files?.[0];
     if (!file) return;
     if (file.size > 2 * 1024 * 1024) {
@@ -3256,7 +3259,7 @@ function wireControls() {
     const reader = new FileReader();
     reader.onload = () => renderAvatarPreview(reader.result, state.huddle?.color, state.huddle?.name);
     reader.readAsDataURL(file);
-  });
+  };
   els.setAvatarClear.onclick = () => {
     state._pendingAvatarFile = null;
     state._editingAvatarUrl = null;
@@ -3281,10 +3284,10 @@ function wireControls() {
   // Search
   els.searchBtn.onclick = openSearchModal;
   els.searchCancel.onclick = () => els.searchModal.classList.add('hidden');
-  els.searchInput.addEventListener('keydown', (e) => {
+  els.searchInput.onkeydown = (e) => {
     if (e.key === 'Enter') runSearch();
     if (e.key === 'Escape') els.searchModal.classList.add('hidden');
-  });
+  };
 
   // Mark every channel + DM as read in one go. Iterates the unread
   // map and clears each entry; updateUnreadBadge handles the
@@ -3307,7 +3310,7 @@ function wireControls() {
     if (els.ccPrivate.checked) renderMemberPicker(els.ccMembers);
   };
   els.ccCreate.onclick = submitCreateChannel;
-  els.ccName.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !els.ccPrivate.checked) submitCreateChannel(); });
+  els.ccName.onkeydown = (e) => { if (e.key === 'Enter' && !els.ccPrivate.checked) submitCreateChannel(); };
 
   // DM picker
   els.addDm.onclick = openDmPicker;

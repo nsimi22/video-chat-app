@@ -141,14 +141,20 @@ class MeshClient extends EventTarget {
     }
 
     // Signaling: route inbound signals into the matching PeerConn, and
-    // add the local camera/screens to any peer that joins.
+    // add the local camera/screens to any peer that joins. Politeness
+    // (perfect-negotiation glare resolver) must be derived the same way
+    // on every path that can create a PeerConn — `this.peerId > remoteId`
+    // — so the two ends always disagree (one polite, one impolite) and
+    // `_ensurePeer`'s "first creator wins" cache can't flip it. Hard-coding
+    // `polite: true` here made both peers polite, so a join-time offer
+    // collision was never backed off and the connection could end up
+    // one-way.
     wire('signal', (e) => {
       const { from, payload } = e.detail;
-      const polite = this.peerId > from;
-      this._ensurePeer(from, polite).then((conn) => conn.handleSignal(payload));
+      this._ensurePeer(from, this.peerId > from).then((conn) => conn.handleSignal(payload));
     });
     wire('peer-joined', (e) => {
-      this._ensurePeer(e.detail.id, /*polite*/ true).then((conn) => {
+      this._ensurePeer(e.detail.id, this.peerId > e.detail.id).then((conn) => {
         if (this.cameraStream) conn.addStream(this.cameraStream);
         for (const { stream } of this._screenStreams.values()) conn.addStream(stream);
         this._applyScreenEncodings();
@@ -170,7 +176,7 @@ class MeshClient extends EventTarget {
   bootstrapExistingPeers() {
     if (!this.huddle.callPeerInfo) return;
     for (const peer of this.huddle.callPeerInfo.values()) {
-      this._ensurePeer(peer.id, /*polite*/ true).then((conn) => {
+      this._ensurePeer(peer.id, this.peerId > peer.id).then((conn) => {
         if (this.cameraStream) conn.addStream(this.cameraStream);
         for (const { stream } of this._screenStreams.values()) conn.addStream(stream);
         this._applyScreenEncodings();
