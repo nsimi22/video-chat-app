@@ -1733,16 +1733,19 @@ class ChatView {
     this.els.composer.value = '';
     this.els.composer.style.height = 'auto';
     this._beginAiThinking();
-    // Wire any configured integrations as tools so the AI can answer
-    // ticket/repo questions without the user having to copy-paste
-    // context. The system prompt nudges the model to call them when
-    // the user names a Jira key or asks for an update; otherwise it
-    // falls through to plain chat.
+    // /ai is the general-purpose assistant — it should answer anything
+    // (jokes, explanations, code, brainstorming, …), not act like a
+    // Jira-only bot. We additionally wire any configured integrations
+    // as tools so it *can* read/act on tickets when the user asks, but
+    // the prompt is explicit that Jira is just one capability and that
+    // non-Jira requests must never be refused. (Free OpenRouter models
+    // were over-indexing on the old Jira-heavy prompt and declining to
+    // tell jokes.)
     const jira = this.hooks.getJira?.();
     const tools = window.HuddleAiTools ? window.HuddleAiTools.buildJiraTools(jira) : [];
     const system = tools.length
-      ? 'You are a helpful assistant inside a team chat app. When the user references a Jira ticket key (e.g. "FOO-123") or asks to update / comment on / transition a ticket, use the Jira tools to fetch context first and then act. Be concise — bullet points for summaries, single-line confirmations after edits. Always state the ticket key + a one-line summary of what you did.'
-      : undefined;
+      ? 'You are a helpful, general-purpose AI assistant inside a team chat app. Answer whatever the user asks — questions, jokes, explanations, brainstorming, code, anything — like any capable chat assistant would; never refuse or redirect a request just because it is not about Jira. You also have Jira tools available: when the user names a Jira ticket key (e.g. "FOO-123") or asks to read / comment on / update / transition a ticket, call those tools to fetch context first and then act. Be concise — bullet points for summaries, single-line confirmations after Jira edits, and when you change a ticket, state its key plus a one-line summary of what you did.'
+      : 'You are a helpful, general-purpose AI assistant inside a team chat app. Answer whatever the user asks. Be concise.';
     let result;
     try {
       result = await ai.chat({
