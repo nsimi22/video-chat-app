@@ -1649,6 +1649,14 @@ button.ctrl.muted.icon-only::after {
 .slash-suggest-item.selected code { background: rgba(255,255,255,.22); }
 .slash-suggest-item .desc { color: var(--text-dim); }
 .slash-suggest-item.selected .desc { color: rgba(255,255,255,.85); }
+/* @-mention rows reuse .slash-suggest-item; the leading dot is the
+   teammate's presence colour, the name fills the rest of the row. */
+.mention-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  flex-shrink: 0; align-self: center;
+}
+.slash-suggest-item .mention-name { color: var(--text); }
+.slash-suggest-item.selected .mention-name { color: white; }
 .composer textarea {
   flex: 1; resize: none;
   min-height: 38px; max-height: 160px;

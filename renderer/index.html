@@ -284,6 +284,9 @@
                while the user is typing a /command. Populated + shown
                by ChatView; arrow keys navigate, Tab fills. -->
           <div id="slash-suggest" class="slash-suggest hidden" role="listbox" aria-label="Slash commands"></div>
+          <!-- @-mention autocomplete: same chrome as the slash popup,
+               shown while the caret is on an @<partial> token. -->
+          <div id="mention-suggest" class="slash-suggest hidden" role="listbox" aria-label="Mention a teammate"></div>
           <button id="attach-btn" class="icon-only ghost" title="Attach file" aria-label="Attach file">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
           </button>
@@ -372,6 +375,19 @@
                 <textarea id="set-profile-bio" rows="3" maxlength="280"></textarea>
               </div>
             </div>
+          </div>
+        </details>
+
+        <details class="settings-section">
+          <summary>Password</summary>
+          <div class="settings-section-body">
+            <p class="hint">Set or change the password for the "Sign in" option on the login screen. Leave this alone if you only ever use an emailed code — that keeps working either way.</p>
+            <label>New password <span class="hint-inline">(6+ characters)</span></label>
+            <input id="set-new-password" type="password" autocomplete="new-password" />
+            <label>Confirm new password</label>
+            <input id="set-new-password-confirm" type="password" autocomplete="new-password" />
+            <div id="set-password-status" class="settings-status hidden"></div>
+            <button id="set-password-update" class="primary">Update password</button>
           </div>
         </details>
 

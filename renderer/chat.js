@@ -21,6 +21,13 @@ const MAX_COMPOSER_HEIGHT = 160;
 // repeat isn't blocked for long.
 const GIF_RECLICK_DEBOUNCE_MS = 5000;
 
+// An `@<partial>` mention token sitting at the end of a string: `@`
+// preceded by start-of-text or a non-name char (the same boundary
+// extractMentions uses, so `foo@bar` doesn't count), then a run of
+// name chars with no whitespace. Capture group 1 is the partial. No
+// `g` flag — reused statelessly by the composer's mention popup.
+const MENTION_TOKEN_RE = /(?:^|[^a-zA-Z0-9_])@([a-zA-Z0-9_.-]*)$/;
+
 // Voice + structure are tuned to read like a senior PM authored the
 // ticket — context, problem statement, testable acceptance criteria,
 // non-goals when applicable. A user-supplied "project context" string
@@ -236,6 +243,14 @@ class ChatView {
     this._slashFiltered = [];
     this._slashIndex = 0;
     this._slashBlurTimer = null;
+    // @-mention autocomplete state.
+    this._mentionOpen = false;
+    this._mentionFiltered = [];
+    this._mentionIndex = 0;
+    // name-lowercased -> { name, color } for everyone who has authored a
+    // loaded message. Built incrementally (see _noteMentionAuthor) so the
+    // mention popup never re-scans the whole message history per keystroke.
+    this._mentionDirectory = new Map();
     // Debounced draft persistence — see _scheduleDraftSave.
     this._draftSaveTimer = null;
     this._pendingDraft = null;
@@ -272,8 +287,12 @@ class ChatView {
     this.els.composer.placeholder = `Message ${label}`;
     this.els.threadBack.classList.add('hidden');
     // Restore the new channel's draft (if any). Null/empty leaves
-    // the composer blank.
+    // the composer blank. The restored value is set programmatically,
+    // so the `input`-driven popups won't re-evaluate — close any that
+    // were open against the old channel's text.
     this.els.composer.value = this._loadDraft(channelId) || '';
+    this._hideSlashSuggest();
+    this._hideMentionSuggest();
     this._autoResizeComposer();
     this._render();
     this._fetchHistory(channelId);
@@ -291,6 +310,7 @@ class ChatView {
     const ids = new Set(existing.map((m) => m.id));
     const merged = existing.slice();
     for (const m of incoming) if (!ids.has(m.id)) merged.unshift(m);
+    for (const m of incoming) this._noteMentionAuthor(m.authorName, m.authorColor);
     merged.sort((a, b) => a.ts - b.ts);
     this.byChannel.set(channelId, merged);
     const oldest = merged.length ? merged[0].ts : null;
@@ -330,10 +350,12 @@ class ChatView {
     this._on(this.els.threadBack, 'click', () => this.closeThread());
     this._on(this.els.send, 'click', () => this._submit());
     this._on(this.els.composer, 'keydown', (e) => {
-      // Slash autocomplete claims arrow keys, Tab, and Escape while
-      // visible. Enter still submits (the popup just disappears as
-      // the message is sent).
+      // Both autocomplete popups claim arrow keys, Tab, and Escape while
+      // visible (they're mutually exclusive — a /command needs to be at
+      // the start of the value, an @mention can't be). Enter still
+      // submits when neither popup consumed it.
       if (this._slashOpen && this._handleSlashKeydown(e)) return;
+      if (this._mentionOpen && this._handleMentionKeydown(e)) return;
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this._submit();
@@ -344,6 +366,7 @@ class ChatView {
     this._on(this.els.composer, 'input', () => {
       this._autoResizeComposer();
       this._refreshSlashSuggest();
+      this._refreshMentionSuggest();
       // Persist the draft, but debounced — localStorage is a
       // synchronous, thread-blocking API and a large draft saved
       // on every keystroke can cause noticeable input lag. The
@@ -366,6 +389,7 @@ class ChatView {
       this._slashBlurTimer = setTimeout(() => {
         this._slashBlurTimer = null;
         this._hideSlashSuggest();
+        this._hideMentionSuggest();
       }, 80);
     });
     this._on(this.els.composer, 'paste', (e) => this._onPaste(e));
@@ -419,6 +443,7 @@ class ChatView {
       } else {
         this.byChannel.set(m.channelId, [m]);
       }
+      this._noteMentionAuthor(m.authorName, m.authorColor);
       if (m.channelId === this.currentChannel) this._appendIncremental(m);
       this.hooks.onMessage?.(m);
     });
@@ -588,6 +613,150 @@ class ChatView {
     this._autoResizeComposer();
     this.els.composer.focus();
     this._hideSlashSuggest();
+  }
+
+  // --- @-mention autocomplete ---------------------------------------------
+
+  // Record a message author in the mention directory (first colour wins;
+  // colours are stable per user so it doesn't matter much). Called from
+  // history ingest + the live chat-message handler so _mentionCandidates
+  // never has to walk the message arrays.
+  _noteMentionAuthor(name, color) {
+    const n = (name || '').trim();
+    if (!n) return;
+    const k = n.toLowerCase();
+    if (!this._mentionDirectory.has(k)) this._mentionDirectory.set(k, { name: n, color: color || '#8a8f98' });
+  }
+
+  // Teammates that can be @-mentioned: everyone who has authored a loaded
+  // message (the directory) plus the current presence peers plus self.
+  // Deduped by lower-cased display name. Cost is O(directory + peers),
+  // both bounded by team size — independent of message count.
+  _mentionCandidates() {
+    const byName = new Map(this._mentionDirectory);
+    const add = (name, color) => {
+      const n = (name || '').trim();
+      if (!n) return;
+      const k = n.toLowerCase();
+      if (!byName.has(k)) byName.set(k, { name: n, color: color || '#8a8f98' });
+    };
+    add(this.mesh.name, this.mesh.color);
+    for (const p of this.mesh.peerInfo.values()) add(p.name, p.color);
+    return [...byName.values()];
+  }
+
+  // Re-evaluate the @-mention popup against the caret. Shows it when the
+  // caret sits at the end of an `@<partial>` token (see MENTION_TOKEN_RE)
+  // and at least one teammate matches the partial.
+  _refreshMentionSuggest() {
+    // The slash popup wins if it's up — a value that's a /command can't
+    // also be on an @mention token, but bail defensively anyway.
+    if (this._slashOpen) { this._hideMentionSuggest(); return; }
+    const el = this.els.composer;
+    const caret = el.selectionStart ?? el.value.length;
+    const m = MENTION_TOKEN_RE.exec(el.value.slice(0, caret));
+    if (!m) { this._hideMentionSuggest(); return; }
+    const q = m[1].toLowerCase();
+    const matches = this._mentionCandidates()
+      .filter((c) => !q || c.name.toLowerCase().includes(q))
+      // Prefix matches first, then alphabetical — so `@al` floats "Alex"
+      // above "Pascal".
+      .sort((a, b) => {
+        const ap = a.name.toLowerCase().startsWith(q), bp = b.name.toLowerCase().startsWith(q);
+        if (ap !== bp) return ap ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      })
+      .slice(0, 8);
+    if (!matches.length) { this._hideMentionSuggest(); return; }
+    this._mentionFiltered = matches;
+    this._mentionIndex = 0;
+    this._mentionOpen = true;
+    this._renderMentionSuggest();
+  }
+
+  _renderMentionSuggest() {
+    const root = this.els.mentionSuggest;
+    root.replaceChildren();
+    for (let i = 0; i < this._mentionFiltered.length; i++) {
+      const cand = this._mentionFiltered[i];
+      const row = document.createElement('div');
+      row.className = 'slash-suggest-item' + (i === this._mentionIndex ? ' selected' : '');
+      row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', i === this._mentionIndex ? 'true' : 'false');
+      const dot = document.createElement('span');
+      dot.className = 'mention-dot';
+      dot.style.background = cand.color;
+      const name = document.createElement('span');
+      name.className = 'mention-name';
+      name.textContent = cand.name;
+      row.append(dot, name);
+      // mousedown so the textarea-blur teardown doesn't beat the click.
+      row.addEventListener('mousedown', (e) => { e.preventDefault(); this._fillMentionSuggest(i); });
+      root.appendChild(row);
+    }
+    root.classList.remove('hidden');
+  }
+
+  _hideMentionSuggest() {
+    this._mentionOpen = false;
+    this._mentionFiltered = [];
+    this._mentionIndex = 0;
+    this.els.mentionSuggest.classList.add('hidden');
+  }
+
+  // Returns true iff the keypress was handled (caller bails out).
+  _handleMentionKeydown(e) {
+    if (!this._mentionOpen) return false;
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        this._mentionIndex = (this._mentionIndex + 1) % this._mentionFiltered.length;
+        this._renderMentionSuggest();
+        return true;
+      case 'ArrowUp':
+        e.preventDefault();
+        this._mentionIndex = (this._mentionIndex - 1 + this._mentionFiltered.length) % this._mentionFiltered.length;
+        this._renderMentionSuggest();
+        return true;
+      case 'Tab':
+      case 'Enter':
+        e.preventDefault();
+        this._fillMentionSuggest(this._mentionIndex);
+        return true;
+      case 'Escape':
+        e.preventDefault();
+        this._hideMentionSuggest();
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  _fillMentionSuggest(index) {
+    const cand = this._mentionFiltered[index];
+    if (!cand) return;
+    const el = this.els.composer;
+    const caret = el.selectionStart ?? el.value.length;
+    // Re-derive the token at the *current* caret rather than trusting a
+    // value captured when the popup opened: the caret can move (Left/Right
+    // arrow) without firing `input`, so a stale offset would splice into
+    // the wrong place. If the caret has moved off the token, just close.
+    const m = MENTION_TOKEN_RE.exec(el.value.slice(0, caret));
+    if (!m) { this._hideMentionSuggest(); return; }
+    const atIdx = caret - m[1].length - 1; // index of the `@`
+    const head = el.value.slice(0, atIdx);
+    const tail = el.value.slice(caret);
+    const insert = `@${cand.name} `;
+    el.value = head + insert + tail;
+    const pos = head.length + insert.length;
+    el.setSelectionRange(pos, pos);
+    // Programmatic value set doesn't fire `input`; mirror what that
+    // handler would have done so the textarea sizing and per-channel
+    // draft stay in sync with the new value.
+    this._autoResizeComposer();
+    if (this.currentChannel) this._scheduleDraftSave(this.currentChannel, el.value);
+    el.focus();
+    this._hideMentionSuggest();
   }
 
   // --- Drafts -------------------------------------------------------------
