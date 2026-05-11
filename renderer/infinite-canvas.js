@@ -54,7 +54,14 @@
       this._wirePointerEvents();
       this._wireKeyboardPan();
       this._wireWheelZoom();
-      this._resizeObs = new ResizeObserver(() => this._fitCanvas());
+      // Coalesce resize ticks to one _fitCanvas per frame — a layout
+      // transition (e.g. spotlighting the tile) can fire the observer
+      // several times in quick succession, and each _fitCanvas reallocs
+      // the canvas bitmap + re-renders every stroke.
+      this._resizeObs = new ResizeObserver(() => {
+        if (this._fitRaf) return;
+        this._fitRaf = requestAnimationFrame(() => { this._fitRaf = null; this._fitCanvas(); });
+      });
       this._resizeObs.observe(tile);
     }
 
@@ -145,6 +152,15 @@
     _fitCanvas() {
       const r = this.tile.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
+      // Bail if nothing that affects the canvas bitmap changed —
+      // ResizeObserver can fire spuriously, and a realloc + full
+      // re-render here is not cheap on a busy board. devicePixelRatio is
+      // in the comparison too: dragging the window to a denser monitor
+      // leaves the CSS size identical but needs a re-render to stay crisp.
+      if (r.width === this._fitW && r.height === this._fitH && dpr === this._fitDpr) return;
+      this._fitW = r.width;
+      this._fitH = r.height;
+      this._fitDpr = dpr;
       this.canvas.width = Math.max(1, Math.floor(r.width * dpr));
       this.canvas.height = Math.max(1, Math.floor(r.height * dpr));
       this.canvas.style.width = `${r.width}px`;
@@ -421,6 +437,7 @@
 
     destroy() {
       this._resizeObs?.disconnect();
+      if (this._fitRaf) cancelAnimationFrame(this._fitRaf);
       if (this._keyDown) document.removeEventListener('keydown', this._keyDown);
       if (this._keyUp) document.removeEventListener('keyup', this._keyUp);
       this.canvas.remove();

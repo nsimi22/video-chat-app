@@ -46,6 +46,7 @@ const els = {
   searchBtn: $('#search-btn'),
   whiteboardBtn: $('#whiteboard-btn'),
   muteChannelBtn: $('#mute-channel-btn'),
+  notifyAllBtn: $('#notify-all-btn'),
   searchModal: $('#search-modal'),
   shortcutsModal: $('#shortcuts-modal'),
   shortcutsClose: $('#shortcuts-close'),
@@ -515,11 +516,18 @@ function toggleCurrentChannelMute() {
   if (!channelId) return;
   const next = !isChannelMuted(channelId);
   setChannelMuted(channelId, next);
+  // "Notify on nothing" and "notify on everything" can't both be on —
+  // muting wins, so clear the notify-all flag here.
+  if (next) setChannelNotifyAll(channelId, false);
   refreshMuteButton();
+  refreshNotifyAllButton();
   // Re-render the sidebar row so the muted indicator updates.
   const sel = `[data-id="${cssEscape(channelId)}"]`;
   const li = els.channels.querySelector(sel) || els.dms.querySelector(sel);
-  if (li) li.classList.toggle('muted', next);
+  if (li) {
+    li.classList.toggle('muted', next);
+    if (next) li.classList.remove('notify-all');
+  }
   // Existing unread for a now-muted channel stays — we just stop
   // bumping the loud title when fresh activity arrives.
   updateUnreadBadge(channelId);
@@ -539,6 +547,55 @@ function refreshMuteButton() {
   els.muteChannelBtn.title = muted
     ? 'Unmute notifications for this channel'
     : 'Mute notifications for this channel';
+}
+
+// Per-channel "notify on every message" — the opposite end of the mute
+// toggle. Same team-scoped localStorage shape; mutually exclusive with
+// mute (each toggle clears the other when turned on).
+function notifyAllKey(channelId) {
+  const teamId = state.huddle?.team?.id || 'unknown';
+  return `huddle.notifyall.${teamId}.${channelId}`;
+}
+function isChannelNotifyAll(channelId) {
+  if (!channelId) return false;
+  try { return localStorage.getItem(notifyAllKey(channelId)) === '1'; }
+  catch { return false; }
+}
+function setChannelNotifyAll(channelId, on) {
+  if (!channelId) return;
+  try {
+    if (on) localStorage.setItem(notifyAllKey(channelId), '1');
+    else localStorage.removeItem(notifyAllKey(channelId));
+  } catch {}
+}
+function toggleCurrentChannelNotifyAll() {
+  const channelId = state.chat?.currentChannel;
+  if (!channelId) return;
+  const next = !isChannelNotifyAll(channelId);
+  setChannelNotifyAll(channelId, next);
+  if (next) setChannelMuted(channelId, false);
+  refreshNotifyAllButton();
+  refreshMuteButton();
+  const sel = `[data-id="${cssEscape(channelId)}"]`;
+  const li = els.channels.querySelector(sel) || els.dms.querySelector(sel);
+  if (li) {
+    li.classList.toggle('notify-all', next);
+    if (next) li.classList.remove('muted');
+  }
+  // If it was muted, un-muting it via this path changes the badge styling.
+  if (next) { updateUnreadBadge(channelId); updateUnreadTitle(); }
+  showToast(next ? 'Notifying on every message here' : 'Back to @mentions only');
+}
+function refreshNotifyAllButton() {
+  if (!els.notifyAllBtn) return;
+  const channelId = state.chat?.currentChannel;
+  els.notifyAllBtn.classList.toggle('hidden', !channelId);
+  if (!channelId) return;
+  const on = isChannelNotifyAll(channelId);
+  els.notifyAllBtn.classList.toggle('active', on);
+  els.notifyAllBtn.title = on
+    ? 'Notifying on every message — click for @mentions only'
+    : 'Notify on every message in this channel';
 }
 
 // ---------------------------------------------------------------------------
@@ -2000,6 +2057,7 @@ function appendChannelToSidebar(channel, makeActive) {
   // suffix in CSS. The class is toggled by toggleCurrentChannelMute
   // when the user flips the per-channel toggle.
   if (isChannelMuted(channel.id)) li.classList.add('muted');
+  else if (isChannelNotifyAll(channel.id)) li.classList.add('notify-all');
 
   const label = document.createElement('span');
   label.className = 'ch-name';
@@ -2063,6 +2121,7 @@ function focusChannel(channelId) {
   }
   renderCallHeader();
   refreshMuteButton();
+  refreshNotifyAllButton();
   // Visiting a channel clears its unread.
   state.unread.delete(channelId);
   updateUnreadBadge(channelId);
@@ -2160,7 +2219,7 @@ function onChatMessage(m) {
   // badge (with muted styling via updateUnreadBadge) so the user
   // can see something happened.
   if (muted) return;
-  const shouldNotify = !isActive && (mentionsMe || isDm);
+  const shouldNotify = !isActive && (mentionsMe || isDm || isChannelNotifyAll(m.channelId));
   if (shouldNotify) sendDesktopNotification(m, channel);
 }
 
@@ -3337,6 +3396,7 @@ function wireControls() {
   // Whiteboard (🎨)
   els.whiteboardBtn.onclick = openWhiteboard;
   els.muteChannelBtn.onclick = toggleCurrentChannelMute;
+  els.notifyAllBtn.onclick = toggleCurrentChannelNotifyAll;
 
   // Search
   els.searchBtn.onclick = openSearchModal;
