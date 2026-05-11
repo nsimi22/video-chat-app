@@ -586,9 +586,10 @@ function toggleCurrentChannelNotifyAll() {
   showToast(next ? 'Notifying on every message here' : 'Back to @mentions only');
 }
 function refreshNotifyAllButton() {
+  if (!els.notifyAllBtn) return;
   const channelId = state.chat?.currentChannel;
-  els.notifyAllBtn?.classList.toggle('hidden', !channelId);
-  if (!channelId || !els.notifyAllBtn) return;
+  els.notifyAllBtn.classList.toggle('hidden', !channelId);
+  if (!channelId) return;
   const on = isChannelNotifyAll(channelId);
   els.notifyAllBtn.classList.toggle('active', on);
   els.notifyAllBtn.title = on
