@@ -2912,7 +2912,17 @@ async function applyLabelChange(messageId, label, add) {
       labels: [...next],
     });
   } catch (err) {
-    showCallError('Could not update labels: ' + (err?.message || err));
+    // A foreign-key violation here means the saved_messages.message_id
+    // target was deleted between rendering it and this save. Nothing to
+    // retry; close the popover rather than leave a raw constraint error
+    // on screen.
+    const PG_FOREIGN_KEY_VIOLATION = '23503';
+    if (err?.code === PG_FOREIGN_KEY_VIOLATION) {
+      showCallError('That message no longer exists — it may have just been deleted.');
+      closeSavePopover();
+    } else {
+      showCallError('Could not update labels: ' + (err?.message || err));
+    }
   }
 }
 

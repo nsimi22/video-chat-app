@@ -15,6 +15,12 @@
 // stays mostly visible while you draft a long message.
 const MAX_COMPOSER_HEIGHT = 160;
 
+// How long to swallow a re-click of the *same* GIF in the picker. Long
+// enough to cover the post's realtime echo round-trip (so "didn't see it,
+// clicked again" doesn't double-post); short enough that an intentional
+// repeat isn't blocked for long.
+const GIF_RECLICK_DEBOUNCE_MS = 5000;
+
 // An `@<partial>` mention token sitting at the end of a string: `@`
 // preceded by start-of-text or a non-name char (the same boundary
 // extractMentions uses, so `foo@bar` doesn't count), then a run of
@@ -216,6 +222,11 @@ class ChatView {
     this._gifFetchSeq = 0;
     this._gifSearchTimer = null;
     this._giphyKey = null;
+    // Last GIF posted (url + timestamp) — debounces the "didn't see it
+    // post, clicked the same one again" double-post while the realtime
+    // echo is still in flight.
+    this._lastGifUrl = null;
+    this._lastGifAt = 0;
     // In-flight AI requests — tracked as a counter so overlapping commands
     // don't prematurely hide the "thinking" indicator.
     this._aiThinkingCount = 0;
@@ -866,17 +877,40 @@ class ChatView {
       }
     }
 
-    await this.mesh.sendMessage({
-      channelId: this.currentChannel,
-      parentId: this.threadParentId,
-      text: window.replaceShortcodes(text),
-      attachments,
-    });
-    this._clearDraft(this.currentChannel);
+    // Clear the composer up front — before the (sometimes laggy) send
+    // round-trip — so a second Enter while it's in flight can't re-fire
+    // and double-post. If the send actually throws, put the text +
+    // attachments back so nothing is lost. Snapshot the destination
+    // channel/thread so a mid-flight channel switch doesn't (a) send to
+    // the wrong place or (b) dump the failed text into another channel's
+    // composer on the restore path.
+    const channelId = this.currentChannel;
+    const parentId = this.threadParentId;
+    const restoreAttachments = this.composerAttachments;
+    this._clearDraft(channelId);
     this.els.composer.value = '';
     this.els.composer.style.height = 'auto';
     this.composerAttachments = [];
     this._renderAttachmentChips();
+    try {
+      await this.mesh.sendMessage({
+        channelId,
+        parentId,
+        text: window.replaceShortcodes(text),
+        attachments,
+      });
+    } catch (err) {
+      // Re-stash the text as that channel's draft either way; only put it
+      // back in the live composer if we're still looking at that channel.
+      this._saveDraft(channelId, text);
+      if (this.currentChannel === channelId) {
+        this.els.composer.value = text;
+        this._autoResizeComposer();
+        this.composerAttachments = restoreAttachments;
+        this._renderAttachmentChips();
+      }
+      alert("Couldn't send your message: " + (err?.message || err));
+    }
   }
 
   _beginEdit(messageId) {
@@ -2171,6 +2205,16 @@ class ChatView {
   }
 
   _postGif(url, result) {
+    // The same GIF URL re-clicked within a few seconds is a "didn't see
+    // it post, clicked again" double-post (the realtime echo hasn't
+    // landed yet), not intent to post it twice — swallow it.
+    const now = Date.now();
+    if (url === this._lastGifUrl && now - this._lastGifAt < GIF_RECLICK_DEBOUNCE_MS) {
+      this.els.gifPicker.classList.add('hidden');
+      return;
+    }
+    this._lastGifUrl = url;
+    this._lastGifAt = now;
     const images = result?.images || {};
     const size = parseInt(images.original?.size, 10) || 0;
     this.mesh.sendMessage({
