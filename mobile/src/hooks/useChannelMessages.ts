@@ -19,13 +19,20 @@ export function useChannelMessages(teamId: string, channelId: string) {
     setHasMore(true);
     oldestTs.current = null;
 
-    fetchMessages(teamId, channelId).then((rows) => {
-      if (!active) return;
-      setMessages(rows);
-      oldestTs.current = rows[0]?.ts ?? null;
-      setHasMore(rows.length >= 50);
-      setLoading(false);
-    });
+    fetchMessages(teamId, channelId)
+      .then((rows) => {
+        if (!active) return;
+        setMessages(rows);
+        oldestTs.current = rows[0]?.ts ?? null;
+        setHasMore(rows.length >= 50);
+        setLoading(false);
+      })
+      .catch((e) => {
+        if (!active) return;
+        console.warn('fetchMessages failed', e);
+        setHasMore(false);
+        setLoading(false);
+      });
 
     const channel = supabase
       .channel(`db:messages:${teamId}:${channelId}`)

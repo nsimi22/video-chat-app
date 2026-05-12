@@ -53,10 +53,13 @@ the desktop default). Override per build if you self-host.
 2. Apply the migration `supabase/migrations/20260512000000_huddle_device_tokens.sql`.
 3. Deploy + wire the webhook:
    ```bash
+   supabase secrets set NOTIFY_WEBHOOK_SECRET="$(openssl rand -hex 24)"
    supabase functions deploy notify-on-message --no-verify-jwt
    ```
    Then in the dashboard add a Database Webhook on `public.messages` INSERT →
-   HTTP POST to the `notify-on-message` function.
+   HTTP POST to the `notify-on-message` function, with an
+   `x-webhook-secret: <NOTIFY_WEBHOOK_SECRET>` header (the function is deployed
+   without JWT verification, so this header is its only auth).
 
 ## Builds / release
 

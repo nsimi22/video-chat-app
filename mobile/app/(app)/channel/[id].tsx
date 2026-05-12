@@ -56,15 +56,26 @@ export default function ChannelScreen() {
   // The topic is RLS-gated, so the channel must be marked `private`.
   useEffect(() => {
     if (!teamId) return;
+    let active = true;
+    const timers = new Set<ReturnType<typeof setTimeout>>();
     const ch = supabase.channel(teamTopic(teamId), { config: { broadcast: { self: false }, private: true } });
     ch.on('broadcast', { event: 'typing' }, ({ payload }) => {
-      if (!payload || payload.channelId !== String(channelId) || payload.from === userId) return;
+      if (!active || !payload || payload.channelId !== String(channelId) || payload.from === userId) return;
       setTypingNames((prev) => Array.from(new Set([...prev, payload.name])));
-      setTimeout(() => setTypingNames((prev) => prev.filter((n) => n !== payload.name)), 3500);
+      const t = setTimeout(() => {
+        timers.delete(t);
+        if (active) setTypingNames((prev) => prev.filter((n) => n !== payload.name));
+      }, 3500);
+      timers.add(t);
     });
     ch.subscribe();
     teamChannelRef.current = ch;
-    return () => { supabase.removeChannel(ch); teamChannelRef.current = null; };
+    return () => {
+      active = false;
+      timers.forEach(clearTimeout);
+      supabase.removeChannel(ch);
+      teamChannelRef.current = null;
+    };
   }, [teamId, channelId, userId]);
 
   const profileFor = useCallback((uid: string) => roster.find((p) => p.user_id === uid), [roster]);
@@ -105,7 +116,9 @@ export default function ChannelScreen() {
   };
 
   const attachImage = async () => {
-    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.All, quality: 0.85 });
+    // Images only for the MVP: uploads read the whole file into memory, so
+    // videos / huge assets would risk OOM. Broaden once we have resumable uploads.
+    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.85 });
     if (res.canceled || !res.assets?.length) return;
     const a = res.assets[0];
     setSending(true);
