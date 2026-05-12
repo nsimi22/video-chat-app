@@ -59,6 +59,7 @@ class WhiteboardSession {
     });
     this.canvas.onStrokeFinished((polyline) => this._persistFinishedStroke(polyline));
     this.canvas.onStrokeErased((uuid) => this._eraseStroke(uuid));
+    this.canvas.onStrokeMoved((uuid, polyline) => this._moveStroke(uuid, polyline));
     this.canvas.onViewportChange(() => this._scheduleNoteReposition());
 
     // Sticky notes ride above the canvas in their own absolutely-
@@ -378,6 +379,26 @@ class WhiteboardSession {
       await this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid);
     } catch (err) {
       console.warn('[whiteboard] eraser persist-delete failed', err);
+    }
+  }
+
+  // The select tool finished dragging a stroke to a new position. Peers
+  // already followed the move (live `move-stroke` deltas during the drag,
+  // handled in InfiniteCanvas.applyRemote), so this just re-persists.
+  // whiteboard_strokes has no UPDATE policy, so we delete the old row and
+  // insert the moved polyline under the SAME uuid — side effect: a moved
+  // stroke jumps to the front of the z-order on the next reload, which is
+  // fine ("bring forward on edit"). The uuid is already in _paintedUuids,
+  // so a later history replay correctly skips the reinserted row.
+  async _moveStroke(uuid, polyline) {
+    if (!uuid || !polyline) return;
+    try {
+      const inflight = this._inflightPersists?.get(uuid);
+      if (inflight) await inflight;
+      await this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid);
+      await this.huddle.persistWhiteboardStroke(this.whiteboardId, polyline);
+    } catch (err) {
+      console.warn('[whiteboard] move persist failed', err);
     }
   }
 
