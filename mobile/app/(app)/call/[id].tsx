@@ -93,6 +93,14 @@ function CallView({ title }: { title: string }) {
     setCam(next);
     await localParticipant.setCameraEnabled(next);
   };
+  const flipCamera = async () => {
+    // @livekit/react-native augments the local camera track with switchCamera().
+    const track = localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack as
+      | { switchCamera?: () => Promise<void>; restartTrack?: () => Promise<void> }
+      | undefined;
+    if (track?.switchCamera) await track.switchCamera();
+    else await track?.restartTrack?.();
+  };
 
   return (
     <View style={{ flex: 1, backgroundColor: '#000' }}>
@@ -123,7 +131,7 @@ function CallView({ title }: { title: string }) {
       <View style={{ position: 'absolute', bottom: space(10), left: 0, right: 0, flexDirection: 'row', justifyContent: 'center', gap: space(4) }}>
         <CtrlButton label={mic ? 'Mute' : 'Unmute'} active={mic} onPress={toggleMic} />
         <CtrlButton label={cam ? 'Cam off' : 'Cam on'} active={cam} onPress={toggleCam} />
-        <CtrlButton label="Flip" active onPress={() => localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack?.restartTrack()} />
+        <CtrlButton label="Flip" active onPress={flipCamera} />
         <CtrlButton label="Leave" danger onPress={() => router.back()} />
       </View>
     </View>

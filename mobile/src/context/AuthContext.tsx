@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
+import * as SecureStore from 'expo-secure-store';
 import { supabase } from '@/lib/supabase';
 import { listTeams, type Team } from '@/lib/api';
 
@@ -40,7 +41,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     (async () => {
       const teams = await listTeams().catch(() => [] as Team[]);
       if (cancelled) return;
-      const savedId = globalThis.localStorage?.getItem?.(TEAM_KEY) ?? null;
+      const savedId = await SecureStore.getItemAsync(TEAM_KEY).catch(() => null);
       const pick = teams.find((t) => t.id === savedId) ?? (teams.length === 1 ? teams[0] : null);
       setActiveTeamState(pick);
     })();
@@ -51,11 +52,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const setActiveTeam = (t: Team | null) => {
     setActiveTeamState(t);
-    try {
-      if (t) globalThis.localStorage?.setItem?.(TEAM_KEY, t.id);
-    } catch {
-      /* ignore */
-    }
+    // Fire-and-forget persistence; failures here are non-fatal.
+    if (t) void SecureStore.setItemAsync(TEAM_KEY, t.id).catch(() => {});
+    else void SecureStore.deleteItemAsync(TEAM_KEY).catch(() => {});
   };
 
   const signOut = async () => {

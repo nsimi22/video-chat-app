@@ -1,3 +1,4 @@
+import * as Crypto from 'expo-crypto';
 import { supabase } from './supabase';
 
 // Thin data layer mirroring the relevant parts of renderer/api.js (HuddleClient).
@@ -154,14 +155,8 @@ export async function getProfile(userId: string): Promise<Profile | null> {
   return (Array.isArray(data) ? data[0] : data) ?? null;
 }
 
-function randomId(): string {
-  const g = globalThis as { crypto?: { randomUUID?: () => string } };
-  if (g.crypto?.randomUUID) return g.crypto.randomUUID();
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 export async function uploadAttachment(userId: string, file: { uri: string; name: string; mime: string }): Promise<Attachment> {
-  const objectPath = `${userId}/${randomId()}/${file.name}`;
+  const objectPath = `${userId}/${Crypto.randomUUID()}/${file.name}`;
   const res = await fetch(file.uri);
   const blob = await res.blob();
   const { error } = await supabase.storage.from('uploads').upload(objectPath, blob, {
