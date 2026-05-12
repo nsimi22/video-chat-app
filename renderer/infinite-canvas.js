@@ -52,9 +52,23 @@
     return [sx + len * Math.cos(ang), sy + len * Math.sin(ang)];
   }
 
-  // Two-point shapes (straight line / arrow) carry exactly [start, end];
-  // pen/eraser strokes are open polylines of many points.
-  const isTwoPoint = (tool) => tool === 'line' || tool === 'arrow';
+  // Two-point tools carry exactly [start, end]: straight line, arrow, and
+  // the box-shapes (rect/ellipse/diamond). Pen/eraser strokes are open
+  // polylines of many points.
+  const SHAPE_TOOLS = new Set(['rect', 'ellipse', 'diamond']);
+  const TWO_POINT_TOOLS = new Set(['line', 'arrow', ...SHAPE_TOOLS]);
+  const isTwoPoint = (tool) => TWO_POINT_TOOLS.has(tool);
+  const isShape = (tool) => SHAPE_TOOLS.has(tool);
+
+  // Shift-constraint for a two-point drag: a box-shape becomes a perfect
+  // square/circle (equal width & height); a line/arrow snaps to 45°.
+  function constrainEnd(tool, sx, sy, px, py) {
+    if (isShape(tool)) {
+      const m = Math.max(Math.abs(px - sx), Math.abs(py - sy));
+      return [sx + (px < sx ? -m : m), sy + (py < sy ? -m : m)];
+    }
+    return snap45(sx, sy, px, py);
+  }
 
   class InfiniteCanvas {
     constructor({ tile, send, isOwner = true }) {
@@ -275,6 +289,35 @@
       this.ctx.lineJoin = 'round';
       this.ctx.strokeStyle = stroke.color || '#ff3b30';
       this.ctx.lineWidth = stroke.size || 4;
+      // Box-shapes: rect / ellipse / diamond, sized by the two opposite
+      // corners in `points`. Outline in the current colour + a faint fill
+      // of the same colour so they read as shapes, not just frames.
+      if (isShape(stroke.tool)) {
+        if (points.length < 2) return; // a click with no drag yet — nothing to draw
+        const a = points[0], b = points[points.length - 1];
+        const x = Math.min(a[0], b[0]), y = Math.min(a[1], b[1]);
+        const w = Math.abs(b[0] - a[0]), h = Math.abs(b[1] - a[1]);
+        this.ctx.globalCompositeOperation = 'source-over';
+        this.ctx.lineJoin = 'miter';
+        this.ctx.beginPath();
+        if (stroke.tool === 'rect') {
+          this.ctx.rect(x, y, w, h);
+        } else if (stroke.tool === 'ellipse') {
+          this.ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+        } else { // diamond
+          this.ctx.moveTo(x + w / 2, y);
+          this.ctx.lineTo(x + w, y + h / 2);
+          this.ctx.lineTo(x + w / 2, y + h);
+          this.ctx.lineTo(x, y + h / 2);
+          this.ctx.closePath();
+        }
+        this.ctx.globalAlpha = 0.12;
+        this.ctx.fillStyle = stroke.color || '#ff3b30';
+        this.ctx.fill();
+        this.ctx.globalAlpha = 1;
+        this.ctx.stroke();
+        return;
+      }
       if (stroke.tool === 'eraser') {
         // Eraser cuts through everything by drawing in
         // destination-out. The colour is irrelevant; the stroke
@@ -363,7 +406,7 @@
         const p = this._clientToWorld(e.clientX, e.clientY);
         if (isTwoPoint(this._currentStroke.tool)) {
           const s = this._currentStroke.points[0];
-          const end = e.shiftKey ? snap45(s[0], s[1], p.x, p.y) : [p.x, p.y];
+          const end = e.shiftKey ? constrainEnd(this._currentStroke.tool, s[0], s[1], p.x, p.y) : [p.x, p.y];
           this._currentStroke.points = [s, end];
           this._render();
           this.send?.({
@@ -393,7 +436,7 @@
         if (p) {
           if (lineish) {
             const s = this._currentStroke.points[0];
-            const fin = e.shiftKey ? snap45(s[0], s[1], p.x, p.y) : [p.x, p.y];
+            const fin = e.shiftKey ? constrainEnd(this._currentStroke.tool, s[0], s[1], p.x, p.y) : [p.x, p.y];
             this._currentStroke.points = [s, fin];
             this.send?.({
               action: 'end', uuid: this._currentStroke.uuid,
@@ -485,6 +528,26 @@
       const pts = stroke.points;
       if (!pts || !pts.length) return false;
       if (pts.length === 1) return Math.hypot(wx - pts[0][0], wy - pts[0][1]) <= r;
+      // Box-shapes are stored as just two opposite corners, so the
+      // polyline path is only their diagonal — hit-test the actual area
+      // (expanded by the nib) instead, otherwise they're nearly
+      // impossible to erase.
+      if (isShape(stroke.tool)) {
+        const a = pts[0], b = pts[pts.length - 1];
+        const x = Math.min(a[0], b[0]), y = Math.min(a[1], b[1]);
+        const w = Math.abs(b[0] - a[0]), h = Math.abs(b[1] - a[1]);
+        if (stroke.tool === 'rect') {
+          return wx >= x - r && wx <= x + w + r && wy >= y - r && wy <= y + h + r;
+        }
+        const rx = w / 2, ry = h / 2;
+        if (rx <= 0 || ry <= 0) return distToSeg(wx, wy, a[0], a[1], b[0], b[1]) <= r;
+        const dx = wx - (x + rx), dy = wy - (y + ry);
+        if (stroke.tool === 'ellipse') {
+          return (dx * dx) / ((rx + r) * (rx + r)) + (dy * dy) / ((ry + r) * (ry + r)) <= 1;
+        }
+        // diamond — point inside the (expanded) rhombus, L1 norm
+        return Math.abs(dx) / (rx + r) + Math.abs(dy) / (ry + r) <= 1;
+      }
       for (let i = 1; i < pts.length; i++) {
         if (distToSeg(wx, wy, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]) <= r) return true;
       }
