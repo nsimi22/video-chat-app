@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "Huddle",
+    "slug": "huddle",
+    "scheme": "huddle",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "com.huddle.app",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Huddle uses your camera for video calls.",
+        "NSMicrophoneUsageDescription": "Huddle uses your microphone for calls.",
+        "UIBackgroundModes": ["audio", "voip"]
+      }
+    },
+    "android": {
+      "package": "com.huddle.app",
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS",
+        "POST_NOTIFICATIONS"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "@livekit/react-native",
+      [
+        "expo-camera",
+        { "cameraPermission": "Huddle uses your camera for video calls." }
+      ],
+      "expo-notifications"
+    ],
+    "extra": {
+      "supabaseUrl": "https://jwqvrdgjpftjiwvgdrck.supabase.co",
+      "supabaseAnonKey": "sb_publishable_5eJWwJEHWHSLuhFEs2iUlw_tu4fGOvn",
+      "eas": { "projectId": "" }
+    }
+  }
+}
