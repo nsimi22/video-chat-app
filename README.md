@@ -83,11 +83,13 @@ shared with teammates.
     `anthropic/claude-opus-4-7` via OpenRouter — both overridable in
     Settings). The team sees a single message containing your question
     above the AI's response, rendered with a robot avatar and a *via
-    @you* footer.
-  - **`/ai-ticket <prompt>`** is the Jira-aware variant: when Jira (and
-    optionally GitHub) are configured it can read a ticket, pull in the
-    linked repo's context, and comment on / update / transition the
-    ticket on your behalf.
+    @you* footer. When Jira is configured it can also read, comment on,
+    update, or transition a ticket you name.
+  - **`/ai-ticket <description>`** turns a freeform description into a
+    well-structured Jira ticket and files it in your default project. If
+    a GitHub repo is wired up for the project, it first grounds itself in
+    the actual code (searching files, reading them, scanning issues +
+    recent commits) and cites file paths in the ticket body.
   - **`/summarize`** asks the AI for a recap — the last 100 messages of
     the current channel or thread, or the live transcript when you're on
     a call.
@@ -212,8 +214,9 @@ renderer/
                        connections; camera + screen streams + perfect-
                        negotiation signaling.
   ai.js, ai-tools.js   AI provider client (Claude / OpenRouter via the main-
-                       process proxy) and the Jira/GitHub tool definitions
-                       for /ai-ticket.
+                       process proxy) and the Jira tool definitions wired
+                       into /ai. (The /ai-ticket GitHub repo tools are
+                       defined in chat.js alongside that command.)
   jira.js, github.js   Atlassian + GitHub REST clients for unfurls, /jira,
                        /gh, and ticket creation/updates.
   chat.js              ChatView: channel/thread rendering, markdown,
