@@ -76,13 +76,19 @@
       const toolUses = [];
       const convo = messages.slice();
       for (let i = 0; i < maxIterations; i++) {
+        // On the last allowed round, force a text answer instead of
+        // failing the request: keep the tools *declared* (the API wants
+        // every tool referenced in the history to stay defined) but set
+        // tool_choice:none so the model can't ask for yet another call —
+        // it has to answer with whatever it's already gathered.
+        const lastRound = i === maxIterations - 1;
         const body = {
           model,
           max_tokens: 16000,
           thinking: { type: 'adaptive' },
           messages: convo,
           ...(system ? { system } : {}),
-          ...(apiTools ? { tools: apiTools } : {}),
+          ...(apiTools ? { tools: apiTools, ...(lastRound ? { tool_choice: { type: 'none' } } : {}) } : {}),
         };
         const res = await window.huddle.fetchProxy({
           url: 'https://api.anthropic.com/v1/messages',
@@ -107,7 +113,7 @@
         // these via stop_reason, but checking for tool_use blocks is
         // equivalent and avoids depending on the literal value.
         const toolBlocks = blocks.filter((b) => b.type === 'tool_use');
-        if (!apiTools || toolBlocks.length === 0) {
+        if (!apiTools || lastRound || toolBlocks.length === 0) {
           const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
           return { text, model, usage, toolUses };
         }
@@ -137,8 +143,8 @@
         }
         convo.push({ role: 'user', content: results });
       }
-      // Hit the iteration cap — surface what we have rather than silently
-      // dropping the run. Caller can decide whether to retry or escalate.
+      // Unreachable for maxIterations >= 1 (the final round forces a text
+      // answer and so always returns); kept as a guard against a 0/neg cap.
       throw new Error(`AI tool-use loop exceeded ${maxIterations} iterations`);
     }
 
@@ -155,7 +161,12 @@
       const toolUses = [];
       const convo = system ? [{ role: 'system', content: system }, ...messages] : messages.slice();
       for (let i = 0; i < maxIterations; i++) {
-        const body = { model, messages: convo, ...(apiTools ? { tools: apiTools } : {}) };
+        // Last allowed round: keep tools declared but tool_choice:'none'
+        // so the model must answer rather than ask for another call —
+        // avoids both a hard failure and the "tool_calls in history but
+        // no tools defined" error some providers raise (see _anthropicChat).
+        const lastRound = i === maxIterations - 1;
+        const body = { model, messages: convo, ...(apiTools ? { tools: apiTools, ...(lastRound ? { tool_choice: 'none' } : {}) } : {}) };
         const res = await window.huddle.fetchProxy({
           url: 'https://openrouter.ai/api/v1/chat/completions',
           method: 'POST',
@@ -180,7 +191,7 @@
         }
         const message = json.choices?.[0]?.message || {};
         const calls = message.tool_calls || [];
-        if (!apiTools || calls.length === 0) {
+        if (!apiTools || lastRound || calls.length === 0) {
           return { text: message.content || '', model, usage, toolUses };
         }
         // Echo the assistant's tool_calls back so the next request has
@@ -208,6 +219,7 @@
           convo.push({ role: 'tool', tool_call_id: call.id, content: resultText });
         }
       }
+      // Unreachable for maxIterations >= 1 (see _anthropicChat).
       throw new Error(`AI tool-use loop exceeded ${maxIterations} iterations`);
     }
 
