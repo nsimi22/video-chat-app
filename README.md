@@ -2,25 +2,35 @@
 
 A self-contained Electron desktop app that combines:
 
-- **Magic-link sign-in** — every teammate signs in with their email and a
-  6-digit code. Real per-user identity; no shared passwords.
+- **Email-code sign-in** — every teammate signs in with their email and a
+  6-digit code; real per-user identity. A password can optionally be set
+  (and changed) afterward for a faster return login.
 - **Teams (workspaces)** — each user joins one or more teams. People in
   different teams can't see each other's chat, presence, or screen
   shares. Joining an unknown team auto-creates it.
 - **Video chat** over WebRTC (camera + microphone, full mesh).
+- **Live call transcription** — opt-in captions powered by the browser's
+  built-in speech-to-text; every peer's lines merge into one shared
+  transcript panel, and **`/summarize`** during a call asks the AI for a
+  recap (key points, decisions, action items).
 - **Multi-screen sharing** — share more than one screen or window at the
   same time. Each share appears as its own tile for everyone in the
   team.
-- **Live drawing on shared screens** — pen, arrow, eraser. Strokes are
-  broadcast in real time on a per-screen Realtime channel and align
-  for every viewer (resolution-independent).
+- **Live drawing on shared screens** — pen, line, arrow, shapes, and an
+  eraser. Strokes are broadcast in real time on a per-screen Realtime
+  channel and align for every viewer (resolution-independent); screen
+  annotations are ephemeral.
 - **Collaborative whiteboard per channel** — click 🎨 in the chat
-  header to open a blank canvas anyone in the channel can draw on
-  together. Live strokes ride the same broadcast pipe; completed
-  strokes are persisted as polylines in Postgres so the canvas
-  survives reloads and latecomers replay the full board on open.
-  Open as many as you want at once — each channel gets its own
-  whiteboard.
+  header to open a blank infinite canvas anyone in the channel can draw
+  on together. Tools: pen, straight line + arrow (hold Shift to snap to
+  45°), rectangle / ellipse / diamond shapes (Shift = perfect
+  square/circle), an **object eraser** that deletes whole strokes its
+  nib passes over, and a **select tool** to click a stroke, drag it to a
+  new spot, or hit Delete to remove it — all changes broadcast live and
+  persisted. Live strokes ride the broadcast pipe; completed strokes are
+  saved as polylines in Postgres so the canvas survives reloads and
+  latecomers replay the full board on open. Open as many as you want at
+  once — each channel gets its own whiteboard.
 - **Slack-style chat** — public + private channels, direct messages,
   threaded replies, emoji reactions, an emoji picker (with
   `:shortcode:` autoreplace on send), and a typing indicator.
@@ -67,14 +77,22 @@ shared with teammates.
     Picks project, issue type, summary, description; optionally posts
     the new ticket back to the channel.
 - **AI assistant** (Claude or OpenRouter)
-  - **`/ai <prompt>`** posts an answer from your chosen provider (default
+  - **`/ai <prompt>`** is the general-purpose assistant — ask it
+    anything. It posts an answer from your chosen provider (default
     model: `claude-opus-4-7` for Anthropic direct,
     `anthropic/claude-opus-4-7` via OpenRouter — both overridable in
     Settings). The team sees a single message containing your question
     above the AI's response, rendered with a robot avatar and a *via
-    @you* footer.
-  - **`/summarize`** asks the AI to summarize the last 100 messages of
-    the current channel or thread.
+    @you* footer. When Jira is configured it can also read, comment on,
+    update, or transition a ticket you name.
+  - **`/ai-ticket <description>`** turns a freeform description into a
+    well-structured Jira ticket and files it in your default project. If
+    a GitHub repo is wired up for the project, it first grounds itself in
+    the actual code (searching files, reading them, scanning issues +
+    recent commits) and cites file paths in the ticket body.
+  - **`/summarize`** asks the AI for a recap — the last 100 messages of
+    the current channel or thread, or the live transcript when you're on
+    a call.
   - Anthropic calls use **adaptive thinking** (the model decides how
     much to think per request).
   - All AI traffic is routed through the Electron main process so the
@@ -178,20 +196,36 @@ renderer/
   styles.css           Slack-ish dark theme.
   emojis.js            Curated emoji set + shortcode replacement.
   markdown.js          Tiny markdown renderer (bold/italic/code/links/mentions).
+  icons.js             Inline SVG icon set used across the UI.
   drawing.js           Per-screen DrawingLayer (canvas overlay, normalized
-                       coordinates).
+                       coordinates) for ephemeral screen annotations.
+  infinite-canvas.js   InfiniteCanvas: the pannable/zoomable whiteboard
+                       surface — pen/line/arrow/shape tools, object eraser,
+                       select-move-delete, incremental + full re-render.
+  whiteboard.js        WhiteboardSession: wires a channel's whiteboard to
+                       Realtime broadcast + Postgres persistence (replay,
+                       undo, erase, move) and the sticky-note layer.
+  transcript.js        TranscriptManager: continuous browser speech-to-text
+                       for live call captions.
   api.js               HuddleClient: Supabase Auth, Realtime channels for
-                       signaling/presence/typing, Postgres reads/writes for
-                       chat, Storage uploads.
+                       signaling/presence/typing/drawing, Postgres reads/
+                       writes for chat + whiteboard strokes, Storage uploads.
   webrtc.js            MeshClient: wraps a HuddleClient with WebRTC peer
                        connections; camera + screen streams + perfect-
                        negotiation signaling.
+  ai.js, ai-tools.js   AI provider client (Claude / OpenRouter via the main-
+                       process proxy) and the Jira tool definitions wired
+                       into /ai. (The /ai-ticket GitHub repo tools are
+                       defined in chat.js alongside that command.)
+  jira.js, github.js   Atlassian + GitHub REST clients for unfurls, /jira,
+                       /gh, and ticket creation/updates.
   chat.js              ChatView: channel/thread rendering, markdown,
                        reactions, edit/delete, attachments, GIF picker,
-                       history pagination.
+                       slash commands, history pagination.
+  profile-card.js      Hover/click user profile cards.
   app.js               Orchestrator: auth state machine, team picker,
-                       sidebar/tiles/notifications/search, integrates the
-                       drawing toolbar.
+                       sidebar/tiles/notifications/search, call transcription,
+                       integrates the drawing + whiteboard toolbars.
 ```
 
 ## Notes / limitations
@@ -219,7 +253,7 @@ Release whose tag matches the one you pushed.
 
 ```bash
 # Bump version in package.json, commit, then:
-git tag v0.3.0
+git tag v0.17.0
 git push --tags
 ```
 
