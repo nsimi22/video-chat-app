@@ -7,10 +7,15 @@ import { supabase } from '@/lib/supabase';
 import { Avatar } from '@/components/ui';
 import { colors, space } from '@/theme';
 
+// DM channel ids look like `dm:<a>::<b>` with the two user uuids sorted
+// (see renderer/api.js openDm). Return the *other* participant's uuid.
+function dmPeerId(channelId: string, me: string | null): string | null {
+  return channelId.replace(/^dm:/, '').split('::').find((x) => x && x !== me) ?? null;
+}
+
 function channelLabel(c: Channel, profiles: Profile[], me: string | null): string {
   if (c.type === 'dm') {
-    // DM channel id is the sorted pair of user uuids joined by ':'
-    const other = c.id.split(':').find((x) => x !== me);
+    const other = dmPeerId(c.id, me);
     return profiles.find((p) => p.user_id === other)?.name ?? 'Direct message';
   }
   return `# ${c.name}`;
@@ -68,7 +73,7 @@ export default function ChannelsScreen() {
       refreshControl={<RefreshControl tintColor={colors.accent} refreshing={false} onRefresh={load} />}
       renderItem={({ item }) => {
         const dm = item.type === 'dm';
-        const other = dm ? item.id.split(':').find((x) => x !== userId) : null;
+        const other = dm ? dmPeerId(item.id, userId) : null;
         const otherProfile = other ? profiles.find((p) => p.user_id === other) : null;
         return (
           <TouchableOpacity
@@ -76,7 +81,7 @@ export default function ChannelsScreen() {
             style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: space(4), paddingVertical: space(3.5), borderBottomWidth: 1, borderBottomColor: colors.border }}
           >
             {dm ? (
-              <Avatar name={otherProfile?.name ?? '?'} color={otherProfile?.color} size={30} />
+              <Avatar name={otherProfile?.name ?? '?'} color={otherProfile?.color} size={30} uri={otherProfile?.avatar_url} />
             ) : (
               <Text style={{ color: colors.textDim, fontSize: 18, width: 30, textAlign: 'center' }}>
                 {item.type === 'private' ? '🔒' : '#'}

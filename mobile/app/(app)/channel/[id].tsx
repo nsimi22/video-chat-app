@@ -46,15 +46,17 @@ export default function ChannelScreen() {
   const listRef = useRef<FlatList<Message>>(null);
   const teamChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const lastTypingSent = useRef(0);
+  const lastTailId = useRef<string | null>(null);
 
   useEffect(() => {
     if (teamId) listTeamProfiles(teamId).then(setRoster).catch(() => {});
   }, [teamId]);
 
   // Typing indicator over the team:<id> broadcast topic (same as desktop).
+  // The topic is RLS-gated, so the channel must be marked `private`.
   useEffect(() => {
     if (!teamId) return;
-    const ch = supabase.channel(teamTopic(teamId), { config: { broadcast: { self: false } } });
+    const ch = supabase.channel(teamTopic(teamId), { config: { broadcast: { self: false }, private: true } });
     ch.on('broadcast', { event: 'typing' }, ({ payload }) => {
       if (!payload || payload.channelId !== String(channelId) || payload.from === userId) return;
       setTypingNames((prev) => Array.from(new Set([...prev, payload.name])));
@@ -158,8 +160,16 @@ export default function ChannelScreen() {
           data={messages}
           keyExtractor={(m) => m.id}
           contentContainerStyle={{ paddingVertical: space(3) }}
-          onEndReachedThreshold={0.1}
-          onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
+          onContentSizeChange={() => {
+            // Stick to the bottom on initial load and when a new message
+            // arrives at the tail — but NOT when older messages are prepended
+            // (that doesn't change the last id), so "Load earlier" doesn't yank.
+            const tail = messages[messages.length - 1]?.id ?? null;
+            if (tail !== lastTailId.current) {
+              lastTailId.current = tail;
+              listRef.current?.scrollToEnd({ animated: false });
+            }
+          }}
           ListHeaderComponent={
             hasMore ? (
               <TouchableOpacity onPress={loadOlder} style={{ padding: space(3), alignItems: 'center' }}>

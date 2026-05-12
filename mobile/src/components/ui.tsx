@@ -4,6 +4,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  Image,
   StyleSheet,
   ActivityIndicator,
   type TextInputProps,
@@ -75,18 +76,20 @@ export function Avatar({ name, color, size = 36, uri }: { name: string; color?: 
     .slice(0, 2)
     .map((w) => w[0]?.toUpperCase())
     .join('');
+  const box = {
+    width: size,
+    height: size,
+    borderRadius: size / 2,
+    backgroundColor: color || colors.surfaceAlt,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
+    overflow: 'hidden' as const,
+  };
+  if (uri) {
+    return <Image source={{ uri }} style={box} />;
+  }
   return (
-    <View
-      style={{
-        width: size,
-        height: size,
-        borderRadius: size / 2,
-        backgroundColor: color || colors.surfaceAlt,
-        alignItems: 'center',
-        justifyContent: 'center',
-        overflow: 'hidden',
-      }}
-    >
+    <View style={box}>
       <Text style={{ color: '#fff', fontWeight: '600', fontSize: size * 0.4 }}>{initials}</Text>
     </View>
   );

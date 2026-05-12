@@ -1,4 +1,5 @@
 import * as Crypto from 'expo-crypto';
+import * as FileSystem from 'expo-file-system';
 import { supabase } from './supabase';
 
 // Thin data layer mirroring the relevant parts of renderer/api.js (HuddleClient).
@@ -155,17 +156,29 @@ export async function getProfile(userId: string): Promise<Profile | null> {
   return (Array.isArray(data) ? data[0] : data) ?? null;
 }
 
+function base64ToBytes(b64: string): Uint8Array {
+  // atob is available on Hermes (RN >= 0.74) but isn't in React Native's TS lib.
+  const bin = (globalThis as unknown as { atob: (s: string) => string }).atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+// Reading the local file as base64 → ArrayBuffer is the reliable way to upload
+// from React Native; `fetch(uri).blob()` is known to produce 0-byte uploads for
+// some content:// URIs on Android.
 export async function uploadAttachment(userId: string, file: { uri: string; name: string; mime: string }): Promise<Attachment> {
-  const objectPath = `${userId}/${Crypto.randomUUID()}/${file.name}`;
-  const res = await fetch(file.uri);
-  const blob = await res.blob();
-  const { error } = await supabase.storage.from('uploads').upload(objectPath, blob, {
+  const safeName = file.name.replace(/[^\w.\-]+/g, '_') || 'file';
+  const objectPath = `${userId}/${Crypto.randomUUID()}/${safeName}`;
+  const b64 = await FileSystem.readAsStringAsync(file.uri, { encoding: FileSystem.EncodingType.Base64 });
+  const bytes = base64ToBytes(b64);
+  const { error } = await supabase.storage.from('uploads').upload(objectPath, bytes, {
     contentType: file.mime,
     upsert: false,
   });
   if (error) throw error;
   const { data } = supabase.storage.from('uploads').getPublicUrl(objectPath);
-  return { url: data.publicUrl, name: file.name, size: blob.size, type: file.mime };
+  return { url: data.publicUrl, name: file.name, size: bytes.byteLength, type: file.mime };
 }
 
 // Client-side @mention extraction, same approach as the desktop renderer:

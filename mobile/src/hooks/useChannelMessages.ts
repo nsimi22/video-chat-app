@@ -3,8 +3,9 @@ import { supabase } from '@/lib/supabase';
 import { fetchMessages, type Message } from '@/lib/api';
 
 // Loads paginated message history for a channel and keeps it live via a
-// postgres_changes subscription on public.messages (INSERT/UPDATE/DELETE),
-// scoped to the channel. Mirrors the desktop renderer's chat subscription.
+// postgres_changes subscription on public.messages. Channel `id` is only unique
+// per team (composite PK), so — like the desktop renderer — we subscribe with a
+// team_id filter and narrow to this channel client-side.
 export function useChannelMessages(teamId: string, channelId: string) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,22 +28,24 @@ export function useChannelMessages(teamId: string, channelId: string) {
     });
 
     const channel = supabase
-      .channel(`db:messages:${channelId}`)
+      .channel(`db:messages:${teamId}:${channelId}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'messages', filter: `channel_id=eq.${channelId}` },
+        { event: '*', schema: 'public', table: 'messages', filter: `team_id=eq.${teamId}` },
         (payload) => {
           if (!active) return;
           if (payload.eventType === 'INSERT') {
             const m = payload.new as Message;
-            if (m.parent_id) return; // thread replies handled in the thread view
+            if (m.channel_id !== channelId || m.parent_id) return; // other channel / thread reply
             setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
           } else if (payload.eventType === 'UPDATE') {
             const m = payload.new as Message;
+            if (m.channel_id !== channelId) return;
             setMessages((prev) => prev.map((x) => (x.id === m.id ? m : x)));
           } else if (payload.eventType === 'DELETE') {
-            const id = (payload.old as { id: string }).id;
-            setMessages((prev) => prev.filter((x) => x.id !== id));
+            const old = payload.old as { id: string; channel_id?: string };
+            // DELETE payloads only carry replica-identity columns; id is the PK.
+            setMessages((prev) => prev.filter((x) => x.id !== old.id));
           }
         },
       )
