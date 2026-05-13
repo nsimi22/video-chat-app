@@ -89,7 +89,7 @@ export default function EmailScreen() {
       <H1>Sign in to Huddle</H1>
       <P>
         {mode === 'otp'
-          ? "We'll email you a 6-digit code."
+          ? "We'll email you an 8-digit code."
           : 'Use a password if you’ve set one, or create an account.'}
       </P>
       <Field

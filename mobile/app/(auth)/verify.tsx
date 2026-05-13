@@ -11,8 +11,8 @@ export default function VerifyScreen() {
 
   const submit = async () => {
     const token = code.trim();
-    if (token.length < 6) {
-      Alert.alert('Enter the 6-digit code');
+    if (!token) {
+      Alert.alert('Enter your verification code');
       return;
     }
     setBusy(true);
@@ -37,14 +37,13 @@ export default function VerifyScreen() {
       <H1>Enter your code</H1>
       <P>Sent to {String(email)}.</P>
       <Field
-        placeholder="123456"
+        placeholder="12345678"
         keyboardType="number-pad"
-        maxLength={6}
         value={code}
         onChangeText={setCode}
         onSubmitEditing={submit}
       />
-      <Button title="Verify" onPress={submit} loading={busy} disabled={code.length < 6} />
+      <Button title="Verify" onPress={submit} loading={busy} disabled={!code.trim()} />
     </Screen>
   );
 }
