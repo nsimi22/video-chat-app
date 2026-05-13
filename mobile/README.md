@@ -61,6 +61,21 @@ the desktop default). Override per build if you self-host.
    `x-webhook-secret: <NOTIFY_WEBHOOK_SECRET>` header (the function is deployed
    without JWT verification, so this header is its only auth).
 
+## Branding assets
+
+The login screen, splash background and primary colour are wired up
+already (the three-circle Huddle mark on the auth screens is rendered
+from `<Logo />` in `src/components/ui.tsx`, no PNG needed). What's still
+missing for store-quality builds:
+
+- `assets/icon.png` — 1024×1024 app icon. Reference it as `"icon": "./assets/icon.png"` under `expo` in `app.json`.
+- `assets/adaptive-icon.png` — 1024×1024 foreground for Android. Reference
+  it as `"android.adaptiveIcon": { "foregroundImage": "./assets/adaptive-icon.png", "backgroundColor": "#0b0b0d" }`.
+- `assets/splash.png` — wordmark for the splash screen (Expo centers it on the configured `backgroundColor`). Reference as `"splash.image": "./assets/splash.png"`.
+
+Until those are added, Expo falls back to its default icon and a solid
+`#0b0b0d` splash.
+
 ## Builds / release
 
 ```bash

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Alert } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { supabase } from '@/lib/supabase';
-import { Button, Field, H1, P, Screen } from '@/components/ui';
+import { Brand, Button, Field, H1, P, Screen } from '@/components/ui';
 
 export default function VerifyScreen() {
   const { email } = useLocalSearchParams<{ email: string }>();
@@ -33,6 +33,7 @@ export default function VerifyScreen() {
 
   return (
     <Screen>
+      <Brand />
       <H1>Enter your code</H1>
       <P>Sent to {String(email)}.</P>
       <Field

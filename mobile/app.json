@@ -7,9 +7,16 @@
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
+    "backgroundColor": "#0b0b0d",
+    "primaryColor": "#5b8cff",
+    "splash": {
+      "backgroundColor": "#0b0b0d",
+      "resizeMode": "contain"
+    },
     "ios": {
       "bundleIdentifier": "com.huddle.app",
       "supportsTablet": true,
+      "backgroundColor": "#0b0b0d",
       "infoPlist": {
         "NSCameraUsageDescription": "Huddle uses your camera for video calls.",
         "NSMicrophoneUsageDescription": "Huddle uses your microphone for calls.",
@@ -18,6 +25,7 @@
     },
     "android": {
       "package": "com.huddle.app",
+      "backgroundColor": "#0b0b0d",
       "permissions": [
         "CAMERA",
         "RECORD_AUDIO",
