@@ -1145,10 +1145,10 @@
       await this._assertTeamMembers(ids);
       const want = new Set([this.peerId, ...ids]);
 
-      // Dedup against existing DM channels we belong to.
-      const { data: mine } = await this.supabase
-        .from('channel_members').select('channel_id').eq('team_id', this.team.id).eq('user_id', this.peerId);
-      const myChannelIds = [...new Set((mine || []).map((r) => r.channel_id))];
+      // Dedup against existing DM channels we belong to. `_myChannelIds` is
+      // kept current on welcome + via the realtime stream, so we can use it
+      // directly instead of re-querying our channel_members rows.
+      const myChannelIds = [...this._myChannelIds];
       if (myChannelIds.length) {
         const { data: allRows } = await this.supabase
           .from('channel_members').select('channel_id,user_id').eq('team_id', this.team.id).in('channel_id', myChannelIds);
@@ -1187,9 +1187,12 @@
       if (chErr) throw chErr;
       // The trigger added us; add the rest. We're the creator, so the existing
       // channel_members insert_self policy (created_by branch) permits this.
+      // .insert() is atomic — a single failed row aborts the batch and leaves
+      // the channel half-populated, so don't mask any error (incl. 23505,
+      // which shouldn't happen at all for a freshly-minted gdm:<uuid>).
       const rows = ids.map((uid) => ({ team_id: this.team.id, channel_id: id, user_id: uid }));
       const { error: memErr } = await this.supabase.from('channel_members').insert(rows);
-      if (memErr && memErr.code !== '23505') throw memErr;
+      if (memErr) throw memErr;
       this._myChannelIds.add(id);
       const allIds = [this.peerId, ...ids];
       return {

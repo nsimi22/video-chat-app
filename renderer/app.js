@@ -2044,6 +2044,13 @@ function consumePendingInviteHop() {
 }
 
 function appendChannelToSidebar(channel, makeActive) {
+  // Preserve membership info we may already have: a realtime `channels` INSERT
+  // echo doesn't carry memberIds/members, so blindly overwriting would clobber
+  // the richer meta we just got back from createDm/createGroupDm.
+  const prev = state.channelMeta.get(channel.id);
+  if (prev && !channel.memberIds && prev.memberIds) {
+    channel = { ...channel, memberIds: prev.memberIds, members: prev.members };
+  }
   state.channelMeta.set(channel.id, channel);
   const isDm = channel.type === 'dm';
   const list = isDm ? els.dms : els.channels;
