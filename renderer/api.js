@@ -96,6 +96,7 @@
       this._whiteboardChannels = new Map(); // whiteboardId -> RealtimeChannel
       this._dbChannel = null;               // postgres_changes subscription
       this._myChannelIds = new Set();       // channel ids we have a membership row in (private + dm)
+      this._memberRefreshTimers = new Map(); // channelId -> debounce timer, coalescing realtime member-change events
       // Per-channel call topic (call:<team>:<channel>). Only one active
       // call at a time. Presence on this channel drives WebRTC
       // peer-joined/peer-left events.
@@ -182,6 +183,9 @@
       this._whiteboardChannels.clear();
       this._lurkers.clear();
       this._lurkerCounts.clear();
+      for (const t of this._memberRefreshTimers.values()) clearTimeout(t);
+      this._memberRefreshTimers.clear();
+      this._myChannelIds.clear();
       this.roster.clear();
     }
 
@@ -550,10 +554,9 @@
             return;
           }
           // Someone else joined a channel we're in (e.g. a group DM grew) —
-          // refresh its member list so labels stay current.
-          if (!this._myChannelIds.has(p.new.channel_id)) return;
-          const { memberIds, members } = await this._fetchChannelMembers(p.new.channel_id);
-          this.dispatchEvent(new CustomEvent('chat-channel-updated', { detail: { channelId: p.new.channel_id, memberIds, members } }));
+          // refresh its member list so labels stay current. Debounced so a
+          // bulk add (several rows in quick succession) is one refetch.
+          this._scheduleMemberRefresh(p.new.channel_id);
         });
       ch.on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'channel_members', filter: teamFilter },
         async (p) => {
@@ -564,10 +567,9 @@
             this.dispatchEvent(new CustomEvent('chat-channel-removed', { detail: { channelId: p.old.channel_id } }));
             return;
           }
-          // Someone else left a channel we're in — refresh its member list.
-          if (!this._myChannelIds.has(p.old.channel_id)) return;
-          const { memberIds, members } = await this._fetchChannelMembers(p.old.channel_id);
-          this.dispatchEvent(new CustomEvent('chat-channel-updated', { detail: { channelId: p.old.channel_id, memberIds, members } }));
+          // Someone else left a channel we're in — refresh its member list
+          // (debounced, same as the join path).
+          this._scheduleMemberRefresh(p.old.channel_id);
         });
       // Saved-messages mutations. RLS on saved_messages restricts the
       // payload to the caller's own rows so we don't need an auth-side
@@ -617,6 +619,22 @@
           this._myChannelIds.add(c.id);
         }
       }
+    }
+
+    // Coalesce a burst of channel_members changes for one channel (e.g. several
+    // people added at once each emit their own realtime row) into a single
+    // member-list refetch + 'chat-channel-updated'.
+    _scheduleMemberRefresh(channelId) {
+      if (!this._myChannelIds.has(channelId)) return;
+      clearTimeout(this._memberRefreshTimers.get(channelId));
+      this._memberRefreshTimers.set(channelId, setTimeout(async () => {
+        this._memberRefreshTimers.delete(channelId);
+        if (!this._myChannelIds.has(channelId)) return;
+        try {
+          const { memberIds, members } = await this._fetchChannelMembers(channelId);
+          this.dispatchEvent(new CustomEvent('chat-channel-updated', { detail: { channelId, memberIds, members } }));
+        } catch { /* a transient read failure self-heals on the next change */ }
+      }, 200));
     }
 
     // Member ids + display names for one channel, in a stable order.
