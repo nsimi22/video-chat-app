@@ -30,16 +30,23 @@ export default function ChannelsScreen() {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     if (!activeTeam) return;
-    const [ch, pr] = await Promise.all([listChannels(activeTeam.id), listTeamProfiles(activeTeam.id)]);
-    setChannels(ch);
-    setProfiles(pr);
-    setLoading(false);
+    setRefreshing(true);
+    try {
+      const [ch, pr] = await Promise.all([listChannels(activeTeam.id), listTeamProfiles(activeTeam.id)]);
+      setChannels(ch);
+      setProfiles(pr);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, [activeTeam]);
 
-  useEffect(() => { load(); }, [load]);
+  // useFocusEffect fires on first focus too, so it doubles as the initial
+  // load — no separate useEffect needed.
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   // Live channel list (new channels, renames, archive).
@@ -84,7 +91,7 @@ export default function ChannelsScreen() {
       <SectionList
         sections={sections}
         keyExtractor={(c) => `${c.team_id}/${c.id}`}
-        refreshControl={<RefreshControl tintColor={colors.accent} refreshing={false} onRefresh={load} />}
+        refreshControl={<RefreshControl tintColor={colors.accent} refreshing={refreshing} onRefresh={load} />}
         stickySectionHeadersEnabled={false}
         renderSectionHeader={({ section: { title } }) => (
           <Text style={{ color: colors.textDim, fontSize: 12, fontWeight: '600', letterSpacing: 0.5, textTransform: 'uppercase', paddingHorizontal: space(4), paddingTop: space(4), paddingBottom: space(2) }}>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Alert, FlatList, RefreshControl, Text, TouchableOpacity, View, ActivityIndicator } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { listTeamProfiles, openDm, type Profile } from '@/lib/api';
@@ -13,15 +13,21 @@ export default function PeopleScreen() {
   const { activeTeam, userId } = useAuth();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     if (!activeTeam) return;
-    const pr = await listTeamProfiles(activeTeam.id);
-    setProfiles(pr);
-    setLoading(false);
+    setRefreshing(true);
+    try {
+      const pr = await listTeamProfiles(activeTeam.id);
+      setProfiles(pr);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, [activeTeam]);
 
-  useEffect(() => { load(); }, [load]);
+  // useFocusEffect fires on first focus too, so it doubles as the initial load.
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   if (loading) {
@@ -39,7 +45,7 @@ export default function PeopleScreen() {
       style={{ flex: 1, backgroundColor: colors.bg }}
       data={others}
       keyExtractor={(p) => p.user_id}
-      refreshControl={<RefreshControl tintColor={colors.accent} refreshing={false} onRefresh={load} />}
+      refreshControl={<RefreshControl tintColor={colors.accent} refreshing={refreshing} onRefresh={load} />}
       ListEmptyComponent={
         <View style={{ padding: space(6), alignItems: 'center' }}>
           <Text style={{ color: colors.textDim, fontSize: 14 }}>You're the only one on this team so far.</Text>

@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   Linking,
+  Platform,
   Text,
   TextInput,
   TouchableOpacity,
@@ -11,6 +12,8 @@ import {
   type TextInputProps,
   type TextStyle,
 } from 'react-native';
+
+const MONO_FONT = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, radius, space } from '@/theme';
 
@@ -174,7 +177,7 @@ function renderInline(text: string, prefix: string): React.ReactNode[] {
       out.push(<Text key={`${prefix}i${i++}`} style={{ fontStyle: 'italic' }}>{tok.slice(1, -1)}</Text>);
     } else if (tok.startsWith('`')) {
       out.push(
-        <Text key={`${prefix}c${i++}`} style={{ fontFamily: 'Menlo', backgroundColor: colors.surfaceAlt }}>
+        <Text key={`${prefix}c${i++}`} style={{ fontFamily: MONO_FONT, backgroundColor: colors.surfaceAlt }}>
           {' '}{tok.slice(1, -1)}{' '}
         </Text>,
       );
