@@ -257,9 +257,13 @@ class ChatView {
     this._mentionOpen = false;
     this._mentionFiltered = [];
     this._mentionIndex = 0;
-    // name-lowercased -> { name, color } for everyone who has authored a
-    // loaded message. Built incrementally (see _noteMentionAuthor) so the
-    // mention popup never re-scans the whole message history per keystroke.
+    // author key -> { name, color } for everyone who has authored a
+    // loaded message. Keyed by user_id when known so a renamed user
+    // doesn't show up under both their old and new display names;
+    // falls back to `name:<lower>` for AI/system messages without an
+    // author_id. Built incrementally (see _noteMentionAuthor) so the
+    // mention popup never re-scans the whole message history per
+    // keystroke.
     this._mentionDirectory = new Map();
     // Debounced draft persistence — see _scheduleDraftSave.
     this._draftSaveTimer = null;
@@ -331,7 +335,7 @@ class ChatView {
     const ids = new Set(existing.map((m) => m.id));
     const merged = existing.slice();
     for (const m of incoming) if (!ids.has(m.id)) merged.unshift(m);
-    for (const m of incoming) this._noteMentionAuthor(m.authorName, m.authorColor);
+    for (const m of incoming) this._noteMentionAuthor(m.authorName, m.authorColor, m.authorId);
     merged.sort((a, b) => a.ts - b.ts);
     this.byChannel.set(channelId, merged);
     const oldest = merged.length ? merged[0].ts : null;
@@ -464,7 +468,7 @@ class ChatView {
       } else {
         this.byChannel.set(m.channelId, [m]);
       }
-      this._noteMentionAuthor(m.authorName, m.authorColor);
+      this._noteMentionAuthor(m.authorName, m.authorColor, m.authorId);
       if (m.channelId === this.currentChannel) this._appendIncremental(m);
       this.hooks.onMessage?.(m);
     });
@@ -638,32 +642,37 @@ class ChatView {
 
   // --- @-mention autocomplete ---------------------------------------------
 
-  // Record a message author in the mention directory (first colour wins;
-  // colours are stable per user so it doesn't matter much). Called from
-  // history ingest + the live chat-message handler so _mentionCandidates
-  // never has to walk the message arrays.
-  _noteMentionAuthor(name, color) {
+  // Record a message author in the mention directory. Keyed by
+  // authorId when present so a renamed user collapses to one entry;
+  // latest write wins so the directory reflects the most recent name
+  // we've seen for that user. Falls back to `name:<lower>` for
+  // AI/system messages without an author_id.
+  _noteMentionAuthor(name, color, authorId) {
     const n = (name || '').trim();
     if (!n) return;
-    const k = n.toLowerCase();
-    if (!this._mentionDirectory.has(k)) this._mentionDirectory.set(k, { name: n, color: color || '#8a8f98' });
+    const k = authorId || ('name:' + n.toLowerCase());
+    this._mentionDirectory.set(k, { name: n, color: color || '#8a8f98' });
   }
 
-  // Teammates that can be @-mentioned: everyone who has authored a loaded
-  // message (the directory) plus the current presence peers plus self.
-  // Deduped by lower-cased display name. Cost is O(directory + peers),
-  // both bounded by team size — independent of message count.
+  // Teammates that can be @-mentioned: the live team roster (current
+  // profile names by user_id) plus presence peers plus self, then any
+  // historical message authors not in the roster (e.g. former
+  // members). Deduped by user_id so a rename doesn't double-list the
+  // user under old + new names.
   _mentionCandidates() {
-    const byName = new Map(this._mentionDirectory);
-    const add = (name, color) => {
+    const byKey = new Map();
+    const set = (key, name, color) => {
       const n = (name || '').trim();
-      if (!n) return;
-      const k = n.toLowerCase();
-      if (!byName.has(k)) byName.set(k, { name: n, color: color || '#8a8f98' });
+      if (!n || !key) return;
+      if (!byKey.has(key)) byKey.set(key, { name: n, color: color || '#8a8f98' });
     };
-    add(this.mesh.name, this.mesh.color);
-    for (const p of this.mesh.peerInfo.values()) add(p.name, p.color);
-    return [...byName.values()];
+    set(this.mesh.peerId, this.mesh.name, this.mesh.color);
+    for (const p of this.mesh.roster?.values?.() || []) set(p.id, p.name, p.color);
+    for (const p of this.mesh.peerInfo.values()) set(p.id, p.name, p.color);
+    for (const [k, v] of this._mentionDirectory) {
+      if (!byKey.has(k)) byKey.set(k, v);
+    }
+    return [...byKey.values()];
   }
 
   // Re-evaluate the @-mention popup against the caret. Shows it when the
