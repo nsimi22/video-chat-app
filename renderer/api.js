@@ -1602,6 +1602,11 @@
     const id = slugifyTeamName(rawName);
     if (!id) throw new Error('invalid team name');
     const { data: { user } } = await sb.auth.getUser();
+    // Single-team rule (enforced by team_members_one_team_per_user):
+    // leave any other team first, otherwise the team_after_insert
+    // trigger trips the unique (user_id) constraint and the create
+    // path rolls back.
+    await sb.from('team_members').delete().eq('user_id', user.id).neq('team_id', id);
     // We can't probe existence with `select * from teams where id=X`:
     // teams_read_member RLS only lets members + creator see the row, so
     // a non-member trying to join an existing team would see "missing"
