@@ -417,16 +417,25 @@ const STREAM_DECISION_MS = 1500;
     return;
   }
   state._email = session.user.email;
+  await routePostAuth(session.user.id);
+})();
+
+// Shared post-authentication routing. Used by the boot resume path
+// AND by the OTP / password sign-in handlers — without this, returning
+// users were sent through the profile step every login even though
+// their name was already saved. Sign-up still routes to the profile
+// step directly since a brand-new account has no profile row.
+async function routePostAuth(userId) {
   let prof = null;
   try {
     const sb = await window.huddleApi.getSupabase();
-    const { data } = await sb.from('profiles').select('name, color').eq('user_id', session.user.id).maybeSingle();
+    const { data } = await sb.from('profiles').select('name, color').eq('user_id', userId).maybeSingle();
     prof = data;
   } catch (err) {
     // Network / supabase blip: don't strand the user on a blank screen.
     // Fall through to the profile step; ensureProfile is an upsert so a
     // re-entry of the existing name is harmless.
-    console.warn('boot: profile fetch failed', err);
+    console.warn('routePostAuth: profile fetch failed', err);
   }
   if (!prof?.name) {
     showStep('profile');
@@ -449,7 +458,7 @@ const STREAM_DECISION_MS = 1500;
     showStep('team');
     await renderMyTeams();
   }
-})();
+}
 
 // --- Step navigation -----------------------------------------------------
 function showStep(step) {
@@ -1112,8 +1121,9 @@ async function stepVerifyOtp() {
   els.authVerify.disabled = true;
   try {
     await window.huddleApi.verifyOtp(state._email, token);
-    showStep('profile');
-    await prefillProfile();
+    const session = await window.huddleApi.getActiveSession();
+    if (!session?.user) throw new Error('sign-in did not establish a session');
+    await routePostAuth(session.user.id);
   } catch (err) {
     showError("That code didn't match. Try again or send a new one.");
   } finally { els.authVerify.disabled = false; }
@@ -1130,8 +1140,9 @@ async function stepPasswordSignIn() {
   try {
     await window.huddleApi.signInWithPassword(email, password);
     state._email = email;
-    showStep('profile');
-    await prefillProfile();
+    const session = await window.huddleApi.getActiveSession();
+    if (!session?.user) throw new Error('sign-in did not establish a session');
+    await routePostAuth(session.user.id);
   } catch (err) {
     // Supabase returns "Invalid login credentials" (HTTP 400) for both a
     // wrong password and an unknown email — surface one generic hint for
