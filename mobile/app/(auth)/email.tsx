@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Alert, View } from 'react-native';
+import { Alert, ScrollView, View } from 'react-native';
 import { router } from 'expo-router';
 import { supabase } from '@/lib/supabase';
 import { Brand, Button, Field, H1, LinkButton, P, Screen } from '@/components/ui';
@@ -84,6 +84,7 @@ export default function EmailScreen() {
 
   return (
     <Screen>
+      <ScrollView contentContainerStyle={{ paddingBottom: space(8) }} keyboardShouldPersistTaps="handled">
       <Brand tagline="Team video, screen-share, and chat — in one app." />
       <H1>Sign in to Huddle</H1>
       <P>
@@ -130,6 +131,7 @@ export default function EmailScreen() {
         title={mode === 'otp' ? 'Use a password instead' : 'Use the email code instead'}
         onPress={() => { setMode(mode === 'otp' ? 'password' : 'otp'); setPassword(''); }}
       />
+      </ScrollView>
     </Screen>
   );
 }

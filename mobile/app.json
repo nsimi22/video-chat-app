@@ -16,7 +16,6 @@
     "ios": {
       "bundleIdentifier": "com.huddle.app",
       "supportsTablet": true,
-      "backgroundColor": "#0b0b0d",
       "infoPlist": {
         "NSCameraUsageDescription": "Huddle uses your camera for video calls.",
         "NSMicrophoneUsageDescription": "Huddle uses your microphone for calls.",
@@ -25,7 +24,6 @@
     },
     "android": {
       "package": "com.huddle.app",
-      "backgroundColor": "#0b0b0d",
       "permissions": [
         "CAMERA",
         "RECORD_AUDIO",
