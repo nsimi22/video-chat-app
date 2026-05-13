@@ -10,3 +10,7 @@ where other.user_id = tm.user_id
 
 alter table public.team_members
   add constraint team_members_one_team_per_user unique (user_id);
+
+-- The constraint above implies a unique index on (user_id); the
+-- original non-unique index from the initial schema is now redundant.
+drop index if exists public.team_members_user_idx;
