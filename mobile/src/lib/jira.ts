@@ -7,20 +7,20 @@
 import type { JiraSettings } from './integrations';
 
 // Tiny base64 encoder. RN doesn't ship a global btoa and we don't want to
-// pull in `base-64` just for this one Authorization header. UTF-8 safe via
-// encodeURIComponent → byte-string round-trip.
+// pull in `base-64` just for this one Authorization header. UTF-8 bytes via
+// TextEncoder (Hermes ships it) — avoids the deprecated unescape() hack.
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 function b64(input: string): string {
-  const str = unescape(encodeURIComponent(input));
+  const bytes = new TextEncoder().encode(input);
   let out = '';
-  for (let i = 0; i < str.length; i += 3) {
-    const a = str.charCodeAt(i);
-    const b = i + 1 < str.length ? str.charCodeAt(i + 1) : 0;
-    const c = i + 2 < str.length ? str.charCodeAt(i + 2) : 0;
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i];
+    const b = i + 1 < bytes.length ? bytes[i + 1] : 0;
+    const c = i + 2 < bytes.length ? bytes[i + 2] : 0;
     out += B64[a >> 2];
     out += B64[((a & 0x3) << 4) | (b >> 4)];
-    out += i + 1 < str.length ? B64[((b & 0xf) << 2) | (c >> 6)] : '=';
-    out += i + 2 < str.length ? B64[c & 0x3f] : '=';
+    out += i + 1 < bytes.length ? B64[((b & 0xf) << 2) | (c >> 6)] : '=';
+    out += i + 2 < bytes.length ? B64[c & 0x3f] : '=';
   }
   return out;
 }
@@ -88,12 +88,13 @@ export type JiraRef = { key: string; host?: string };
 export function extractJiraRefs(text: string, defaultHost?: string): JiraRef[] {
   if (!text) return [];
   const out = new Map<string, string | undefined>();
-  text.replace(URL_RE, (_, host: string, key: string) => { out.set(key, host); return _; });
-  text.replace(KEY_RE, (_, key: string) => {
-    if (out.has(key)) return _;
-    if (KEY_BLOCKLIST.has(key)) return _;
+  for (const m of text.matchAll(URL_RE)) {
+    out.set(m[2], m[1]);
+  }
+  for (const m of text.matchAll(KEY_RE)) {
+    const key = m[1];
+    if (out.has(key) || KEY_BLOCKLIST.has(key)) continue;
     out.set(key, defaultHost);
-    return _;
-  });
+  }
   return [...out.entries()].map(([key, host]) => ({ key, host }));
 }

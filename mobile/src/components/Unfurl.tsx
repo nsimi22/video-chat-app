@@ -10,15 +10,26 @@ import { getJiraSettings, getGithubSettings } from '@/lib/integrations';
 // teammate sees only the tickets / repos their PAT or token can see).
 //
 // Fetches are deduped via a process-wide cache so a channel full of links to
-// the same ticket only hits the API once.
+// the same ticket only hits the API once. The cache key includes the viewer
+// id — a sign-out → sign-in on the same device must NOT serve user A's
+// cached titles to user B (B's credentials might not have access to them).
+// Failed fetches (null) are evicted so a later send/redraw can retry instead
+// of staying broken for the rest of the app's lifetime.
 
 type JiraCache = { [k: string]: Promise<JiraIssue | null> };
 type GhCache = { [k: string]: Promise<GithubIssue | null> };
 const jiraCache: JiraCache = {};
 const ghCache: GhCache = {};
 
-function jiraKey(host: string | undefined, key: string) { return `${host ?? '_'}::${key}`; }
-function ghKey(owner: string, repo: string, number: string) { return `${owner}/${repo}#${number}`; }
+function jiraKey(viewerId: string, host: string | undefined, key: string) { return `${viewerId}::${host ?? '_'}::${key}`; }
+function ghKey(viewerId: string, owner: string, repo: string, number: string) { return `${viewerId}::${owner}/${repo}#${number}`; }
+
+async function cachedFetch<T>(cache: { [k: string]: Promise<T | null> }, key: string, fetcher: () => Promise<T | null>): Promise<T | null> {
+  if (!cache[key]) cache[key] = fetcher();
+  const v = await cache[key];
+  if (v === null) delete cache[key]; // let the next attempt retry instead of pinning the failure
+  return v;
+}
 
 function jiraStatusColor(category?: string) {
   // Atlassian's status category keys: 'new' (todo), 'indeterminate' (in
@@ -131,22 +142,26 @@ export function MessageUnfurls({ body, viewerId }: { body: string; viewerId: str
     const ghRefs = extractGithubRefs(body);
     if (!jiraRefs.length && !ghRefs.length) { setJira([]); setGh([]); return; }
     (async () => {
-      const jiraSettings = jiraRefs.length ? await getJiraSettings(viewerId) : null;
-      const ghSettings = ghRefs.length ? await getGithubSettings(viewerId) : null;
-      const jiraPs = jiraSettings ? jiraRefs.map((r) => {
-        const k = jiraKey(r.host, r.key);
-        if (!jiraCache[k]) jiraCache[k] = fetchJiraIssue(jiraSettings, r.key, r.host);
-        return jiraCache[k];
-      }) : [];
-      const ghPs = ghSettings ? ghRefs.map((r) => {
-        const k = ghKey(r.owner, r.repo, r.number);
-        if (!ghCache[k]) ghCache[k] = fetchGithubIssueOrPull(ghSettings, r.owner, r.repo, r.number);
-        return ghCache[k];
-      }) : [];
-      const [jiraRes, ghRes] = await Promise.all([Promise.all(jiraPs), Promise.all(ghPs)]);
-      if (!active) return;
-      setJira(jiraRes.filter((x): x is JiraIssue => !!x));
-      setGh(ghRes.filter((x): x is GithubIssue => !!x));
+      try {
+        const jiraSettings = jiraRefs.length ? await getJiraSettings(viewerId) : null;
+        const ghSettings = ghRefs.length ? await getGithubSettings(viewerId) : null;
+        const jiraPs = jiraSettings ? jiraRefs.map((r) =>
+          cachedFetch(jiraCache, jiraKey(viewerId, r.host, r.key), () => fetchJiraIssue(jiraSettings, r.key, r.host)),
+        ) : [];
+        const ghPs = ghSettings ? ghRefs.map((r) =>
+          cachedFetch(ghCache, ghKey(viewerId, r.owner, r.repo, r.number), () => fetchGithubIssueOrPull(ghSettings, r.owner, r.repo, r.number)),
+        ) : [];
+        const [jiraRes, ghRes] = await Promise.all([Promise.all(jiraPs), Promise.all(ghPs)]);
+        if (!active) return;
+        setJira(jiraRes.filter((x): x is JiraIssue => !!x));
+        setGh(ghRes.filter((x): x is GithubIssue => !!x));
+      } catch (e) {
+        // Belt + braces: the individual fetchers already swallow errors and
+        // return null. Catching here covers anything we didn't anticipate
+        // (e.g. an integrations.ts supabase fault on a stale session) so a
+        // bad unfurl can't take down the whole message row.
+        console.warn('[unfurl] failed', e);
+      }
     })();
     return () => { active = false; };
   }, [body, viewerId]);

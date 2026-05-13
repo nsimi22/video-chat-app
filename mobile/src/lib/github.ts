@@ -63,14 +63,11 @@ export type GithubRef = { owner: string; repo: string; number: string };
 export function extractGithubRefs(text: string): GithubRef[] {
   if (!text) return [];
   const seen = new Map<string, GithubRef>();
-  URL_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = URL_RE.exec(text)) !== null) {
+  for (const m of text.matchAll(URL_RE)) {
     const owner = m[1], repo = m[2], number = m[3];
     seen.set(`${owner}/${repo}#${number}`, { owner, repo, number });
   }
-  REF_RE.lastIndex = 0;
-  while ((m = REF_RE.exec(text)) !== null) {
+  for (const m of text.matchAll(REF_RE)) {
     const owner = m[2], repo = m[3], number = m[4];
     const k = `${owner}/${repo}#${number}`;
     if (!seen.has(k)) seen.set(k, { owner, repo, number });
