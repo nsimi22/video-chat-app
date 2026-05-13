@@ -95,6 +95,7 @@
       this._screenChannels = new Map();     // streamId -> RealtimeChannel
       this._whiteboardChannels = new Map(); // whiteboardId -> RealtimeChannel
       this._dbChannel = null;               // postgres_changes subscription
+      this._myChannelIds = new Set();       // channel ids we have a membership row in (private + dm)
       // Per-channel call topic (call:<team>:<channel>). Only one active
       // call at a time. Presence on this channel drives WebRTC
       // peer-joined/peer-left events.
@@ -528,25 +529,45 @@
       ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'channels', filter: teamFilter },
         (p) => this.dispatchEvent(new CustomEvent('chat-channel-added', { detail: { channel: this._marshalChannel(p.new) } })));
       ch.on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'channels', filter: teamFilter },
-        (p) => this.dispatchEvent(new CustomEvent('chat-channel-removed', { detail: { channelId: p.old.id } })));
+        (p) => { this._myChannelIds.delete(p.old.id); this.dispatchEvent(new CustomEvent('chat-channel-removed', { detail: { channelId: p.old.id } })); });
       ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'channel_members', filter: teamFilter },
         async (p) => {
-          // A member was added to a private channel — if it's us, fetch the
-          // channel meta + member names and announce it client-side so it
-          // appears in the sidebar (we couldn't have read it before this).
-          if (p.new.user_id !== this.peerId) return;
-          const { data } = await this.supabase
-            .from('channels').select('*').eq('team_id', p.new.team_id).eq('id', p.new.channel_id).maybeSingle();
-          if (!data) return;
-          const meta = this._marshalChannel(data);
-          if (meta.type !== 'public') {
-            const { data: rows } = await this.supabase
-              .from('channel_members')
-              .select('profiles!inner(name)')
-              .eq('team_id', p.new.team_id).eq('channel_id', p.new.channel_id);
-            meta.members = (rows || []).map((r) => r.profiles.name);
+          if (p.new.user_id === this.peerId) {
+            // We were added to a private channel or (group) DM — fetch the
+            // channel meta + members and announce it so it appears in the
+            // sidebar (we couldn't have read it before this).
+            const { data } = await this.supabase
+              .from('channels').select('*').eq('team_id', p.new.team_id).eq('id', p.new.channel_id).maybeSingle();
+            if (!data) return;
+            const meta = this._marshalChannel(data);
+            if (meta.type !== 'public') {
+              const { memberIds, members } = await this._fetchChannelMembers(p.new.channel_id);
+              meta.memberIds = memberIds;
+              meta.members = members;
+              this._myChannelIds.add(p.new.channel_id);
+            }
+            this.dispatchEvent(new CustomEvent('chat-channel-added', { detail: { channel: meta } }));
+            return;
           }
-          this.dispatchEvent(new CustomEvent('chat-channel-added', { detail: { channel: meta } }));
+          // Someone else joined a channel we're in (e.g. a group DM grew) —
+          // refresh its member list so labels stay current.
+          if (!this._myChannelIds.has(p.new.channel_id)) return;
+          const { memberIds, members } = await this._fetchChannelMembers(p.new.channel_id);
+          this.dispatchEvent(new CustomEvent('chat-channel-updated', { detail: { channelId: p.new.channel_id, memberIds, members } }));
+        });
+      ch.on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'channel_members', filter: teamFilter },
+        async (p) => {
+          // Our own removal is handled synchronously by leaveDmChannel(); a
+          // realtime echo of it is harmless (onChannelRemoved is idempotent).
+          if (p.old.user_id === this.peerId) {
+            this._myChannelIds.delete(p.old.channel_id);
+            this.dispatchEvent(new CustomEvent('chat-channel-removed', { detail: { channelId: p.old.channel_id } }));
+            return;
+          }
+          // Someone else left a channel we're in — refresh its member list.
+          if (!this._myChannelIds.has(p.old.channel_id)) return;
+          const { memberIds, members } = await this._fetchChannelMembers(p.old.channel_id);
+          this.dispatchEvent(new CustomEvent('chat-channel-updated', { detail: { channelId: p.old.channel_id, memberIds, members } }));
         });
       // Saved-messages mutations. RLS on saved_messages restricts the
       // payload to the caller's own rows so we don't need an auth-side
@@ -590,9 +611,27 @@
       }
       for (const c of this._initialChannels) {
         if (memberIdsByChannel.has(c.id)) {
-          c.members = memberIdsByChannel.get(c.id).map((id) => nameById.get(id) || '');
+          const ids = memberIdsByChannel.get(c.id);
+          c.memberIds = ids;
+          c.members = ids.map((id) => nameById.get(id) || '');
+          this._myChannelIds.add(c.id);
         }
       }
+    }
+
+    // Member ids + display names for one channel, in a stable order.
+    async _fetchChannelMembers(channelId) {
+      const { data: rows } = await this.supabase
+        .from('channel_members').select('user_id').eq('team_id', this.team.id).eq('channel_id', channelId);
+      const memberIds = (rows || []).map((r) => r.user_id);
+      let members = memberIds.map(() => '');
+      if (memberIds.length) {
+        const { data: profs } = await this.supabase
+          .from('profiles').select('user_id,name').in('user_id', memberIds);
+        const nameById = new Map((profs || []).map((p) => [p.user_id, p.name]));
+        members = memberIds.map((id) => nameById.get(id) || '');
+      }
+      return { memberIds, members };
     }
 
     _dispatchWelcome() {
@@ -1043,9 +1082,127 @@
         );
         if (peerErr) throw peerErr;
       }
+      this._myChannelIds.add(id);
       const meta = this._marshalChannel(ch);
+      meta.memberIds = [a, b];
       meta.members = [this.name, displayName];
       return meta;
+    }
+
+    // --- Group DMs ----------------------------------------------------------
+
+    // Resolve uuids -> current display names, preferring live presence over a
+    // profiles round-trip. Always includes ourselves.
+    async _resolveNames(userIds) {
+      const out = new Map([[this.peerId, this.name]]);
+      const missing = [];
+      for (const uid of userIds) {
+        if (out.has(uid)) continue;
+        const live = this.peerInfo.get(uid)?.name;
+        if (live) out.set(uid, live); else missing.push(uid);
+      }
+      if (missing.length) {
+        const { data: profs } = await this.supabase.from('profiles').select('user_id,name').in('user_id', missing);
+        for (const p of (profs || [])) out.set(p.user_id, p.name);
+      }
+      return out;
+    }
+
+    async _assertTeamMembers(userIds) {
+      if (!userIds.length) return;
+      const { data, error } = await this.supabase
+        .from('team_members').select('user_id').eq('team_id', this.team.id).in('user_id', userIds);
+      if (error) throw error;
+      const have = new Set((data || []).map((r) => r.user_id));
+      if (userIds.some((id) => !have.has(id))) throw new Error('not all of those users are in this team');
+    }
+
+    // Open or create a group DM with `otherUserIds` (plus us). If a DM channel
+    // with exactly this membership already exists, reuse it (no duplicates).
+    // Group DMs use a random `gdm:<uuid>` id so members can change over time
+    // without the id going stale.
+    async createGroupDm(otherUserIds, _names) {
+      const ids = [...new Set((otherUserIds || []).filter(Boolean))].filter((id) => id !== this.peerId);
+      if (ids.length < 2) throw new Error('a group DM needs at least two other people');
+      await this._assertTeamMembers(ids);
+      const want = new Set([this.peerId, ...ids]);
+
+      // Dedup against existing DM channels we belong to.
+      const { data: mine } = await this.supabase
+        .from('channel_members').select('channel_id').eq('team_id', this.team.id).eq('user_id', this.peerId);
+      const myChannelIds = [...new Set((mine || []).map((r) => r.channel_id))];
+      if (myChannelIds.length) {
+        const { data: allRows } = await this.supabase
+          .from('channel_members').select('channel_id,user_id').eq('team_id', this.team.id).in('channel_id', myChannelIds);
+        const byChannel = new Map();
+        for (const r of (allRows || [])) {
+          if (!byChannel.has(r.channel_id)) byChannel.set(r.channel_id, []);
+          byChannel.get(r.channel_id).push(r.user_id);
+        }
+        for (const [cid, memberIds] of byChannel) {
+          if (memberIds.length === want.size && memberIds.every((id) => want.has(id))) {
+            const { data: chRow } = await this.supabase
+              .from('channels').select('*').eq('team_id', this.team.id).eq('id', cid).maybeSingle();
+            if (chRow && chRow.type === 'dm') {
+              const nameById = await this._resolveNames(memberIds);
+              this._myChannelIds.add(cid);
+              const meta = this._marshalChannel(chRow);
+              meta.memberIds = memberIds;
+              meta.members = memberIds.map((id) => nameById.get(id) || '');
+              return meta;
+            }
+          }
+        }
+      }
+
+      const nameById = await this._resolveNames(ids);
+      const label = ids.map((id) => nameById.get(id) || 'someone').sort((x, y) => x.localeCompare(y)).join(', ');
+      const id = 'gdm:' + ((typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      // Don't chain .select() — same RLS-with-RETURNING gotcha as createDm:
+      // channels_read gates type='dm' on membership, which the
+      // on_channel_after_insert trigger only grants after RETURNING runs.
+      const { error: chErr } = await this.supabase.from('channels').insert({
+        team_id: this.team.id, id, name: label.slice(0, 200) || 'Group', topic: '',
+        type: 'dm', protected: false, created_by: this.peerId,
+      });
+      if (chErr) throw chErr;
+      // The trigger added us; add the rest. We're the creator, so the existing
+      // channel_members insert_self policy (created_by branch) permits this.
+      const rows = ids.map((uid) => ({ team_id: this.team.id, channel_id: id, user_id: uid }));
+      const { error: memErr } = await this.supabase.from('channel_members').insert(rows);
+      if (memErr && memErr.code !== '23505') throw memErr;
+      this._myChannelIds.add(id);
+      const allIds = [this.peerId, ...ids];
+      return {
+        id, name: label || 'Group', topic: '', type: 'dm', protected: false, createdBy: this.peerId,
+        memberIds: allIds, members: allIds.map((uid) => nameById.get(uid) || ''),
+      };
+    }
+
+    // Add more people to an existing DM channel (turns a 1:1 into a group, or
+    // grows a group). Requires the group-DM RLS migration so non-creators can
+    // do this. Peers see the change via the channel_members realtime stream.
+    async addDmMembers(channelId, userIds) {
+      const ids = [...new Set((userIds || []).filter(Boolean))].filter((id) => id !== this.peerId);
+      if (!ids.length) return null;
+      await this._assertTeamMembers(ids);
+      const rows = ids.map((uid) => ({ team_id: this.team.id, channel_id: channelId, user_id: uid }));
+      const { error } = await this.supabase.from('channel_members').insert(rows);
+      if (error && error.code !== '23505') throw error;
+      const { memberIds, members } = await this._fetchChannelMembers(channelId);
+      this.dispatchEvent(new CustomEvent('chat-channel-updated', { detail: { channelId, memberIds, members } }));
+      return { memberIds, members };
+    }
+
+    // Leave a DM/group channel: just drop our own membership row. (RLS:
+    // channel_members_delete_self allows deleting where user_id = auth.uid().)
+    async leaveDmChannel(channelId) {
+      const { error } = await this.supabase.from('channel_members')
+        .delete().eq('team_id', this.team.id).eq('channel_id', channelId).eq('user_id', this.peerId);
+      if (error) throw error;
+      this._myChannelIds.delete(channelId);
+      this.dispatchEvent(new CustomEvent('chat-channel-removed', { detail: { channelId } }));
     }
 
     async deleteChannel(channelId) {

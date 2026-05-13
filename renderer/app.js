@@ -72,7 +72,10 @@ const els = {
   ccCreate: $('#cc-create'),
   ccCancel: $('#cc-cancel'),
   dmPicker: $('#dm-picker'),
+  dmPickerTitle: $('#dm-picker-title'),
+  dmPickerHint: $('#dm-picker-hint'),
   dmPeople: $('#dm-people'),
+  dmStart: $('#dm-start'),
   dmCancel: $('#dm-cancel'),
   people: $('#people'),
   channelName: $('#channel-name'),
@@ -1378,6 +1381,7 @@ async function joinTeamAndStart(teamId) {
   huddle.addEventListener('member-offline', (e) => onMemberOffline(e.detail));
   huddle.addEventListener('chat-channel-added', (e) => onChannelAdded(e.detail.channel));
   huddle.addEventListener('chat-channel-removed', (e) => onChannelRemoved(e.detail.channelId));
+  huddle.addEventListener('chat-channel-updated', (e) => onChannelUpdated(e.detail));
   huddle.addEventListener('call-presence', (e) => onCallPresence(e.detail));
   huddle.addEventListener('saved-message-added', (e) => onSavedMessageChange('add', e.detail.save));
   huddle.addEventListener('saved-message-updated', (e) => onSavedMessageChange('update', e.detail.save));
@@ -2070,7 +2074,36 @@ function appendChannelToSidebar(channel, makeActive) {
   badge.style.display = 'none';
   li.appendChild(badge);
 
-  if (canDelete(channel)) {
+  if (isGroupDm(channel)) {
+    // Group DMs get "add people" + "leave" rather than a delete-for-everyone.
+    const add = document.createElement('button');
+    add.className = 'ch-delete';
+    add.title = 'Add people';
+    add.setAttribute('aria-label', 'Add people');
+    add.textContent = '+';
+    add.onclick = (e) => {
+      e.stopPropagation();
+      openDmPicker({ mode: 'add', channel: state.channelMeta.get(channel.id) || channel });
+    };
+    li.appendChild(add);
+    const leave = document.createElement('button');
+    leave.className = 'ch-delete';
+    leave.title = 'Leave group';
+    leave.setAttribute('aria-label', 'Leave group');
+    leave.innerHTML = window.HuddleIcons.x;
+    leave.onclick = async (e) => {
+      e.stopPropagation();
+      const label = dmLabelFor(state.channelMeta.get(channel.id) || channel);
+      if (!confirm(`Leave "${label}"? You won't get new messages unless someone adds you back.`)) return;
+      try {
+        await state.huddle.leaveDmChannel(channel.id);
+      } catch (err) {
+        console.warn('leaveDmChannel failed', err);
+        showCallError(`Could not leave the group: ${err?.message || err}`);
+      }
+    };
+    li.appendChild(leave);
+  } else if (canDelete(channel)) {
     const del = document.createElement('button');
     del.className = 'ch-delete';
     del.title = isDm ? 'Close DM' : 'Delete channel';
@@ -2079,7 +2112,7 @@ function appendChannelToSidebar(channel, makeActive) {
     del.onclick = async (e) => {
       e.stopPropagation();
       const verb = isDm ? 'Close' : 'Delete';
-      const target = isDm ? `your DM with ${displayLabelFor(channel).replace(/^@\s*/, '')}` : `#${channel.name}`;
+      const target = isDm ? `your DM with ${displayLabelFor(channel).replace(/^[@👥]\s*/, '')}` : `#${channel.name}`;
       if (!confirm(`${verb} ${target}? This is permanent.`)) return;
       try {
         await state.huddle.deleteChannel(channel.id);
@@ -2258,28 +2291,53 @@ function onChannelRemoved(channelId) {
   }
 }
 
+// Membership of a channel we're in changed (e.g. a group DM grew/shrank).
+// Refresh the cached meta and the visible label(s).
+function onChannelUpdated({ channelId, memberIds, members } = {}) {
+  const ch = state.channelMeta.get(channelId);
+  if (!ch) return;
+  if (memberIds) ch.memberIds = memberIds;
+  if (members) ch.members = members;
+  const sel = `[data-id="${cssEscape(channelId)}"]`;
+  const li = els.dms.querySelector(sel) || els.channels.querySelector(sel);
+  const lbl = li?.querySelector('.ch-name');
+  if (lbl) lbl.textContent = displayLabelFor(ch);
+  state.chat?.setLabel(channelId, displayLabelFor(ch));
+}
+
+// A "group DM" is a type='dm' channel with a `gdm:<uuid>` id (or, defensively,
+// one that has grown past two members). 1:1 DMs keep their `dm:<a>::<b>` id.
+function isGroupDm(channel) {
+  return channel.type === 'dm'
+    && (String(channel.id).startsWith('gdm:') || (channel.memberIds?.length || 0) > 2);
+}
+
 function displayLabelFor(channel) {
-  if (channel.type === 'dm') {
-    return `@ ${dmCounterpartName(channel)}`;
-  }
+  if (channel.type === 'dm') return `${isGroupDm(channel) ? '👥' : '@'} ${dmLabelFor(channel)}`;
   if (channel.type === 'private') return `🔒 ${channel.name}`;
   return `# ${channel.name}`;
 }
 
-// Resolve the "other party" name for a DM. The previous logic
-// (find a name in channel.members that wasn't state.myName) broke
-// after Edit-profile renames: channel.members is a snapshot of
-// display names taken at DM creation, state.myName is the user's
-// current name, and after a rename the find() could pick the
-// stale OLD self-name and label the DM with your own old name.
-//
-// Parse the uuids out of the channel id (dm:<uuid_a>::<uuid_b>)
-// and look up the counterpart's CURRENT name from live presence.
-// channel.name (set to the counterpart's display name at
-// creation) is the last-resort fallback for offline counterparts.
-function dmCounterpartName(channel) {
-  const m = /^dm:([0-9a-f-]+)::([0-9a-f-]+)$/.exec(channel.id);
+// Human label for a DM (1:1 or group). Prefer each member's CURRENT name from
+// live presence over the snapshot in channel.members (which is taken at
+// creation/load and goes stale after Edit-profile renames). channel.members is
+// index-aligned with channel.memberIds. For a 1:1 DM whose member list hasn't
+// loaded yet, fall back to parsing the `dm:<a>::<b>` id; channel.name (the
+// counterpart's / the group's name at creation) is the last resort.
+function dmLabelFor(channel) {
   const me = state.huddle?.peerId;
+  const ids = channel.memberIds || [];
+  if (ids.length === 1 && ids[0] === me) return 'just you'; // everyone else left a group
+  if (ids.length > 1) {
+    const names = ids
+      .map((id, i) => ({ id, snap: channel.members?.[i] || '' }))
+      .filter((x) => x.id !== me)
+      .map((x) => state.huddle?.peerInfo.get(x.id)?.name || x.snap || 'someone')
+      .sort((a, b) => a.localeCompare(b));
+    if (names.length === 1) return names[0];
+    if (names.length) return names.length <= 3 ? names.join(', ') : `${names.slice(0, 3).join(', ')} +${names.length - 3}`;
+  }
+  const m = /^dm:([0-9a-f-]+)::([0-9a-f-]+)$/.exec(channel.id);
   if (m && me) {
     const otherId = m[1] === me ? m[2] : (m[2] === me ? m[1] : null);
     if (otherId) {
@@ -2292,18 +2350,10 @@ function dmCounterpartName(channel) {
 
 function canDelete(channel) {
   if (channel.protected) return false;
-  if (channel.type === 'dm') {
-    // Parse membership from the channel id (`dm:<uuid_a>::<uuid_b>`)
-    // rather than channel.members. The members array is a snapshot
-    // of display names taken at DM creation / channel-load time;
-    // after Edit-profile renames it can drift away from
-    // state.myName, which silently strips the ✕ delete button from
-    // DMs the user actually owns. The id is stable.
-    const m = /^dm:([0-9a-f-]+)::([0-9a-f-]+)$/.exec(channel.id);
-    if (!m) return false;
-    const me = state.huddle?.peerId;
-    return !!me && (m[1] === me || m[2] === me);
-  }
+  // A DM/group channel is only ever in your sidebar because you're a member
+  // (RLS on `channels` requires it), so the close/leave control is always
+  // available. (Group DMs use a separate "Leave" action — see the sidebar.)
+  if (channel.type === 'dm') return true;
   // createdBy is a user uuid; compare against the authenticated user's id,
   // not the display name.
   return channel.createdBy && channel.createdBy === state.huddle?.peerId;
@@ -3430,7 +3480,8 @@ function wireControls() {
   els.ccName.onkeydown = (e) => { if (e.key === 'Enter' && !els.ccPrivate.checked) submitCreateChannel(); };
 
   // DM picker
-  els.addDm.onclick = openDmPicker;
+  els.addDm.onclick = () => openDmPicker();
+  els.dmStart.onclick = submitDmPicker;
   els.dmCancel.onclick = () => els.dmPicker.classList.add('hidden');
 
   wireDrawToolbar();
@@ -3547,42 +3598,83 @@ function renderMemberPicker(container) {
   }
 }
 
-function openDmPicker() {
+// The DM picker is multi-select: pick one teammate for a 1:1, or several for
+// a group DM. Reused in "add" mode to pull more people into an existing group
+// (opts = { mode: 'add', channel }).
+function openDmPicker(opts = {}) {
+  const mode = opts && opts.mode === 'add' ? 'add' : 'new';
+  const channel = (opts && opts.channel) || null;
+  state.dmPickerMode = mode;
+  state.dmPickerChannel = channel;
+  els.dmPickerTitle.textContent = mode === 'add' ? 'Add people' : 'Start a direct message';
+  els.dmPickerHint.textContent = mode === 'add'
+    ? 'Pick teammates to add to this group.'
+    : 'Pick one person, or several for a group.';
+  els.dmStart.textContent = mode === 'add' ? 'Add' : 'Start chat';
+  els.dmStart.disabled = true;
   els.dmPeople.replaceChildren();
-  // Iterate the full team roster — DMing offline teammates is the
-  // whole point.
+  // Iterate the full team roster — DMing/adding offline teammates is fine.
+  const already = mode === 'add' && channel ? new Set(channel.memberIds || []) : new Set();
   const members = sortRosterMembers(
-    [...state.huddle.roster.values()].filter((m) => m.id !== state.huddle.peerId),
+    [...state.huddle.roster.values()].filter((m) => m.id !== state.huddle.peerId && !already.has(m.id)),
   );
   if (members.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty';
-    empty.textContent = 'No other teammates yet.';
+    empty.textContent = mode === 'add' ? 'Everyone is already in this group.' : 'No other teammates yet.';
     els.dmPeople.appendChild(empty);
   } else {
     for (const m of members) {
       const { online, name, color } = resolveMemberDisplay(m);
       const row = document.createElement('div');
       row.className = 'row' + (online ? '' : ' offline');
+      row.dataset.userId = m.id;
+      row.dataset.name = name;
       const dot = document.createElement('span');
       dot.className = online ? 'dot online' : 'dot';
       dot.style.background = color;
       const lbl = document.createElement('span');
       lbl.textContent = name;
-      row.append(dot, lbl);
-      // The DM picker is intent-driven (the user explicitly opened
-      // it to start a DM), so a row click goes directly to creating
-      // the channel — no profile-card detour. Browse-style profile
-      // viewing lives on the chat author/avatar, the sidebar people
-      // list, and call tile labels.
+      const check = document.createElement('span');
+      check.className = 'check';
+      row.append(dot, lbl, check);
       row.addEventListener('click', () => {
-        els.dmPicker.classList.add('hidden');
-        openDmWith(m.id, name);
+        const selected = row.classList.toggle('selected');
+        check.innerHTML = selected ? window.HuddleIcons.check : '';
+        els.dmStart.disabled = !els.dmPeople.querySelector('.row.selected');
       });
       els.dmPeople.appendChild(row);
     }
   }
   els.dmPicker.classList.remove('hidden');
+}
+
+async function submitDmPicker() {
+  const picks = [...els.dmPeople.querySelectorAll('.row.selected')]
+    .map((r) => ({ id: r.dataset.userId, name: r.dataset.name }))
+    .filter((p) => p.id);
+  if (!picks.length) return;
+  els.dmPicker.classList.add('hidden');
+  if (state.dmPickerMode === 'add') {
+    const channel = state.dmPickerChannel;
+    if (!channel) return;
+    try {
+      await state.huddle.addDmMembers(channel.id, picks.map((p) => p.id));
+    } catch (err) {
+      console.warn('addDmMembers failed', err);
+      showCallError('Could not add people: ' + (err?.message || err));
+    }
+    return;
+  }
+  if (picks.length === 1) { openDmWith(picks[0].id, picks[0].name); return; }
+  try {
+    const channel = await state.huddle.createGroupDm(picks.map((p) => p.id), picks.map((p) => p.name));
+    onChannelAdded(channel);
+    focusChannel(channel.id);
+  } catch (err) {
+    console.warn('createGroupDm failed', err);
+    showCallError('Could not start group DM: ' + (err?.message || err));
+  }
 }
 
 function openSearchModal() {

@@ -363,13 +363,17 @@
       </div>
     </div>
 
-    <!-- DM picker modal -->
+    <!-- DM picker modal (multi-select: one person = 1:1, several = group DM;
+         also reused in "add people to this group" mode) -->
     <div id="dm-picker" class="modal-backdrop hidden">
       <div class="modal">
-        <h2>Start a direct message</h2>
-        <p class="hint">Pick someone to message privately.</p>
+        <h2 id="dm-picker-title">Start a direct message</h2>
+        <p class="hint" id="dm-picker-hint">Pick one person, or several for a group.</p>
         <div id="dm-people" class="member-picker"></div>
-        <button id="dm-cancel" class="subtle btn-block">Cancel</button>
+        <div class="btn-row">
+          <button id="dm-cancel" class="subtle">Cancel</button>
+          <button id="dm-start" class="primary" disabled>Start chat</button>
+        </div>
       </div>
     </div>
 
