@@ -308,6 +308,17 @@ class ChatView {
     this._fetchHistory(channelId);
   }
 
+  // Relabel the current channel in-place (e.g. a group DM's membership
+  // changed) without reloading history or touching the composer draft.
+  setLabel(channelId, displayLabel) {
+    if (channelId !== this.currentChannel || !displayLabel) return;
+    this._currentLabel = displayLabel;
+    if (this.threadParentId) return; // thread view shows "Thread", not the channel label
+    this.els.chatChannelName.textContent = displayLabel;
+    this.els.channelName.textContent = displayLabel;
+    this.els.composer.placeholder = `Message ${displayLabel}`;
+  }
+
   async _fetchHistory(channelId, before) {
     try {
       const { messages, hasMore } = await this.mesh.loadHistory(channelId, { before, limit: 50 });
