@@ -2,7 +2,7 @@
   "name": "huddle-mobile",
   "version": "0.1.0",
   "private": true,
-  "main": "expo-router/entry",
+  "main": "index.js",
   "scripts": {
     "start": "expo start --dev-client",
     "android": "expo run:android",
@@ -12,10 +12,11 @@
     "lint": "expo lint"
   },
   "dependencies": {
-    "@livekit/react-native": "^2.7.0",
+    "@livekit/react-native": "~2.7.0",
     "@livekit/react-native-webrtc": "^125.0.0",
     "@supabase/supabase-js": "^2.45.0",
     "expo": "~52.0.0",
+    "expo-asset": "~11.0.0",
     "expo-av": "~15.0.0",
     "expo-camera": "~16.0.0",
     "expo-constants": "~17.0.0",
