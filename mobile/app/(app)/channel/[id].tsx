@@ -30,6 +30,7 @@ import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { teamTopic } from '@/lib/topics';
 import { Avatar, Markdown } from '@/components/ui';
+import { MessageUnfurls } from '@/components/Unfurl';
 import { colors, radius, space } from '@/theme';
 
 const QUICK = ['👍', '✅', '🎉', '❤️', '😂', '👀'];
@@ -227,6 +228,7 @@ export default function ChannelScreen() {
                       {item.edited_ts ? <Text style={{ color: colors.textDim, fontSize: 11, marginTop: 2 }}>(edited)</Text> : null}
                     </View>
                   )}
+                  {!!item.body && <MessageUnfurls body={item.body} viewerId={userId} />}
                   {(item.attachments ?? []).map((a, i) => (
                     a.type?.startsWith('image/') ? (
                       <Image key={i} source={{ uri: a.url }} style={{ width: 220, height: 160, borderRadius: radius.sm, marginTop: space(1.5), backgroundColor: colors.surfaceAlt }} resizeMode="cover" />
