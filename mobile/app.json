@@ -7,6 +7,12 @@
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
+    "backgroundColor": "#0b0b0d",
+    "primaryColor": "#5b8cff",
+    "splash": {
+      "backgroundColor": "#0b0b0d",
+      "resizeMode": "contain"
+    },
     "ios": {
       "bundleIdentifier": "com.huddle.app",
       "supportsTablet": true,
