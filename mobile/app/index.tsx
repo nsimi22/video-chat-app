@@ -11,7 +11,7 @@ export default function Index() {
     if (loading) return;
     if (!session) router.replace('/(auth)/email');
     else if (!activeTeam) router.replace('/(auth)/team');
-    else router.replace('/(app)/channels');
+    else router.replace('/(app)/(tabs)/channels');
   }, [loading, session, activeTeam]);
 
   return (

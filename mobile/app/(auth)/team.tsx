@@ -16,7 +16,7 @@ export default function TeamScreen() {
 
   const choose = (t: Team) => {
     setActiveTeam(t);
-    router.replace('/(app)/channels');
+    router.replace('/(app)/(tabs)/channels');
   };
 
   if (!teams) {

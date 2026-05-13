@@ -17,6 +17,8 @@ export default function AppLayout() {
     if (userId) registerForPush(userId).catch(() => {});
   }, [userId]);
 
+  // The (tabs) group is the bottom-tab shell; chat and call screens push
+  // *over* the tabs at this Stack level.
   return (
     <Stack
       screenOptions={{
@@ -25,10 +27,9 @@ export default function AppLayout() {
         contentStyle: { backgroundColor: colors.bg },
       }}
     >
-      <Stack.Screen name="channels" options={{ title: activeTeam?.name ?? 'Huddle' }} />
+      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="channel/[id]" options={{ title: '' }} />
       <Stack.Screen name="call/[id]" options={{ title: 'Call', presentation: 'fullScreenModal' }} />
-      <Stack.Screen name="settings" options={{ title: 'Settings', presentation: 'modal' }} />
     </Stack>
   );
 }

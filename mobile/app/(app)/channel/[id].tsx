@@ -29,7 +29,7 @@ import {
 import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { teamTopic } from '@/lib/topics';
-import { Avatar } from '@/components/ui';
+import { Avatar, Markdown } from '@/components/ui';
 import { colors, radius, space } from '@/theme';
 
 const QUICK = ['👍', '✅', '🎉', '❤️', '😂', '👀'];
@@ -192,22 +192,41 @@ export default function ChannelScreen() {
           }
           renderItem={({ item, index }) => {
             const prev = messages[index - 1];
-            const grouped = prev && prev.author_id === item.author_id && new Date(item.ts).getTime() - new Date(prev.ts).getTime() < 5 * 60_000;
+            // AI messages never group — they should always show the robot
+            // avatar + "AI · via <user>" header so it's clear which lines are
+            // model output (vs the human's own messages, even when they share
+            // an author_id).
+            const isAi = !!item.ai_generated;
+            const prevIsAi = !!prev?.ai_generated;
+            const grouped = !isAi && !prevIsAi && prev && prev.author_id === item.author_id
+              && new Date(item.ts).getTime() - new Date(prev.ts).getTime() < 5 * 60_000;
             const p = profileFor(item.author_id);
             return (
               <TouchableOpacity activeOpacity={0.7} onLongPress={() => onLongPressMessage(item)} style={{ flexDirection: 'row', paddingHorizontal: space(3), paddingTop: grouped ? 2 : space(2.5) }}>
                 <View style={{ width: 36, marginRight: space(2.5) }}>
-                  {!grouped && <Avatar name={p?.name ?? '?'} color={p?.color} size={36} uri={p?.avatar_url} />}
+                  {!grouped && (
+                    isAi
+                      ? <Avatar name="AI" ai size={36} />
+                      : <Avatar name={p?.name ?? '?'} color={p?.color} size={36} uri={p?.avatar_url} />
+                  )}
                 </View>
                 <View style={{ flex: 1 }}>
                   {!grouped && (
                     <Text style={{ color: colors.text, fontWeight: '600', marginBottom: 2 }}>
-                      {p?.name ?? 'Unknown'}{'  '}
-                      <Text style={{ color: colors.textDim, fontWeight: '400', fontSize: 11 }}>{new Date(item.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                      {isAi ? 'AI' : (p?.name ?? 'Unknown')}{'  '}
+                      <Text style={{ color: colors.textDim, fontWeight: '400', fontSize: 11 }}>
+                        {isAi && p ? `via ${p.name} · ` : ''}
+                        {new Date(item.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
                       {item.pinned_at ? '  📌' : ''}
                     </Text>
                   )}
-                  {!!item.body && <Text style={{ color: colors.text, fontSize: 15, lineHeight: 21 }}>{item.body}{item.edited_ts ? <Text style={{ color: colors.textDim, fontSize: 11 }}>{'  (edited)'}</Text> : null}</Text>}
+                  {!!item.body && (
+                    <View>
+                      <Markdown body={item.body} />
+                      {item.edited_ts ? <Text style={{ color: colors.textDim, fontSize: 11, marginTop: 2 }}>(edited)</Text> : null}
+                    </View>
+                  )}
                   {(item.attachments ?? []).map((a, i) => (
                     a.type?.startsWith('image/') ? (
                       <Image key={i} source={{ uri: a.url }} style={{ width: 220, height: 160, borderRadius: radius.sm, marginTop: space(1.5), backgroundColor: colors.surfaceAlt }} resizeMode="cover" />
