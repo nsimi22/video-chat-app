@@ -413,10 +413,11 @@ input:focus, textarea:focus {
   color: var(--accent-2);
   padding: 1px 5px; border-radius: 4px; font-weight: 500;
 }
-.mention-self { background: rgba(255, 159, 10, 0.22); color: var(--warn); }
-.mention-broadcast {
+.mention-self, .mention-broadcast {
   background: rgba(255, 159, 10, 0.22);
   color: var(--warn);
+}
+.mention-broadcast {
   font-weight: 600;
   text-transform: lowercase;
 }
