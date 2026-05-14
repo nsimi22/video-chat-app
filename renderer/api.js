@@ -1150,10 +1150,16 @@
       // order by user_id::text) or existing rows won't be found.
       const memberSig = [this.peerId, ...ids].sort().join(',');
 
-      // First try server-side dedup. The RPC is SECURITY DEFINER so it returns
-      // a hit even if we previously left the gdm (RLS would otherwise hide it).
+      // First try server-side dedup. join_dm_by_member_sig is SECURITY
+      // DEFINER: it checks auth.uid() is in the sig, looks up the matching
+      // gdm, and adds us to channel_members in one atomic step. Returns the
+      // channel id (or null on miss). Folding the lookup and the membership
+      // write together is what lets us tighten channel_members_insert_self
+      // (20260515000000) — the RLS no longer allows self-insert into a gdm
+      // we aren't a creator/member of, so we have to rejoin through this
+      // function instead of doing it client-side.
       const { data: existingId, error: lookupErr } = await this.supabase
-        .rpc('find_dm_by_member_sig', { t: this.team.id, sig: memberSig });
+        .rpc('join_dm_by_member_sig', { t: this.team.id, sig: memberSig });
       if (lookupErr) throw lookupErr;
       if (existingId) return await this._openExistingDm(existingId, ids);
 
@@ -1174,7 +1180,7 @@
         // opening the winner instead of surfacing an opaque error.
         if (chErr.code === '23505') {
           const { data: conflictId } = await this.supabase
-            .rpc('find_dm_by_member_sig', { t: this.team.id, sig: memberSig });
+            .rpc('join_dm_by_member_sig', { t: this.team.id, sig: memberSig });
           if (conflictId) return await this._openExistingDm(conflictId, ids);
         }
         throw chErr;
@@ -1195,22 +1201,18 @@
       };
     }
 
-    // Open an existing DM by id, re-adding us and any other intended
-    // participants to channel_members if they'd previously left. Used by
-    // createGroupDm when find_dm_by_member_sig hits.
+    // Open an existing DM by id, re-adding any intended participants who
+    // had previously left. Used by createGroupDm when join_dm_by_member_sig
+    // hits — that RPC already added the caller to channel_members, so we
+    // only need to handle the *other* intended members here. Branch 3 of
+    // channel_members_insert_self (is_channel_member + type='dm') authorizes
+    // them: we're now a member of the gdm via the RPC, and they're being
+    // pulled in by an existing member.
     //
-    // We add ourselves first (channel_members_insert_self covers it via the
-    // user_id = auth.uid() branch), which makes us a member; the gdm RLS
-    // migration (20260513000000) then lets us add the rest via the
-    // is_channel_member branch. `.upsert(ignoreDuplicates)` is used for the
-    // batch insert because `.insert()` is atomic — one 23505 (already a
-    // member) would otherwise abort the whole batch and leave the rest of
-    // the intended members unadded.
+    // .upsert(ignoreDuplicates) is used for the batch because .insert() is
+    // atomic: one 23505 (already a member) would otherwise abort the whole
+    // batch and leave the rest of the intended members unadded.
     async _openExistingDm(channelId, otherUserIds = []) {
-      const { error: joinErr } = await this.supabase
-        .from('channel_members')
-        .insert({ team_id: this.team.id, channel_id: channelId, user_id: this.peerId });
-      if (joinErr && joinErr.code !== '23505') throw joinErr;
       this._myChannelIds.add(channelId);
       const others = (otherUserIds || []).filter((uid) => uid && uid !== this.peerId);
       if (others.length) {
