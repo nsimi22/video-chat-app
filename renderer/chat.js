@@ -672,7 +672,13 @@ class ChatView {
     for (const [k, v] of this._mentionDirectory) {
       if (!byKey.has(k)) byKey.set(k, v);
     }
-    return [...byKey.values()];
+    // Broadcast keywords. Tagged with kind='broadcast' so the row renderer
+    // shows the leading '@' and the "notify the channel" subtitle, making
+    // them visually distinct from teammates.
+    const out = [...byKey.values()];
+    out.push({ name: 'here', color: 'var(--warn)', kind: 'broadcast', subtitle: 'Notify the channel' });
+    out.push({ name: 'channel', color: 'var(--warn)', kind: 'broadcast', subtitle: 'Notify the channel' });
+    return out;
   }
 
   // Re-evaluate the @-mention popup against the caret. Shows it when the
@@ -718,8 +724,17 @@ class ChatView {
       dot.style.background = cand.color;
       const name = document.createElement('span');
       name.className = 'mention-name';
-      name.textContent = cand.name;
+      // Broadcast rows show the literal '@here' / '@channel' so they're
+      // visibly different from a teammate row. Insertion still uses
+      // cand.name; the '@' prefix gets added by _fillMentionSuggest.
+      name.textContent = cand.kind === 'broadcast' ? '@' + cand.name : cand.name;
       row.append(dot, name);
+      if (cand.subtitle) {
+        const sub = document.createElement('span');
+        sub.className = 'mention-subtitle';
+        sub.textContent = cand.subtitle;
+        row.appendChild(sub);
+      }
       // mousedown so the textarea-blur teardown doesn't beat the click.
       row.addEventListener('mousedown', (e) => { e.preventDefault(); this._fillMentionSuggest(i); });
       root.appendChild(row);

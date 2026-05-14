@@ -2260,8 +2260,15 @@ function onChatMessage(m) {
   if (!state.huddle) return;
   if (m.authorName === state.myName) return; // ignore our own messages
   const channel = state.channelMeta.get(m.channelId);
-  const mentionsMe = Array.isArray(m.mentions) && m.mentions.includes(state.myName);
   const isDm = channel?.type === 'dm';
+  // A message "mentions me" if my name is in `m.mentions`, or — in a
+  // public/private channel — it carries a broadcast sentinel (@here /
+  // @channel). Broadcast in DMs is redundant since `isDm` already fans the
+  // notification out to every member, so we don't double-count it there.
+  const mentionsMe = Array.isArray(m.mentions) && (
+    m.mentions.includes(state.myName)
+    || (!isDm && (m.mentions.includes('@here') || m.mentions.includes('@channel')))
+  );
   const isActive = state.chat?.currentChannel === m.channelId && windowFocused;
   const muted = isChannelMuted(m.channelId);
   if (!isActive) bumpUnread(m.channelId, mentionsMe);

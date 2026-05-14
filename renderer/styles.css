@@ -413,7 +413,14 @@ input:focus, textarea:focus {
   color: var(--accent-2);
   padding: 1px 5px; border-radius: 4px; font-weight: 500;
 }
-.mention-self { background: rgba(255, 159, 10, 0.22); color: var(--warn); }
+.mention-self, .mention-broadcast {
+  background: rgba(255, 159, 10, 0.22);
+  color: var(--warn);
+}
+.mention-broadcast {
+  font-weight: 600;
+  text-transform: lowercase;
+}
 .msg-mentions-me {
   background: rgba(255, 159, 10, 0.08);
   border-left: 3px solid var(--warn);
@@ -1672,6 +1679,12 @@ button.ctrl.muted.icon-only::after {
 }
 .slash-suggest-item .mention-name { color: var(--text); }
 .slash-suggest-item.selected .mention-name { color: white; }
+.slash-suggest-item .mention-subtitle {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.slash-suggest-item.selected .mention-subtitle { color: rgba(255,255,255,.75); }
 .composer textarea {
   flex: 1; resize: none;
   min-height: 38px; max-height: 160px;
