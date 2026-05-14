@@ -1155,7 +1155,7 @@
       const { data: existingId, error: lookupErr } = await this.supabase
         .rpc('find_dm_by_member_sig', { t: this.team.id, sig: memberSig });
       if (lookupErr) throw lookupErr;
-      if (existingId) return await this._openExistingDm(existingId);
+      if (existingId) return await this._openExistingDm(existingId, ids);
 
       const nameById = await this._resolveNames(ids);
       const label = ids.map((id) => nameById.get(id) || 'someone').sort((x, y) => x.localeCompare(y)).join(', ');
@@ -1175,7 +1175,7 @@
         if (chErr.code === '23505') {
           const { data: conflictId } = await this.supabase
             .rpc('find_dm_by_member_sig', { t: this.team.id, sig: memberSig });
-          if (conflictId) return await this._openExistingDm(conflictId);
+          if (conflictId) return await this._openExistingDm(conflictId, ids);
         }
         throw chErr;
       }
@@ -1195,17 +1195,31 @@
       };
     }
 
-    // Open an existing DM by id, re-adding us to channel_members if we'd
-    // previously left. Used by createGroupDm when find_dm_by_member_sig hits.
-    // channel_members_insert_self lets us add ourselves to any channel in a
-    // team we belong to; 23505 means we were already a member (e.g. cache
-    // miss but realtime had it) and is treated as success.
-    async _openExistingDm(channelId) {
+    // Open an existing DM by id, re-adding us and any other intended
+    // participants to channel_members if they'd previously left. Used by
+    // createGroupDm when find_dm_by_member_sig hits.
+    //
+    // We add ourselves first (channel_members_insert_self covers it via the
+    // user_id = auth.uid() branch), which makes us a member; the gdm RLS
+    // migration (20260513000000) then lets us add the rest via the
+    // is_channel_member branch. `.upsert(ignoreDuplicates)` is used for the
+    // batch insert because `.insert()` is atomic — one 23505 (already a
+    // member) would otherwise abort the whole batch and leave the rest of
+    // the intended members unadded.
+    async _openExistingDm(channelId, otherUserIds = []) {
       const { error: joinErr } = await this.supabase
         .from('channel_members')
         .insert({ team_id: this.team.id, channel_id: channelId, user_id: this.peerId });
       if (joinErr && joinErr.code !== '23505') throw joinErr;
       this._myChannelIds.add(channelId);
+      const others = (otherUserIds || []).filter((uid) => uid && uid !== this.peerId);
+      if (others.length) {
+        const rows = others.map((uid) => ({ team_id: this.team.id, channel_id: channelId, user_id: uid }));
+        const { error: othersErr } = await this.supabase
+          .from('channel_members')
+          .upsert(rows, { onConflict: 'team_id,channel_id,user_id', ignoreDuplicates: true });
+        if (othersErr) throw othersErr;
+      }
       const { data: chRow, error: chErr } = await this.supabase
         .from('channels').select('*').eq('team_id', this.team.id).eq('id', channelId).maybeSingle();
       if (chErr) throw chErr;
