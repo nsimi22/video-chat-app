@@ -1136,42 +1136,26 @@
     }
 
     // Open or create a group DM with `otherUserIds` (plus us). If a DM channel
-    // with exactly this membership already exists, reuse it (no duplicates).
-    // Group DMs use a random `gdm:<uuid>` id so members can change over time
-    // without the id going stale.
+    // with exactly this membership already exists, reuse it (re-adding us to
+    // channel_members if we'd previously left). Group DMs use a random
+    // `gdm:<uuid>` id so members can change over time without the id going
+    // stale; dedup is enforced server-side by a partial unique index on
+    // (team_id, member_sig) added in 20260514120000.
     async createGroupDm(otherUserIds, _names) {
       const ids = [...new Set((otherUserIds || []).filter(Boolean))].filter((id) => id !== this.peerId);
       if (ids.length < 2) throw new Error('a group DM needs at least two other people');
       await this._assertTeamMembers(ids);
-      const want = new Set([this.peerId, ...ids]);
+      // Canonical member-set signature: sorted UUIDs joined by commas. Must
+      // match the format the migration's backfill uses (string_agg user_id::text
+      // order by user_id::text) or existing rows won't be found.
+      const memberSig = [this.peerId, ...ids].sort().join(',');
 
-      // Dedup against existing DM channels we belong to. `_myChannelIds` is
-      // kept current on welcome + via the realtime stream, so we can use it
-      // directly instead of re-querying our channel_members rows.
-      const myChannelIds = [...this._myChannelIds];
-      if (myChannelIds.length) {
-        const { data: allRows } = await this.supabase
-          .from('channel_members').select('channel_id,user_id').eq('team_id', this.team.id).in('channel_id', myChannelIds);
-        const byChannel = new Map();
-        for (const r of (allRows || [])) {
-          if (!byChannel.has(r.channel_id)) byChannel.set(r.channel_id, []);
-          byChannel.get(r.channel_id).push(r.user_id);
-        }
-        for (const [cid, memberIds] of byChannel) {
-          if (memberIds.length === want.size && memberIds.every((id) => want.has(id))) {
-            const { data: chRow } = await this.supabase
-              .from('channels').select('*').eq('team_id', this.team.id).eq('id', cid).maybeSingle();
-            if (chRow && chRow.type === 'dm') {
-              const nameById = await this._resolveNames(memberIds);
-              this._myChannelIds.add(cid);
-              const meta = this._marshalChannel(chRow);
-              meta.memberIds = memberIds;
-              meta.members = memberIds.map((id) => nameById.get(id) || '');
-              return meta;
-            }
-          }
-        }
-      }
+      // First try server-side dedup. The RPC is SECURITY DEFINER so it returns
+      // a hit even if we previously left the gdm (RLS would otherwise hide it).
+      const { data: existingId, error: lookupErr } = await this.supabase
+        .rpc('find_dm_by_member_sig', { t: this.team.id, sig: memberSig });
+      if (lookupErr) throw lookupErr;
+      if (existingId) return await this._openExistingDm(existingId);
 
       const nameById = await this._resolveNames(ids);
       const label = ids.map((id) => nameById.get(id) || 'someone').sort((x, y) => x.localeCompare(y)).join(', ');
@@ -1182,9 +1166,19 @@
       // on_channel_after_insert trigger only grants after RETURNING runs.
       const { error: chErr } = await this.supabase.from('channels').insert({
         team_id: this.team.id, id, name: label.slice(0, 200) || 'Group', topic: '',
-        type: 'dm', protected: false, created_by: this.peerId,
+        type: 'dm', protected: false, created_by: this.peerId, member_sig: memberSig,
       });
-      if (chErr) throw chErr;
+      if (chErr) {
+        // 23505 = the (team_id, member_sig) partial unique index fired. We
+        // raced another tab/click that beat us to the insert; recover by
+        // opening the winner instead of surfacing an opaque error.
+        if (chErr.code === '23505') {
+          const { data: conflictId } = await this.supabase
+            .rpc('find_dm_by_member_sig', { t: this.team.id, sig: memberSig });
+          if (conflictId) return await this._openExistingDm(conflictId);
+        }
+        throw chErr;
+      }
       // The trigger added us; add the rest. We're the creator, so the existing
       // channel_members insert_self policy (created_by branch) permits this.
       // .insert() is atomic — a single failed row aborts the batch and leaves
@@ -1199,6 +1193,28 @@
         id, name: label || 'Group', topic: '', type: 'dm', protected: false, createdBy: this.peerId,
         memberIds: allIds, members: allIds.map((uid) => nameById.get(uid) || ''),
       };
+    }
+
+    // Open an existing DM by id, re-adding us to channel_members if we'd
+    // previously left. Used by createGroupDm when find_dm_by_member_sig hits.
+    // channel_members_insert_self lets us add ourselves to any channel in a
+    // team we belong to; 23505 means we were already a member (e.g. cache
+    // miss but realtime had it) and is treated as success.
+    async _openExistingDm(channelId) {
+      const { error: joinErr } = await this.supabase
+        .from('channel_members')
+        .insert({ team_id: this.team.id, channel_id: channelId, user_id: this.peerId });
+      if (joinErr && joinErr.code !== '23505') throw joinErr;
+      this._myChannelIds.add(channelId);
+      const { data: chRow, error: chErr } = await this.supabase
+        .from('channels').select('*').eq('team_id', this.team.id).eq('id', channelId).maybeSingle();
+      if (chErr) throw chErr;
+      if (!chRow) throw new Error('dm vanished between lookup and join');
+      const { memberIds, members } = await this._fetchChannelMembers(channelId);
+      const meta = this._marshalChannel(chRow);
+      meta.memberIds = memberIds;
+      meta.members = members;
+      return meta;
     }
 
     // Add more people to an existing DM channel (turns a 1:1 into a group, or
