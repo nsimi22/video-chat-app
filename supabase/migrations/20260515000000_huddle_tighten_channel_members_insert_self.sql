@@ -89,6 +89,13 @@ declare
   cid text;
 begin
   if uid is null then return null; end if;
+  -- Team-membership gate: SECURITY DEFINER bypasses channel_members_insert_self
+  -- (which checks is_team_member as a precondition on every branch), so we
+  -- have to enforce it ourselves. Without this, a user who was removed from
+  -- the team but still holds a valid JWT could rejoin any gdm they were once
+  -- a party to and read its history (channel_members membership unblocks
+  -- can_see_channel for type='dm', which messages_read keys off).
+  if not public.is_team_member(t) then return null; end if;
   -- Intent gate: caller must be a party to the requested sig. Without this
   -- a team member could brute-force teammate-UUID combinations and discover
   -- gdm ids they aren't in.
