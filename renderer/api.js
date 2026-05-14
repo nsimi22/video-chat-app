@@ -51,14 +51,26 @@
   const slugifyChannelName = (raw) => slugify(raw);
 
   // --- Mention extraction (client-side; we no longer have a server doing it)
+  //
+  // Returns the entries to store in messages.mentions:
+  //   - resolved user display names (from `names`, case-insensitive match) —
+  //     stored as-typed in the directory, e.g. 'Alice'
+  //   - broadcast sentinels '@here' / '@channel' — the leading '@' makes them
+  //     unambiguous against a hypothetical user literally named "here" or
+  //     "channel" (no other entry in the array carries an '@' prefix)
   function extractMentions(text, names) {
-    if (!text || !names || !names.length) return [];
+    if (!text) return [];
     const set = new Set();
-    const lookup = new Map(names.map((n) => [n.toLowerCase(), n]));
+    const lookup = new Map((names || []).map((n) => [n.toLowerCase(), n]));
     const re = /(^|[^a-zA-Z0-9_])@([a-zA-Z0-9_][a-zA-Z0-9_.-]{0,31})/g;
     let m;
     while ((m = re.exec(text)) !== null) {
-      const hit = lookup.get(m[2].toLowerCase());
+      const token = m[2].toLowerCase();
+      if (token === 'here' || token === 'channel') {
+        set.add('@' + token);
+        continue;
+      }
+      const hit = lookup.get(token);
       if (hit) set.add(hit);
     }
     return [...set];
