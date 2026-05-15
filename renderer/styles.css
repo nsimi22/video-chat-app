@@ -237,13 +237,14 @@ input:focus, textarea:focus {
   font-size: 10px;
   opacity: 0.7;
 }
-#mute-channel-btn.muted {
+#channel-notify-btn.muted {
   color: var(--bad);
 }
-/* Per-channel "notify on everything" — header bell-plus button lights up
-   in the accent colour and the sidebar row gets a bell suffix. Mutually
-   exclusive with `.muted` (the JS clears one when you set the other). */
-#notify-all-btn.active {
+/* Per-channel "notify on everything" — header bell-plus icon lights up
+   in the accent colour and the sidebar row gets a bell suffix. The JS
+   cycle keeps `.muted` and `.notify-all` mutually exclusive on the
+   button + the sidebar row. */
+#channel-notify-btn.notify-all {
   color: var(--accent);
 }
 .channel-list li.notify-all .ch-name::after {
