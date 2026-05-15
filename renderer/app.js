@@ -880,6 +880,10 @@ async function bootCallPopout(cfg) {
   btnCam.disabled = true;
   const btnBlur = mkIconBtn('popout-btn-blur', 'blur', 'Blur background');
   btnBlur.disabled = true;
+  // Hide outright when the MediaPipe runtime didn't load — popout
+  // doesn't run renderCallHeader so the main-window's
+  // BlurPipeline.isAvailable() gate doesn't apply here.
+  if (!window.BlurPipeline?.isAvailable()) btnBlur.classList.add('hidden');
   const btnShare = mkIconBtn('popout-btn-share', 'screen', 'Share a screen');
   btnShare.disabled = true;
   const btnHand = mkIconBtn('popout-btn-hand', 'hand', 'Raise hand');
@@ -1018,7 +1022,7 @@ async function startPopoutCall(channelId) {
   // them on now that mesh.toggle{Mic,Cam}/addScreen have something to act on.
   els.btnMic.disabled = false;
   els.btnCam.disabled = false;
-  if (els.btnBlur) els.btnBlur.disabled = false;
+  if (els.btnBlur && window.BlurPipeline?.isAvailable()) els.btnBlur.disabled = false;
   if (els.btnShare) els.btnShare.disabled = false;
   if (els.btnHand) els.btnHand.disabled = false;
   if (els.btnReact) els.btnReact.disabled = false;

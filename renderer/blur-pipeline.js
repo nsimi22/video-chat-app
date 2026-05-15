@@ -26,6 +26,8 @@
       this._seg = null;
       this._running = false;
       this._output = null;
+      this._frameIntervalMs = 1000 / DEFAULT_FPS;
+      this._lastFrameTs = 0;
     }
 
     static isAvailable() {
@@ -36,6 +38,7 @@
       if (!BlurPipeline.isAvailable()) {
         throw new Error('SelfieSegmentation runtime not loaded');
       }
+      this._frameIntervalMs = 1000 / Math.max(1, fps);
       this._rawStream = rawStream;
 
       // Hidden <video> playing the raw camera — MediaPipe pulls frames
@@ -91,17 +94,27 @@
     // throws on an undecoded HTMLVideoElement. Errors are logged but
     // never re-thrown; one bad frame must not break the steady-state
     // loop.
-    _tick() {
+    //
+    // rAF fires at the display refresh rate (60–144 Hz on most
+    // hardware); without throttling we'd run segmentation faster
+    // than the captureStream(fps) consumer can use, burning CPU on
+    // frames nobody sees. Gate by elapsed wall-clock time so the
+    // segmentation rate matches the configured fps.
+    _tick(now) {
       if (!this._running) return;
+      const ts = typeof now === 'number' ? now : performance.now();
       const v = this._sourceVideo;
-      if (v && v.readyState >= 2) {
+      const ready = v && v.readyState >= 2;
+      const due = ts - this._lastFrameTs >= this._frameIntervalMs;
+      if (ready && due) {
+        this._lastFrameTs = ts;
         this._seg.send({ image: v }).catch((err) => {
           console.warn('[blur] segmentation send failed', err);
         }).finally(() => {
-          if (this._running) requestAnimationFrame(() => this._tick());
+          if (this._running) requestAnimationFrame((t) => this._tick(t));
         });
       } else {
-        requestAnimationFrame(() => this._tick());
+        requestAnimationFrame((t) => this._tick(t));
       }
     }
 

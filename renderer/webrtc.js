@@ -355,14 +355,32 @@ class MeshClient extends EventTarget {
     // new SDP exchange. Screen-share senders carry their own tracks
     // (not equal to the previous published video track) and are
     // skipped naturally by the identity check.
+    //
+    // If replaceTrack rejects for a peer (per spec: incompatible
+    // codec parameters, sender removed, etc.) we fall back to a
+    // remove/addStream renegotiation for that connection — otherwise
+    // we'd hand back success while that peer is still pinned to the
+    // old track that we're about to stop, freezing their feed.
+    const fallbackConns = new Set();
     if (prevVideoTrack !== newVideoTrack) {
       for (const conn of this.peers.values()) {
         for (const sender of conn.pc.getSenders()) {
           if (sender.track === prevVideoTrack) {
             try { await sender.replaceTrack(newVideoTrack); }
-            catch (err) { console.warn('[mesh] replaceTrack failed', err); }
+            catch (err) {
+              console.warn('[mesh] replaceTrack failed; falling back to renegotiation', err);
+              fallbackConns.add(conn);
+            }
           }
         }
+      }
+    }
+    for (const conn of fallbackConns) {
+      try {
+        if (prevPublished) conn.removeStream(prevPublished);
+        conn.addStream(newPublished);
+      } catch (err) {
+        console.warn('[mesh] fallback addStream failed', err);
       }
     }
     this.cameraStream = newPublished;
