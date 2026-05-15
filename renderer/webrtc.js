@@ -288,6 +288,11 @@ class MeshClient extends EventTarget {
         published = await this._blurPipeline.start(raw);
       } catch (err) {
         console.warn('[mesh] blur pipeline start failed, publishing raw camera', err);
+        // start() can throw after partial init (e.g. once the
+        // segmentation runtime is allocated but before captureStream
+        // returns). Tear down what we started so we don't leak a
+        // half-initialised segmenter.
+        try { this._blurPipeline?.stop(); } catch {}
         this._blurPipeline = null;
         this._blurOn = false;
         published = raw;
