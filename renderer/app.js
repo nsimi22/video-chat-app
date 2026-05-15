@@ -2745,8 +2745,8 @@ function ensureCamOffOverlay(tile, peerId) {
   if (tile.querySelector('.tile-cam-off')) return;
   const isSelf = peerId === state.huddle?.peerId;
   const peer = isSelf
-    ? { name: state.huddle.name, color: state.huddle.color }
-    : state.huddle?.peerInfo.get(peerId) || state.huddle?.callPeerInfo?.get(peerId) || {};
+    ? { name: state.huddle?.name, color: state.huddle?.color }
+    : state.huddle?.peerInfo?.get(peerId) || state.huddle?.callPeerInfo?.get(peerId) || {};
   const name = peer.name || 'guest';
   const color = peer.color || '#666';
   const overlay = document.createElement('div');
