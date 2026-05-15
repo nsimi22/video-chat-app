@@ -34,6 +34,11 @@ contextBridge.exposeInMainWorld('huddle', {
   getScreenSources: () => ipcRenderer.invoke('get-screen-sources'),
   getSupabaseConfig: () => ipcRenderer.invoke('get-supabase-config'),
   fetchProxy: (req) => ipcRenderer.invoke('fetch-proxy', req),
+  // ICS calendar subscription fetch. Separate from fetchProxy because
+  // it accepts any HTTPS host (user-supplied URL in Settings) — the
+  // main-process handler enforces a private-IP block, an HTTPS-only
+  // policy, and a response-size cap.
+  icsFetch: (url) => ipcRenderer.invoke('ics-fetch', { url }),
 
   // Popout windows. `openPopout({ target, teamId, channelId, whiteboardId, title })`
   // spawns a child renderer that boots into the requested view.

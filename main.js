@@ -293,6 +293,61 @@ function isLoopbackOrPrivate(hostname) {
   return false;
 }
 
+// ICS calendar subscription fetch. The URL is user-supplied in
+// Settings (any provider's published .ics endpoint), so unlike the
+// host-allowlisted fetch-proxy below this accepts any HTTPS host —
+// but it still rejects loopback / RFC1918 to keep an SSRF surface
+// off the table, caps the response body, and forces text/calendar
+// content. A separate handler from fetch-proxy because the security
+// posture is different (user URL vs. integration-allowlisted URL)
+// and conflating them would weaken both. webcal:// is normalised
+// to https:// per the de-facto convention used by every major
+// calendar provider.
+const ICS_MAX_BYTES = 4 * 1024 * 1024; // 4 MB — accommodates large feeds (year of 30+ events)
+ipcMain.handle('ics-fetch', async (_event, { url }) => {
+  let parsed;
+  try {
+    let s = String(url || '');
+    if (s.startsWith('webcal://')) s = 'https://' + s.slice('webcal://'.length);
+    parsed = new URL(s);
+  } catch { return { ok: false, status: 0, error: 'invalid url' }; }
+  if (parsed.protocol !== 'https:') {
+    return { ok: false, status: 0, error: 'only https / webcal urls are allowed' };
+  }
+  if (isLoopbackOrPrivate(parsed.hostname)) {
+    return { ok: false, status: 0, error: 'private/loopback hosts blocked' };
+  }
+  try {
+    const res = await fetch(parsed.toString(), {
+      method: 'GET',
+      headers: { 'Accept': 'text/calendar, text/plain;q=0.9, */*;q=0.5' },
+      redirect: 'follow',
+    });
+    // Guard against a rogue server streaming an unbounded response.
+    // We consume up to ICS_MAX_BYTES then stop reading.
+    const reader = res.body?.getReader();
+    if (!reader) {
+      return { ok: false, status: res.status, error: 'no response body' };
+    }
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > ICS_MAX_BYTES) {
+        try { await reader.cancel(); } catch {}
+        return { ok: false, status: res.status, error: 'response too large' };
+      }
+      chunks.push(value);
+    }
+    const buf = Buffer.concat(chunks.map((c) => Buffer.from(c)));
+    return { ok: res.ok, status: res.status, body: buf.toString('utf8') };
+  } catch (err) {
+    return { ok: false, status: 0, error: String(err && err.message || err) };
+  }
+});
+
 ipcMain.handle('fetch-proxy', async (_event, { url, method = 'GET', headers = {}, body = null }) => {
   let parsed;
   try { parsed = new URL(url); } catch { return { ok: false, status: 0, error: 'invalid url' }; }

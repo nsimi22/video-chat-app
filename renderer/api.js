@@ -1597,6 +1597,87 @@
       // members are populated separately for private/dm.
       return out;
     }
+
+    // --- Scheduled calls ----------------------------------------------------
+    //
+    // Per-team agenda of upcoming Huddle calls. RLS gates by team
+    // membership for read and by created_by for mutation, so the
+    // renderer doesn't need to re-check authority. The realtime
+    // subscriber emits inserts/deletes/updates; the subscription
+    // filter + RLS ensure non-members never receive the events.
+
+    async loadScheduledCalls({ from = new Date(Date.now() - 60 * 60 * 1000), limit = 500 } = {}) {
+      if (!this.team) return [];
+      // `from` defaults to one hour ago so a call that JUST started
+      // still shows in the upcoming list (people often want to
+      // rejoin a recently-started scheduled call).
+      const { data, error } = await this.supabase
+        .from('scheduled_calls')
+        .select('*')
+        .eq('team_id', this.team.id)
+        .gte('starts_at', new Date(from).toISOString())
+        .order('starts_at', { ascending: true })
+        .limit(limit);
+      if (error) { console.warn('loadScheduledCalls failed', error); return []; }
+      return (data || []).map((r) => this._marshalScheduledCall(r));
+    }
+
+    async createScheduledCall({ channelId, title, description = '', startsAt, durationMin = 30 }) {
+      if (!this.team) throw new Error('not in a team');
+      if (!(startsAt instanceof Date)) startsAt = new Date(startsAt);
+      if (isNaN(startsAt.getTime())) throw new Error('invalid startsAt');
+      const { data, error } = await this.supabase.from('scheduled_calls').insert({
+        team_id: this.team.id,
+        channel_id: channelId,
+        created_by: this.peerId,
+        title, description,
+        starts_at: startsAt.toISOString(),
+        duration_min: durationMin,
+      }).select().single();
+      if (error) throw error;
+      return this._marshalScheduledCall(data);
+    }
+
+    async deleteScheduledCall(id) {
+      const { error } = await this.supabase.from('scheduled_calls').delete().eq('id', id);
+      if (error) throw error;
+    }
+
+    // Realtime fan-in for the team's schedule. Returns an unsubscribe
+    // fn — callers must invoke it on team-switch or app-shutdown to
+    // avoid stacked subscriptions on hot-reload / re-login.
+    subscribeScheduledCalls(handler) {
+      if (!this.team) return () => {};
+      const ch = this.supabase
+        .channel(`scheduled_calls:${this.team.id}`)
+        .on('postgres_changes', {
+          event: '*', schema: 'public', table: 'scheduled_calls',
+          filter: `team_id=eq.${this.team.id}`,
+        }, (payload) => {
+          handler({
+            eventType: payload.eventType,
+            row: payload.new ? this._marshalScheduledCall(payload.new) : null,
+            oldId: payload.old?.id || null,
+          });
+        })
+        .subscribe();
+      return () => { try { this.supabase.removeChannel(ch); } catch {} };
+    }
+
+    _marshalScheduledCall(row) {
+      return {
+        id: row.id,
+        teamId: row.team_id,
+        channelId: row.channel_id,
+        createdBy: row.created_by,
+        title: row.title,
+        description: row.description || '',
+        startsAt: new Date(row.starts_at),
+        durationMin: row.duration_min,
+        createdAt: new Date(row.created_at),
+        updatedAt: new Date(row.updated_at),
+      };
+    }
   }
 
   // ========================================================================

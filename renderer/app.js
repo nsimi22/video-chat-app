@@ -106,6 +106,26 @@ const els = {
   savedClose: $('#saved-close'),
   savedLabels: $('#saved-labels'),
   savedList: $('#saved-list'),
+  openCalendar: $('#open-calendar'),
+  calendarCount: $('#calendar-count'),
+  calendarDrawer: $('#calendar-drawer'),
+  calendarClose: $('#calendar-close'),
+  calendarList: $('#calendar-list'),
+  calendarSchedule: $('#calendar-schedule'),
+  scheduleModal: $('#schedule-modal'),
+  scheduleForm: $('#schedule-form'),
+  scheduleTitle: $('#schedule-title'),
+  scheduleChannel: $('#schedule-channel'),
+  scheduleDate: $('#schedule-date'),
+  scheduleTime: $('#schedule-time'),
+  scheduleDuration: $('#schedule-duration'),
+  scheduleDescription: $('#schedule-description'),
+  scheduleCancel: $('#schedule-cancel'),
+  scheduleSave: $('#schedule-save'),
+  setCalendarList: $('#set-calendar-list'),
+  setCalendarName: $('#set-calendar-name'),
+  setCalendarUrl: $('#set-calendar-url'),
+  setCalendarAdd: $('#set-calendar-add'),
   savePopover: $('#save-popover'),
   savePopoverLabels: $('#save-popover-labels'),
   savePopoverNew: $('#save-popover-new'),
@@ -236,6 +256,10 @@ const state = {
   // dispatched from HuddleClient. Drives the bookmark indicator on
   // message rows and the count badge on the sidebar Saved entry.
   savedById: new Map(),
+  // HuddleCalendar instance (lazy: built once huddle is ready).
+  // Owns scheduled-call CRUD, ICS subscription cache, and the drawer +
+  // schedule-modal DOM ownership.
+  calendar: null,
   // Currently-active label chip in the saved drawer, or null for "All".
   savedActiveLabel: null,
   // Active save-popover target (messageId being edited) — used by the
@@ -1794,6 +1818,11 @@ async function teardownTeam() {
   // Detach the chat view's interval + every listener it installed before
   // dropping the reference, otherwise rejoining accumulates handlers.
   state.chat?.destroy();
+  // Drop the calendar's realtime subscription + ICS-poll interval
+  // before tearing the huddle down so the realtime channel is closed
+  // cleanly and the polling timer doesn't fire against a null huddle.
+  try { state.calendar?.stop(); } catch {}
+  state.calendar = null;
   // Await the huddle teardown so unsubscribes complete before the page
   // can navigate / reload — otherwise channels can leak server-side.
   try { await state.huddle?.stop(); } catch {}
@@ -2031,6 +2060,10 @@ function onWelcome({ peers, channels }) {
   // sidebar count + bookmark indicators read from this; realtime keeps
   // it current after the first load.
   refreshSavedCache().catch((err) => console.warn('saved cache seed failed', err));
+  // Seed the calendar (internal scheduled-calls + ICS subscriptions)
+  // once the team is up. Realtime + the 15-min ICS poller keep it
+  // current after that.
+  startCalendar().catch((err) => console.warn('calendar start failed', err));
   // If we just redeemed an invite link with a channel/call hop,
   // jump straight there instead of landing on #general. Falls back
   // to the normal default-channel logic if the target isn't visible
@@ -2918,6 +2951,189 @@ async function refreshSavedCache() {
   if (state.chat) state.chat.refreshAllMessages?.();
 }
 
+// ---------------------------------------------------------------------------
+// Calendar (scheduled-call CRUD + ICS subscription cache).
+// HuddleCalendar lives in renderer/calendar.js; this just wires it
+// into the rest of the app: drawer toggling, the channel-list
+// dropdown for the schedule modal, posting an .ics attachment to
+// the channel after a schedule completes, and the per-team
+// realtime / poll lifecycle.
+// ---------------------------------------------------------------------------
+
+async function startCalendar() {
+  if (!state.huddle || !window.HuddleCalendar) return;
+  if (state.calendar) { try { state.calendar.stop(); } catch {} }
+  state.calendar = new window.HuddleCalendar({
+    huddle: state.huddle,
+    hooks: {
+      getChannels: () => Array.from(state.channelMeta?.values?.() || []),
+      currentChannelId: () => state.chat?.currentChannel || null,
+      openCallChannel: (channelId) => {
+        // Calendar drawer's Join button on an imminent scheduled call.
+        // Just focus the channel — the user can hit "Join call" from
+        // there. Opening the call directly would surprise people who
+        // wanted to see the chat first or who haven't realised the
+        // call is mid-flight.
+        focusChannel(channelId);
+        state.calendar?.closeDrawer();
+      },
+      postIcsToChannel: postScheduledCallIcsToChannel,
+      onScheduled: () => refreshCalendarSidebarCount(),
+    },
+  });
+  state.calendar.bindElements({
+    drawer: els.calendarDrawer,
+    list: els.calendarList,
+    scheduleBtn: els.calendarSchedule,
+    closeBtn: els.calendarClose,
+    modal: els.scheduleModal,
+    modalForm: els.scheduleForm,
+    modalTitle: els.scheduleTitle,
+    modalChannel: els.scheduleChannel,
+    modalDate: els.scheduleDate,
+    modalTime: els.scheduleTime,
+    modalDuration: els.scheduleDuration,
+    modalDescription: els.scheduleDescription,
+    modalCancel: els.scheduleCancel,
+    modalSave: els.scheduleSave,
+  });
+  const subscriptions = state.settings?.calendar?.subscriptions || [];
+  await state.calendar.start({ subscriptions });
+  refreshCalendarSidebarCount();
+}
+
+function refreshCalendarSidebarCount() {
+  if (!els.calendarCount) return;
+  const n = state.calendar?._scheduled?.size || 0;
+  els.calendarCount.textContent = String(n);
+  els.calendarCount.classList.toggle('hidden', n === 0);
+}
+
+// Post the just-scheduled call as a chat message in its channel,
+// with the .ics file attached so participants can drag it into their
+// external calendar app. The huddle:// deep link in the URL field
+// becomes the "join from calendar app" affordance — calendar apps
+// typically render URL: as a clickable link in the event details.
+async function postScheduledCallIcsToChannel(scheduled) {
+  if (!state.huddle || !window.HuddleICS) return;
+  // Deep-link shape mirrors buildJoinCallInviteUrl above (kept inline
+  // here to avoid a forward dependency).
+  let huddleUrl = '';
+  try {
+    huddleUrl = `huddle://team/${encodeURIComponent(state.huddle.team.id)}/channel/${encodeURIComponent(scheduled.channelId)}?call=1`;
+  } catch {}
+  const ics = window.HuddleICS.buildEvent({
+    uid: `huddle-${scheduled.id}@huddle`,
+    title: scheduled.title,
+    description: scheduled.description,
+    startsAt: scheduled.startsAt,
+    durationMin: scheduled.durationMin,
+    url: huddleUrl,
+  });
+  const file = new File([ics], 'huddle-call.ics', { type: 'text/calendar' });
+  let attachment = null;
+  try {
+    const uploaded = await state.huddle.uploadFile(file);
+    attachment = { ...uploaded, contentType: 'text/calendar' };
+  } catch (err) {
+    console.warn('postScheduledCallIcsToChannel: upload failed', err);
+    // We still post the announcement even if upload failed — the
+    // user will see the schedule in their Calendar drawer regardless.
+  }
+  const when = scheduled.startsAt.toLocaleString();
+  const body = `📅 Scheduled a call: **${scheduled.title}** — ${when} (${scheduled.durationMin} min)`;
+  await state.huddle.sendMessage({
+    channelId: scheduled.channelId,
+    text: body,
+    attachments: attachment ? [attachment] : [],
+  });
+}
+
+// Re-render the Settings calendar-subscription list from
+// state.settings.calendar.subscriptions. Mutations (add / remove)
+// write back to state.settings and the modal's Save button persists
+// via the existing user_integrations flow.
+function renderCalendarSettingsList() {
+  const root = els.setCalendarList;
+  if (!root) return;
+  root.innerHTML = '';
+  const subs = state.settings?.calendar?.subscriptions || [];
+  if (!subs.length) {
+    const empty = document.createElement('div');
+    empty.className = 'hint-inline';
+    empty.textContent = 'No subscriptions yet.';
+    root.appendChild(empty);
+    return;
+  }
+  for (const sub of subs) {
+    const row = document.createElement('div');
+    row.className = 'set-cal-row';
+    const info = document.createElement('div');
+    info.className = 'set-cal-row-info';
+    const name = document.createElement('div');
+    name.className = 'set-cal-row-name';
+    name.textContent = sub.name || '(unnamed)';
+    const url = document.createElement('div');
+    url.className = 'set-cal-row-url';
+    url.textContent = sub.url;
+    info.append(name, url);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'set-cal-row-del';
+    del.title = 'Remove subscription';
+    del.setAttribute('aria-label', 'Remove subscription');
+    del.textContent = '×';
+    del.onclick = async () => {
+      state.settings.calendar = state.settings.calendar || {};
+      const list = (state.settings.calendar.subscriptions || []).filter((s) => s.url !== sub.url);
+      state.settings.calendar.subscriptions = list;
+      renderCalendarSettingsList();
+      state.calendar?.setSubscriptions(list).catch(() => {});
+      // Persist immediately rather than waiting for Settings → Save:
+      // subscription add/remove is an atomic list edit, not a
+      // partially-typed form field, so it shouldn't be discarded
+      // by the Cancel button.
+      try { await window.huddleApi.saveSettings(state.settings); }
+      catch (err) { console.warn('persistCalendarSettings failed', err); }
+    };
+    row.append(info, del);
+    root.appendChild(row);
+  }
+}
+
+async function addCalendarSubscriptionFromForm() {
+  const name = (els.setCalendarName.value || '').trim();
+  const url = (els.setCalendarUrl.value || '').trim();
+  if (!url) { els.setCalendarUrl.focus(); return; }
+  // Light client-side validation — main-process ics-fetch enforces
+  // the real policy (https only, non-private host, size cap).
+  if (!/^(https?|webcal):\/\//i.test(url)) {
+    alert('URL must start with https:// or webcal://');
+    els.setCalendarUrl.focus();
+    return;
+  }
+  state.settings.calendar = state.settings.calendar || {};
+  const subs = state.settings.calendar.subscriptions || [];
+  if (subs.some((s) => s.url === url)) {
+    alert('That URL is already subscribed.');
+    return;
+  }
+  subs.push({ name: name || hostFromUrl(url), url });
+  state.settings.calendar.subscriptions = subs;
+  els.setCalendarName.value = '';
+  els.setCalendarUrl.value = '';
+  renderCalendarSettingsList();
+  state.calendar?.setSubscriptions(subs).catch(() => {});
+  // Persist immediately — see deletion handler above for rationale.
+  try { await window.huddleApi.saveSettings(state.settings); }
+  catch (err) { console.warn('persistCalendarSettings failed', err); }
+}
+
+function hostFromUrl(u) {
+  try { return new URL(u.replace(/^webcal:\/\//i, 'https://')).hostname; }
+  catch { return u; }
+}
+
 function refreshSavedSidebarCount() {
   if (!els.savedCount) return;
   const n = state.savedById.size;
@@ -3523,6 +3739,14 @@ function wireControls() {
   if (els.pinnedBtn) els.pinnedBtn.onclick = () => state.chat?.openPinnedDrawer();
   if (els.pinnedClose) els.pinnedClose.onclick = closePinnedDrawer;
   if (els.openSaved) els.openSaved.onclick = openSavedDrawer;
+  if (els.openCalendar) {
+    els.openCalendar.onclick = () => {
+      if (!state.calendar) return;
+      if (state.calendar.isOpen()) state.calendar.closeDrawer();
+      else state.calendar.openDrawer();
+    };
+  }
+  if (els.setCalendarAdd) els.setCalendarAdd.onclick = addCalendarSubscriptionFromForm;
   if (els.savedClose) els.savedClose.onclick = closeSavedDrawer;
   if (els.savePopoverAdd) els.savePopoverAdd.onclick = addNewLabelFromPopover;
   if (els.savePopoverNew) els.savePopoverNew.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addNewLabelFromPopover(); } };
@@ -4069,6 +4293,7 @@ async function openSettings() {
   els.setAiTicketRepo.value = s.aiTicket?.githubRepo || '';
   els.setGithubToken.value = s.github?.token || '';
   els.setGiphyKey.value = s.giphy?.key || '';
+  renderCalendarSettingsList();
   els.settingsStatus.classList.add('hidden');
   // Password fields are write-only — never prefilled, always cleared on open.
   els.setNewPassword.value = '';
@@ -4205,6 +4430,10 @@ async function saveSettings() {
     },
     github: { token: els.setGithubToken.value },
     giphy: { key: els.setGiphyKey.value.trim() },
+    // Calendar subscriptions are mutated in-place via the Add /
+    // remove buttons (which already wrote to state.settings); just
+    // pass them through unchanged so save() persists the edits.
+    calendar: state.settings?.calendar || {},
   };
   try {
     // Upload pending avatar first so the URL is included in the
