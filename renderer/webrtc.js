@@ -364,13 +364,17 @@ class MeshClient extends EventTarget {
     this._blurPipeline = newPipeline;
     this._blurOn = on;
 
-    // Stop the prior pipeline only AFTER replaceTrack — ending its
-    // canvas track mid-swap would give peers a brief "no video" gap.
-    if (prevPipeline) prevPipeline.stop();
-
+    // Dispatch BEFORE stopping the prior pipeline so the local self-cam
+    // tile re-points its <video>.srcObject at the new stream first —
+    // otherwise the canvas track ends while the tile is still rendering
+    // it, briefly freezing the local preview. Peers don't care about
+    // ordering here (replaceTrack above already pointed their senders
+    // at the new track); this is purely a local-UX fix.
     this.dispatchEvent(new CustomEvent('camera-stream-changed', {
       detail: { stream: newPublished },
     }));
+
+    if (prevPipeline) prevPipeline.stop();
   }
   toggleMic() {
     if (!this.cameraStream) return false;
