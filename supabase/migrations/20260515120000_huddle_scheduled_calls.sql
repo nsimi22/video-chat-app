@@ -54,15 +54,35 @@ create policy scheduled_calls_insert on public.scheduled_calls for insert to aut
     and public.can_see_channel(team_id, channel_id)
   );
 
--- Update / delete: owner only. Title/time edits flip the updated_at
--- via the trigger below so a future ICS-export with sequence numbers
--- can spot revisions.
+-- Update / delete: owner AND still a team member. A user removed
+-- from the team shouldn't be able to retroactively edit / cancel a
+-- call they scheduled while they were a member. Title/time edits
+-- flip the updated_at via the trigger below so a future ICS-export
+-- with sequence numbers can spot revisions.
 create policy scheduled_calls_update on public.scheduled_calls for update to authenticated
-  using (created_by = auth.uid())
-  with check (created_by = auth.uid());
+  using (
+    created_by = auth.uid()
+    and exists (
+      select 1 from public.team_members tm
+      where tm.team_id = scheduled_calls.team_id and tm.user_id = auth.uid()
+    )
+  )
+  with check (
+    created_by = auth.uid()
+    and exists (
+      select 1 from public.team_members tm
+      where tm.team_id = scheduled_calls.team_id and tm.user_id = auth.uid()
+    )
+  );
 
 create policy scheduled_calls_delete on public.scheduled_calls for delete to authenticated
-  using (created_by = auth.uid());
+  using (
+    created_by = auth.uid()
+    and exists (
+      select 1 from public.team_members tm
+      where tm.team_id = scheduled_calls.team_id and tm.user_id = auth.uid()
+    )
+  );
 
 -- Realtime: postgres_changes filtered by RLS. Members of the team get
 -- live updates as schedules are added / removed; non-members never

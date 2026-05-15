@@ -57,14 +57,23 @@
       const internalLoad = this._loadScheduled();
       const externalLoad = this._refreshAllSubscriptions();
       await internalLoad;            // gate render on the cheap one
+      this._notifyChange();
       this._render();
       externalLoad.then(() => this._render()).catch(() => {});
       this._startRealtime();
       this._startIcsPolling();
     }
 
-    stop() {
-      if (this._unsubscribeRealtime) { try { this._unsubscribeRealtime(); } catch {} this._unsubscribeRealtime = null; }
+    async stop() {
+      // Await the realtime unsubscribe so the WebSocket handshake
+      // completes before the next subscription opens on team-switch.
+      // Fire-and-forget would leak a server-side subscription per
+      // hot-reload / re-login.
+      if (this._unsubscribeRealtime) {
+        const u = this._unsubscribeRealtime;
+        this._unsubscribeRealtime = null;
+        try { await u(); } catch {}
+      }
       if (this._icsTimer) { clearInterval(this._icsTimer); this._icsTimer = null; }
       this._scheduled.clear();
       this._icsEvents.clear();
@@ -172,6 +181,7 @@
         // that already shows the new row (no flicker waiting for
         // the round-trip).
         this._scheduled.set(created.id, created);
+        this._notifyChange();
         this.closeScheduleModal();
         this._render();
         // Best-effort: post an .ics attachment to the channel so
@@ -206,8 +216,17 @@
           // INSERT or UPDATE — set() handles both.
           this._scheduled.set(evt.row.id, evt.row);
         }
+        this._notifyChange();
         this._render();
       });
+    }
+
+    // Single point of "scheduled-call map mutated" notification, fired
+    // from realtime events + local inserts + local deletes. Lets the
+    // host wire the sidebar badge (or any other consumer) to the
+    // actual map state instead of only the local-insert path.
+    _notifyChange() {
+      try { this.hooks.onChange?.(this._scheduled.size); } catch {}
     }
 
     // ----- ICS subscriptions (external calendars) -----------------------
@@ -351,6 +370,7 @@
             try {
               await this.huddle.deleteScheduledCall(e.ref.id);
               this._scheduled.delete(e.ref.id);
+              this._notifyChange();
               this._render();
             } catch (err) {
               console.warn('deleteScheduledCall failed', err);

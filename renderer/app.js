@@ -1821,7 +1821,9 @@ async function teardownTeam() {
   // Drop the calendar's realtime subscription + ICS-poll interval
   // before tearing the huddle down so the realtime channel is closed
   // cleanly and the polling timer doesn't fire against a null huddle.
-  try { state.calendar?.stop(); } catch {}
+  // Await stop() so the WebSocket unsubscribe handshake completes
+  // before the next team's subscribe opens.
+  try { await state.calendar?.stop(); } catch {}
   state.calendar = null;
   // Await the huddle teardown so unsubscribes complete before the page
   // can navigate / reload — otherwise channels can leak server-side.
@@ -2978,7 +2980,12 @@ async function startCalendar() {
         state.calendar?.closeDrawer();
       },
       postIcsToChannel: postScheduledCallIcsToChannel,
-      onScheduled: () => refreshCalendarSidebarCount(),
+      // Fires on every mutation of the scheduled-call cache — local
+      // inserts, local deletes, AND realtime events from other team
+      // members. The sidebar badge reads off this so it stays in
+      // sync with what's actually in the drawer, not just calls the
+      // local user scheduled themselves.
+      onChange: () => refreshCalendarSidebarCount(),
     },
   });
   state.calendar.bindElements({
@@ -3106,8 +3113,11 @@ async function addCalendarSubscriptionFromForm() {
   const url = (els.setCalendarUrl.value || '').trim();
   if (!url) { els.setCalendarUrl.focus(); return; }
   // Light client-side validation — main-process ics-fetch enforces
-  // the real policy (https only, non-private host, size cap).
-  if (!/^(https?|webcal):\/\//i.test(url)) {
+  // the real policy (https only, non-private host, size cap). Mirror
+  // its scheme restriction here (https + webcal only, no plain http)
+  // so the user gets immediate feedback instead of a deferred fetch
+  // failure.
+  if (!/^(https|webcal):\/\//i.test(url)) {
     alert('URL must start with https:// or webcal://');
     els.setCalendarUrl.focus();
     return;

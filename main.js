@@ -307,8 +307,11 @@ const ICS_MAX_BYTES = 4 * 1024 * 1024; // 4 MB — accommodates large feeds (yea
 ipcMain.handle('ics-fetch', async (_event, { url }) => {
   let parsed;
   try {
-    let s = String(url || '');
-    if (s.startsWith('webcal://')) s = 'https://' + s.slice('webcal://'.length);
+    // Case-insensitive webcal scheme normalisation — some providers
+    // (and copy-paste from email) hand us mixed-case schemes like
+    // WEBCAL://… which the URL parser preserves as "WEBCAL:". Match
+    // any case so we don't reject otherwise-valid URLs.
+    const s = String(url || '').replace(/^webcal:\/\//i, 'https://');
     parsed = new URL(s);
   } catch { return { ok: false, status: 0, error: 'invalid url' }; }
   if (parsed.protocol !== 'https:') {
@@ -323,6 +326,35 @@ ipcMain.handle('ics-fetch', async (_event, { url }) => {
       headers: { 'Accept': 'text/calendar, text/plain;q=0.9, */*;q=0.5' },
       redirect: 'follow',
     });
+    // Defense-in-depth against SSRF via HTTP redirect: a public URL
+    // might 302 to http://, to a private IP, or to file://. fetch()
+    // followed the redirect — by the time we check, the connection
+    // is made — but rejecting now still prevents body exfiltration
+    // back to the renderer. We do NOT mitigate DNS rebinding
+    // (public-host → private-IP resolution): doing that properly
+    // requires a custom dns.lookup + http.Agent setup and is left
+    // as follow-up.
+    try {
+      const finalUrl = new URL(res.url);
+      if (finalUrl.protocol !== 'https:') {
+        return { ok: false, status: res.status, error: 'redirect to non-https rejected' };
+      }
+      if (isLoopbackOrPrivate(finalUrl.hostname)) {
+        return { ok: false, status: res.status, error: 'redirect to private/loopback rejected' };
+      }
+    } catch {
+      return { ok: false, status: res.status, error: 'invalid final url' };
+    }
+    // Content-Type check: a server returning an HTML error page (or
+    // a JSON 200 from an unrelated endpoint) shouldn't be parsed as
+    // ICS. We accept any text/* + the spec-correct text/calendar
+    // (Google sometimes returns text/plain for webcal exports) and
+    // reject the rest before reading the body.
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (ct && !ct.startsWith('text/calendar') && !ct.startsWith('text/plain') && !ct.startsWith('application/octet-stream')) {
+      try { res.body?.cancel?.(); } catch {}
+      return { ok: false, status: res.status, error: `unexpected content-type: ${ct}` };
+    }
     // Guard against a rogue server streaming an unbounded response.
     // We consume up to ICS_MAX_BYTES then stop reading.
     const reader = res.body?.getReader();

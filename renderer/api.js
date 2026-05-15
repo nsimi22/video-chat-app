@@ -1643,11 +1643,15 @@
       if (error) throw error;
     }
 
-    // Realtime fan-in for the team's schedule. Returns an unsubscribe
-    // fn — callers must invoke it on team-switch or app-shutdown to
-    // avoid stacked subscriptions on hot-reload / re-login.
+    // Realtime fan-in for the team's schedule. Returns an async
+    // unsubscribe fn — callers should await it on team-switch or
+    // app-shutdown so the WebSocket handshake completes before the
+    // next subscription opens. Mirrors the lurker channel teardown
+    // above (cached.channel.unsubscribe()); using removeChannel()
+    // without unsubscribing leaves the server-side subscription open
+    // and can stack on hot-reload / re-login.
     subscribeScheduledCalls(handler) {
-      if (!this.team) return () => {};
+      if (!this.team) return async () => {};
       const ch = this.supabase
         .channel(`scheduled_calls:${this.team.id}`)
         .on('postgres_changes', {
@@ -1661,7 +1665,7 @@
           });
         })
         .subscribe();
-      return () => { try { this.supabase.removeChannel(ch); } catch {} };
+      return async () => { try { await ch.unsubscribe(); } catch {} };
     }
 
     _marshalScheduledCall(row) {
