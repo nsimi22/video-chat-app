@@ -601,6 +601,10 @@ function refreshNotifyButton() {
     all: 'Notifications: every message — click to reset',
   };
   els.channelNotifyBtn.title = TITLES[mode];
+  // aria-label trumps title for most screen readers, so keep them in
+  // sync — the static markup label ("Notification settings") doesn't
+  // tell the user what the click will actually do.
+  els.channelNotifyBtn.setAttribute('aria-label', TITLES[mode]);
 }
 
 // ---------------------------------------------------------------------------
