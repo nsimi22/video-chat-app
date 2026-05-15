@@ -93,6 +93,14 @@
   // (including TZID-qualified local times) is treated as floating —
   // we hand back a Date constructed in the local zone, which matches
   // what most users expect for events without an explicit zone.
+  //
+  // External feeds can be careless: e.g. 20260230 (Feb 30), or a feed
+  // with the year/month transposed. The regex catches gross structural
+  // breakage, but JS's Date constructor silently overflows out-of-range
+  // components (new Date(2026, 1, 30) → March 2). So after constructing
+  // we (a) reject Invalid Date and (b) round-trip-check the calendar
+  // fields to refuse silent overflow. Anything that fails returns null
+  // and the surrounding VEVENT loop drops the event.
   function parseDate(value, params) {
     const s = (value || '').trim();
     if (!s) return null;
@@ -100,25 +108,40 @@
     if (isAllDay) {
       const m = /^(\d{4})(\d{2})(\d{2})$/.exec(s);
       if (!m) return null;
-      // Anchor all-day events at local midnight; downstream code can
-      // format them with a date-only formatter. Constructing via
-      // (y, m-1, d) keeps the date stable across DST shifts.
-      const d = new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+      const y = parseInt(m[1], 10), mo = parseInt(m[2], 10), dd = parseInt(m[3], 10);
+      const d = new Date(y, mo - 1, dd);
+      if (isNaN(d.getTime())
+          || d.getFullYear() !== y
+          || d.getMonth() !== mo - 1
+          || d.getDate() !== dd) return null;
       return { date: d, allDay: true };
     }
     const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z)?$/.exec(s);
     if (!m) return null;
-    const [, y, mo, d, hh, mm, ss, z] = m;
+    const y = parseInt(m[1], 10), mo = parseInt(m[2], 10), dd = parseInt(m[3], 10);
+    const hh = parseInt(m[4], 10), mm = parseInt(m[5], 10), ss = parseInt(m[6], 10);
+    const z = m[7];
+    let d;
     if (z) {
-      const iso = `${y}-${mo}-${d}T${hh}:${mm}:${ss}Z`;
-      return { date: new Date(iso), allDay: false };
+      d = new Date(Date.UTC(y, mo - 1, dd, hh, mm, ss));
+      if (isNaN(d.getTime())
+          || d.getUTCFullYear() !== y
+          || d.getUTCMonth() !== mo - 1
+          || d.getUTCDate() !== dd
+          || d.getUTCHours() !== hh
+          || d.getUTCMinutes() !== mm
+          || d.getUTCSeconds() !== ss) return null;
+    } else {
+      d = new Date(y, mo - 1, dd, hh, mm, ss);
+      if (isNaN(d.getTime())
+          || d.getFullYear() !== y
+          || d.getMonth() !== mo - 1
+          || d.getDate() !== dd
+          || d.getHours() !== hh
+          || d.getMinutes() !== mm
+          || d.getSeconds() !== ss) return null;
     }
-    // Floating local time — Date constructor in local zone.
-    return {
-      date: new Date(parseInt(y, 10), parseInt(mo, 10) - 1, parseInt(d, 10),
-                     parseInt(hh, 10), parseInt(mm, 10), parseInt(ss, 10)),
-      allDay: false,
-    };
+    return { date: d, allDay: false };
   }
 
   function parse(text) {
