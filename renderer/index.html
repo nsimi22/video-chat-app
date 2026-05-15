@@ -201,6 +201,9 @@
             <button id="btn-cam" class="ctrl icon-only hidden" title="Toggle camera" aria-label="Toggle camera">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
             </button>
+            <button id="btn-blur" class="ctrl icon-only hidden" title="Blur background" aria-label="Blur background">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3" stroke-dasharray="2 1.5"/><path d="M5 21v-2a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v2" stroke-dasharray="2 1.5"/></svg>
+            </button>
             <button id="btn-share" class="ctrl icon-only hidden" title="Share a screen" aria-label="Share a screen">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="9 8 12 5 15 8"/><line x1="12" y1="5" x2="12" y2="13"/></svg>
             </button>
@@ -621,10 +624,12 @@
     </div>
 
     <script src="vendor/supabase.js"></script>
+    <script src="vendor/mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
     <script src="emojis.js"></script>
     <script src="icons.js"></script>
     <script src="markdown.js"></script>
     <script src="drawing.js"></script>
+    <script src="blur-pipeline.js"></script>
     <script src="api.js"></script>
     <script src="ai.js"></script>
     <script src="transcript.js"></script>
