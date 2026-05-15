@@ -28,16 +28,18 @@ create index if not exists scheduled_calls_channel_starts_idx
 
 alter table public.scheduled_calls enable row level security;
 
--- Read: any team member sees the team's schedule, regardless of which
--- channel the call is in. People often need to see the full agenda
--- even for channels they're not a member of (the row only exposes
--- title + time + channel name; private channel content stays gated).
+-- Read: must be a team member, AND must be able to see the target
+-- channel. This matches the insert policy and the channels_read
+-- policy in the initial schema. A schedule in a private channel is
+-- only visible to channel members — the description column can
+-- contain meeting context (agenda, attendees, links) that would
+-- otherwise leak to anyone in the team. The is_team_member guard
+-- is still required because can_see_channel returns true for any
+-- public channel regardless of team membership.
 create policy scheduled_calls_read on public.scheduled_calls for select to authenticated
   using (
-    exists (
-      select 1 from public.team_members tm
-      where tm.team_id = scheduled_calls.team_id and tm.user_id = auth.uid()
-    )
+    public.is_team_member(team_id)
+    and public.can_see_channel(team_id, channel_id)
   );
 
 -- Insert: must be a team member, must be self-attributed, and must
