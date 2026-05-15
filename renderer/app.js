@@ -86,6 +86,7 @@ const els = {
   btnJoinCall: $('#btn-join-call'),
   btnMic: $('#btn-mic'),
   btnCam: $('#btn-cam'),
+  btnBlur: $('#btn-blur'),
   btnShare: $('#btn-share'),
   btnLeave: $('#btn-leave'),
   btnPopoutCall: $('#btn-popout-call'),
@@ -877,6 +878,12 @@ async function bootCallPopout(cfg) {
   btnMic.disabled = true;
   const btnCam = mkIconBtn('popout-btn-cam', 'cam', 'Toggle camera');
   btnCam.disabled = true;
+  const btnBlur = mkIconBtn('popout-btn-blur', 'blur', 'Blur background');
+  btnBlur.disabled = true;
+  // Hide outright when the MediaPipe runtime didn't load — popout
+  // doesn't run renderCallHeader so the main-window's
+  // BlurPipeline.isAvailable() gate doesn't apply here.
+  if (!window.BlurPipeline?.isAvailable()) btnBlur.classList.add('hidden');
   const btnShare = mkIconBtn('popout-btn-share', 'screen', 'Share a screen');
   btnShare.disabled = true;
   const btnHand = mkIconBtn('popout-btn-hand', 'hand', 'Raise hand');
@@ -894,7 +901,7 @@ async function bootCallPopout(cfg) {
   btnLeave.className = 'ctrl danger';
   btnLeave.title = 'Leave call';
   btnLeave.innerHTML = `${window.HuddleIcons.phoneDown}<span>Leave</span>`;
-  bar.append(btnMic, btnCam, btnShare, btnHand, btnReact, btnLeave);
+  bar.append(btnMic, btnCam, btnBlur, btnShare, btnHand, btnReact, btnLeave);
   wrap.appendChild(bar);
   wrap.appendChild(reactPopover);
   stage.appendChild(wrap);
@@ -915,6 +922,7 @@ async function bootCallPopout(cfg) {
   els.tiles = tiles;
   els.btnMic = btnMic;
   els.btnCam = btnCam;
+  els.btnBlur = btnBlur;
   els.btnShare = btnShare;
   els.btnHand = btnHand;
   els.btnReact = btnReact;
@@ -949,6 +957,7 @@ async function bootCallPopout(cfg) {
     btnCam.classList.toggle('muted', !on);
     setPeerCamOn(state.huddle.peerId, on);
   };
+  btnBlur.onclick = toggleBackgroundBlur;
   btnShare.onclick = () => { if (state.mesh) openSourcePicker(); };
   state.reactPopoverCleanup?.();
   state.reactPopoverCleanup = wireReactPopover(btnReact, reactPopover);
@@ -998,6 +1007,7 @@ async function startPopoutCall(channelId) {
   mesh.addEventListener('raise-hand', (e) => onRemoteRaiseHand(e.detail));
   mesh.addEventListener('reaction', (e) => onRemoteReaction(e.detail));
   mesh.addEventListener('mute-state', (e) => onRemoteMuteState(e.detail));
+  mesh.addEventListener('camera-stream-changed', (e) => onLocalCameraStreamChanged(e.detail));
   try {
     await huddle.joinCall(channelId);
   } catch (err) {
@@ -1012,13 +1022,19 @@ async function startPopoutCall(channelId) {
   // them on now that mesh.toggle{Mic,Cam}/addScreen have something to act on.
   els.btnMic.disabled = false;
   els.btnCam.disabled = false;
+  if (els.btnBlur && window.BlurPipeline?.isAvailable()) els.btnBlur.disabled = false;
   if (els.btnShare) els.btnShare.disabled = false;
   if (els.btnHand) els.btnHand.disabled = false;
   if (els.btnReact) els.btnReact.disabled = false;
   mesh.bootstrapExistingPeers();
+  // Pre-apply the persisted blur preference before setCamera so the
+  // very first frame peers receive is already blurred — toggling
+  // after the fact briefly publishes a sharp frame.
+  applyPersistedBlurPreference();
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, huddle.name);
+    syncBlurButtonState();
   } catch (err) {
     showCallError('Could not access camera/microphone: ' + (err?.message || err));
   }
@@ -1483,6 +1499,7 @@ async function startCall(channelId) {
   mesh.addEventListener('raise-hand', (e) => onRemoteRaiseHand(e.detail));
   mesh.addEventListener('reaction', (e) => onRemoteReaction(e.detail));
   mesh.addEventListener('mute-state', (e) => onRemoteMuteState(e.detail));
+  mesh.addEventListener('camera-stream-changed', (e) => onLocalCameraStreamChanged(e.detail));
   try {
     await state.huddle.joinCall(channelId);
   } catch (err) {
@@ -1506,9 +1523,14 @@ async function startCall(channelId) {
   // listener attached during the joinCall handshake. _ensurePeer is
   // memoised so the duplicate path is a no-op when peer-joined races us.
   mesh.bootstrapExistingPeers();
+  // Pre-apply the persisted blur preference before setCamera so the
+  // very first frame peers receive is already blurred — toggling
+  // after the fact briefly publishes a sharp frame.
+  applyPersistedBlurPreference();
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, state.huddle.name);
+    syncBlurButtonState();
   } catch (err) {
     console.warn('No camera/mic available', err);
     // The call itself is still alive (signaling + presence work) so
@@ -1903,6 +1925,13 @@ function renderCallHeader() {
   }
   els.btnMic.classList.toggle('hidden', !inCallHere);
   els.btnCam.classList.toggle('hidden', !inCallHere);
+  // Blur control is only relevant during a call and only if the
+  // MediaPipe runtime is loaded (postinstall copies it into
+  // renderer/vendor/mediapipe/). If the vendor copy is missing — e.g.
+  // a checkout without `npm install` — we keep the button hidden
+  // rather than letting users click into an inevitable failure.
+  const blurAvail = !!window.BlurPipeline?.isAvailable();
+  els.btnBlur?.classList.toggle('hidden', !inCallHere || !blurAvail);
   els.btnShare.classList.toggle('hidden', !inCallHere);
   els.btnHand?.classList.toggle('hidden', !inCallHere);
   els.btnReact?.classList.toggle('hidden', !inCallHere);
@@ -3233,6 +3262,75 @@ function addLocalCameraTile(stream, name) {
   tile.querySelector('video').srcObject = stream;
 }
 
+// ---------------------------------------------------------------------------
+// Background blur
+//
+// The MeshClient holds the segmentation pipeline and the swap logic;
+// the renderer just wires the toggle button + persists the preference
+// and re-points the self-cam tile's video at the new stream when the
+// mesh emits camera-stream-changed (since toggling blur mid-call
+// replaces the published MediaStream).
+// ---------------------------------------------------------------------------
+const BLUR_PREF_KEY = 'huddle.blurBackground';
+function getBlurPreference() {
+  try { return localStorage.getItem(BLUR_PREF_KEY) === '1'; }
+  catch { return false; }
+}
+function setBlurPreference(on) {
+  try {
+    if (on) localStorage.setItem(BLUR_PREF_KEY, '1');
+    else localStorage.removeItem(BLUR_PREF_KEY);
+  } catch {}
+}
+
+async function toggleBackgroundBlur() {
+  if (!state.mesh) return;
+  if (!window.BlurPipeline?.isAvailable()) {
+    showToast("Background blur isn't available — run `npm install` to fetch the model.");
+    return;
+  }
+  const next = !state.mesh.blurOn;
+  if (els.btnBlur) els.btnBlur.disabled = true;
+  try {
+    await state.mesh.setBlurBackground(next);
+    setBlurPreference(next);
+    syncBlurButtonState();
+    showToast(next ? 'Background blurred' : 'Background blur off');
+  } catch (err) {
+    console.warn('toggleBackgroundBlur failed', err);
+    showToast('Could not toggle blur: ' + (err?.message || err));
+  } finally {
+    if (els.btnBlur) els.btnBlur.disabled = false;
+  }
+}
+
+// Called from startCall / startPopoutCall before setCamera so the
+// pipeline is initialised as part of camera setup. setBlurBackground
+// with no live raw stream just stashes the preference.
+function applyPersistedBlurPreference() {
+  if (!state.mesh) return;
+  if (!getBlurPreference()) return;
+  if (!window.BlurPipeline?.isAvailable()) return;
+  state.mesh.setBlurBackground(true).catch((err) => {
+    console.warn('applyPersistedBlurPreference failed', err);
+  });
+}
+
+function syncBlurButtonState() {
+  if (!els.btnBlur) return;
+  els.btnBlur.classList.toggle('active', !!state.mesh?.blurOn);
+}
+
+// The mesh swaps the published MediaStream when blur is toggled
+// mid-call (replaceTrack on the senders, new composite locally), so
+// the self-cam tile's <video>.srcObject needs to be re-pointed —
+// otherwise it'd keep rendering the now-stopped previous stream.
+function onLocalCameraStreamChanged({ stream }) {
+  const tile = state.tilesByKey.get('self-cam');
+  const video = tile?.querySelector('video');
+  if (video) video.srcObject = stream;
+}
+
 function addLocalScreenTile(stream, label) {
   const key = `screen:${stream.id}`;
   const tile = makeTile({ key, label: `${label} — you`, kind: 'screen' });
@@ -3408,6 +3506,7 @@ function wireControls() {
     els.btnCam.classList.toggle('muted', !on);
     setPeerCamOn(state.huddle.peerId, on);
   };
+  els.btnBlur && (els.btnBlur.onclick = toggleBackgroundBlur);
   els.btnShare.onclick = openSourcePicker;
   // CC button + the panel's X both toggle captions off so the panel
   // visibility and the capture state stay in sync — otherwise you'd

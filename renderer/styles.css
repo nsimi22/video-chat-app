@@ -1023,6 +1023,14 @@ button.ctrl.muted.icon-only::after {
   color: #ffc400;
 }
 
+/* Background-blur toggle: accent-tinted when on. Same affordance as
+   the hand button — colour-coded `.active` state, no icon swap. */
+#btn-blur.active,
+#popout-btn-blur.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .popout-call .react-popover { right: 16px; bottom: 76px; top: auto; }
 
 /* Pinned messages: subtle accent strip + chip on the row, plus a
