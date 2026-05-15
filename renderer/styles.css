@@ -1325,6 +1325,37 @@ button.ctrl.muted.icon-only::after {
   padding: 4px 8px;
   border-radius: var(--r-sm);
   font-size: 12px;
+  z-index: 20;
+}
+
+/* Camera off: WebRTC keeps the (now-black) video track flowing, so
+   hide the <video> outright and surface the participant's avatar +
+   name in its place. The overlay node is built lazily in JS and stays
+   in the DOM; toggling .cam-off on the tile is what shows / hides it. */
+.tile.cam-off video { visibility: hidden; }
+.tile-cam-off {
+  position: absolute; inset: 0;
+  display: none;
+  flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px;
+  background: var(--bg-2, #1a1d21);
+  color: white;
+  padding: 16px;
+  pointer-events: none;
+}
+.tile.cam-off .tile-cam-off { display: flex; }
+.tile-cam-off-avatar {
+  width: 88px; height: 88px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: white; font-weight: 600; font-size: 36px;
+  letter-spacing: -0.02em;
+  box-shadow: var(--shadow-2);
+}
+.tile-cam-off-name {
+  font-size: 14px; font-weight: 500;
+  letter-spacing: -0.01em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
 }
 
 /* Drawing canvas overlay sits on top of the screen video, transparent until

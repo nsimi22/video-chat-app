@@ -102,6 +102,11 @@
       // Peer ids whose hand is currently raised. Cleared when the peer
       // lowers their hand or leaves the call.
       this.raisedHands = new Set();
+      // Per-peer mic/cam state in the active call. Default assumption for
+      // a newly-joined peer is both on; the peer broadcasts a mute-state
+      // event (and re-broadcasts on every peer-joined) so receivers
+      // converge to the truth quickly. Cleared on peer-left / leaveCall.
+      this.peerMediaState = new Map(); // peerId -> { micOn, camOn }
       this.url = _config.url;
       this._teamChannel = null;
       this._screenChannels = new Map();     // streamId -> RealtimeChannel
@@ -264,6 +269,7 @@
           if (!seen.has(id)) {
             this._callPeerInfo.delete(id);
             this.raisedHands.delete(id);
+            this.peerMediaState.delete(id);
             this.dispatchEvent(new CustomEvent('peer-left', { detail: id }));
           }
         }
@@ -295,6 +301,17 @@
         if (payload.raised) this.raisedHands.add(payload.from);
         else this.raisedHands.delete(payload.from);
         this.dispatchEvent(new CustomEvent('raise-hand', { detail: payload }));
+      });
+      // Mic/cam state for remote peers. WebRTC's `track.enabled = false`
+      // sends silence / black frames rather than tearing the track down,
+      // so receivers can't detect a mute from the media itself — this
+      // broadcast is the source of truth. Senders re-emit on every
+      // peer-joined so late joiners catch up.
+      ch.on('broadcast', { event: 'mute-state' }, ({ payload }) => {
+        this.peerMediaState.set(payload.from, {
+          micOn: !!payload.micOn, camOn: !!payload.camOn,
+        });
+        this.dispatchEvent(new CustomEvent('mute-state', { detail: payload }));
       });
       // Reactions are ephemeral; receivers render a floating emoji on
       // the sender's tile and let it auto-clear locally — no DB row.
@@ -371,6 +388,7 @@
       }
       this._callPeerInfo.clear();
       this.raisedHands.clear();
+      this.peerMediaState.clear();
       this._callChannel = null;
       this._callChannelId = null;
       // Await the call channel + every per-screen channel before clearing
@@ -713,6 +731,15 @@
       if (raised) this.raisedHands.add(this.peerId);
       else this.raisedHands.delete(this.peerId);
       this._callChannel?.send({ type: 'broadcast', event: 'raise-hand', payload: { from: this.peerId, raised: !!raised } });
+    }
+    sendMuteState(micOn, camOn) {
+      // Call channel is { broadcast: { self: false } }, so this never
+      // echoes back; the local UI updates its own self tile directly
+      // when toggling, no local mirror needed.
+      this._callChannel?.send({
+        type: 'broadcast', event: 'mute-state',
+        payload: { from: this.peerId, micOn: !!micOn, camOn: !!camOn },
+      });
     }
     sendReaction(emoji) {
       this._callChannel?.send({ type: 'broadcast', event: 'reaction', payload: { from: this.peerId, emoji } });
