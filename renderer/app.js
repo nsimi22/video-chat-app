@@ -45,8 +45,7 @@ const els = {
   reconnectBanner: $('#reconnect-banner'),
   searchBtn: $('#search-btn'),
   whiteboardBtn: $('#whiteboard-btn'),
-  muteChannelBtn: $('#mute-channel-btn'),
-  notifyAllBtn: $('#notify-all-btn'),
+  channelNotifyBtn: $('#channel-notify-btn'),
   searchModal: $('#search-modal'),
   shortcutsModal: $('#shortcuts-modal'),
   shortcutsClose: $('#shortcuts-close'),
@@ -523,47 +522,9 @@ function setChannelMuted(channelId, muted) {
     else localStorage.removeItem(muteKey(channelId));
   } catch {}
 }
-function toggleCurrentChannelMute() {
-  const channelId = state.chat?.currentChannel;
-  if (!channelId) return;
-  const next = !isChannelMuted(channelId);
-  setChannelMuted(channelId, next);
-  // "Notify on nothing" and "notify on everything" can't both be on —
-  // muting wins, so clear the notify-all flag here.
-  if (next) setChannelNotifyAll(channelId, false);
-  refreshMuteButton();
-  refreshNotifyAllButton();
-  // Re-render the sidebar row so the muted indicator updates.
-  const sel = `[data-id="${cssEscape(channelId)}"]`;
-  const li = els.channels.querySelector(sel) || els.dms.querySelector(sel);
-  if (li) {
-    li.classList.toggle('muted', next);
-    if (next) li.classList.remove('notify-all');
-  }
-  // Existing unread for a now-muted channel stays — we just stop
-  // bumping the loud title when fresh activity arrives.
-  updateUnreadBadge(channelId);
-  updateUnreadTitle();
-  showToast(next ? 'Channel muted' : 'Channel unmuted');
-}
-function refreshMuteButton() {
-  const channelId = state.chat?.currentChannel;
-  // Hide the button entirely until a channel is focused — clicking
-  // it without a channel is a no-op (toggleCurrentChannelMute
-  // early-returns) and a functional-looking-but-dead button reads
-  // as broken UX.
-  els.muteChannelBtn.classList.toggle('hidden', !channelId);
-  if (!channelId) return;
-  const muted = isChannelMuted(channelId);
-  els.muteChannelBtn.classList.toggle('muted', muted);
-  els.muteChannelBtn.title = muted
-    ? 'Unmute notifications for this channel'
-    : 'Mute notifications for this channel';
-}
-
 // Per-channel "notify on every message" — the opposite end of the mute
 // toggle. Same team-scoped localStorage shape; mutually exclusive with
-// mute (each toggle clears the other when turned on).
+// mute (the cycle below keeps both from being on at once).
 function notifyAllKey(channelId) {
   const teamId = state.huddle?.team?.id || 'unknown';
   return `huddle.notifyall.${teamId}.${channelId}`;
@@ -580,34 +541,66 @@ function setChannelNotifyAll(channelId, on) {
     else localStorage.removeItem(notifyAllKey(channelId));
   } catch {}
 }
-function toggleCurrentChannelNotifyAll() {
+
+// Channel notification preference is one of three modes — `default`
+// (@mentions + DMs only), `muted`, or `all`. The header bell cycles
+// through them in that order. Stored as two independent localStorage
+// flags (mute + notify-all) for backwards compatibility with rows
+// already on disk; this helper folds them into a single enum.
+function getChannelNotifyMode(channelId) {
+  if (isChannelMuted(channelId)) return 'muted';
+  if (isChannelNotifyAll(channelId)) return 'all';
+  return 'default';
+}
+const NOTIFY_CYCLE = { default: 'muted', muted: 'all', all: 'default' };
+const NOTIFY_TOAST = {
+  default: 'Back to @mentions only',
+  muted: 'Channel muted',
+  all: 'Notifying on every message here',
+};
+function setChannelNotifyMode(channelId, mode) {
+  setChannelMuted(channelId, mode === 'muted');
+  setChannelNotifyAll(channelId, mode === 'all');
+}
+function cycleCurrentChannelNotify() {
   const channelId = state.chat?.currentChannel;
   if (!channelId) return;
-  const next = !isChannelNotifyAll(channelId);
-  setChannelNotifyAll(channelId, next);
-  if (next) setChannelMuted(channelId, false);
-  refreshNotifyAllButton();
-  refreshMuteButton();
+  const next = NOTIFY_CYCLE[getChannelNotifyMode(channelId)];
+  setChannelNotifyMode(channelId, next);
+  refreshNotifyButton();
+  // Re-render the sidebar row so the muted / notify-all suffix tracks.
   const sel = `[data-id="${cssEscape(channelId)}"]`;
   const li = els.channels.querySelector(sel) || els.dms.querySelector(sel);
   if (li) {
-    li.classList.toggle('notify-all', next);
-    if (next) li.classList.remove('muted');
+    li.classList.toggle('muted', next === 'muted');
+    li.classList.toggle('notify-all', next === 'all');
   }
-  // If it was muted, un-muting it via this path changes the badge styling.
-  if (next) { updateUnreadBadge(channelId); updateUnreadTitle(); }
-  showToast(next ? 'Notifying on every message here' : 'Back to @mentions only');
+  // Mute keeps existing unread but stops bumping the loud title;
+  // un-muting a previously-muted channel needs the badge re-styled.
+  updateUnreadBadge(channelId);
+  updateUnreadTitle();
+  showToast(NOTIFY_TOAST[next]);
 }
-function refreshNotifyAllButton() {
-  if (!els.notifyAllBtn) return;
+function refreshNotifyButton() {
+  if (!els.channelNotifyBtn) return;
   const channelId = state.chat?.currentChannel;
-  els.notifyAllBtn.classList.toggle('hidden', !channelId);
+  // Hide the button entirely until a channel is focused — clicking
+  // it without a channel is a no-op (cycleCurrentChannelNotify
+  // early-returns) and a functional-looking-but-dead button reads
+  // as broken UX.
+  els.channelNotifyBtn.classList.toggle('hidden', !channelId);
   if (!channelId) return;
-  const on = isChannelNotifyAll(channelId);
-  els.notifyAllBtn.classList.toggle('active', on);
-  els.notifyAllBtn.title = on
-    ? 'Notifying on every message — click for @mentions only'
-    : 'Notify on every message in this channel';
+  const mode = getChannelNotifyMode(channelId);
+  els.channelNotifyBtn.classList.toggle('muted', mode === 'muted');
+  els.channelNotifyBtn.classList.toggle('notify-all', mode === 'all');
+  const ICONS = { default: 'bell', muted: 'bellOff', all: 'bellPlus' };
+  window.HuddleIcons.set(els.channelNotifyBtn, ICONS[mode]);
+  const TITLES = {
+    default: 'Notifications: @mentions only — click to mute',
+    muted: 'Notifications: muted — click to notify on every message',
+    all: 'Notifications: every message — click to reset',
+  };
+  els.channelNotifyBtn.title = TITLES[mode];
 }
 
 // ---------------------------------------------------------------------------
@@ -2079,7 +2072,7 @@ function appendChannelToSidebar(channel, makeActive) {
   const li = document.createElement('li');
   li.dataset.id = channel.id;
   // Sidebar muted-channel styling: dimmer text + a small bell-slash
-  // suffix in CSS. The class is toggled by toggleCurrentChannelMute
+  // suffix in CSS. The class is toggled by cycleCurrentChannelNotify
   // when the user flips the per-channel toggle.
   if (isChannelMuted(channel.id)) li.classList.add('muted');
   else if (isChannelNotifyAll(channel.id)) li.classList.add('notify-all');
@@ -2174,8 +2167,7 @@ function focusChannel(channelId) {
     state.lurkingChannelId = null;
   }
   renderCallHeader();
-  refreshMuteButton();
-  refreshNotifyAllButton();
+  refreshNotifyButton();
   // Visiting a channel clears its unread.
   state.unread.delete(channelId);
   updateUnreadBadge(channelId);
@@ -3531,8 +3523,7 @@ function wireControls() {
 
   // Whiteboard (🎨)
   els.whiteboardBtn.onclick = openWhiteboard;
-  els.muteChannelBtn.onclick = toggleCurrentChannelMute;
-  els.notifyAllBtn.onclick = toggleCurrentChannelNotifyAll;
+  els.channelNotifyBtn.onclick = cycleCurrentChannelNotify;
 
   // Search
   els.searchBtn.onclick = openSearchModal;
