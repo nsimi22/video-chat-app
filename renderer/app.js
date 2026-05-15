@@ -950,6 +950,7 @@ async function bootCallPopout(cfg) {
     if (!state.mesh) return;
     const on = state.mesh.toggleCam();
     btnCam.classList.toggle('muted', !on);
+    setPeerCamOn(state.huddle.peerId, on);
   };
   btnShare.onclick = () => { if (state.mesh) openSourcePicker(); };
   state.reactPopoverCleanup?.();
@@ -999,6 +1000,7 @@ async function startPopoutCall(channelId) {
   mesh.addEventListener('draw', (e) => onRemoteDraw(e.detail));
   mesh.addEventListener('raise-hand', (e) => onRemoteRaiseHand(e.detail));
   mesh.addEventListener('reaction', (e) => onRemoteReaction(e.detail));
+  mesh.addEventListener('mute-state', (e) => onRemoteMuteState(e.detail));
   try {
     await huddle.joinCall(channelId);
   } catch (err) {
@@ -1483,6 +1485,7 @@ async function startCall(channelId) {
   mesh.addEventListener('draw', (e) => onRemoteDraw(e.detail));
   mesh.addEventListener('raise-hand', (e) => onRemoteRaiseHand(e.detail));
   mesh.addEventListener('reaction', (e) => onRemoteReaction(e.detail));
+  mesh.addEventListener('mute-state', (e) => onRemoteMuteState(e.detail));
   try {
     await state.huddle.joinCall(channelId);
   } catch (err) {
@@ -2715,6 +2718,55 @@ function onRemoteRaiseHand({ from, raised }) {
   setHandRaised(from, !!raised);
 }
 
+// Mic / cam state for remote peers (and the local self-cam tile, called
+// from the toggle handlers). Driven by the call channel's `mute-state`
+// broadcast — `track.enabled = false` doesn't show up on the receiver
+// side, so this is the only signal the renderer has for muted / camera-
+// off remote peers.
+function setPeerMicOn(peerId, micOn) {
+  const tile = tileForPeer(peerId);
+  if (!tile) return;
+  tile.classList.toggle('muted', !micOn);
+}
+
+function setPeerCamOn(peerId, camOn) {
+  const tile = tileForPeer(peerId);
+  if (!tile) return;
+  tile.classList.toggle('cam-off', !camOn);
+  if (!camOn) ensureCamOffOverlay(tile, peerId);
+}
+
+// The overlay is what users see in place of the (black) video when a
+// peer turns their camera off — a colored avatar circle with their
+// initial and their name underneath. Built lazily on first cam-off and
+// kept in the DOM so re-enabling the cam (CSS hides the overlay via the
+// .cam-off class) is a single class flip with no rebuild.
+function ensureCamOffOverlay(tile, peerId) {
+  if (tile.querySelector('.tile-cam-off')) return;
+  const isSelf = peerId === state.huddle?.peerId;
+  const peer = isSelf
+    ? { name: state.huddle?.name, color: state.huddle?.color }
+    : state.huddle?.peerInfo?.get(peerId) || state.huddle?.callPeerInfo?.get(peerId) || {};
+  const name = peer.name || 'guest';
+  const color = peer.color || '#666';
+  const overlay = document.createElement('div');
+  overlay.className = 'tile-cam-off';
+  const avatar = document.createElement('div');
+  avatar.className = 'tile-cam-off-avatar';
+  avatar.style.background = color;
+  avatar.textContent = (name || '?').slice(0, 1).toUpperCase();
+  const label = document.createElement('div');
+  label.className = 'tile-cam-off-name';
+  label.textContent = isSelf ? `${name} (you)` : name;
+  overlay.append(avatar, label);
+  tile.appendChild(overlay);
+}
+
+function onRemoteMuteState({ from, micOn, camOn }) {
+  setPeerMicOn(from, !!micOn);
+  setPeerCamOn(from, !!camOn);
+}
+
 // Reactions: ephemeral floating emoji over the sender's tile. Each reaction
 // has its own independent timer (rapid follow-ups intentionally coexist —
 // the CSS jitter offsets them so they don't perfectly stack). The Map keeps
@@ -3218,6 +3270,14 @@ function commitStreamAsCamera(streamId) {
   tile.querySelector('video').srcObject = pending.stream;
   // Catch up on hand-raised state in case the broadcast arrived before the tile.
   if (state.raisedHands.has(pending.fromId)) setHandRaised(pending.fromId, true);
+  // Catch up on mute / cam state too — same race: the mute-state
+  // broadcast can land before the WebRTC track does, and the tile we'd
+  // have toggled didn't exist yet.
+  const media = state.huddle?.peerMediaState.get(pending.fromId);
+  if (media) {
+    setPeerMicOn(pending.fromId, media.micOn);
+    setPeerCamOn(pending.fromId, media.camOn);
+  }
 }
 
 function renderRemoteScreen(stream, screen) {
@@ -3350,6 +3410,7 @@ function wireControls() {
     if (!state.mesh) return;
     const on = state.mesh.toggleCam();
     els.btnCam.classList.toggle('muted', !on);
+    setPeerCamOn(state.huddle.peerId, on);
   };
   els.btnShare.onclick = openSourcePicker;
   // CC button + the panel's X both toggle captions off so the panel

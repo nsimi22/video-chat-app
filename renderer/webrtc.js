@@ -112,6 +112,13 @@ class MeshClient extends EventTarget {
     this.huddle = huddle;
     this.peers = new Map();             // remoteId -> PeerConn
     this.cameraStream = null;
+    // Local mic/cam state mirrors the actual track.enabled values.
+    // Broadcast to peers (via huddle.sendMuteState) whenever it changes
+    // so remote tiles can show a mic-off icon / cam-off avatar overlay
+    // — receivers can't infer this from media (a disabled track sends
+    // silence / black frames, not "no track").
+    this._micOn = true;
+    this._camOn = true;
     this._screenStreams = new Map();    // streamId -> { stream, label }
     this._pendingScreens = 0;           // shares awaiting getUserMedia, counted toward the cap
 
@@ -131,7 +138,7 @@ class MeshClient extends EventTarget {
     const FORWARD = [
       'welcome', 'connected', 'peer-joined', 'peer-left',
       'screen-announce', 'screen-stop', 'draw', 'typing',
-      'raise-hand', 'reaction',
+      'raise-hand', 'reaction', 'mute-state',
       'chat-message', 'chat-update', 'chat-message-deleted',
       'chat-channel-added', 'chat-channel-removed',
       'saved-message-added', 'saved-message-updated', 'saved-message-removed',
@@ -159,6 +166,11 @@ class MeshClient extends EventTarget {
         for (const { stream } of this._screenStreams.values()) conn.addStream(stream);
         this._applyScreenEncodings();
       });
+      // Re-broadcast our current mic/cam state so the joining peer
+      // catches up without us having to maintain a per-peer message
+      // queue. Channel-wide broadcast is fine — existing peers ignore
+      // it (they already had the right value).
+      if (this.cameraStream) this.huddle.sendMuteState(this._micOn, this._camOn);
     });
     wire('peer-left', (e) => {
       this._dropPeer(e.detail);
@@ -246,18 +258,32 @@ class MeshClient extends EventTarget {
     }
     const stream = await navigator.mediaDevices.getUserMedia(constraints);
     this.cameraStream = stream;
+    // Sync local state from the actual tracks (a constraints set with
+    // audio:false would leave us "muted" from the start — reflect that
+    // truthfully so the broadcast doesn't lie).
+    this._micOn = !!stream.getAudioTracks()[0]?.enabled;
+    this._camOn = !!stream.getVideoTracks()[0]?.enabled;
     for (const conn of this.peers.values()) conn.addStream(stream);
+    this.huddle.sendMuteState(this._micOn, this._camOn);
     return stream;
   }
   toggleMic() {
     if (!this.cameraStream) return false;
     const t = this.cameraStream.getAudioTracks()[0];
-    if (!t) return false; t.enabled = !t.enabled; return t.enabled;
+    if (!t) return false;
+    t.enabled = !t.enabled;
+    this._micOn = t.enabled;
+    this.huddle.sendMuteState(this._micOn, this._camOn);
+    return t.enabled;
   }
   toggleCam() {
     if (!this.cameraStream) return false;
     const t = this.cameraStream.getVideoTracks()[0];
-    if (!t) return false; t.enabled = !t.enabled; return t.enabled;
+    if (!t) return false;
+    t.enabled = !t.enabled;
+    this._camOn = t.enabled;
+    this.huddle.sendMuteState(this._micOn, this._camOn);
+    return t.enabled;
   }
 
   get activeScreenCount() {
