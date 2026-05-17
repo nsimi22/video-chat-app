@@ -21,6 +21,12 @@ export default function PeopleScreen() {
     try {
       const pr = await listTeamProfiles(activeTeam.id);
       setProfiles(pr);
+    } catch (e: any) {
+      // Surface failures so the user doesn't see the misleading
+      // "You're the only one on this team" empty state when the
+      // roster query actually broke.
+      console.warn('[people] listTeamProfiles failed', e);
+      Alert.alert('Could not load team', e?.message ?? String(e));
     } finally {
       setLoading(false);
       setRefreshing(false);

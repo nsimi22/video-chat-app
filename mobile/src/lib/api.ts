@@ -13,6 +13,7 @@ export type Channel = {
   topic: string | null;
   type: 'public' | 'private' | 'dm';
   protected: boolean;
+  created_by?: string | null;
 };
 export type Profile = { user_id: string; name: string; color: string | null; bio?: string | null; avatar_url?: string | null };
 export type Attachment = { url: string; name: string; size?: number; type?: string };

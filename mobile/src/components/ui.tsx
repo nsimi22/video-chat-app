@@ -199,7 +199,11 @@ function renderInline(text: string, prefix: string): React.ReactNode[] {
   return out;
 }
 
-export function Markdown({ body, baseStyle }: { body: string; baseStyle?: TextStyle }) {
+// Memoised because every chat-row render would otherwise re-walk the body via
+// regex + rebuild the JSX tree. With a typical channel of 50+ messages on
+// every reaction / typing / scroll tick, that's the hottest path in the list.
+export const Markdown = React.memo(MarkdownImpl);
+function MarkdownImpl({ body, baseStyle }: { body: string; baseStyle?: TextStyle }) {
   // Block-level: contiguous `> ` lines render as a quoted block (left border
   // + dim text); everything else is a paragraph. Paragraphs keep newlines so
   // multi-line bodies don't run together.
