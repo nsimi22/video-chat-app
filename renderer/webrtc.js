@@ -112,6 +112,22 @@ class MeshClient extends EventTarget {
     this.huddle = huddle;
     this.peers = new Map();             // remoteId -> PeerConn
     this.cameraStream = null;
+    // The unprocessed getUserMedia stream. When blur is off it's the
+    // same MediaStream as `cameraStream`; when blur is on it's kept
+    // alive separately as the audio source + the blur pipeline's
+    // input. Tracked so toggling blur mid-call doesn't need a fresh
+    // getUserMedia (which would re-prompt for camera access on some
+    // platforms and reset capture settings).
+    this._rawStream = null;
+    this._blurOn = false;
+    this._blurPipeline = null;
+    // Local mic/cam state mirrors the actual track.enabled values.
+    // Broadcast to peers (via huddle.sendMuteState) whenever it changes
+    // so remote tiles can show a mic-off icon / cam-off avatar overlay
+    // — receivers can't infer this from media (a disabled track sends
+    // silence / black frames, not "no track").
+    this._micOn = true;
+    this._camOn = true;
     this._screenStreams = new Map();    // streamId -> { stream, label }
     this._pendingScreens = 0;           // shares awaiting getUserMedia, counted toward the cap
 
@@ -131,7 +147,7 @@ class MeshClient extends EventTarget {
     const FORWARD = [
       'welcome', 'connected', 'peer-joined', 'peer-left',
       'screen-announce', 'screen-stop', 'draw', 'typing',
-      'raise-hand', 'reaction',
+      'raise-hand', 'reaction', 'mute-state',
       'chat-message', 'chat-update', 'chat-message-deleted',
       'chat-channel-added', 'chat-channel-removed',
       'saved-message-added', 'saved-message-updated', 'saved-message-removed',
@@ -159,6 +175,11 @@ class MeshClient extends EventTarget {
         for (const { stream } of this._screenStreams.values()) conn.addStream(stream);
         this._applyScreenEncodings();
       });
+      // Re-broadcast our current mic/cam state so the joining peer
+      // catches up without us having to maintain a per-peer message
+      // queue. Channel-wide broadcast is fine — existing peers ignore
+      // it (they already had the right value).
+      if (this.cameraStream) this.huddle.sendMuteState(this._micOn, this._camOn);
     });
     wire('peer-left', (e) => {
       this._dropPeer(e.detail);
@@ -239,25 +260,162 @@ class MeshClient extends EventTarget {
   }
 
   // --- Media: camera + screens -------------------------------------------
+  // Acquires a fresh camera + mic stream, runs it through the blur
+  // pipeline if `_blurOn` is set, and pushes the resulting "published"
+  // stream to every peer. Callers can pre-set `_blurOn` via
+  // setBlurBackground() before this runs (the no-stream branch over
+  // there just stashes the preference); the pipeline then starts as
+  // part of camera setup so the first frame peers receive is already
+  // blurred.
   async setCamera(constraints = { video: true, audio: true }) {
+    // Tear down any prior streams + pipeline. Remove the published
+    // stream from peers BEFORE stopping tracks so we don't briefly
+    // double-send (the addStream below would otherwise stack on top
+    // of stale senders).
     if (this.cameraStream) {
-      for (const t of this.cameraStream.getTracks()) t.stop();
       for (const conn of this.peers.values()) conn.removeStream(this.cameraStream);
     }
-    const stream = await navigator.mediaDevices.getUserMedia(constraints);
-    this.cameraStream = stream;
-    for (const conn of this.peers.values()) conn.addStream(stream);
-    return stream;
+    if (this._blurPipeline) { this._blurPipeline.stop(); this._blurPipeline = null; }
+    if (this._rawStream) for (const t of this._rawStream.getTracks()) t.stop();
+
+    const raw = await navigator.mediaDevices.getUserMedia(constraints);
+    this._rawStream = raw;
+
+    let published = raw;
+    if (this._blurOn && window.BlurPipeline?.isAvailable()) {
+      try {
+        this._blurPipeline = new window.BlurPipeline();
+        published = await this._blurPipeline.start(raw);
+      } catch (err) {
+        console.warn('[mesh] blur pipeline start failed, publishing raw camera', err);
+        // start() can throw after partial init (e.g. once the
+        // segmentation runtime is allocated but before captureStream
+        // returns). Tear down what we started so we don't leak a
+        // half-initialised segmenter.
+        try { this._blurPipeline?.stop(); } catch {}
+        this._blurPipeline = null;
+        this._blurOn = false;
+        published = raw;
+      }
+    }
+
+    this.cameraStream = published;
+    // Sync local state from the actual tracks (a constraints set with
+    // audio:false would leave us "muted" from the start — reflect that
+    // truthfully so the broadcast doesn't lie).
+    this._micOn = !!published.getAudioTracks()[0]?.enabled;
+    this._camOn = !!published.getVideoTracks()[0]?.enabled;
+    for (const conn of this.peers.values()) conn.addStream(published);
+    this.huddle.sendMuteState(this._micOn, this._camOn);
+    return published;
+  }
+
+  get blurOn() { return this._blurOn; }
+
+  // Toggle background blur. If the camera isn't live yet this just
+  // records the preference and setCamera() applies it; otherwise we
+  // swap the outbound video track on every peer connection via
+  // replaceTrack() so the change is renegotiation-free. Emits
+  // `camera-stream-changed` so the local self-cam tile can re-point
+  // its <video>.srcObject at the new stream.
+  async setBlurBackground(on) {
+    on = !!on;
+    if (!this._rawStream) {
+      this._blurOn = on;
+      return;
+    }
+    if (this._blurOn === on) return;
+
+    const prevPublished = this.cameraStream;
+    const prevPipeline = this._blurPipeline;
+
+    let newPublished;
+    let newPipeline = null;
+    if (on) {
+      if (!window.BlurPipeline?.isAvailable()) {
+        throw new Error('Blur pipeline is not available');
+      }
+      newPipeline = new window.BlurPipeline();
+      newPublished = await newPipeline.start(this._rawStream);
+    } else {
+      newPublished = this._rawStream;
+    }
+
+    // Carry the cam-on flag across the swap. The canvas-derived
+    // track starts enabled regardless of the raw track's state, so
+    // without this a user who muted their camera and then toggled
+    // blur would have their cam silently re-enabled.
+    const prevVideoTrack = prevPublished?.getVideoTracks()[0];
+    const newVideoTrack = newPublished.getVideoTracks()[0];
+    if (newVideoTrack && prevVideoTrack && newVideoTrack !== prevVideoTrack) {
+      newVideoTrack.enabled = prevVideoTrack.enabled;
+    }
+
+    // replaceTrack swaps the source feeding each sender without a
+    // new SDP exchange. Screen-share senders carry their own tracks
+    // (not equal to the previous published video track) and are
+    // skipped naturally by the identity check.
+    //
+    // If replaceTrack rejects for a peer (per spec: incompatible
+    // codec parameters, sender removed, etc.) we fall back to a
+    // remove/addStream renegotiation for that connection — otherwise
+    // we'd hand back success while that peer is still pinned to the
+    // old track that we're about to stop, freezing their feed.
+    const fallbackConns = new Set();
+    if (prevVideoTrack !== newVideoTrack) {
+      for (const conn of this.peers.values()) {
+        for (const sender of conn.pc.getSenders()) {
+          if (sender.track === prevVideoTrack) {
+            try { await sender.replaceTrack(newVideoTrack); }
+            catch (err) {
+              console.warn('[mesh] replaceTrack failed; falling back to renegotiation', err);
+              fallbackConns.add(conn);
+            }
+          }
+        }
+      }
+    }
+    for (const conn of fallbackConns) {
+      try {
+        if (prevPublished) conn.removeStream(prevPublished);
+        conn.addStream(newPublished);
+      } catch (err) {
+        console.warn('[mesh] fallback addStream failed', err);
+      }
+    }
+    this.cameraStream = newPublished;
+    this._blurPipeline = newPipeline;
+    this._blurOn = on;
+
+    // Dispatch BEFORE stopping the prior pipeline so the local self-cam
+    // tile re-points its <video>.srcObject at the new stream first —
+    // otherwise the canvas track ends while the tile is still rendering
+    // it, briefly freezing the local preview. Peers don't care about
+    // ordering here (replaceTrack above already pointed their senders
+    // at the new track); this is purely a local-UX fix.
+    this.dispatchEvent(new CustomEvent('camera-stream-changed', {
+      detail: { stream: newPublished },
+    }));
+
+    if (prevPipeline) prevPipeline.stop();
   }
   toggleMic() {
     if (!this.cameraStream) return false;
     const t = this.cameraStream.getAudioTracks()[0];
-    if (!t) return false; t.enabled = !t.enabled; return t.enabled;
+    if (!t) return false;
+    t.enabled = !t.enabled;
+    this._micOn = t.enabled;
+    this.huddle.sendMuteState(this._micOn, this._camOn);
+    return t.enabled;
   }
   toggleCam() {
     if (!this.cameraStream) return false;
     const t = this.cameraStream.getVideoTracks()[0];
-    if (!t) return false; t.enabled = !t.enabled; return t.enabled;
+    if (!t) return false;
+    t.enabled = !t.enabled;
+    this._camOn = t.enabled;
+    this.huddle.sendMuteState(this._micOn, this._camOn);
+    return t.enabled;
   }
 
   get activeScreenCount() {
@@ -370,6 +528,15 @@ class MeshClient extends EventTarget {
   // duplicate signal routing.
   disconnect() {
     for (const id of [...this._screenStreams.keys()]) this.removeScreen(id);
+    if (this._blurPipeline) { this._blurPipeline.stop(); this._blurPipeline = null; }
+    // Stop the raw stream's tracks too — when blur was on the
+    // cameraStream below is a composite (canvas video + raw audio),
+    // stopping it ends the canvas track but leaves the raw video
+    // track running (the camera light would stay on).
+    if (this._rawStream) {
+      for (const t of this._rawStream.getTracks()) t.stop();
+      this._rawStream = null;
+    }
     if (this.cameraStream) {
       for (const t of this.cameraStream.getTracks()) t.stop();
       this.cameraStream = null;

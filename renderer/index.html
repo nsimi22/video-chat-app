@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: mediastream: https:; connect-src 'self' wss: https:;" />
+          content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: mediastream: https:; connect-src 'self' wss: https:;" />
     <title>Huddle</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
@@ -131,6 +131,11 @@
           <span>Saved</span>
           <span id="saved-count" class="count">0</span>
         </button>
+        <button id="open-calendar" class="sidebar-quick-link" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          <span>Calendar</span>
+          <span id="calendar-count" class="count hidden">0</span>
+        </button>
         <div class="section-header section-header-row">
           <span>Channels</span>
           <span class="section-header-controls">
@@ -166,11 +171,8 @@
             <span id="channel-topic" class="channel-topic"></span>
           </div>
           <div class="header-actions">
-            <button id="mute-channel-btn" class="icon-only ghost hidden" title="Mute notifications for this channel" aria-label="Mute channel">
+            <button id="channel-notify-btn" class="icon-only ghost hidden" title="Notification settings for this channel" aria-label="Notification settings">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-            </button>
-            <button id="notify-all-btn" class="icon-only ghost hidden" title="Notify on every message in this channel" aria-label="Notify on all messages">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.3 14.8C20.1 16.4 21 17 21 17H3s3-2 3-9c0-3.3 2.7-6 6-6 1 0 1.96.25 2.8.7"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/><path d="M15 8h6"/><path d="M18 5v6"/></svg>
             </button>
             <button id="whiteboard-btn" class="icon-only ghost" title="Open whiteboard" aria-label="Open whiteboard">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
@@ -203,6 +205,9 @@
             </button>
             <button id="btn-cam" class="ctrl icon-only hidden" title="Toggle camera" aria-label="Toggle camera">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+            </button>
+            <button id="btn-blur" class="ctrl icon-only hidden" title="Blur background" aria-label="Blur background">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3" stroke-dasharray="2 1.5"/><path d="M5 21v-2a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v2" stroke-dasharray="2 1.5"/></svg>
             </button>
             <button id="btn-share" class="ctrl icon-only hidden" title="Share a screen" aria-label="Share a screen">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="9 8 12 5 15 8"/><line x1="12" y1="5" x2="12" y2="13"/></svg>
@@ -482,6 +487,23 @@
           </div>
         </details>
 
+        <details class="settings-section">
+          <summary>Calendar subscriptions</summary>
+          <div class="settings-section-body">
+            <p class="hint-inline">
+              Paste an ICS / webcal URL from any calendar provider (Google,
+              Apple, Outlook…). Events appear in the Calendar drawer
+              alongside scheduled Huddles. Refreshed every 15 minutes.
+            </p>
+            <div id="set-calendar-list" class="set-cal-list"></div>
+            <div class="set-cal-add">
+              <input id="set-calendar-name" type="text" placeholder="Name (e.g. Personal)" maxlength="60" />
+              <input id="set-calendar-url" type="url" placeholder="https://… or webcal://…" />
+              <button id="set-calendar-add" type="button" class="ctrl">Add</button>
+            </div>
+          </div>
+        </details>
+
         <div id="settings-status" class="settings-status hidden"></div>
         <div class="btn-row">
           <button id="settings-cancel" class="subtle">Cancel</button>
@@ -607,6 +629,64 @@
       <div id="saved-list" class="saved-list"></div>
     </div>
 
+    <!-- Calendar drawer: upcoming Huddle scheduled-calls + events from
+         any ICS subscriptions the user has added in Settings. Same
+         visual chrome as the Saved drawer. -->
+    <div id="calendar-drawer" class="saved-drawer hidden" aria-hidden="true">
+      <div class="saved-drawer-head">
+        <span>Calendar</span>
+        <span class="cal-head-actions">
+          <button id="calendar-schedule" class="primary" type="button">Schedule call</button>
+          <button id="calendar-close" class="icon-only ghost" title="Close" aria-label="Close calendar">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </span>
+      </div>
+      <div id="calendar-list" class="cal-list"></div>
+    </div>
+
+    <!-- Schedule-call modal. Channel dropdown is repopulated each time
+         it opens so it reflects the current set of channels the user
+         has access to. -->
+    <div id="schedule-modal" class="modal-backdrop hidden">
+      <div class="modal schedule-modal">
+        <h2>Schedule a call</h2>
+        <form id="schedule-form" autocomplete="off">
+          <label>Title
+            <input id="schedule-title" type="text" maxlength="200" required />
+          </label>
+          <label>Channel
+            <select id="schedule-channel" required></select>
+          </label>
+          <div class="schedule-row">
+            <label>Date
+              <input id="schedule-date" type="date" required />
+            </label>
+            <label>Time
+              <input id="schedule-time" type="time" required />
+            </label>
+            <label>Duration
+              <select id="schedule-duration">
+                <option value="15">15 min</option>
+                <option value="30" selected>30 min</option>
+                <option value="45">45 min</option>
+                <option value="60">1 hour</option>
+                <option value="90">1.5 hours</option>
+                <option value="120">2 hours</option>
+              </select>
+            </label>
+          </div>
+          <label>Description (optional)
+            <textarea id="schedule-description" rows="3" maxlength="2000"></textarea>
+          </label>
+          <div class="btn-row">
+            <button id="schedule-cancel" type="button" class="subtle">Cancel</button>
+            <button id="schedule-save" type="submit" class="primary">Schedule</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <!-- Save / edit-labels popover: anchored to the bookmark button in
          a message's hover-actions strip. Lets the user toggle save
          state and edit the labels on the row. -->
@@ -624,10 +704,13 @@
     </div>
 
     <script src="vendor/supabase.js"></script>
+    <script src="vendor/mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
     <script src="emojis.js"></script>
     <script src="icons.js"></script>
     <script src="markdown.js"></script>
     <script src="drawing.js"></script>
+    <script src="blur-pipeline.js"></script>
+    <script src="ics.js"></script>
     <script src="api.js"></script>
     <script src="ai.js"></script>
     <script src="transcript.js"></script>
@@ -639,6 +722,7 @@
     <script src="webrtc.js"></script>
     <script src="profile-card.js"></script>
     <script src="chat.js"></script>
+    <script src="calendar.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

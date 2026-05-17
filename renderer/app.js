@@ -45,8 +45,7 @@ const els = {
   reconnectBanner: $('#reconnect-banner'),
   searchBtn: $('#search-btn'),
   whiteboardBtn: $('#whiteboard-btn'),
-  muteChannelBtn: $('#mute-channel-btn'),
-  notifyAllBtn: $('#notify-all-btn'),
+  channelNotifyBtn: $('#channel-notify-btn'),
   searchModal: $('#search-modal'),
   shortcutsModal: $('#shortcuts-modal'),
   shortcutsClose: $('#shortcuts-close'),
@@ -87,6 +86,7 @@ const els = {
   btnJoinCall: $('#btn-join-call'),
   btnMic: $('#btn-mic'),
   btnCam: $('#btn-cam'),
+  btnBlur: $('#btn-blur'),
   btnShare: $('#btn-share'),
   btnLeave: $('#btn-leave'),
   btnPopoutCall: $('#btn-popout-call'),
@@ -106,6 +106,26 @@ const els = {
   savedClose: $('#saved-close'),
   savedLabels: $('#saved-labels'),
   savedList: $('#saved-list'),
+  openCalendar: $('#open-calendar'),
+  calendarCount: $('#calendar-count'),
+  calendarDrawer: $('#calendar-drawer'),
+  calendarClose: $('#calendar-close'),
+  calendarList: $('#calendar-list'),
+  calendarSchedule: $('#calendar-schedule'),
+  scheduleModal: $('#schedule-modal'),
+  scheduleForm: $('#schedule-form'),
+  scheduleTitle: $('#schedule-title'),
+  scheduleChannel: $('#schedule-channel'),
+  scheduleDate: $('#schedule-date'),
+  scheduleTime: $('#schedule-time'),
+  scheduleDuration: $('#schedule-duration'),
+  scheduleDescription: $('#schedule-description'),
+  scheduleCancel: $('#schedule-cancel'),
+  scheduleSave: $('#schedule-save'),
+  setCalendarList: $('#set-calendar-list'),
+  setCalendarName: $('#set-calendar-name'),
+  setCalendarUrl: $('#set-calendar-url'),
+  setCalendarAdd: $('#set-calendar-add'),
   savePopover: $('#save-popover'),
   savePopoverLabels: $('#save-popover-labels'),
   savePopoverNew: $('#save-popover-new'),
@@ -236,6 +256,10 @@ const state = {
   // dispatched from HuddleClient. Drives the bookmark indicator on
   // message rows and the count badge on the sidebar Saved entry.
   savedById: new Map(),
+  // HuddleCalendar instance (lazy: built once huddle is ready).
+  // Owns scheduled-call CRUD, ICS subscription cache, and the drawer +
+  // schedule-modal DOM ownership.
+  calendar: null,
   // Currently-active label chip in the saved drawer, or null for "All".
   savedActiveLabel: null,
   // Active save-popover target (messageId being edited) — used by the
@@ -417,16 +441,25 @@ const STREAM_DECISION_MS = 1500;
     return;
   }
   state._email = session.user.email;
+  await routePostAuth(session.user.id);
+})();
+
+// Shared post-authentication routing. Used by the boot resume path
+// AND by the OTP / password sign-in handlers — without this, returning
+// users were sent through the profile step every login even though
+// their name was already saved. Sign-up still routes to the profile
+// step directly since a brand-new account has no profile row.
+async function routePostAuth(userId) {
   let prof = null;
   try {
     const sb = await window.huddleApi.getSupabase();
-    const { data } = await sb.from('profiles').select('name, color').eq('user_id', session.user.id).maybeSingle();
+    const { data } = await sb.from('profiles').select('name, color').eq('user_id', userId).maybeSingle();
     prof = data;
   } catch (err) {
     // Network / supabase blip: don't strand the user on a blank screen.
     // Fall through to the profile step; ensureProfile is an upsert so a
     // re-entry of the existing name is harmless.
-    console.warn('boot: profile fetch failed', err);
+    console.warn('routePostAuth: profile fetch failed', err);
   }
   if (!prof?.name) {
     showStep('profile');
@@ -449,7 +482,7 @@ const STREAM_DECISION_MS = 1500;
     showStep('team');
     await renderMyTeams();
   }
-})();
+}
 
 // --- Step navigation -----------------------------------------------------
 function showStep(step) {
@@ -514,47 +547,9 @@ function setChannelMuted(channelId, muted) {
     else localStorage.removeItem(muteKey(channelId));
   } catch {}
 }
-function toggleCurrentChannelMute() {
-  const channelId = state.chat?.currentChannel;
-  if (!channelId) return;
-  const next = !isChannelMuted(channelId);
-  setChannelMuted(channelId, next);
-  // "Notify on nothing" and "notify on everything" can't both be on —
-  // muting wins, so clear the notify-all flag here.
-  if (next) setChannelNotifyAll(channelId, false);
-  refreshMuteButton();
-  refreshNotifyAllButton();
-  // Re-render the sidebar row so the muted indicator updates.
-  const sel = `[data-id="${cssEscape(channelId)}"]`;
-  const li = els.channels.querySelector(sel) || els.dms.querySelector(sel);
-  if (li) {
-    li.classList.toggle('muted', next);
-    if (next) li.classList.remove('notify-all');
-  }
-  // Existing unread for a now-muted channel stays — we just stop
-  // bumping the loud title when fresh activity arrives.
-  updateUnreadBadge(channelId);
-  updateUnreadTitle();
-  showToast(next ? 'Channel muted' : 'Channel unmuted');
-}
-function refreshMuteButton() {
-  const channelId = state.chat?.currentChannel;
-  // Hide the button entirely until a channel is focused — clicking
-  // it without a channel is a no-op (toggleCurrentChannelMute
-  // early-returns) and a functional-looking-but-dead button reads
-  // as broken UX.
-  els.muteChannelBtn.classList.toggle('hidden', !channelId);
-  if (!channelId) return;
-  const muted = isChannelMuted(channelId);
-  els.muteChannelBtn.classList.toggle('muted', muted);
-  els.muteChannelBtn.title = muted
-    ? 'Unmute notifications for this channel'
-    : 'Mute notifications for this channel';
-}
-
 // Per-channel "notify on every message" — the opposite end of the mute
 // toggle. Same team-scoped localStorage shape; mutually exclusive with
-// mute (each toggle clears the other when turned on).
+// mute (the cycle below keeps both from being on at once).
 function notifyAllKey(channelId) {
   const teamId = state.huddle?.team?.id || 'unknown';
   return `huddle.notifyall.${teamId}.${channelId}`;
@@ -571,34 +566,70 @@ function setChannelNotifyAll(channelId, on) {
     else localStorage.removeItem(notifyAllKey(channelId));
   } catch {}
 }
-function toggleCurrentChannelNotifyAll() {
+
+// Channel notification preference is one of three modes — `default`
+// (@mentions + DMs only), `muted`, or `all`. The header bell cycles
+// through them in that order. Stored as two independent localStorage
+// flags (mute + notify-all) for backwards compatibility with rows
+// already on disk; this helper folds them into a single enum.
+function getChannelNotifyMode(channelId) {
+  if (isChannelMuted(channelId)) return 'muted';
+  if (isChannelNotifyAll(channelId)) return 'all';
+  return 'default';
+}
+const NOTIFY_CYCLE = { default: 'muted', muted: 'all', all: 'default' };
+const NOTIFY_TOAST = {
+  default: 'Back to @mentions only',
+  muted: 'Channel muted',
+  all: 'Notifying on every message here',
+};
+function setChannelNotifyMode(channelId, mode) {
+  setChannelMuted(channelId, mode === 'muted');
+  setChannelNotifyAll(channelId, mode === 'all');
+}
+function cycleCurrentChannelNotify() {
   const channelId = state.chat?.currentChannel;
   if (!channelId) return;
-  const next = !isChannelNotifyAll(channelId);
-  setChannelNotifyAll(channelId, next);
-  if (next) setChannelMuted(channelId, false);
-  refreshNotifyAllButton();
-  refreshMuteButton();
+  const next = NOTIFY_CYCLE[getChannelNotifyMode(channelId)];
+  setChannelNotifyMode(channelId, next);
+  refreshNotifyButton();
+  // Re-render the sidebar row so the muted / notify-all suffix tracks.
   const sel = `[data-id="${cssEscape(channelId)}"]`;
   const li = els.channels.querySelector(sel) || els.dms.querySelector(sel);
   if (li) {
-    li.classList.toggle('notify-all', next);
-    if (next) li.classList.remove('muted');
+    li.classList.toggle('muted', next === 'muted');
+    li.classList.toggle('notify-all', next === 'all');
   }
-  // If it was muted, un-muting it via this path changes the badge styling.
-  if (next) { updateUnreadBadge(channelId); updateUnreadTitle(); }
-  showToast(next ? 'Notifying on every message here' : 'Back to @mentions only');
+  // Mute keeps existing unread but stops bumping the loud title;
+  // un-muting a previously-muted channel needs the badge re-styled.
+  updateUnreadBadge(channelId);
+  updateUnreadTitle();
+  showToast(NOTIFY_TOAST[next]);
 }
-function refreshNotifyAllButton() {
-  if (!els.notifyAllBtn) return;
+function refreshNotifyButton() {
+  if (!els.channelNotifyBtn) return;
   const channelId = state.chat?.currentChannel;
-  els.notifyAllBtn.classList.toggle('hidden', !channelId);
+  // Hide the button entirely until a channel is focused — clicking
+  // it without a channel is a no-op (cycleCurrentChannelNotify
+  // early-returns) and a functional-looking-but-dead button reads
+  // as broken UX.
+  els.channelNotifyBtn.classList.toggle('hidden', !channelId);
   if (!channelId) return;
-  const on = isChannelNotifyAll(channelId);
-  els.notifyAllBtn.classList.toggle('active', on);
-  els.notifyAllBtn.title = on
-    ? 'Notifying on every message — click for @mentions only'
-    : 'Notify on every message in this channel';
+  const mode = getChannelNotifyMode(channelId);
+  els.channelNotifyBtn.classList.toggle('muted', mode === 'muted');
+  els.channelNotifyBtn.classList.toggle('notify-all', mode === 'all');
+  const ICONS = { default: 'bell', muted: 'bellOff', all: 'bellPlus' };
+  window.HuddleIcons.set(els.channelNotifyBtn, ICONS[mode]);
+  const TITLES = {
+    default: 'Notifications: @mentions only — click to mute',
+    muted: 'Notifications: muted — click to notify on every message',
+    all: 'Notifications: every message — click to reset',
+  };
+  els.channelNotifyBtn.title = TITLES[mode];
+  // aria-label trumps title for most screen readers, so keep them in
+  // sync — the static markup label ("Notification settings") doesn't
+  // tell the user what the click will actually do.
+  els.channelNotifyBtn.setAttribute('aria-label', TITLES[mode]);
 }
 
 // ---------------------------------------------------------------------------
@@ -871,6 +902,12 @@ async function bootCallPopout(cfg) {
   btnMic.disabled = true;
   const btnCam = mkIconBtn('popout-btn-cam', 'cam', 'Toggle camera');
   btnCam.disabled = true;
+  const btnBlur = mkIconBtn('popout-btn-blur', 'blur', 'Blur background');
+  btnBlur.disabled = true;
+  // Hide outright when the MediaPipe runtime didn't load — popout
+  // doesn't run renderCallHeader so the main-window's
+  // BlurPipeline.isAvailable() gate doesn't apply here.
+  if (!window.BlurPipeline?.isAvailable()) btnBlur.classList.add('hidden');
   const btnShare = mkIconBtn('popout-btn-share', 'screen', 'Share a screen');
   btnShare.disabled = true;
   const btnHand = mkIconBtn('popout-btn-hand', 'hand', 'Raise hand');
@@ -888,7 +925,7 @@ async function bootCallPopout(cfg) {
   btnLeave.className = 'ctrl danger';
   btnLeave.title = 'Leave call';
   btnLeave.innerHTML = `${window.HuddleIcons.phoneDown}<span>Leave</span>`;
-  bar.append(btnMic, btnCam, btnShare, btnHand, btnReact, btnLeave);
+  bar.append(btnMic, btnCam, btnBlur, btnShare, btnHand, btnReact, btnLeave);
   wrap.appendChild(bar);
   wrap.appendChild(reactPopover);
   stage.appendChild(wrap);
@@ -909,6 +946,7 @@ async function bootCallPopout(cfg) {
   els.tiles = tiles;
   els.btnMic = btnMic;
   els.btnCam = btnCam;
+  els.btnBlur = btnBlur;
   els.btnShare = btnShare;
   els.btnHand = btnHand;
   els.btnReact = btnReact;
@@ -941,7 +979,9 @@ async function bootCallPopout(cfg) {
     if (!state.mesh) return;
     const on = state.mesh.toggleCam();
     btnCam.classList.toggle('muted', !on);
+    setPeerCamOn(state.huddle.peerId, on);
   };
+  btnBlur.onclick = toggleBackgroundBlur;
   btnShare.onclick = () => { if (state.mesh) openSourcePicker(); };
   state.reactPopoverCleanup?.();
   state.reactPopoverCleanup = wireReactPopover(btnReact, reactPopover);
@@ -990,6 +1030,8 @@ async function startPopoutCall(channelId) {
   mesh.addEventListener('draw', (e) => onRemoteDraw(e.detail));
   mesh.addEventListener('raise-hand', (e) => onRemoteRaiseHand(e.detail));
   mesh.addEventListener('reaction', (e) => onRemoteReaction(e.detail));
+  mesh.addEventListener('mute-state', (e) => onRemoteMuteState(e.detail));
+  mesh.addEventListener('camera-stream-changed', (e) => onLocalCameraStreamChanged(e.detail));
   try {
     await huddle.joinCall(channelId);
   } catch (err) {
@@ -1004,13 +1046,19 @@ async function startPopoutCall(channelId) {
   // them on now that mesh.toggle{Mic,Cam}/addScreen have something to act on.
   els.btnMic.disabled = false;
   els.btnCam.disabled = false;
+  if (els.btnBlur && window.BlurPipeline?.isAvailable()) els.btnBlur.disabled = false;
   if (els.btnShare) els.btnShare.disabled = false;
   if (els.btnHand) els.btnHand.disabled = false;
   if (els.btnReact) els.btnReact.disabled = false;
   mesh.bootstrapExistingPeers();
+  // Pre-apply the persisted blur preference before setCamera so the
+  // very first frame peers receive is already blurred — toggling
+  // after the fact briefly publishes a sharp frame.
+  applyPersistedBlurPreference();
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, huddle.name);
+    syncBlurButtonState();
   } catch (err) {
     showCallError('Could not access camera/microphone: ' + (err?.message || err));
   }
@@ -1112,8 +1160,9 @@ async function stepVerifyOtp() {
   els.authVerify.disabled = true;
   try {
     await window.huddleApi.verifyOtp(state._email, token);
-    showStep('profile');
-    await prefillProfile();
+    const session = await window.huddleApi.getActiveSession();
+    if (!session?.user) throw new Error('sign-in did not establish a session');
+    await routePostAuth(session.user.id);
   } catch (err) {
     showError("That code didn't match. Try again or send a new one.");
   } finally { els.authVerify.disabled = false; }
@@ -1130,8 +1179,9 @@ async function stepPasswordSignIn() {
   try {
     await window.huddleApi.signInWithPassword(email, password);
     state._email = email;
-    showStep('profile');
-    await prefillProfile();
+    const session = await window.huddleApi.getActiveSession();
+    if (!session?.user) throw new Error('sign-in did not establish a session');
+    await routePostAuth(session.user.id);
   } catch (err) {
     // Supabase returns "Invalid login credentials" (HTTP 400) for both a
     // wrong password and an unknown email — surface one generic hint for
@@ -1472,6 +1522,8 @@ async function startCall(channelId) {
   mesh.addEventListener('draw', (e) => onRemoteDraw(e.detail));
   mesh.addEventListener('raise-hand', (e) => onRemoteRaiseHand(e.detail));
   mesh.addEventListener('reaction', (e) => onRemoteReaction(e.detail));
+  mesh.addEventListener('mute-state', (e) => onRemoteMuteState(e.detail));
+  mesh.addEventListener('camera-stream-changed', (e) => onLocalCameraStreamChanged(e.detail));
   try {
     await state.huddle.joinCall(channelId);
   } catch (err) {
@@ -1495,9 +1547,14 @@ async function startCall(channelId) {
   // listener attached during the joinCall handshake. _ensurePeer is
   // memoised so the duplicate path is a no-op when peer-joined races us.
   mesh.bootstrapExistingPeers();
+  // Pre-apply the persisted blur preference before setCamera so the
+  // very first frame peers receive is already blurred — toggling
+  // after the fact briefly publishes a sharp frame.
+  applyPersistedBlurPreference();
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, state.huddle.name);
+    syncBlurButtonState();
   } catch (err) {
     console.warn('No camera/mic available', err);
     // The call itself is still alive (signaling + presence work) so
@@ -1761,6 +1818,13 @@ async function teardownTeam() {
   // Detach the chat view's interval + every listener it installed before
   // dropping the reference, otherwise rejoining accumulates handlers.
   state.chat?.destroy();
+  // Drop the calendar's realtime subscription + ICS-poll interval
+  // before tearing the huddle down so the realtime channel is closed
+  // cleanly and the polling timer doesn't fire against a null huddle.
+  // Await stop() so the WebSocket unsubscribe handshake completes
+  // before the next team's subscribe opens.
+  try { await state.calendar?.stop(); } catch {}
+  state.calendar = null;
   // Await the huddle teardown so unsubscribes complete before the page
   // can navigate / reload — otherwise channels can leak server-side.
   try { await state.huddle?.stop(); } catch {}
@@ -1892,6 +1956,13 @@ function renderCallHeader() {
   }
   els.btnMic.classList.toggle('hidden', !inCallHere);
   els.btnCam.classList.toggle('hidden', !inCallHere);
+  // Blur control is only relevant during a call and only if the
+  // MediaPipe runtime is loaded (postinstall copies it into
+  // renderer/vendor/mediapipe/). If the vendor copy is missing — e.g.
+  // a checkout without `npm install` — we keep the button hidden
+  // rather than letting users click into an inevitable failure.
+  const blurAvail = !!window.BlurPipeline?.isAvailable();
+  els.btnBlur?.classList.toggle('hidden', !inCallHere || !blurAvail);
   els.btnShare.classList.toggle('hidden', !inCallHere);
   els.btnHand?.classList.toggle('hidden', !inCallHere);
   els.btnReact?.classList.toggle('hidden', !inCallHere);
@@ -1991,6 +2062,10 @@ function onWelcome({ peers, channels }) {
   // sidebar count + bookmark indicators read from this; realtime keeps
   // it current after the first load.
   refreshSavedCache().catch((err) => console.warn('saved cache seed failed', err));
+  // Seed the calendar (internal scheduled-calls + ICS subscriptions)
+  // once the team is up. Realtime + the 15-min ICS poller keep it
+  // current after that.
+  startCalendar().catch((err) => console.warn('calendar start failed', err));
   // If we just redeemed an invite link with a channel/call hop,
   // jump straight there instead of landing on #general. Falls back
   // to the normal default-channel logic if the target isn't visible
@@ -2065,7 +2140,7 @@ function appendChannelToSidebar(channel, makeActive) {
   const li = document.createElement('li');
   li.dataset.id = channel.id;
   // Sidebar muted-channel styling: dimmer text + a small bell-slash
-  // suffix in CSS. The class is toggled by toggleCurrentChannelMute
+  // suffix in CSS. The class is toggled by cycleCurrentChannelNotify
   // when the user flips the per-channel toggle.
   if (isChannelMuted(channel.id)) li.classList.add('muted');
   else if (isChannelNotifyAll(channel.id)) li.classList.add('notify-all');
@@ -2160,8 +2235,7 @@ function focusChannel(channelId) {
     state.lurkingChannelId = null;
   }
   renderCallHeader();
-  refreshMuteButton();
-  refreshNotifyAllButton();
+  refreshNotifyButton();
   // Visiting a channel clears its unread.
   state.unread.delete(channelId);
   updateUnreadBadge(channelId);
@@ -2249,8 +2323,15 @@ function onChatMessage(m) {
   if (!state.huddle) return;
   if (m.authorName === state.myName) return; // ignore our own messages
   const channel = state.channelMeta.get(m.channelId);
-  const mentionsMe = Array.isArray(m.mentions) && m.mentions.includes(state.myName);
   const isDm = channel?.type === 'dm';
+  // A message "mentions me" if my name is in `m.mentions`, or — in a
+  // public/private channel — it carries a broadcast sentinel (@here /
+  // @channel). Broadcast in DMs is redundant since `isDm` already fans the
+  // notification out to every member, so we don't double-count it there.
+  const mentionsMe = Array.isArray(m.mentions) && (
+    m.mentions.includes(state.myName)
+    || (!isDm && (m.mentions.includes('@here') || m.mentions.includes('@channel')))
+  );
   const isActive = state.chat?.currentChannel === m.channelId && windowFocused;
   const muted = isChannelMuted(m.channelId);
   if (!isActive) bumpUnread(m.channelId, mentionsMe);
@@ -2697,6 +2778,55 @@ function onRemoteRaiseHand({ from, raised }) {
   setHandRaised(from, !!raised);
 }
 
+// Mic / cam state for remote peers (and the local self-cam tile, called
+// from the toggle handlers). Driven by the call channel's `mute-state`
+// broadcast — `track.enabled = false` doesn't show up on the receiver
+// side, so this is the only signal the renderer has for muted / camera-
+// off remote peers.
+function setPeerMicOn(peerId, micOn) {
+  const tile = tileForPeer(peerId);
+  if (!tile) return;
+  tile.classList.toggle('muted', !micOn);
+}
+
+function setPeerCamOn(peerId, camOn) {
+  const tile = tileForPeer(peerId);
+  if (!tile) return;
+  tile.classList.toggle('cam-off', !camOn);
+  if (!camOn) ensureCamOffOverlay(tile, peerId);
+}
+
+// The overlay is what users see in place of the (black) video when a
+// peer turns their camera off — a colored avatar circle with their
+// initial and their name underneath. Built lazily on first cam-off and
+// kept in the DOM so re-enabling the cam (CSS hides the overlay via the
+// .cam-off class) is a single class flip with no rebuild.
+function ensureCamOffOverlay(tile, peerId) {
+  if (tile.querySelector('.tile-cam-off')) return;
+  const isSelf = peerId === state.huddle?.peerId;
+  const peer = isSelf
+    ? { name: state.huddle?.name, color: state.huddle?.color }
+    : state.huddle?.peerInfo?.get(peerId) || state.huddle?.callPeerInfo?.get(peerId) || {};
+  const name = peer.name || 'guest';
+  const color = peer.color || '#666';
+  const overlay = document.createElement('div');
+  overlay.className = 'tile-cam-off';
+  const avatar = document.createElement('div');
+  avatar.className = 'tile-cam-off-avatar';
+  avatar.style.background = color;
+  avatar.textContent = (name || '?').slice(0, 1).toUpperCase();
+  const label = document.createElement('div');
+  label.className = 'tile-cam-off-name';
+  label.textContent = isSelf ? `${name} (you)` : name;
+  overlay.append(avatar, label);
+  tile.appendChild(overlay);
+}
+
+function onRemoteMuteState({ from, micOn, camOn }) {
+  setPeerMicOn(from, !!micOn);
+  setPeerCamOn(from, !!camOn);
+}
+
 // Reactions: ephemeral floating emoji over the sender's tile. Each reaction
 // has its own independent timer (rapid follow-ups intentionally coexist —
 // the CSS jitter offsets them so they don't perfectly stack). The Map keeps
@@ -2821,6 +2951,208 @@ async function refreshSavedCache() {
   // Re-render any visible message rows so their bookmark indicators
   // catch up to the now-populated cache.
   if (state.chat) state.chat.refreshAllMessages?.();
+}
+
+// ---------------------------------------------------------------------------
+// Calendar (scheduled-call CRUD + ICS subscription cache).
+// HuddleCalendar lives in renderer/calendar.js; this just wires it
+// into the rest of the app: drawer toggling, the channel-list
+// dropdown for the schedule modal, posting an .ics attachment to
+// the channel after a schedule completes, and the per-team
+// realtime / poll lifecycle.
+// ---------------------------------------------------------------------------
+
+async function startCalendar() {
+  if (!state.huddle || !window.HuddleCalendar) return;
+  if (state.calendar) { try { state.calendar.stop(); } catch {} }
+  state.calendar = new window.HuddleCalendar({
+    huddle: state.huddle,
+    hooks: {
+      getChannels: () => Array.from(state.channelMeta?.values?.() || []),
+      currentChannelId: () => state.chat?.currentChannel || null,
+      openCallChannel: (channelId) => {
+        // Calendar drawer's Join button on an imminent scheduled call.
+        // Just focus the channel — the user can hit "Join call" from
+        // there. Opening the call directly would surprise people who
+        // wanted to see the chat first or who haven't realised the
+        // call is mid-flight.
+        focusChannel(channelId);
+        state.calendar?.closeDrawer();
+      },
+      postIcsToChannel: postScheduledCallIcsToChannel,
+      // Fires on every mutation of the scheduled-call cache — local
+      // inserts, local deletes, AND realtime events from other team
+      // members. The sidebar badge reads off this so it stays in
+      // sync with what's actually in the drawer, not just calls the
+      // local user scheduled themselves.
+      onChange: (n) => refreshCalendarSidebarCount(n),
+    },
+  });
+  state.calendar.bindElements({
+    drawer: els.calendarDrawer,
+    list: els.calendarList,
+    scheduleBtn: els.calendarSchedule,
+    closeBtn: els.calendarClose,
+    modal: els.scheduleModal,
+    modalForm: els.scheduleForm,
+    modalTitle: els.scheduleTitle,
+    modalChannel: els.scheduleChannel,
+    modalDate: els.scheduleDate,
+    modalTime: els.scheduleTime,
+    modalDuration: els.scheduleDuration,
+    modalDescription: els.scheduleDescription,
+    modalCancel: els.scheduleCancel,
+    modalSave: els.scheduleSave,
+  });
+  const subscriptions = state.settings?.calendar?.subscriptions || [];
+  await state.calendar.start({ subscriptions });
+  // start() invokes _notifyChange() once the internal load completes,
+  // so the sidebar badge is already populated via onChange — no need
+  // for a separate refresh call here.
+}
+
+function refreshCalendarSidebarCount(n = 0) {
+  if (!els.calendarCount) return;
+  els.calendarCount.textContent = String(n);
+  els.calendarCount.classList.toggle('hidden', n === 0);
+}
+
+// Post the just-scheduled call as a chat message in its channel,
+// with the .ics file attached so participants can drag it into their
+// external calendar app. The huddle:// deep link in the URL field
+// becomes the "join from calendar app" affordance — calendar apps
+// typically render URL: as a clickable link in the event details.
+async function postScheduledCallIcsToChannel(scheduled) {
+  if (!state.huddle || !window.HuddleICS) return;
+  // Deep-link shape mirrors buildJoinCallInviteUrl above (kept inline
+  // here to avoid a forward dependency).
+  let huddleUrl = '';
+  try {
+    huddleUrl = `huddle://team/${encodeURIComponent(state.huddle.team.id)}/channel/${encodeURIComponent(scheduled.channelId)}?call=1`;
+  } catch {}
+  const ics = window.HuddleICS.buildEvent({
+    uid: `huddle-${scheduled.id}@huddle`,
+    title: scheduled.title,
+    description: scheduled.description,
+    startsAt: scheduled.startsAt,
+    durationMin: scheduled.durationMin,
+    url: huddleUrl,
+  });
+  const file = new File([ics], 'huddle-call.ics', { type: 'text/calendar' });
+  let attachment = null;
+  try {
+    const uploaded = await state.huddle.uploadFile(file);
+    attachment = { ...uploaded, contentType: 'text/calendar' };
+  } catch (err) {
+    console.warn('postScheduledCallIcsToChannel: upload failed', err);
+    // We still post the announcement even if upload failed — the
+    // user will see the schedule in their Calendar drawer regardless.
+  }
+  const when = scheduled.startsAt.toLocaleString();
+  const body = `📅 Scheduled a call: **${scheduled.title}** — ${when} (${scheduled.durationMin} min)`;
+  await state.huddle.sendMessage({
+    channelId: scheduled.channelId,
+    text: body,
+    attachments: attachment ? [attachment] : [],
+  });
+}
+
+// Re-render the Settings calendar-subscription list from
+// state.settings.calendar.subscriptions. Mutations (add / remove)
+// write back to state.settings and the modal's Save button persists
+// via the existing user_integrations flow.
+function renderCalendarSettingsList() {
+  const root = els.setCalendarList;
+  if (!root) return;
+  root.innerHTML = '';
+  const subs = state.settings?.calendar?.subscriptions || [];
+  if (!subs.length) {
+    const empty = document.createElement('div');
+    empty.className = 'hint-inline';
+    empty.textContent = 'No subscriptions yet.';
+    root.appendChild(empty);
+    return;
+  }
+  for (const sub of subs) {
+    const row = document.createElement('div');
+    row.className = 'set-cal-row';
+    const info = document.createElement('div');
+    info.className = 'set-cal-row-info';
+    const name = document.createElement('div');
+    name.className = 'set-cal-row-name';
+    name.textContent = sub.name || '(unnamed)';
+    const url = document.createElement('div');
+    url.className = 'set-cal-row-url';
+    url.textContent = sub.url;
+    info.append(name, url);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'set-cal-row-del';
+    del.title = 'Remove subscription';
+    del.setAttribute('aria-label', 'Remove subscription');
+    del.textContent = '×';
+    del.onclick = async () => {
+      state.settings.calendar = state.settings.calendar || {};
+      const list = (state.settings.calendar.subscriptions || []).filter((s) => s.url !== sub.url);
+      state.settings.calendar.subscriptions = list;
+      renderCalendarSettingsList();
+      state.calendar?.setSubscriptions(list).catch(() => {});
+      // Persist immediately rather than waiting for Settings → Save:
+      // subscription add/remove is an atomic list edit, not a
+      // partially-typed form field, so it shouldn't be discarded
+      // by the Cancel button.
+      try { await window.huddleApi.saveSettings(state.settings); }
+      catch (err) { console.warn('persistCalendarSettings failed', err); }
+    };
+    row.append(info, del);
+    root.appendChild(row);
+  }
+}
+
+async function addCalendarSubscriptionFromForm() {
+  const name = (els.setCalendarName.value || '').trim();
+  const url = (els.setCalendarUrl.value || '').trim();
+  if (!url) { els.setCalendarUrl.focus(); return; }
+  // Light client-side validation — main-process ics-fetch enforces
+  // the real policy (https only, non-private host, size cap). Mirror
+  // its scheme restriction here (https + webcal only, no plain http)
+  // so the user gets immediate feedback instead of a deferred fetch
+  // failure.
+  if (!/^(https|webcal):\/\//i.test(url)) {
+    alert('URL must start with https:// or webcal://');
+    els.setCalendarUrl.focus();
+    return;
+  }
+  state.settings.calendar = state.settings.calendar || {};
+  const subs = state.settings.calendar.subscriptions || [];
+  // Normalise for dedup: lowercase scheme + host (URL parser handles
+  // both), preserve path case because some calendar providers use
+  // case-sensitive tokens in the path. Without this, "WEBCAL://X.com/..."
+  // and "https://x.com/..." would slot in as two separate subscriptions.
+  const normalized = normalizeIcsUrl(url);
+  if (subs.some((s) => normalizeIcsUrl(s.url) === normalized)) {
+    alert('That URL is already subscribed.');
+    return;
+  }
+  subs.push({ name: name || hostFromUrl(url), url });
+  state.settings.calendar.subscriptions = subs;
+  els.setCalendarName.value = '';
+  els.setCalendarUrl.value = '';
+  renderCalendarSettingsList();
+  state.calendar?.setSubscriptions(subs).catch(() => {});
+  // Persist immediately — see deletion handler above for rationale.
+  try { await window.huddleApi.saveSettings(state.settings); }
+  catch (err) { console.warn('persistCalendarSettings failed', err); }
+}
+
+function normalizeIcsUrl(u) {
+  try { return new URL(String(u).replace(/^webcal:\/\//i, 'https://')).toString(); }
+  catch { return String(u); }
+}
+
+function hostFromUrl(u) {
+  try { return new URL(u.replace(/^webcal:\/\//i, 'https://')).hostname; }
+  catch { return u; }
 }
 
 function refreshSavedSidebarCount() {
@@ -3167,6 +3499,75 @@ function addLocalCameraTile(stream, name) {
   tile.querySelector('video').srcObject = stream;
 }
 
+// ---------------------------------------------------------------------------
+// Background blur
+//
+// The MeshClient holds the segmentation pipeline and the swap logic;
+// the renderer just wires the toggle button + persists the preference
+// and re-points the self-cam tile's video at the new stream when the
+// mesh emits camera-stream-changed (since toggling blur mid-call
+// replaces the published MediaStream).
+// ---------------------------------------------------------------------------
+const BLUR_PREF_KEY = 'huddle.blurBackground';
+function getBlurPreference() {
+  try { return localStorage.getItem(BLUR_PREF_KEY) === '1'; }
+  catch { return false; }
+}
+function setBlurPreference(on) {
+  try {
+    if (on) localStorage.setItem(BLUR_PREF_KEY, '1');
+    else localStorage.removeItem(BLUR_PREF_KEY);
+  } catch {}
+}
+
+async function toggleBackgroundBlur() {
+  if (!state.mesh) return;
+  if (!window.BlurPipeline?.isAvailable()) {
+    showToast("Background blur isn't available — run `npm install` to fetch the model.");
+    return;
+  }
+  const next = !state.mesh.blurOn;
+  if (els.btnBlur) els.btnBlur.disabled = true;
+  try {
+    await state.mesh.setBlurBackground(next);
+    setBlurPreference(next);
+    syncBlurButtonState();
+    showToast(next ? 'Background blurred' : 'Background blur off');
+  } catch (err) {
+    console.warn('toggleBackgroundBlur failed', err);
+    showToast('Could not toggle blur: ' + (err?.message || err));
+  } finally {
+    if (els.btnBlur) els.btnBlur.disabled = false;
+  }
+}
+
+// Called from startCall / startPopoutCall before setCamera so the
+// pipeline is initialised as part of camera setup. setBlurBackground
+// with no live raw stream just stashes the preference.
+function applyPersistedBlurPreference() {
+  if (!state.mesh) return;
+  if (!getBlurPreference()) return;
+  if (!window.BlurPipeline?.isAvailable()) return;
+  state.mesh.setBlurBackground(true).catch((err) => {
+    console.warn('applyPersistedBlurPreference failed', err);
+  });
+}
+
+function syncBlurButtonState() {
+  if (!els.btnBlur) return;
+  els.btnBlur.classList.toggle('active', !!state.mesh?.blurOn);
+}
+
+// The mesh swaps the published MediaStream when blur is toggled
+// mid-call (replaceTrack on the senders, new composite locally), so
+// the self-cam tile's <video>.srcObject needs to be re-pointed —
+// otherwise it'd keep rendering the now-stopped previous stream.
+function onLocalCameraStreamChanged({ stream }) {
+  const tile = state.tilesByKey.get('self-cam');
+  const video = tile?.querySelector('video');
+  if (video) video.srcObject = stream;
+}
+
 function addLocalScreenTile(stream, label) {
   const key = `screen:${stream.id}`;
   const tile = makeTile({ key, label: `${label} — you`, kind: 'screen' });
@@ -3200,6 +3601,14 @@ function commitStreamAsCamera(streamId) {
   tile.querySelector('video').srcObject = pending.stream;
   // Catch up on hand-raised state in case the broadcast arrived before the tile.
   if (state.raisedHands.has(pending.fromId)) setHandRaised(pending.fromId, true);
+  // Catch up on mute / cam state too — same race: the mute-state
+  // broadcast can land before the WebRTC track does, and the tile we'd
+  // have toggled didn't exist yet.
+  const media = state.huddle?.peerMediaState.get(pending.fromId);
+  if (media) {
+    setPeerMicOn(pending.fromId, media.micOn);
+    setPeerCamOn(pending.fromId, media.camOn);
+  }
 }
 
 function renderRemoteScreen(stream, screen) {
@@ -3332,7 +3741,9 @@ function wireControls() {
     if (!state.mesh) return;
     const on = state.mesh.toggleCam();
     els.btnCam.classList.toggle('muted', !on);
+    setPeerCamOn(state.huddle.peerId, on);
   };
+  els.btnBlur && (els.btnBlur.onclick = toggleBackgroundBlur);
   els.btnShare.onclick = openSourcePicker;
   // CC button + the panel's X both toggle captions off so the panel
   // visibility and the capture state stay in sync — otherwise you'd
@@ -3349,6 +3760,14 @@ function wireControls() {
   if (els.pinnedBtn) els.pinnedBtn.onclick = () => state.chat?.openPinnedDrawer();
   if (els.pinnedClose) els.pinnedClose.onclick = closePinnedDrawer;
   if (els.openSaved) els.openSaved.onclick = openSavedDrawer;
+  if (els.openCalendar) {
+    els.openCalendar.onclick = () => {
+      if (!state.calendar) return;
+      if (state.calendar.isOpen()) state.calendar.closeDrawer();
+      else state.calendar.openDrawer();
+    };
+  }
+  if (els.setCalendarAdd) els.setCalendarAdd.onclick = addCalendarSubscriptionFromForm;
   if (els.savedClose) els.savedClose.onclick = closeSavedDrawer;
   if (els.savePopoverAdd) els.savePopoverAdd.onclick = addNewLabelFromPopover;
   if (els.savePopoverNew) els.savePopoverNew.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addNewLabelFromPopover(); } };
@@ -3452,8 +3871,7 @@ function wireControls() {
 
   // Whiteboard (🎨)
   els.whiteboardBtn.onclick = openWhiteboard;
-  els.muteChannelBtn.onclick = toggleCurrentChannelMute;
-  els.notifyAllBtn.onclick = toggleCurrentChannelNotifyAll;
+  els.channelNotifyBtn.onclick = cycleCurrentChannelNotify;
 
   // Search
   els.searchBtn.onclick = openSearchModal;
@@ -3896,6 +4314,7 @@ async function openSettings() {
   els.setAiTicketRepo.value = s.aiTicket?.githubRepo || '';
   els.setGithubToken.value = s.github?.token || '';
   els.setGiphyKey.value = s.giphy?.key || '';
+  renderCalendarSettingsList();
   els.settingsStatus.classList.add('hidden');
   // Password fields are write-only — never prefilled, always cleared on open.
   els.setNewPassword.value = '';
@@ -4032,6 +4451,10 @@ async function saveSettings() {
     },
     github: { token: els.setGithubToken.value },
     giphy: { key: els.setGiphyKey.value.trim() },
+    // Calendar subscriptions are mutated in-place via the Add /
+    // remove buttons (which already wrote to state.settings); just
+    // pass them through unchanged so save() persists the edits.
+    calendar: state.settings?.calendar || {},
   };
   try {
     // Upload pending avatar first so the URL is included in the

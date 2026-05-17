@@ -50,12 +50,23 @@ function renderMarkdown(text, { mentionNames, myName } = {}) {
   s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>');
 
-  // @mentions — render highlighted; the "self" mention gets an extra class.
-  if (mentionNames && mentionNames.length) {
-    const pattern = new RegExp(`(^|[^a-zA-Z0-9_])@(${mentionNames.map(escapeRegex).join('|')})\\b`, 'gi');
-    s = s.replace(pattern, (_, pre, name) => {
-      const cls = myName && name.toLowerCase() === myName.toLowerCase() ? 'mention mention-self' : 'mention';
-      return `${pre}<span class="${cls}">@${name}</span>`;
+  // @mentions — single pass that handles both user mentions and the
+  // broadcast keywords @here / @channel. Combining them in one regex avoids
+  // a second pass re-matching the `@here` text we just emitted inside a
+  // <span>, which would produce nested broken markup.
+  {
+    const userAlt = mentionNames && mentionNames.length
+      ? mentionNames.map(escapeRegex).join('|')
+      : null;
+    const alt = userAlt ? `here|channel|${userAlt}` : 'here|channel';
+    const pattern = new RegExp(`(^|[^a-zA-Z0-9_])@(${alt})\\b`, 'gi');
+    s = s.replace(pattern, (_, pre, token) => {
+      const lower = token.toLowerCase();
+      if (lower === 'here' || lower === 'channel') {
+        return `${pre}<span class="mention mention-broadcast">@${lower}</span>`;
+      }
+      const cls = myName && lower === myName.toLowerCase() ? 'mention mention-self' : 'mention';
+      return `${pre}<span class="${cls}">@${token}</span>`;
     });
   }
 

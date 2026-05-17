@@ -51,14 +51,26 @@
   const slugifyChannelName = (raw) => slugify(raw);
 
   // --- Mention extraction (client-side; we no longer have a server doing it)
+  //
+  // Returns the entries to store in messages.mentions:
+  //   - resolved user display names (from `names`, case-insensitive match) —
+  //     stored as-typed in the directory, e.g. 'Alice'
+  //   - broadcast sentinels '@here' / '@channel' — the leading '@' makes them
+  //     unambiguous against a hypothetical user literally named "here" or
+  //     "channel" (no other entry in the array carries an '@' prefix)
   function extractMentions(text, names) {
-    if (!text || !names || !names.length) return [];
+    if (!text) return [];
     const set = new Set();
-    const lookup = new Map(names.map((n) => [n.toLowerCase(), n]));
+    const lookup = new Map((names || []).map((n) => [n.toLowerCase(), n]));
     const re = /(^|[^a-zA-Z0-9_])@([a-zA-Z0-9_][a-zA-Z0-9_.-]{0,31})/g;
     let m;
     while ((m = re.exec(text)) !== null) {
-      const hit = lookup.get(m[2].toLowerCase());
+      const token = m[2].toLowerCase();
+      if (token === 'here' || token === 'channel') {
+        set.add('@' + token);
+        continue;
+      }
+      const hit = lookup.get(token);
       if (hit) set.add(hit);
     }
     return [...set];
@@ -90,6 +102,11 @@
       // Peer ids whose hand is currently raised. Cleared when the peer
       // lowers their hand or leaves the call.
       this.raisedHands = new Set();
+      // Per-peer mic/cam state in the active call. Default assumption for
+      // a newly-joined peer is both on; the peer broadcasts a mute-state
+      // event (and re-broadcasts on every peer-joined) so receivers
+      // converge to the truth quickly. Cleared on peer-left / leaveCall.
+      this.peerMediaState = new Map(); // peerId -> { micOn, camOn }
       this.url = _config.url;
       this._teamChannel = null;
       this._screenChannels = new Map();     // streamId -> RealtimeChannel
@@ -252,6 +269,7 @@
           if (!seen.has(id)) {
             this._callPeerInfo.delete(id);
             this.raisedHands.delete(id);
+            this.peerMediaState.delete(id);
             this.dispatchEvent(new CustomEvent('peer-left', { detail: id }));
           }
         }
@@ -283,6 +301,17 @@
         if (payload.raised) this.raisedHands.add(payload.from);
         else this.raisedHands.delete(payload.from);
         this.dispatchEvent(new CustomEvent('raise-hand', { detail: payload }));
+      });
+      // Mic/cam state for remote peers. WebRTC's `track.enabled = false`
+      // sends silence / black frames rather than tearing the track down,
+      // so receivers can't detect a mute from the media itself — this
+      // broadcast is the source of truth. Senders re-emit on every
+      // peer-joined so late joiners catch up.
+      ch.on('broadcast', { event: 'mute-state' }, ({ payload }) => {
+        this.peerMediaState.set(payload.from, {
+          micOn: !!payload.micOn, camOn: !!payload.camOn,
+        });
+        this.dispatchEvent(new CustomEvent('mute-state', { detail: payload }));
       });
       // Reactions are ephemeral; receivers render a floating emoji on
       // the sender's tile and let it auto-clear locally — no DB row.
@@ -359,6 +388,7 @@
       }
       this._callPeerInfo.clear();
       this.raisedHands.clear();
+      this.peerMediaState.clear();
       this._callChannel = null;
       this._callChannelId = null;
       // Await the call channel + every per-screen channel before clearing
@@ -701,6 +731,15 @@
       if (raised) this.raisedHands.add(this.peerId);
       else this.raisedHands.delete(this.peerId);
       this._callChannel?.send({ type: 'broadcast', event: 'raise-hand', payload: { from: this.peerId, raised: !!raised } });
+    }
+    sendMuteState(micOn, camOn) {
+      // Call channel is { broadcast: { self: false } }, so this never
+      // echoes back; the local UI updates its own self tile directly
+      // when toggling, no local mirror needed.
+      this._callChannel?.send({
+        type: 'broadcast', event: 'mute-state',
+        payload: { from: this.peerId, micOn: !!micOn, camOn: !!camOn },
+      });
     }
     sendReaction(emoji) {
       this._callChannel?.send({ type: 'broadcast', event: 'reaction', payload: { from: this.peerId, emoji } });
@@ -1136,42 +1175,32 @@
     }
 
     // Open or create a group DM with `otherUserIds` (plus us). If a DM channel
-    // with exactly this membership already exists, reuse it (no duplicates).
-    // Group DMs use a random `gdm:<uuid>` id so members can change over time
-    // without the id going stale.
+    // with exactly this membership already exists, reuse it (re-adding us to
+    // channel_members if we'd previously left). Group DMs use a random
+    // `gdm:<uuid>` id so members can change over time without the id going
+    // stale; dedup is enforced server-side by a partial unique index on
+    // (team_id, member_sig) added in 20260514120000.
     async createGroupDm(otherUserIds, _names) {
       const ids = [...new Set((otherUserIds || []).filter(Boolean))].filter((id) => id !== this.peerId);
       if (ids.length < 2) throw new Error('a group DM needs at least two other people');
       await this._assertTeamMembers(ids);
-      const want = new Set([this.peerId, ...ids]);
+      // Canonical member-set signature: sorted UUIDs joined by commas. Must
+      // match the format the migration's backfill uses (string_agg user_id::text
+      // order by user_id::text) or existing rows won't be found.
+      const memberSig = [this.peerId, ...ids].sort().join(',');
 
-      // Dedup against existing DM channels we belong to. `_myChannelIds` is
-      // kept current on welcome + via the realtime stream, so we can use it
-      // directly instead of re-querying our channel_members rows.
-      const myChannelIds = [...this._myChannelIds];
-      if (myChannelIds.length) {
-        const { data: allRows } = await this.supabase
-          .from('channel_members').select('channel_id,user_id').eq('team_id', this.team.id).in('channel_id', myChannelIds);
-        const byChannel = new Map();
-        for (const r of (allRows || [])) {
-          if (!byChannel.has(r.channel_id)) byChannel.set(r.channel_id, []);
-          byChannel.get(r.channel_id).push(r.user_id);
-        }
-        for (const [cid, memberIds] of byChannel) {
-          if (memberIds.length === want.size && memberIds.every((id) => want.has(id))) {
-            const { data: chRow } = await this.supabase
-              .from('channels').select('*').eq('team_id', this.team.id).eq('id', cid).maybeSingle();
-            if (chRow && chRow.type === 'dm') {
-              const nameById = await this._resolveNames(memberIds);
-              this._myChannelIds.add(cid);
-              const meta = this._marshalChannel(chRow);
-              meta.memberIds = memberIds;
-              meta.members = memberIds.map((id) => nameById.get(id) || '');
-              return meta;
-            }
-          }
-        }
-      }
+      // First try server-side dedup. join_dm_by_member_sig is SECURITY
+      // DEFINER: it checks auth.uid() is in the sig, looks up the matching
+      // gdm, and adds us to channel_members in one atomic step. Returns the
+      // channel id (or null on miss). Folding the lookup and the membership
+      // write together is what lets us tighten channel_members_insert_self
+      // (20260515000000) — the RLS no longer allows self-insert into a gdm
+      // we aren't a creator/member of, so we have to rejoin through this
+      // function instead of doing it client-side.
+      const { data: existingId, error: lookupErr } = await this.supabase
+        .rpc('join_dm_by_member_sig', { t: this.team.id, sig: memberSig });
+      if (lookupErr) throw lookupErr;
+      if (existingId) return await this._openExistingDm(existingId, ids);
 
       const nameById = await this._resolveNames(ids);
       const label = ids.map((id) => nameById.get(id) || 'someone').sort((x, y) => x.localeCompare(y)).join(', ');
@@ -1182,9 +1211,19 @@
       // on_channel_after_insert trigger only grants after RETURNING runs.
       const { error: chErr } = await this.supabase.from('channels').insert({
         team_id: this.team.id, id, name: label.slice(0, 200) || 'Group', topic: '',
-        type: 'dm', protected: false, created_by: this.peerId,
+        type: 'dm', protected: false, created_by: this.peerId, member_sig: memberSig,
       });
-      if (chErr) throw chErr;
+      if (chErr) {
+        // 23505 = the (team_id, member_sig) partial unique index fired. We
+        // raced another tab/click that beat us to the insert; recover by
+        // opening the winner instead of surfacing an opaque error.
+        if (chErr.code === '23505') {
+          const { data: conflictId } = await this.supabase
+            .rpc('join_dm_by_member_sig', { t: this.team.id, sig: memberSig });
+          if (conflictId) return await this._openExistingDm(conflictId, ids);
+        }
+        throw chErr;
+      }
       // The trigger added us; add the rest. We're the creator, so the existing
       // channel_members insert_self policy (created_by branch) permits this.
       // .insert() is atomic — a single failed row aborts the batch and leaves
@@ -1199,6 +1238,38 @@
         id, name: label || 'Group', topic: '', type: 'dm', protected: false, createdBy: this.peerId,
         memberIds: allIds, members: allIds.map((uid) => nameById.get(uid) || ''),
       };
+    }
+
+    // Open an existing DM by id, re-adding any intended participants who
+    // had previously left. Used by createGroupDm when join_dm_by_member_sig
+    // hits — that RPC already added the caller to channel_members, so we
+    // only need to handle the *other* intended members here. Branch 3 of
+    // channel_members_insert_self (is_channel_member + type='dm') authorizes
+    // them: we're now a member of the gdm via the RPC, and they're being
+    // pulled in by an existing member.
+    //
+    // .upsert(ignoreDuplicates) is used for the batch because .insert() is
+    // atomic: one 23505 (already a member) would otherwise abort the whole
+    // batch and leave the rest of the intended members unadded.
+    async _openExistingDm(channelId, otherUserIds = []) {
+      this._myChannelIds.add(channelId);
+      const others = (otherUserIds || []).filter((uid) => uid && uid !== this.peerId);
+      if (others.length) {
+        const rows = others.map((uid) => ({ team_id: this.team.id, channel_id: channelId, user_id: uid }));
+        const { error: othersErr } = await this.supabase
+          .from('channel_members')
+          .upsert(rows, { onConflict: 'team_id,channel_id,user_id', ignoreDuplicates: true });
+        if (othersErr) throw othersErr;
+      }
+      const { data: chRow, error: chErr } = await this.supabase
+        .from('channels').select('*').eq('team_id', this.team.id).eq('id', channelId).maybeSingle();
+      if (chErr) throw chErr;
+      if (!chRow) throw new Error('dm vanished between lookup and join');
+      const { memberIds, members } = await this._fetchChannelMembers(channelId);
+      const meta = this._marshalChannel(chRow);
+      meta.memberIds = memberIds;
+      meta.members = members;
+      return meta;
     }
 
     // Add more people to an existing DM channel (turns a 1:1 into a group, or
@@ -1526,6 +1597,91 @@
       // members are populated separately for private/dm.
       return out;
     }
+
+    // --- Scheduled calls ----------------------------------------------------
+    //
+    // Per-team agenda of upcoming Huddle calls. RLS gates by team
+    // membership for read and by created_by for mutation, so the
+    // renderer doesn't need to re-check authority. The realtime
+    // subscriber emits inserts/deletes/updates; the subscription
+    // filter + RLS ensure non-members never receive the events.
+
+    async loadScheduledCalls({ from = new Date(Date.now() - 60 * 60 * 1000), limit = 500 } = {}) {
+      if (!this.team) return [];
+      // `from` defaults to one hour ago so a call that JUST started
+      // still shows in the upcoming list (people often want to
+      // rejoin a recently-started scheduled call).
+      const { data, error } = await this.supabase
+        .from('scheduled_calls')
+        .select('*')
+        .eq('team_id', this.team.id)
+        .gte('starts_at', new Date(from).toISOString())
+        .order('starts_at', { ascending: true })
+        .limit(limit);
+      if (error) { console.warn('loadScheduledCalls failed', error); return []; }
+      return (data || []).map((r) => this._marshalScheduledCall(r));
+    }
+
+    async createScheduledCall({ channelId, title, description = '', startsAt, durationMin = 30 }) {
+      if (!this.team) throw new Error('not in a team');
+      if (!(startsAt instanceof Date)) startsAt = new Date(startsAt);
+      if (isNaN(startsAt.getTime())) throw new Error('invalid startsAt');
+      const { data, error } = await this.supabase.from('scheduled_calls').insert({
+        team_id: this.team.id,
+        channel_id: channelId,
+        created_by: this.peerId,
+        title, description,
+        starts_at: startsAt.toISOString(),
+        duration_min: durationMin,
+      }).select().single();
+      if (error) throw error;
+      return this._marshalScheduledCall(data);
+    }
+
+    async deleteScheduledCall(id) {
+      const { error } = await this.supabase.from('scheduled_calls').delete().eq('id', id);
+      if (error) throw error;
+    }
+
+    // Realtime fan-in for the team's schedule. Returns an async
+    // unsubscribe fn — callers should await it on team-switch or
+    // app-shutdown so the WebSocket handshake completes before the
+    // next subscription opens. Mirrors the lurker channel teardown
+    // above (cached.channel.unsubscribe()); using removeChannel()
+    // without unsubscribing leaves the server-side subscription open
+    // and can stack on hot-reload / re-login.
+    subscribeScheduledCalls(handler) {
+      if (!this.team) return async () => {};
+      const ch = this.supabase
+        .channel(`scheduled_calls:${this.team.id}`)
+        .on('postgres_changes', {
+          event: '*', schema: 'public', table: 'scheduled_calls',
+          filter: `team_id=eq.${this.team.id}`,
+        }, (payload) => {
+          handler({
+            eventType: payload.eventType,
+            row: payload.new ? this._marshalScheduledCall(payload.new) : null,
+            oldId: payload.old?.id || null,
+          });
+        })
+        .subscribe();
+      return async () => { try { await ch.unsubscribe(); } catch {} };
+    }
+
+    _marshalScheduledCall(row) {
+      return {
+        id: row.id,
+        teamId: row.team_id,
+        channelId: row.channel_id,
+        createdBy: row.created_by,
+        title: row.title,
+        description: row.description || '',
+        startsAt: new Date(row.starts_at),
+        durationMin: row.duration_min,
+        createdAt: new Date(row.created_at),
+        updatedAt: new Date(row.updated_at),
+      };
+    }
   }
 
   // ========================================================================
@@ -1602,6 +1758,15 @@
     const id = slugifyTeamName(rawName);
     if (!id) throw new Error('invalid team name');
     const { data: { user } } = await sb.auth.getUser();
+    if (!user) throw new Error('not authenticated');
+    // Single-team rule (enforced by team_members_one_team_per_user):
+    // leave any other team first, otherwise the team_after_insert
+    // trigger trips the unique (user_id) constraint and the create
+    // path rolls back. Surface delete errors so they don't masquerade
+    // as the subsequent unique-violation.
+    const { error: delErr } = await sb.from('team_members')
+      .delete().eq('user_id', user.id).neq('team_id', id);
+    if (delErr) throw delErr;
     // We can't probe existence with `select * from teams where id=X`:
     // teams_read_member RLS only lets members + creator see the row, so
     // a non-member trying to join an existing team would see "missing"
