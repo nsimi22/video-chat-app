@@ -2985,7 +2985,7 @@ async function startCalendar() {
       // members. The sidebar badge reads off this so it stays in
       // sync with what's actually in the drawer, not just calls the
       // local user scheduled themselves.
-      onChange: () => refreshCalendarSidebarCount(),
+      onChange: (n) => refreshCalendarSidebarCount(n),
     },
   });
   state.calendar.bindElements({
@@ -3006,12 +3006,13 @@ async function startCalendar() {
   });
   const subscriptions = state.settings?.calendar?.subscriptions || [];
   await state.calendar.start({ subscriptions });
-  refreshCalendarSidebarCount();
+  // start() invokes _notifyChange() once the internal load completes,
+  // so the sidebar badge is already populated via onChange — no need
+  // for a separate refresh call here.
 }
 
-function refreshCalendarSidebarCount() {
+function refreshCalendarSidebarCount(n = 0) {
   if (!els.calendarCount) return;
-  const n = state.calendar?._scheduled?.size || 0;
   els.calendarCount.textContent = String(n);
   els.calendarCount.classList.toggle('hidden', n === 0);
 }
@@ -3124,7 +3125,12 @@ async function addCalendarSubscriptionFromForm() {
   }
   state.settings.calendar = state.settings.calendar || {};
   const subs = state.settings.calendar.subscriptions || [];
-  if (subs.some((s) => s.url === url)) {
+  // Normalise for dedup: lowercase scheme + host (URL parser handles
+  // both), preserve path case because some calendar providers use
+  // case-sensitive tokens in the path. Without this, "WEBCAL://X.com/..."
+  // and "https://x.com/..." would slot in as two separate subscriptions.
+  const normalized = normalizeIcsUrl(url);
+  if (subs.some((s) => normalizeIcsUrl(s.url) === normalized)) {
     alert('That URL is already subscribed.');
     return;
   }
@@ -3137,6 +3143,11 @@ async function addCalendarSubscriptionFromForm() {
   // Persist immediately — see deletion handler above for rationale.
   try { await window.huddleApi.saveSettings(state.settings); }
   catch (err) { console.warn('persistCalendarSettings failed', err); }
+}
+
+function normalizeIcsUrl(u) {
+  try { return new URL(String(u).replace(/^webcal:\/\//i, 'https://')).toString(); }
+  catch { return String(u); }
 }
 
 function hostFromUrl(u) {
