@@ -266,6 +266,12 @@ const state = {
   // popover input handlers to know which row to mutate.
   savePopoverTarget: null,
   pendingStreams: new Map(),
+  // peerId -> intervalId for the dark-frame cam-off detector. Used as
+  // a fallback for older clients that don't broadcast mute-state —
+  // we sample the remote <video> for sustained darkness and treat it
+  // as cam-off. Cleared the moment an explicit mute-state arrives
+  // (the broadcast supersedes the heuristic) or the peer leaves.
+  camOffDetectors: new Map(),
   unread: new Map(), // channelId -> { count, mentions } both ints
   _email: null,
   settings: {},      // user_integrations.settings; loaded post-auth
@@ -1992,6 +1998,7 @@ function onCallPeerLeft(peerId) {
 
 function removePersonFromCall(peerId) {
   removeTile(`peer:${peerId}`);
+  stopCamOffDetection(peerId);
   state.raisedHands.delete(peerId);
   if (state.speakingPeer === peerId) setSpeakingPeer(null);
   // Drop any screen tiles owned by this peer too.
@@ -2825,6 +2832,86 @@ function ensureCamOffOverlay(tile, peerId) {
 function onRemoteMuteState({ from, micOn, camOn }) {
   setPeerMicOn(from, !!micOn);
   setPeerCamOn(from, !!camOn);
+  // Explicit broadcast supersedes the dark-frame heuristic — the
+  // peer is on a build that publishes mute-state, so we trust it.
+  stopCamOffDetection(from);
+}
+
+// Fallback cam-off detector. Older clients (pre-mute-state-broadcast)
+// don't tell us when they disable their camera; their video track
+// keeps flowing but full of black frames, so the receiver renders a
+// black tile with no avatar overlay. We sample the remote <video>
+// every couple of seconds: sustained darkness ⇒ assume cam off and
+// flip on the overlay; brightness returns ⇒ flip it back. Stopped
+// the moment an explicit mute-state arrives for the peer.
+const CAM_OFF_POLL_MS = 2000;
+const CAM_OFF_SAMPLE_DIM = 16;
+const CAM_OFF_DARK_AVG = 8;     // 0–255 per channel
+const CAM_OFF_HYSTERESIS = 2;    // consecutive ticks before flipping
+function startCamOffDetection(peerId, video) {
+  if (!peerId || !video) return;
+  if (state.camOffDetectors.has(peerId)) return;
+  // If we've already received a mute-state for this peer, the explicit
+  // signal is authoritative — don't start the heuristic at all.
+  if (state.huddle?.peerMediaState?.has(peerId)) return;
+  const canvas = document.createElement('canvas');
+  canvas.width = CAM_OFF_SAMPLE_DIM;
+  canvas.height = CAM_OFF_SAMPLE_DIM;
+  // willReadFrequently hints the impl to keep a software-backed
+  // buffer; without it the per-tick getImageData on a GPU canvas
+  // can stall ~2ms each call.
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  let darkStreak = 0;
+  let brightStreak = 0;
+  let lastReported = null;
+  const interval = setInterval(() => {
+    if (state.huddle?.peerMediaState?.has(peerId)) {
+      stopCamOffDetection(peerId);
+      return;
+    }
+    const tile = tileForPeer(peerId);
+    if (!tile || !document.body.contains(tile)) {
+      stopCamOffDetection(peerId);
+      return;
+    }
+    if (video.readyState < 2 || !video.videoWidth) return;
+    let avg;
+    try {
+      ctx.drawImage(video, 0, 0, CAM_OFF_SAMPLE_DIM, CAM_OFF_SAMPLE_DIM);
+      const { data } = ctx.getImageData(0, 0, CAM_OFF_SAMPLE_DIM, CAM_OFF_SAMPLE_DIM);
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 4) sum += data[i] + data[i + 1] + data[i + 2];
+      avg = sum / (CAM_OFF_SAMPLE_DIM * CAM_OFF_SAMPLE_DIM * 3);
+    } catch {
+      // SecurityError (tainted canvas) or similar — give up rather
+      // than spam errors every tick.
+      stopCamOffDetection(peerId);
+      return;
+    }
+    if (avg < CAM_OFF_DARK_AVG) { darkStreak++; brightStreak = 0; }
+    else { brightStreak++; darkStreak = 0; }
+    let next = null;
+    if (brightStreak >= CAM_OFF_HYSTERESIS) next = true;
+    else if (darkStreak >= CAM_OFF_HYSTERESIS) next = false;
+    if (next !== null && next !== lastReported) {
+      lastReported = next;
+      setPeerCamOn(peerId, next);
+    }
+  }, CAM_OFF_POLL_MS);
+  state.camOffDetectors.set(peerId, interval);
+}
+
+function stopCamOffDetection(peerId) {
+  const id = state.camOffDetectors.get(peerId);
+  if (id) {
+    clearInterval(id);
+    state.camOffDetectors.delete(peerId);
+  }
+}
+
+function stopAllCamOffDetection() {
+  for (const id of state.camOffDetectors.values()) clearInterval(id);
+  state.camOffDetectors.clear();
 }
 
 // Reactions: ephemeral floating emoji over the sender's tile. Each reaction
@@ -3443,6 +3530,7 @@ function resetCallEphemera() {
   state.drawLayers.clear();
   for (const p of state.pendingStreams.values()) clearTimeout(p.timer);
   state.pendingStreams.clear();
+  stopAllCamOffDetection();
   closeAnnotate();
   clearSpotlight();
   stopSpeakerPolling();
@@ -3598,7 +3686,8 @@ function commitStreamAsCamera(streamId) {
   const key = `peer:${pending.fromId}`;
   const peer = state.huddle.peerInfo.get(pending.fromId);
   const tile = makeTile({ key, label: peer ? peer.name : 'guest', kind: 'remote', userId: pending.fromId });
-  tile.querySelector('video').srcObject = pending.stream;
+  const videoEl = tile.querySelector('video');
+  videoEl.srcObject = pending.stream;
   // Catch up on hand-raised state in case the broadcast arrived before the tile.
   if (state.raisedHands.has(pending.fromId)) setHandRaised(pending.fromId, true);
   // Catch up on mute / cam state too — same race: the mute-state
@@ -3608,6 +3697,13 @@ function commitStreamAsCamera(streamId) {
   if (media) {
     setPeerMicOn(pending.fromId, media.micOn);
     setPeerCamOn(pending.fromId, media.camOn);
+  } else {
+    // No mute-state yet — the peer might be on an older build that
+    // doesn't broadcast it. Start the dark-frame fallback so a
+    // cammed-off peer still gets an avatar overlay instead of a
+    // featureless black tile. The detector self-cancels if a real
+    // mute-state broadcast eventually arrives.
+    startCamOffDetection(pending.fromId, videoEl);
   }
 }
 
