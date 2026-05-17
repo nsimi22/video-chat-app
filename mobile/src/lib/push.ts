@@ -23,7 +23,10 @@ export async function registerForPush(userId: string): Promise<void> {
     const req = await Notifications.requestPermissionsAsync();
     status = req.status;
   }
-  if (status !== 'granted') return;
+  if (status !== 'granted') {
+    console.warn('[push] permission not granted — device will not receive notifications');
+    return;
+  }
 
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('default', {

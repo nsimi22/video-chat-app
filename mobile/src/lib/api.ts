@@ -167,9 +167,19 @@ function base64ToBytes(b64: string): Uint8Array {
 // Reading the local file as base64 → ArrayBuffer is the reliable way to upload
 // from React Native; `fetch(uri).blob()` is known to produce 0-byte uploads for
 // some content:// URIs on Android.
+//
+// 25 MB cap matches the Supabase Storage default upload limit and keeps us
+// from OOM-ing low-end Android devices on a 50 MB gallery video — the base64
+// pass roughly doubles in-memory size before we hand bytes to the SDK.
+const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
+
 export async function uploadAttachment(userId: string, file: { uri: string; name: string; mime: string }): Promise<Attachment> {
   const safeName = file.name.replace(/[^\w.\-]+/g, '_') || 'file';
   const objectPath = `${userId}/${Crypto.randomUUID()}/${safeName}`;
+  const info = await FileSystem.getInfoAsync(file.uri, { size: true });
+  if (info.exists && typeof info.size === 'number' && info.size > UPLOAD_MAX_BYTES) {
+    throw new Error(`File too large (${(info.size / 1024 / 1024).toFixed(1)} MB; max 25 MB)`);
+  }
   const b64 = await FileSystem.readAsStringAsync(file.uri, { encoding: FileSystem.EncodingType.Base64 });
   const bytes = base64ToBytes(b64);
   const { error } = await supabase.storage.from('uploads').upload(objectPath, bytes, {

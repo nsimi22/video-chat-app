@@ -52,9 +52,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const setActiveTeam = (t: Team | null) => {
     setActiveTeamState(t);
-    // Fire-and-forget persistence; failures here are non-fatal.
-    if (t) void SecureStore.setItemAsync(TEAM_KEY, t.id).catch(() => {});
-    else void SecureStore.deleteItemAsync(TEAM_KEY).catch(() => {});
+    // Fire-and-forget persistence; failures here are non-fatal but worth
+    // surfacing — silently dropping the write means the user lands on the
+    // team picker every launch, which looks like a bug not a storage error.
+    const onWriteErr = (err: unknown) => console.warn('[auth] team persist failed', err);
+    if (t) void SecureStore.setItemAsync(TEAM_KEY, t.id).catch(onWriteErr);
+    else void SecureStore.deleteItemAsync(TEAM_KEY).catch(onWriteErr);
   };
 
   const signOut = async () => {

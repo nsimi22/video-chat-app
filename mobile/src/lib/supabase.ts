@@ -45,7 +45,13 @@ async function getLarge(key: string): Promise<string | null> {
   let out = '';
   for (let i = 0; i < parts; i++) {
     const part = await SecureStore.getItemAsync(`${key}.${i}`);
-    if (part == null) return null; // corrupt/partial — treat as missing
+    if (part == null) {
+      // Corrupt/partial — treat as missing so the auth layer falls back
+      // to refresh-or-re-login. Log it so a flaky storage doesn't
+      // silently sign users out without leaving a trace.
+      console.warn('[secure-store] missing chunk', `${key}.${i}`, 'of', parts);
+      return null;
+    }
     out += part;
   }
   return out;
