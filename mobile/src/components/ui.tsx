@@ -1,5 +1,7 @@
 import React from 'react';
 import {
+  Linking,
+  Platform,
   Text,
   TextInput,
   TouchableOpacity,
@@ -8,7 +10,10 @@ import {
   StyleSheet,
   ActivityIndicator,
   type TextInputProps,
+  type TextStyle,
 } from 'react-native';
+
+const MONO_FONT = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, radius, space } from '@/theme';
 
@@ -125,7 +130,7 @@ export function LinkButton({ title, onPress, disabled }: { title: string; onPres
   );
 }
 
-export function Avatar({ name, color, size = 36, uri }: { name: string; color?: string | null; size?: number; uri?: string | null }) {
+export function Avatar({ name, color, size = 36, uri, ai }: { name: string; color?: string | null; size?: number; uri?: string | null; ai?: boolean }) {
   const initials = (name || '?')
     .split(/\s+/)
     .slice(0, 2)
@@ -135,19 +140,107 @@ export function Avatar({ name, color, size = 36, uri }: { name: string; color?: 
     width: size,
     height: size,
     borderRadius: size / 2,
-    backgroundColor: color || colors.surfaceAlt,
+    backgroundColor: ai ? colors.accent : (color || colors.surfaceAlt),
     alignItems: 'center' as const,
     justifyContent: 'center' as const,
     overflow: 'hidden' as const,
   };
-  if (uri) {
+  if (uri && !ai) {
     return <Image source={{ uri }} style={box} />;
   }
   return (
     <View style={box}>
-      <Text style={{ color: '#fff', fontWeight: '600', fontSize: size * 0.4 }}>{initials}</Text>
+      <Text style={{ color: '#fff', fontWeight: '600', fontSize: size * (ai ? 0.5 : 0.4) }}>
+        {ai ? '🤖' : initials}
+      </Text>
     </View>
   );
+}
+
+// Tiny markdown renderer for chat bodies — mirrors renderer/markdown.js:
+// **bold**, *italic*, `inline code`, blockquote (lines starting with `> `),
+// and autolinked http(s) URLs. Pure regex; no markdown library.
+const INLINE_RE = /(\*\*[^*]+\*\*)|(\*[^*]+\*)|(`[^`]+`)|(https?:\/\/[^\s<>'"]+)/g;
+function renderInline(text: string, prefix: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  let last = 0;
+  let i = 0;
+  // RegExp with /g is stateful, so reset before each call.
+  INLINE_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = INLINE_RE.exec(text)) !== null) {
+    if (m.index > last) out.push(<Text key={`${prefix}t${i++}`}>{text.slice(last, m.index)}</Text>);
+    const tok = m[0];
+    if (tok.startsWith('**')) {
+      out.push(<Text key={`${prefix}b${i++}`} style={{ fontWeight: '700' }}>{tok.slice(2, -2)}</Text>);
+    } else if (tok.startsWith('*')) {
+      out.push(<Text key={`${prefix}i${i++}`} style={{ fontStyle: 'italic' }}>{tok.slice(1, -1)}</Text>);
+    } else if (tok.startsWith('`')) {
+      out.push(
+        <Text key={`${prefix}c${i++}`} style={{ fontFamily: MONO_FONT, backgroundColor: colors.surfaceAlt }}>
+          {' '}{tok.slice(1, -1)}{' '}
+        </Text>,
+      );
+    } else {
+      const url = tok;
+      out.push(
+        <Text
+          key={`${prefix}u${i++}`}
+          style={{ color: colors.accent, textDecorationLine: 'underline' }}
+          onPress={() => Linking.openURL(url).catch(() => {})}
+        >
+          {url}
+        </Text>,
+      );
+    }
+    last = m.index + tok.length;
+  }
+  if (last < text.length) out.push(<Text key={`${prefix}t${i++}`}>{text.slice(last)}</Text>);
+  return out;
+}
+
+// Memoised because every chat-row render would otherwise re-walk the body via
+// regex + rebuild the JSX tree. With a typical channel of 50+ messages on
+// every reaction / typing / scroll tick, that's the hottest path in the list.
+export const Markdown = React.memo(MarkdownImpl);
+function MarkdownImpl({ body, baseStyle }: { body: string; baseStyle?: TextStyle }) {
+  // Block-level: contiguous `> ` lines render as a quoted block (left border
+  // + dim text); everything else is a paragraph. Paragraphs keep newlines so
+  // multi-line bodies don't run together.
+  const blocks: React.ReactNode[] = [];
+  let buf: string[] = [];
+  let kind: 'p' | 'q' = 'p';
+  let bi = 0;
+  const flush = () => {
+    if (!buf.length) return;
+    const text = buf.join('\n');
+    if (kind === 'q') {
+      blocks.push(
+        <View key={`q${bi}`} style={{ borderLeftWidth: 3, borderLeftColor: colors.border, paddingLeft: space(2), marginVertical: 2 }}>
+          <Text style={[{ color: colors.textDim, fontSize: 15, lineHeight: 21 }, baseStyle]}>
+            {renderInline(text, `q${bi}-`)}
+          </Text>
+        </View>,
+      );
+    } else {
+      blocks.push(
+        <Text key={`p${bi}`} style={[{ color: colors.text, fontSize: 15, lineHeight: 21 }, baseStyle]}>
+          {renderInline(text, `p${bi}-`)}
+        </Text>,
+      );
+    }
+    bi++;
+    buf = [];
+  };
+  for (const line of body.split('\n')) {
+    const quoted = /^>\s?/.test(line);
+    const nextKind: 'p' | 'q' = quoted ? 'q' : 'p';
+    if (nextKind !== kind && buf.length) flush();
+    kind = nextKind;
+    buf.push(quoted ? line.replace(/^>\s?/, '') : line);
+  }
+  flush();
+  return <View>{blocks}</View>;
 }
 
 const styles = StyleSheet.create({

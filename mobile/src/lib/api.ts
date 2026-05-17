@@ -13,6 +13,7 @@ export type Channel = {
   topic: string | null;
   type: 'public' | 'private' | 'dm';
   protected: boolean;
+  created_by?: string | null;
 };
 export type Profile = { user_id: string; name: string; color: string | null; bio?: string | null; avatar_url?: string | null };
 export type Attachment = { url: string; name: string; size?: number; type?: string };
@@ -30,6 +31,10 @@ export type Message = {
   edited_ts: string | null;
   pinned_at: string | null;
   pinned_by: string | null;
+  // AI-message flags (huddle_ai_message_flags migration). author_id is still
+  // the human who invoked the AI — these just let the UI render it distinctly.
+  ai_generated?: boolean | null;
+  ai_model?: string | null;
 };
 
 export async function listTeams(): Promise<Team[]> {
@@ -46,6 +51,45 @@ export async function listChannels(teamId: string): Promise<Channel[]> {
   const { data, error } = await supabase.from('channels').select('*').eq('team_id', teamId);
   if (error) throw error;
   return (data ?? []) as Channel[];
+}
+
+// Open-or-create a 1:1 DM channel with another team member. Mirrors
+// renderer/api.js createDm: the channel id is deterministic from the sorted
+// pair of uuids, so re-opening returns the same row. on_channel_after_insert
+// adds the creator to channel_members; we upsert ourselves defensively (no-op
+// when the trigger already added us) and only upsert the peer if we created
+// the channel (the only branch where channel_members_insert_self lets us
+// insert someone else's row).
+export async function openDm(teamId: string, meId: string, otherId: string, otherName?: string): Promise<Channel> {
+  if (meId === otherId) throw new Error("can't DM yourself");
+  const id = 'dm:' + (meId < otherId ? `${meId}::${otherId}` : `${otherId}::${meId}`);
+  const { error: chErr } = await supabase
+    .from('channels')
+    .upsert(
+      { team_id: teamId, id, name: otherName ?? 'Direct message', topic: '', type: 'dm', protected: false, created_by: meId },
+      { onConflict: 'team_id,id', ignoreDuplicates: true },
+    );
+  if (chErr && chErr.code !== '23505') throw chErr;
+  const { error: meErr } = await supabase
+    .from('channel_members')
+    .upsert(
+      { team_id: teamId, channel_id: id, user_id: meId },
+      { onConflict: 'team_id,channel_id,user_id', ignoreDuplicates: true },
+    );
+  if (meErr) throw meErr;
+  const { data: ch, error: selErr } = await supabase
+    .from('channels').select('*').eq('team_id', teamId).eq('id', id).single();
+  if (selErr) throw selErr;
+  if (ch.created_by === meId) {
+    const { error: peerErr } = await supabase
+      .from('channel_members')
+      .upsert(
+        { team_id: teamId, channel_id: id, user_id: otherId },
+        { onConflict: 'team_id,channel_id,user_id', ignoreDuplicates: true },
+      );
+    if (peerErr) throw peerErr;
+  }
+  return ch as Channel;
 }
 
 export async function listTeamProfiles(teamId: string): Promise<Profile[]> {
