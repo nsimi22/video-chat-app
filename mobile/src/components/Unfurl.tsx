@@ -155,12 +155,14 @@ export function MessageUnfurls({ body, viewerId }: { body: string; viewerId: str
         if (!active) return;
         setJira(jiraRes.filter((x): x is JiraIssue => !!x));
         setGh(ghRes.filter((x): x is GithubIssue => !!x));
-      } catch (e) {
+      } catch (e: any) {
         // Belt + braces: the individual fetchers already swallow errors and
         // return null. Catching here covers anything we didn't anticipate
         // (e.g. an integrations.ts supabase fault on a stale session) so a
-        // bad unfurl can't take down the whole message row.
-        console.warn('[unfurl] failed', e);
+        // bad unfurl can't take down the whole message row. Log only the
+        // message so the full error object — which on Supabase faults can
+        // include the query context — never reaches crash reporters.
+        console.warn('[unfurl] failed', e?.message ?? String(e));
       }
     })();
     return () => { active = false; };
