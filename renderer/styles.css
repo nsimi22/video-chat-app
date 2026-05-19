@@ -292,6 +292,23 @@ input:focus, textarea:focus {
   width: 14px;
   height: 14px;
 }
+
+/* Chat-header Lock glyph for private channels. Mirrors the sidebar
+   Lock icon so the "this is private" context isn't lost when you're
+   actually inside the channel. The :empty rule collapses the span
+   for non-private channels so it doesn't reserve trailing margin. */
+.channel-name-prefix {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-right: 6px;
+  color: var(--text-dim);
+}
+.channel-name-prefix:empty { display: none; }
+.channel-name-prefix svg {
+  width: 14px;
+  height: 14px;
+}
 .section-header-row button.ghost {
   background: transparent; border: none; color: var(--text-dim);
   font-size: 14px; line-height: 1; padding: 2px 6px; cursor: pointer;

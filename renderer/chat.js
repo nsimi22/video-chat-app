@@ -278,7 +278,7 @@ class ChatView {
 
   // --- Public API ---------------------------------------------------------
 
-  setChannel(channelId, topic, displayLabel) {
+  setChannel(channelId, topic, displayLabel, channelType) {
     // Save the previous channel's draft before swapping in the new
     // one. Flush any pending debounced save first, then capture
     // the current composer value synchronously — the input event
@@ -289,6 +289,7 @@ class ChatView {
       this._saveDraft(this.currentChannel, this.els.composer.value);
     }
     this.currentChannel = channelId;
+    this._currentChannelType = channelType || null;
     this.threadParentId = null;
     this.editingMessageId = null;
     this.composerAttachments = [];
@@ -300,6 +301,10 @@ class ChatView {
     this.els.channelTopic.textContent = topic || '';
     this.els.composer.placeholder = `Message ${label}`;
     this.els.threadBack.classList.add('hidden');
+    // Header lock for private channels — sidebar drops the 🔒 prefix
+    // in favour of the Lock SVG icon on the row, and this restores the
+    // same visual cue when the user is actually inside the channel.
+    this._applyHeaderPrefix();
     // Restore the new channel's draft (if any). Null/empty leaves
     // the composer blank. The restored value is set programmatically,
     // so the `input`-driven popups won't re-evaluate — close any that
@@ -314,13 +319,15 @@ class ChatView {
 
   // Relabel the current channel in-place (e.g. a group DM's membership
   // changed) without reloading history or touching the composer draft.
-  setLabel(channelId, displayLabel) {
+  setLabel(channelId, displayLabel, channelType) {
     if (channelId !== this.currentChannel || !displayLabel) return;
     this._currentLabel = displayLabel;
+    if (channelType) this._currentChannelType = channelType;
     if (this.threadParentId) return; // thread view shows "Thread", not the channel label
     this.els.chatChannelName.textContent = displayLabel;
     this.els.channelName.textContent = displayLabel;
     this.els.composer.placeholder = `Message ${displayLabel}`;
+    this._applyHeaderPrefix();
   }
 
   async _fetchHistory(channelId, before) {
@@ -347,6 +354,9 @@ class ChatView {
     this.threadParentId = messageId;
     this.els.threadBack.classList.remove('hidden');
     this.els.chatChannelName.textContent = 'Thread';
+    // Header reads "Thread", not the channel name — drop the lock
+    // prefix so it doesn't read "🔒 Thread".
+    if (this.els.chatChannelPrefix) this.els.chatChannelPrefix.replaceChildren();
     const parent = this._messages().find((m) => m.id === messageId);
     this.els.composer.placeholder = parent ? `Reply to ${parent.authorName}` : 'Reply';
     this._render();
@@ -358,7 +368,22 @@ class ChatView {
     const label = this._currentLabel || ('#' + this.currentChannel);
     this.els.chatChannelName.textContent = label;
     this.els.composer.placeholder = `Message ${label}`;
+    // Restore the lock prefix for private channels.
+    this._applyHeaderPrefix();
     this._render();
+  }
+
+  // Mirror the sidebar's lock-icon decoration in the chat header for
+  // private channels. Empty `<span>` for everything else; CSS `:empty`
+  // collapses it so there's no stray margin.
+  _applyHeaderPrefix() {
+    const el = this.els.chatChannelPrefix;
+    if (!el) return;
+    if (this._currentChannelType === 'private' && window.HuddleIcons) {
+      el.innerHTML = window.HuddleIcons.lock;
+    } else {
+      el.replaceChildren();
+    }
   }
 
   // --- Wiring -------------------------------------------------------------

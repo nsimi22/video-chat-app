@@ -152,6 +152,7 @@ const els = {
   // single column; ChatView.setChannel still writes to chatChannelName,
   // so we alias it to the same DOM node.
   chatChannelName: $('#channel-name'),
+  chatChannelPrefix: $('#channel-name-prefix'),
   threadBack: $('#chat-thread-back'),
   messages: $('#messages'),
   typing: $('#typing-indicator'),
@@ -2238,7 +2239,7 @@ function focusChannel(channelId) {
   const list = channel.type === 'dm' ? els.dms : els.channels;
   const li = list.querySelector(`[data-id="${cssEscape(channel.id)}"]`);
   if (li) li.classList.add('active');
-  state.chat.setChannel(channel.id, channel.topic, displayLabelFor(channel));
+  state.chat.setChannel(channel.id, channel.topic, displayLabelFor(channel), channel.type);
   refreshPinnedCount();
   closePinnedDrawer();
   // Make sure this channel's call presence is being watched (it always
@@ -2409,7 +2410,7 @@ function onChannelUpdated({ channelId, memberIds, members } = {}) {
   const li = els.dms.querySelector(sel) || els.channels.querySelector(sel);
   const lbl = li?.querySelector('.ch-name');
   if (lbl) lbl.textContent = displayLabelFor(ch);
-  state.chat?.setLabel(channelId, displayLabelFor(ch));
+  state.chat?.setLabel(channelId, displayLabelFor(ch), ch.type);
 }
 
 // A "group DM" is a type='dm' channel with a `gdm:<uuid>` id (or, defensively,
