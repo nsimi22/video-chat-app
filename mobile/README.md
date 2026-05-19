@@ -1,25 +1,27 @@
 # Huddle Mobile (Expo)
 
 Native iOS + Android client for Huddle. Talks to the **same Supabase project**
-as the desktop app (`jwqvrdgjpftjiwvgdrck`) — no backend changes for chat. Video
-calls use a hosted **LiveKit** SFU instead of the desktop full-mesh, brokered by
-the `livekit-token` Supabase Edge Function.
+as the desktop app (`jwqvrdgjpftjiwvgdrck`) — no backend changes for chat.
+Audio calls use a **WebRTC mesh** signaled over the existing
+`call:<team>:<channel>` Supabase Realtime topic (the same topic the desktop
+mesh uses), so a mobile caller and a desktop caller can join the same call
+and hear each other.
 
 ## Status
 
-MVP scope: **chat + receive-only calls**.
+MVP scope: **chat + audio calls**.
 
 - ✅ Email-OTP auth, profile setup, team picker (mirrors `renderer/api.js`)
 - ✅ Channel / DM list (live via `postgres_changes`)
 - ✅ Chat: history pagination, realtime, reactions, pins, attachments (images), typing
 - ✅ Push notifications (DMs + @-mentions) via Expo push + `notify-on-message`
-- ✅ Calls: join a channel call, see/hear participants, publish camera/mic, mute/flip/leave (LiveKit)
-- ⛔ Not yet: screen-share send, annotations, whiteboard, threads UI, search UI, GIF picker, integration API keys, CallKit/ConnectionService, cross-platform A/V with desktop (desktop still on mesh)
+- ✅ Calls: join a channel call, hear participants, publish mic, mute/leave (WebRTC mesh)
+- ⛔ Not yet: video send/receive on mobile, screen-share, annotations, whiteboard, threads UI, search UI, GIF picker, integration API keys, CallKit/ConnectionService
 
 ## Develop
 
 This package is **not** part of the Electron app's build; it's a standalone Expo
-project. WebRTC/LiveKit need a dev client (Expo Go won't work).
+project. `react-native-webrtc` needs a dev client (Expo Go won't work).
 
 ```bash
 cd mobile
@@ -34,32 +36,75 @@ npm run typecheck
 Supabase URL / anon key are in `app.json` → `expo.extra` (same public values as
 the desktop default). Override per build if you self-host.
 
-## LiveKit setup (calls)
+## Calls (WebRTC mesh)
 
-1. Create a LiveKit Cloud project (or self-host).
-2. Set Edge Function secrets in Supabase:
-   ```bash
-   supabase secrets set LIVEKIT_URL=wss://<your>.livekit.cloud \
-     LIVEKIT_API_KEY=... LIVEKIT_API_SECRET=...
-   supabase functions deploy livekit-token
-   ```
-3. The app calls `livekit-token` (see `src/lib/livekit.ts`); it verifies the
-   caller's session + channel membership (`can_see_channel`) before signing a
-   token for room `call:<team_id>:<channel_id>`.
+Calls are full-mesh: every participant holds one `RTCPeerConnection` per other
+participant. Plenty for audio-only up through ~6–8 people; revisit if the
+typical call gets larger. The signaling protocol is identical to the desktop's
+(`renderer/webrtc.js` + `renderer/api.js`), so mobile ↔ desktop calls Just
+Work — desktop publishes video too, mobile peers ignore the video track.
+
+**TURN** is optional but strongly recommended for cellular: STUN-only fails on
+symmetric NATs. The `ice-servers` Edge Function returns short-lived
+credentials from Cloudflare TURN (or Twilio NTS, or just public STUN if
+nothing is configured):
+
+```bash
+# Cloudflare (free tier: ~1 TB/month)
+supabase secrets set \
+  CLOUDFLARE_TURN_TOKEN_ID=<id> \
+  CLOUDFLARE_TURN_API_TOKEN=<token>
+
+# …or Twilio (pay-as-you-go)
+supabase secrets set TWILIO_ACCOUNT_SID=<sid> TWILIO_AUTH_TOKEN=<token>
+
+supabase functions deploy ice-servers
+```
+
+The function 401s any caller without a Supabase session, so TURN credentials
+aren't handed to anonymous users.
+
+### Known limitations
+
+- **Android background audio.** The `FOREGROUND_SERVICE` /
+  `FOREGROUND_SERVICE_MICROPHONE` permissions are declared, but the app
+  does not yet start a foreground service when a call begins — so on
+  Android, locking the screen will let the OS kill the call after a
+  while. `useKeepAwake()` keeps the screen on while the app is in the
+  foreground, which is enough for the common case. Proper background
+  calling needs a foreground service (likely via `expo-task-manager` or
+  a small custom config plugin) — tracked as follow-up work.
+- **No speaker / earpiece toggle.** RN-WebRTC routes audio to the
+  earpiece by default. AirPods and other Bluetooth headsets are picked
+  up automatically by the OS. Loudspeaker requires a native helper
+  (`AudioManager.setSpeakerphoneOn` on Android,
+  `AVAudioSession.overrideOutputAudioPort` on iOS) which rn-webrtc
+  doesn't expose; follow-up.
+- **Same user on two devices.** Presence keys on `userId`, so a user
+  signed in on both desktop and mobile collides in the call channel.
+  Pre-existing in the desktop renderer too — needs a coordinated
+  per-device peer-id scheme to fix properly.
 
 ## Push setup
 
 1. `npx eas credentials` — configure APNs key + FCM.
-2. Apply the migration `supabase/migrations/20260512000000_huddle_device_tokens.sql`.
-3. Deploy + wire the webhook:
+2. Apply the migrations:
+   - `supabase/migrations/20260512000000_huddle_device_tokens.sql`
+   - `supabase/migrations/20260519000000_huddle_active_calls.sql`
+3. Deploy + wire the webhooks:
    ```bash
    supabase secrets set NOTIFY_WEBHOOK_SECRET="$(openssl rand -hex 24)"
    supabase functions deploy notify-on-message --no-verify-jwt
+   supabase functions deploy notify-on-call --no-verify-jwt
    ```
-   Then in the dashboard add a Database Webhook on `public.messages` INSERT →
-   HTTP POST to the `notify-on-message` function, with an
-   `x-webhook-secret: <NOTIFY_WEBHOOK_SECRET>` header (the function is deployed
-   without JWT verification, so this header is its only auth).
+   Then in the dashboard add two Database Webhooks (both with the
+   `x-webhook-secret: <NOTIFY_WEBHOOK_SECRET>` header — the functions are
+   deployed without JWT verification, so this header is their only auth):
+   - On `public.messages` INSERT → HTTP POST to `notify-on-message`.
+   - On `public.active_calls` **INSERT only** → HTTP POST to `notify-on-call`.
+     **Do not** enable UPDATE on this webhook — every participant heartbeats
+     the row every 30 s, and re-firing the push on each heartbeat would
+     spam everyone in the channel.
 
 ## Branding assets
 

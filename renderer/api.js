@@ -177,6 +177,7 @@
     }
 
     async stop() {
+      this._stopCallAnnouncer();
       // Channel maps store readiness promises — resolve them and await
       // the unsubscribes before clearing the maps so the page isn't
       // unloaded mid-handshake (which leaks subscriptions server-side).
@@ -375,12 +376,18 @@
       this._callChannelId = channelId;
       // (Lurker for this channel was already dropped at the top of
       // joinCall — see _dropLurker.)
+
+      // Announce on `public.active_calls` so the notify-on-call Edge
+      // Function fires push notifications to channel members on mobile.
+      // Fire-and-forget — push fan-out failing must not break the call.
+      this._startCallAnnouncer(channelId);
     }
 
     async leaveCall() {
       if (!this._callChannel) return;
       const ch = this._callChannel;
       const wasIn = this._callChannelId;
+      this._stopCallAnnouncer();
       // Emit synthetic peer-left for everyone we were connected to so
       // the renderer (MeshClient + tile grid) drops them cleanly.
       for (const id of [...this._callPeerInfo.keys()]) {
@@ -696,6 +703,76 @@
         },
       }));
       this.dispatchEvent(new CustomEvent('connected', { detail: { isFirst: true } }));
+    }
+
+    // --- Push-notification announce (active_calls heartbeat) -------------
+    //
+    // The mobile app's notify-on-call Edge Function fires off Expo push
+    // when public.active_calls gains a new row. Mobile clients and this
+    // desktop renderer both write to the same row so a call started from
+    // either platform rings everyone on the channel.
+    //
+    // Lifecycle mirrors mobile/src/lib/call-announce.ts: sweep stale rows
+    // older than 5 min (best-effort delete), upsert with last_active_at,
+    // then heartbeat every 30 s. We deliberately don't delete on leave —
+    // see the migration comment for why (delete-on-leave races other
+    // participants' heartbeats and would re-fire the push).
+
+    async _startCallAnnouncer(channelId) {
+      this._stopCallAnnouncer();
+      const teamId = this.team.id;
+      const startedBy = this.peerId;
+      const staleAfterMs = 5 * 60 * 1000;
+      const heartbeatMs = 30 * 1000;
+
+      const announce = async () => {
+        const staleBefore = new Date(Date.now() - staleAfterMs).toISOString();
+        try {
+          await this.supabase
+            .from('active_calls')
+            .delete()
+            .eq('team_id', teamId)
+            .eq('channel_id', channelId)
+            .lt('last_active_at', staleBefore);
+        } catch (err) {
+          console.warn('[call-announce] stale sweep failed', err);
+        }
+        try {
+          await this.supabase.from('active_calls').upsert(
+            {
+              team_id: teamId,
+              channel_id: channelId,
+              started_by: startedBy,
+              last_active_at: new Date().toISOString(),
+            },
+            { onConflict: 'team_id,channel_id' },
+          );
+        } catch (err) {
+          console.warn('[call-announce] announce failed', err);
+        }
+      };
+
+      const heartbeat = async () => {
+        try {
+          await this.supabase
+            .from('active_calls')
+            .update({ last_active_at: new Date().toISOString() })
+            .eq('team_id', teamId)
+            .eq('channel_id', channelId);
+        } catch (err) {
+          console.warn('[call-announce] heartbeat failed', err);
+        }
+      };
+
+      this._callAnnouncerTimer = setInterval(() => { heartbeat(); }, heartbeatMs);
+      await announce();
+    }
+
+    _stopCallAnnouncer() {
+      if (this._callAnnouncerTimer) {
+        clearInterval(this._callAnnouncerTimer);
+        this._callAnnouncerTimer = null;
+      }
     }
 
     // --- Outgoing operations --------------------------------------------

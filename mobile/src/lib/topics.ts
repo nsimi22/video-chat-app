@@ -10,11 +10,6 @@ export const screenTopic = (streamId: string) => `screen:${streamId}`;
 export const whiteboardTopic = (teamId: string, whiteboardId: string) =>
   `team:${teamId}:wb:${whiteboardId}`;
 
-// The LiveKit room name for a channel call. Kept identical to the Supabase
-// Realtime call topic so presence and media stay aligned, and so a future
-// desktop migration can reuse it.
-export const livekitRoom = callTopic;
-
 export const TeamEvents = {
   typing: 'typing',
   presence: 'presence',
