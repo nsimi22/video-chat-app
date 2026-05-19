@@ -67,6 +67,22 @@ export async function loadScheduledCalls(
   return ((data ?? []) as Row[]).map(marshal);
 }
 
+// Single-row lookup by id — used by the detail screen so it doesn't have
+// to pull the whole team's history to find one row. Returns null if the
+// row doesn't exist (or RLS hid it).
+export async function getScheduledCall(id: string): Promise<ScheduledCall | null> {
+  const { data, error } = await supabase
+    .from('scheduled_calls')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) {
+    console.warn('getScheduledCall failed', error.message, error.code ?? '');
+    return null;
+  }
+  return data ? marshal(data as Row) : null;
+}
+
 export async function createScheduledCall(args: {
   teamId: string;
   channelId: string;

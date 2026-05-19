@@ -5,7 +5,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { X } from 'lucide-react-native';
 import { useAuth } from '@/context/AuthContext';
 import { listChannels, type Channel } from '@/lib/api';
-import { deleteScheduledCall, loadScheduledCalls, type ScheduledCall } from '@/lib/scheduledCalls';
+import { deleteScheduledCall, getScheduledCall, type ScheduledCall } from '@/lib/scheduledCalls';
 import { C, channelColorForChannel, fmtTime } from '@/components/calendar/tokens';
 import { HuddleMiniMark } from '@/components/calendar/atoms';
 
@@ -14,10 +14,6 @@ import { HuddleMiniMark } from '@/components/calendar/atoms';
 // exist in our `scheduled_calls` schema yet; rendering them as fake
 // "Weekly · Tue" rows would mislead the user. We surface the fields we
 // actually have: channel, date+time, duration, notes (description).
-//
-// Identified by stable Supabase id rather than fetched-on-mount lookup —
-// we just re-pull the team's upcoming list and find the row. That keeps
-// the data-layer surface small (no per-id getScheduledCall fn yet).
 
 export default function EventDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -30,14 +26,16 @@ export default function EventDetailScreen() {
     let cancelled = false;
     (async () => {
       if (!activeTeam || !id) return;
-      const [calls, channels] = await Promise.all([
-        loadScheduledCalls(activeTeam.id, { from: new Date(0) }),
-        listChannels(activeTeam.id),
-      ]);
+      const found = await getScheduledCall(id);
       if (cancelled) return;
-      const found = calls.find((c) => c.id === id) ?? null;
       setEvent(found);
-      setChannel(found ? channels.find((c) => c.id === found.channelId) ?? null : null);
+      // Only pull the channels list to resolve the channel name + color —
+      // skip when the event itself wasn't found.
+      if (found) {
+        const channels = await listChannels(activeTeam.id);
+        if (cancelled) return;
+        setChannel(channels.find((c) => c.id === found.channelId) ?? null);
+      }
       setLoading(false);
     })();
     return () => {

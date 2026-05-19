@@ -33,6 +33,9 @@ const UPCOMING_HORIZON_DAYS = 60;
 const ICS_MAX_HORIZON_MS = UPCOMING_HORIZON_DAYS * 24 * 60 * 60 * 1000;
 const ICS_BACKLOG_MS = 60 * 60 * 1000;
 const ICS_POLL_MS = 15 * 60 * 1000;
+// Per-feed network deadline. A slow / unresponsive ICS endpoint mustn't
+// stall the tab — the polling timer will retry on its next tick anyway.
+const ICS_FETCH_TIMEOUT_MS = 10_000;
 
 function startOfWeek(d: Date): Date {
   // Sunday-anchored — matches the design's WEEK array (Sun → Sat).
@@ -74,7 +77,14 @@ export default function CalendarScreen() {
     }
     const results = await Promise.allSettled(
       subs.map(async (s) => {
-        const res = await fetch(s.url);
+        const ac = new AbortController();
+        const t = setTimeout(() => ac.abort(), ICS_FETCH_TIMEOUT_MS);
+        let res: Response;
+        try {
+          res = await fetch(s.url, { signal: ac.signal });
+        } finally {
+          clearTimeout(t);
+        }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const ct = res.headers.get('content-type') ?? '';
         if (ct && !/text\/(calendar|plain)|application\/octet-stream/i.test(ct)) {

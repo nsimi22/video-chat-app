@@ -100,6 +100,13 @@ export function ScheduleCallSheet({
       Alert.alert('Channel required', 'Pick a channel to host the call.');
       return;
     }
+    // The date picker enforces minimumDate=today, but the time picker can
+    // still land before "right now" — guard so we don't write a row that
+    // the realtime listener would surface in the past column.
+    if (startsAt.getTime() <= Date.now()) {
+      Alert.alert('Pick a future time', 'The event must start later than right now.');
+      return;
+    }
     setSaving(true);
     try {
       await createScheduledCall({
