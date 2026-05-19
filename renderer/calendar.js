@@ -252,11 +252,13 @@
           console.warn('[calendar] ics-fetch failed', sub.url, res?.error || res?.status);
           return;
         }
-        const parsed = window.HuddleICS.parse(res.body);
         // Cap at a 14-day forward horizon — subscription feeds often
         // cover years; we don't want to drag thousands of historical
-        // events into the upcoming list.
+        // events into the upcoming list. The cutoff is also passed
+        // into parse() so RRULE expansion stops at the same boundary
+        // (a weekly meeting expanded for years would balloon memory).
         const cutoff = Date.now() + ICS_MAX_HORIZON_MS;
+        const parsed = window.HuddleICS.parse(res.body, { expandUntil: new Date(cutoff) });
         const horizon = (parsed.events || []).filter((e) =>
           e.start && e.start.getTime() >= Date.now() - 60 * 60 * 1000
                   && e.start.getTime() <= cutoff,
