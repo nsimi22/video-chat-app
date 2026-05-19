@@ -29,6 +29,11 @@
   --accent-2: #64d2ff;
   --accent-soft: rgba(10, 132, 255, 0.35);
 
+  /* Brand mark blue (the dot at the center of the huddle arcs). Distinct
+     from --accent so a future theme can re-tone UI accents without
+     touching the canonical brand. */
+  --brand-blue: #2e63e6;
+
   /* Semantic colors — Apple's dark-mode system palette. */
   --good: #30d158;
   --warn: #ff9f0a;

@@ -19,10 +19,12 @@
                login surface; the .login-logo CSS drop-shadow keeps
                the blue glow that defined the previous mark. -->
           <svg class="login-logo" width="56" height="56" viewBox="0 0 200 200" aria-hidden="true">
-            <circle cx="100" cy="120" r="12" fill="#2e63e6"/>
-            <path d="M 50 120 A 50 50 0 0 1 150 120" fill="none" stroke="#ffffff" stroke-width="14" stroke-linecap="round"/>
-            <path d="M 30 120 A 70 70 0 0 1 90 51.6" fill="none" stroke="#ffffff" stroke-width="14" stroke-linecap="round"/>
-            <path d="M 110 51.6 A 70 70 0 0 1 170 120" fill="none" stroke="#ffffff" stroke-width="14" stroke-linecap="round"/>
+            <circle cx="100" cy="120" r="12" fill="var(--brand-blue)"/>
+            <g fill="none" stroke="var(--text)" stroke-width="14" stroke-linecap="round">
+              <path d="M 50 120 A 50 50 0 0 1 150 120"/>
+              <path d="M 30 120 A 70 70 0 0 1 90 51.6"/>
+              <path d="M 110 51.6 A 70 70 0 0 1 170 120"/>
+            </g>
           </svg>
           <h1 class="login-title">Huddle</h1>
           <p class="login-tagline">Team video, screen-share, and chat — in one window.</p>
