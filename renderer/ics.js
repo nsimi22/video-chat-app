@@ -187,17 +187,44 @@
         if (Number.isFinite(n) && n > 0) out.count = n;
       } else if (k === 'UNTIL') {
         const p = parseDate(v, {});
-        if (p) out.until = p.date;
+        if (p) {
+          // RFC 5545 §3.3.10: a date-only UNTIL is inclusive of that
+          // whole day. parseDate gives us local midnight; bump to the
+          // last millisecond of the day so a 10:00 AM occurrence on
+          // that date isn't excluded.
+          out.until = p.allDay
+            ? new Date(p.date.getTime() + 24 * 60 * 60 * 1000 - 1)
+            : p.date;
+        }
       } else if (k === 'BYDAY') {
         out.byday = v.split(',').map(parseDayCode).filter((d) => d !== null);
       } else if (k === 'BYMONTHDAY') {
-        out.bymonthday = v.split(',')
-          .map((x) => parseInt(x, 10))
-          .filter((n) => Number.isFinite(n) && n >= 1 && n <= 31);
+        const vals = v.split(',').map((x) => parseInt(x, 10));
+        // Reject negative values (last-day-of-month etc.) and any
+        // bad input — emit a marker so the rule falls back to single
+        // DTSTART emission rather than silently using the wrong day.
+        if (vals.some((n) => !Number.isFinite(n) || n < 1 || n > 31)) {
+          out._unsupported = true;
+        } else {
+          out.bymonthday = vals;
+        }
       }
     }
     if (!out.freq) return null;
     if (!['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'].includes(out.freq)) return null;
+    if (out._unsupported) return null;
+    // BYDAY is only implemented for WEEKLY (matches the rule subset
+    // promised in this file's header). BYDAY=1MO on MONTHLY would
+    // mean "first Monday of each month" — we don't generate that,
+    // so fall back to a single DTSTART emission instead of silently
+    // emitting on DTSTART's day-of-month every month.
+    if ((out.freq === 'MONTHLY' || out.freq === 'YEARLY')
+        && out.byday && out.byday.length) return null;
+    // BYMONTHDAY is only implemented for MONTHLY. YEARLY+BYMONTHDAY
+    // would need both a BYMONTH/BYYEARDAY mate to be meaningful;
+    // we don't handle it, so don't pretend.
+    if (out.freq === 'YEARLY'
+        && out.bymonthday && out.bymonthday.length) return null;
     out.interval = out.interval || 1;
     return out;
   }
@@ -238,7 +265,14 @@
       : 0;
 
     const out = [];
+    // `yielded` counts every occurrence the generator produced — used
+    // for COUNT and for the EXDATE skip-but-count behaviour. `emitted`
+    // counts the ones we actually push, which is what should drive the
+    // "is this the first visible instance, get the bare UID?" check.
+    // Without the split, an EXDATE on DTSTART would silently move the
+    // bare UID off the series, breaking consumers that key off it.
     let yielded = 0;
+    let emitted = 0;
     for (const occStart of generateOccurrences(event.start, rule, effectiveMs)) {
       if (rule.count && yielded >= rule.count) break;
       // EXDATE matches by exact start instant. Skip the occurrence but
@@ -250,7 +284,7 @@
         continue;
       }
       const occEnd = duration > 0 ? new Date(occStart.getTime() + duration) : null;
-      const isFirst = yielded === 0;
+      const isFirst = emitted === 0;
       out.push({
         ...event,
         uid: isFirst ? event.uid : `${event.uid}/${occStart.toISOString()}`,
@@ -259,6 +293,7 @@
         _recurringInstance: !isFirst,
       });
       yielded++;
+      emitted++;
     }
     return out.length ? out : [event];
   }
@@ -309,7 +344,11 @@
       const bymonthday = (rule.bymonthday && rule.bymonthday.length)
         ? rule.bymonthday
         : [start.getDate()];
-      for (let i = 1; i < 1000; i++) {
+      // Start at i=0 so multi-day rules (e.g. BYMONTHDAY=1,15 with
+      // DTSTART on the 1st) still emit the 15th of the *first* month.
+      // The `occ.getTime() <= start.getTime()` skip below removes
+      // DTSTART itself, which we already yielded at the top.
+      for (let i = 0; i < 1000; i++) {
         const totalMonths = start.getMonth() + i * rule.interval;
         const year = start.getFullYear() + Math.floor(totalMonths / 12);
         const month = ((totalMonths % 12) + 12) % 12;
