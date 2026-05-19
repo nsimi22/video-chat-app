@@ -16,7 +16,7 @@
       "resizeMode": "contain"
     },
     "ios": {
-      "bundleIdentifier": "com.huddle.app",
+      "bundleIdentifier": "com.nicksimi.huddle",
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "Huddle uses your camera for video calls.",
@@ -28,7 +28,7 @@
       }
     },
     "android": {
-      "package": "com.huddle.app",
+      "package": "com.nicksimi.huddle",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0b0b0d"
@@ -63,6 +63,12 @@
         "origin": false
       }
     },
-    "owner": "nsimi22"
+    "owner": "nsimi22",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/d0bbd9bd-4593-4dad-86ff-da0469f9721e"
+    }
   }
 }
