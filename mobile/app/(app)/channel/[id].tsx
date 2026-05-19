@@ -158,8 +158,14 @@ export default function ChannelScreen() {
         options={{
           title: headerTitle,
           headerRight: () => (
-            <TouchableOpacity onPress={() => router.push({ pathname: '/(app)/call/[id]', params: { id: String(channelId), name: headerTitle } })}>
-              <Text style={{ color: colors.accent, fontSize: 15 }}>Call</Text>
+            <TouchableOpacity
+              onPress={() => router.push({ pathname: '/(app)/call/[id]', params: { id: String(channelId), name: headerTitle } })}
+              accessibilityLabel="Start audio call"
+              accessibilityRole="button"
+              hitSlop={8}
+              style={{ paddingHorizontal: 4 }}
+            >
+              <Text style={{ fontSize: 22 }}>📞</Text>
             </TouchableOpacity>
           ),
         }}

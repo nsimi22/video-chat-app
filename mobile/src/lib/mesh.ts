@@ -166,6 +166,13 @@ class PeerConn {
         if (this.ignoreOffer) return;
         await this.pc.setRemoteDescription(new RTCSessionDescription({ type: desc.type, sdp: desc.sdp }));
         if (desc.type === 'offer') {
+          // We're audio-only on mobile. Before sending our answer, mark any
+          // video transceivers the remote offered as `inactive`. The remote
+          // honors that direction and stops encoding/sending video on this
+          // peer connection, so a desktop peer with a camera doesn't burn
+          // the mobile user's downlink on frames we'd just discard. Keeps
+          // audio intact on a flaky cellular link.
+          this.refuseInboundVideo();
           await (this.pc as unknown as { setLocalDescription: () => Promise<void> }).setLocalDescription();
           if (this.pc.localDescription) this.sendSignal({ description: descriptionToWire(this.pc.localDescription) });
         }
@@ -183,6 +190,19 @@ class PeerConn {
 
   addLocalStream(stream: MediaStream) {
     for (const t of stream.getTracks()) this.pc.addTrack(t, stream);
+  }
+
+  // Refuse video on any transceiver the remote opened. Setting
+  // direction='inactive' on the receiving side tells the peer (per WebRTC
+  // spec) to stop sending RTP on that m-section, so audio quality is not
+  // squeezed by video bytes we'd never render.
+  private refuseInboundVideo() {
+    for (const t of this.pc.getTransceivers()) {
+      if (t.receiver?.track?.kind === 'video' && t.direction !== 'inactive') {
+        try { t.direction = 'inactive'; }
+        catch (err) { console.warn('[mesh] could not refuse video', err); }
+      }
+    }
   }
 
   close() {
