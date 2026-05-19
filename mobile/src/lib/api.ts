@@ -163,8 +163,11 @@ export async function createChannel(args: {
   if (args.isPrivate && args.memberUserIds?.length) {
     // Surface batch failures: silently swallowing would leave a private
     // channel without its invitees, which surfaces as "exists but
-    // invisible" to everyone except the creator.
-    const rows = args.memberUserIds
+    // invisible" to everyone except the creator. Dedup the caller's
+    // ids first — channel_members has a composite-PK on
+    // (team_id,channel_id,user_id), so a duplicate would 23505 the
+    // whole atomic insert.
+    const rows = [...new Set(args.memberUserIds)]
       .filter((uid) => uid && uid !== args.creatorId)
       .map((uid) => ({ team_id: args.teamId, channel_id: id, user_id: uid }));
     if (rows.length) {
