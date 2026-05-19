@@ -217,26 +217,36 @@ export default function ChannelScreen() {
 
   const headerTitle = useMemo(() => (name ? String(name) : '#channel'), [name]);
 
+  // Memoise the Stack.Screen options so the header doesn't get re-applied
+  // on every composer keystroke (which would otherwise hand expo-router a
+  // brand-new headerRight closure each render and re-mount the button).
+  const screenOptions = useMemo(
+    () => ({
+      title: headerTitle,
+      headerRight: () => (
+        <TouchableOpacity
+          // navigate (not push) so a quick double-tap can't stack two call
+          // screens. channelId is already a string from useLocalSearchParams.
+          onPress={() =>
+            router.navigate({ pathname: '/(app)/call/[id]', params: { id: channelId, name: headerTitle } })
+          }
+          accessibilityLabel="Start call"
+          accessibilityRole="button"
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={{ paddingHorizontal: 4 }}
+        >
+          <Phone size={22} color={colors.accent} strokeWidth={2} />
+        </TouchableOpacity>
+      ),
+    }),
+    [headerTitle, channelId],
+  );
+
   if (!activeTeam) return null;
 
   return (
     <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.bg }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={88}>
-      <Stack.Screen
-        options={{
-          title: headerTitle,
-          headerRight: () => (
-            <TouchableOpacity
-              onPress={() => router.push({ pathname: '/(app)/call/[id]', params: { id: String(channelId), name: headerTitle } })}
-              accessibilityLabel="Start call"
-              accessibilityRole="button"
-              hitSlop={8}
-              style={{ paddingHorizontal: 4 }}
-            >
-              <Phone size={22} color={colors.accent} strokeWidth={2} />
-            </TouchableOpacity>
-          ),
-        }}
-      />
+      <Stack.Screen options={screenOptions} />
       {loading ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator color={colors.accent} />
