@@ -186,6 +186,14 @@ class PeerConn {
   }
 
   close() {
+    // Null the on* handlers before closing so their closures (which retain
+    // `this` and via it the Mesh + listener set) can be GC'd even if
+    // react-native-webrtc's native side still has the PC pinned in its
+    // internal _pcId map briefly.
+    this.pc.onicecandidate = null;
+    this.pc.onnegotiationneeded = null;
+    this.pc.ontrack = null;
+    this.pc.onconnectionstatechange = null;
     try {
       this.pc.close();
     } catch {
