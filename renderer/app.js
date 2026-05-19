@@ -2145,6 +2145,16 @@ function appendChannelToSidebar(channel, makeActive) {
   if (isChannelMuted(channel.id)) li.classList.add('muted');
   else if (isChannelNotifyAll(channel.id)) li.classList.add('notify-all');
 
+  // Group DMs get a Users SVG before the name — matches the lucide
+  // Users icon mobile uses in its sidebar (see channels.tsx). For
+  // 1:1 DMs and channels, the textual prefix in displayLabelFor
+  // (`@`, `#`, `🔒`) handles distinction.
+  if (isGroupDm(channel)) {
+    const icon = document.createElement('span');
+    icon.className = 'ch-icon';
+    icon.innerHTML = window.HuddleIcons.users;
+    li.appendChild(icon);
+  }
   const label = document.createElement('span');
   label.className = 'ch-name';
   label.textContent = displayLabelFor(channel);
@@ -2194,7 +2204,10 @@ function appendChannelToSidebar(channel, makeActive) {
     del.onclick = async (e) => {
       e.stopPropagation();
       const verb = isDm ? 'Close' : 'Delete';
-      const target = isDm ? `your DM with ${displayLabelFor(channel).replace(/^[@👥]\s*/, '')}` : `#${channel.name}`;
+      // displayLabelFor for DMs returns either "@ Name" (1:1) or
+      // "Name" (group). Strip a leading "@ " so the dialog reads
+      // "your DM with Alice" / "your DM with Alice, Bob".
+      const target = isDm ? `your DM with ${displayLabelFor(channel).replace(/^@\s*/, '')}` : `#${channel.name}`;
       if (!confirm(`${verb} ${target}? This is permanent.`)) return;
       try {
         await state.huddle.deleteChannel(channel.id);
@@ -2401,7 +2414,12 @@ function isGroupDm(channel) {
 }
 
 function displayLabelFor(channel) {
-  if (channel.type === 'dm') return `${isGroupDm(channel) ? '👥' : '@'} ${dmLabelFor(channel)}`;
+  // Group DMs no longer carry a 👥 prefix in the text label — the
+  // sidebar row renders a Users SVG instead (see appendChannelRow's
+  // `.ch-icon` injection). Everything that uses this label in
+  // strings (toast text, dialog confirmations, chat header) gets
+  // cleaner copy as a side effect.
+  if (channel.type === 'dm') return `${isGroupDm(channel) ? '' : '@ '}${dmLabelFor(channel)}`;
   if (channel.type === 'private') return `🔒 ${channel.name}`;
   return `# ${channel.name}`;
 }

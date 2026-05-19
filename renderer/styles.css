@@ -235,12 +235,37 @@ input:focus, textarea:focus {
 .section-header-controls { display: flex; gap: 2px; }
 
 /* Per-channel muted state — sidebar row dim + the channel-header
-   bell button shows a strikethrough when muted. */
+   bell button shows a strikethrough when muted. The mute/notify-all
+   suffix indicators on sidebar rows used to be emoji (🔕 / 🔔); they
+   are now SVG glyphs delivered via `mask-image`, which lets them
+   inherit the row's text color and stay sharp at any zoom. The SVG
+   shapes are identical to HuddleIcons.bellOff / HuddleIcons.bell so
+   the sidebar matches the channel-header button. */
 .channel-list li.muted { opacity: 0.6; }
-.channel-list li.muted .ch-name::after {
-  content: ' 🔕';
-  font-size: 10px;
+.channel-list li.muted .ch-name::after,
+.channel-list li.notify-all .ch-name::after {
+  content: '';
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-left: 4px;
+  vertical-align: -2px;
+  background-color: currentColor;
   opacity: 0.7;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+}
+.channel-list li.muted .ch-name::after {
+  mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13.73 21a2 2 0 0 1-3.46 0"/><path d="M18.63 13A17.89 17.89 0 0 1 18 8"/><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"/><path d="M18 8a6 6 0 0 0-9.33-5"/><line x1="1" y1="1" x2="23" y2="23"/></svg>');
+  -webkit-mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13.73 21a2 2 0 0 1-3.46 0"/><path d="M18.63 13A17.89 17.89 0 0 1 18 8"/><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"/><path d="M18 8a6 6 0 0 0-9.33-5"/><line x1="1" y1="1" x2="23" y2="23"/></svg>');
+}
+.channel-list li.notify-all .ch-name::after {
+  mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>');
+  -webkit-mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>');
 }
 #channel-notify-btn.muted {
   color: var(--bad);
@@ -252,10 +277,20 @@ input:focus, textarea:focus {
 #channel-notify-btn.notify-all {
   color: var(--accent);
 }
-.channel-list li.notify-all .ch-name::after {
-  content: ' 🔔';
-  font-size: 10px;
-  opacity: 0.7;
+/* Group-DM glyph in the sidebar — a small Users SVG injected by
+   app.js's appendChannelRow() into `<span class="ch-icon">`. Sits
+   immediately before the channel name and inherits the row's text
+   color. Sized to roughly match the typographic baseline of `.ch-name`. */
+.channel-list li .ch-icon {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-right: 6px;
+  color: var(--text-dim);
+}
+.channel-list li .ch-icon svg {
+  width: 14px;
+  height: 14px;
 }
 .section-header-row button.ghost {
   background: transparent; border: none; color: var(--text-dim);
