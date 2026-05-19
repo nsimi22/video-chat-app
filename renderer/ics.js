@@ -2,20 +2,29 @@
 // Huddle needs: read VEVENTs out of subscribed calendar feeds, and
 // emit a single-event VCALENDAR for scheduled-call invites.
 //
-// Intentionally NOT a full implementation:
-//   - Recurrence (RRULE / EXDATE / RECURRENCE-ID) is not expanded —
-//     the parser surfaces RRULE as raw text on the event so the UI
-//     can show a "(recurring)" badge but only one instance.
+// Recurrence support is intentionally narrow:
+//   - Expanded: FREQ=DAILY|WEEKLY|MONTHLY|YEARLY with INTERVAL, COUNT,
+//     UNTIL, BYDAY (weekly), BYMONTHDAY (monthly), and EXDATE.
+//   - Not expanded: BYSETPOS, BYWEEKNO, BYYEARDAY, BYHOUR, RECURRENCE-ID
+//     overrides, the numeric BYDAY prefix like "1MO" (first Monday).
+//     Events with unsupported rules still emit DTSTART so they remain
+//     visible — same behaviour as the pre-RRULE-expansion parser.
+//
+// Other deliberate omissions:
 //   - VTIMEZONE / TZID is not resolved — DTSTART/DTEND with TZID are
 //     treated as floating local time. UTC ("Z" suffix) and full
 //     date-time forms work correctly. All-day VEVENTs (VALUE=DATE) are
 //     surfaced with `allDay: true`.
 //   - VTODO / VJOURNAL / alarms are skipped — only VEVENT is parsed.
-// These restrictions are conscious: a complete RFC 5545 parser is a
-// few thousand lines and would dwarf the rest of this feature.
+//
+// A fully RFC 5545 compliant parser is a few thousand lines; the
+// shortcut above covers the patterns Google/Outlook/iCloud actually
+// emit for weekly meetings.
 //
 // Public API on window.HuddleICS:
-//   parse(text) -> { events: [...] }
+//   parse(text, opts?) -> { events: [...] }
+//     opts.expandUntil   Date — cap recurrence expansion at this point.
+//                        Defaults to ~1 year forward.
 //   buildEvent({ uid, title, description, startsAt, durationMin,
 //                location, url, organizerName, organizerEmail })
 //     -> string  (a complete VCALENDAR document)
@@ -144,9 +153,239 @@
     return { date: d, allDay: false };
   }
 
-  function parse(text) {
+  // ---------------------------------------------------------------------------
+  // RRULE expansion
+  //
+  // The strategy: parse() collects each VEVENT into a "series" object
+  // with its raw rrule + exdate array. When the VEVENT ends, if the
+  // event carries a parseable RRULE we expand it into N occurrence
+  // events (one per yielded start date, bounded by horizon / COUNT /
+  // UNTIL / EXDATE). Events without RRULE pass through unchanged so
+  // the contract is identical for non-recurring feeds.
+  //
+  // Per RFC 5545 every occurrence in a series shares the same UID and
+  // is uniquely identified by its RECURRENCE-ID. The calendar list UI
+  // needs a per-row key, so for everything past the first occurrence
+  // we suffix the UID with the ISO start. The first occurrence keeps
+  // the bare UID — preserves the exact behaviour of the prior parser
+  // for any existing consumer that keys off UID.
+  // ---------------------------------------------------------------------------
+
+  function parseRrule(s) {
+    const out = {};
+    for (const part of String(s || '').split(';')) {
+      const eq = part.indexOf('=');
+      if (eq === -1) continue;
+      const k = part.slice(0, eq).toUpperCase();
+      const v = part.slice(eq + 1);
+      if (k === 'FREQ') out.freq = v.toUpperCase();
+      else if (k === 'INTERVAL') {
+        const n = parseInt(v, 10);
+        if (Number.isFinite(n) && n > 0) out.interval = n;
+      } else if (k === 'COUNT') {
+        const n = parseInt(v, 10);
+        if (Number.isFinite(n) && n > 0) out.count = n;
+      } else if (k === 'UNTIL') {
+        const p = parseDate(v, {});
+        if (p) {
+          // RFC 5545 §3.3.10: a date-only UNTIL is inclusive of that
+          // whole day. parseDate gives us local midnight; bump to the
+          // last millisecond of the day so a 10:00 AM occurrence on
+          // that date isn't excluded.
+          out.until = p.allDay
+            ? new Date(p.date.getTime() + 24 * 60 * 60 * 1000 - 1)
+            : p.date;
+        }
+      } else if (k === 'BYDAY') {
+        out.byday = v.split(',').map(parseDayCode).filter((d) => d !== null);
+      } else if (k === 'BYMONTHDAY') {
+        const vals = v.split(',').map((x) => parseInt(x, 10));
+        // Reject negative values (last-day-of-month etc.) and any
+        // bad input — emit a marker so the rule falls back to single
+        // DTSTART emission rather than silently using the wrong day.
+        if (vals.some((n) => !Number.isFinite(n) || n < 1 || n > 31)) {
+          out._unsupported = true;
+        } else {
+          out.bymonthday = vals;
+        }
+      }
+    }
+    if (!out.freq) return null;
+    if (!['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'].includes(out.freq)) return null;
+    if (out._unsupported) return null;
+    // BYDAY is only implemented for WEEKLY (matches the rule subset
+    // promised in this file's header). BYDAY=1MO on MONTHLY would
+    // mean "first Monday of each month" — we don't generate that,
+    // so fall back to a single DTSTART emission instead of silently
+    // emitting on DTSTART's day-of-month every month.
+    if ((out.freq === 'MONTHLY' || out.freq === 'YEARLY')
+        && out.byday && out.byday.length) return null;
+    // BYMONTHDAY is only implemented for MONTHLY. YEARLY+BYMONTHDAY
+    // would need both a BYMONTH/BYYEARDAY mate to be meaningful;
+    // we don't handle it, so don't pretend.
+    if (out.freq === 'YEARLY'
+        && out.bymonthday && out.bymonthday.length) return null;
+    out.interval = out.interval || 1;
+    return out;
+  }
+
+  function parseDayCode(code) {
+    // BYDAY values can be 'MO' or 'MO,1MO,-1FR' for "first Monday" /
+    // "last Friday". We strip any numeric prefix and treat the rest
+    // as a plain weekday — so an event using "1MO" will still emit on
+    // every Monday rather than disappearing, which beats silence.
+    const stripped = String(code || '').replace(/^[+-]?\d+/, '').toUpperCase();
+    const map = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+    return Object.prototype.hasOwnProperty.call(map, stripped) ? map[stripped] : null;
+  }
+
+  // RFC 5545 default WKST=MO; we use Monday-based weeks to compute
+  // interval blocks. (For INTERVAL=1 WKST doesn't matter; only matters
+  // for biweekly+ rules with BYDAYs spanning the week boundary.)
+  function startOfMondayWeek(d) {
+    const out = new Date(d);
+    const daysSinceMon = (out.getDay() + 6) % 7;
+    out.setDate(out.getDate() - daysSinceMon);
+    out.setHours(0, 0, 0, 0);
+    return out;
+  }
+
+  function expandSeries(event, horizonDate) {
+    const rule = parseRrule(event.rrule);
+    if (!rule) return [event];
+    const horizonMs = horizonDate
+      ? horizonDate.getTime()
+      : Date.now() + 365 * 24 * 60 * 60 * 1000;
+    const effectiveMs = rule.until
+      ? Math.min(horizonMs, rule.until.getTime())
+      : horizonMs;
+    const exdateSet = new Set(event.exdate || []);
+    const duration = event.end && event.start
+      ? event.end.getTime() - event.start.getTime()
+      : 0;
+
+    const out = [];
+    // `yielded` counts every occurrence the generator produced — used
+    // for COUNT and for the EXDATE skip-but-count behaviour. `emitted`
+    // counts the ones we actually push, which is what should drive the
+    // "is this the first visible instance, get the bare UID?" check.
+    // Without the split, an EXDATE on DTSTART would silently move the
+    // bare UID off the series, breaking consumers that key off it.
+    let yielded = 0;
+    let emitted = 0;
+    for (const occStart of generateOccurrences(event.start, rule, effectiveMs)) {
+      if (rule.count && yielded >= rule.count) break;
+      // EXDATE matches by exact start instant. Skip the occurrence but
+      // still count it toward COUNT per common-implementation behaviour
+      // (RFC 5545 §3.8.5.1 is intentionally vague here; this matches
+      // what python-dateutil's `rrule.between()` does).
+      if (exdateSet.has(occStart.getTime())) {
+        yielded++;
+        continue;
+      }
+      const occEnd = duration > 0 ? new Date(occStart.getTime() + duration) : null;
+      const isFirst = emitted === 0;
+      out.push({
+        ...event,
+        uid: isFirst ? event.uid : `${event.uid}/${occStart.toISOString()}`,
+        start: occStart,
+        end: occEnd,
+        _recurringInstance: !isFirst,
+      });
+      yielded++;
+      emitted++;
+    }
+    return out.length ? out : [event];
+  }
+
+  function* generateOccurrences(start, rule, horizonMs) {
+    // DTSTART is always the first occurrence even if it doesn't strictly
+    // satisfy BYDAY/BYMONTHDAY (RFC 5545 §3.8.5.3).
+    yield new Date(start);
+
+    if (rule.freq === 'DAILY') {
+      let cur = new Date(start);
+      for (let i = 0; i < 10000; i++) {
+        cur = new Date(cur);
+        cur.setDate(cur.getDate() + rule.interval);
+        if (cur.getTime() > horizonMs) return;
+        yield cur;
+      }
+      return;
+    }
+
+    if (rule.freq === 'WEEKLY') {
+      const byday = (rule.byday && rule.byday.length)
+        ? rule.byday
+        : [start.getDay()];
+      const weekStart = startOfMondayWeek(start);
+      const intervalDays = rule.interval * 7;
+      // Sort BYDAYs so within a block we emit Mon → Sun order.
+      const sortedDays = byday.slice().sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7));
+      for (let blockIdx = 0; blockIdx < 5000; blockIdx++) {
+        const blockBase = new Date(weekStart);
+        blockBase.setDate(weekStart.getDate() + blockIdx * intervalDays);
+        if (blockBase.getTime() > horizonMs) return;
+        for (const dow of sortedDays) {
+          const daysFromMon = (dow + 6) % 7;
+          const occ = new Date(blockBase);
+          occ.setDate(blockBase.getDate() + daysFromMon);
+          occ.setHours(start.getHours(), start.getMinutes(),
+                       start.getSeconds(), start.getMilliseconds());
+          if (occ.getTime() <= start.getTime()) continue;
+          if (occ.getTime() > horizonMs) return;
+          yield occ;
+        }
+      }
+      return;
+    }
+
+    if (rule.freq === 'MONTHLY') {
+      const bymonthday = (rule.bymonthday && rule.bymonthday.length)
+        ? rule.bymonthday
+        : [start.getDate()];
+      // Start at i=0 so multi-day rules (e.g. BYMONTHDAY=1,15 with
+      // DTSTART on the 1st) still emit the 15th of the *first* month.
+      // The `occ.getTime() <= start.getTime()` skip below removes
+      // DTSTART itself, which we already yielded at the top.
+      for (let i = 0; i < 1000; i++) {
+        const totalMonths = start.getMonth() + i * rule.interval;
+        const year = start.getFullYear() + Math.floor(totalMonths / 12);
+        const month = ((totalMonths % 12) + 12) % 12;
+        for (const dom of bymonthday) {
+          // Overflow guard: new Date(2026, 1, 30) silently rolls to Mar 2.
+          // We refuse the occurrence instead so Feb-only months work.
+          const occ = new Date(year, month, dom,
+            start.getHours(), start.getMinutes(),
+            start.getSeconds(), start.getMilliseconds());
+          if (occ.getMonth() !== month) continue;
+          if (occ.getTime() <= start.getTime()) continue;
+          if (occ.getTime() > horizonMs) return;
+          yield occ;
+        }
+      }
+      return;
+    }
+
+    if (rule.freq === 'YEARLY') {
+      for (let i = 1; i < 100; i++) {
+        const occ = new Date(start);
+        occ.setFullYear(start.getFullYear() + i * rule.interval);
+        // Feb 29 → Mar 1 on non-leap years: drop the occurrence rather
+        // than silently shift.
+        if (occ.getDate() !== start.getDate()) continue;
+        if (occ.getTime() > horizonMs) return;
+        yield occ;
+      }
+    }
+  }
+
+  function parse(text, opts) {
     const out = { events: [] };
     if (typeof text !== 'string' || !text.length) return out;
+    const expandUntil = opts && opts.expandUntil instanceof Date
+      ? opts.expandUntil
+      : null;
     const lines = unfoldLines(text);
     let inEvent = false;
     let cur = null;
@@ -157,12 +396,21 @@
         inEvent = true;
         cur = {
           uid: '', title: '', description: '', location: '', url: '',
-          start: null, end: null, allDay: false, rrule: '', raw: {},
+          start: null, end: null, allDay: false, rrule: '',
+          exdate: [], raw: {},
         };
         continue;
       }
       if (trimmed === 'END:VEVENT') {
-        if (cur && cur.start) out.events.push(cur);
+        if (cur && cur.start) {
+          if (cur.rrule) {
+            for (const occ of expandSeries(cur, expandUntil)) {
+              out.events.push(occ);
+            }
+          } else {
+            out.events.push(cur);
+          }
+        }
         inEvent = false;
         cur = null;
         continue;
@@ -178,6 +426,17 @@
         case 'LOCATION': cur.location = unescapeText(cl.value); break;
         case 'URL': cur.url = cl.value; break;
         case 'RRULE': cur.rrule = cl.value; break;
+        case 'EXDATE': {
+          // EXDATE may carry comma-separated values, AND may appear
+          // multiple times in one VEVENT — we accumulate into the
+          // exdate array (raw[] overwrites, which is why we don't rely
+          // on that path for this field).
+          for (const v of cl.value.split(',')) {
+            const p = parseDate(v.trim(), cl.params);
+            if (p) cur.exdate.push(p.date.getTime());
+          }
+          break;
+        }
         case 'DTSTART': {
           const p = parseDate(cl.value, cl.params);
           if (p) { cur.start = p.date; cur.allDay = p.allDay; }
@@ -284,5 +543,13 @@
     return 'h' + Date.now().toString(36) + Math.random().toString(36).slice(2);
   }
 
-  window.HuddleICS = { parse, buildEvent, escapeText, _internal: { unfoldLines, parseDate, fold } };
+  window.HuddleICS = {
+    parse,
+    buildEvent,
+    escapeText,
+    _internal: {
+      unfoldLines, parseDate, fold,
+      parseRrule, expandSeries, generateOccurrences,
+    },
+  };
 })();
