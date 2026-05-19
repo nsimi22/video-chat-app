@@ -6,3 +6,4 @@ out/
 data/
 renderer/vendor/
 *.log
+supabase/.temp/
