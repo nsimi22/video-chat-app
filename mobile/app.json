@@ -3,7 +3,7 @@
     "name": "Huddle",
     "slug": "huddle",
     "scheme": "huddle",
-    "version": "0.1.0",
+    "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
@@ -23,7 +23,8 @@
         "NSMicrophoneUsageDescription": "Huddle uses your microphone for calls.",
         "UIBackgroundModes": [
           "audio"
-        ]
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -56,8 +57,12 @@
       "supabaseUrl": "https://jwqvrdgjpftjiwvgdrck.supabase.co",
       "supabaseAnonKey": "sb_publishable_5eJWwJEHWHSLuhFEs2iUlw_tu4fGOvn",
       "eas": {
-        "projectId": ""
+        "projectId": "d0bbd9bd-4593-4dad-86ff-da0469f9721e"
+      },
+      "router": {
+        "origin": false
       }
-    }
+    },
+    "owner": "nsimi22"
   }
 }
