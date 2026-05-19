@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { RefreshControl, Text, TouchableOpacity, View, ActivityIndicator, SectionList } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Lock, Users } from 'lucide-react-native';
 import { listChannels, listTeamProfiles, type Channel, type Profile } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
@@ -111,9 +112,15 @@ export default function ChannelsScreen() {
               {dm && otherProfile ? (
                 <Avatar name={otherProfile.name} color={otherProfile.color} size={30} uri={otherProfile.avatar_url} />
               ) : (
-                <Text style={{ color: colors.textDim, fontSize: 18, width: 30, textAlign: 'center' }}>
-                  {isGroupDm ? '👥' : item.type === 'private' ? '🔒' : '#'}
-                </Text>
+                <View style={{ width: 30, alignItems: 'center', justifyContent: 'center' }}>
+                  {isGroupDm ? (
+                    <Users size={18} color={colors.textDim} strokeWidth={2} />
+                  ) : item.type === 'private' ? (
+                    <Lock size={16} color={colors.textDim} strokeWidth={2} />
+                  ) : (
+                    <Text style={{ color: colors.textDim, fontSize: 18 }}>#</Text>
+                  )}
+                </View>
               )}
               <Text style={{ color: colors.text, fontSize: 16, marginLeft: space(3), flex: 1 }} numberOfLines={1}>
                 {channelLabel(item, profiles, userId)}
