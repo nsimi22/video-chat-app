@@ -30,6 +30,7 @@ export default function AppLayout() {
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="channel/[id]" options={{ title: '' }} />
       <Stack.Screen name="call/[id]" options={{ title: 'Call', presentation: 'fullScreenModal' }} />
+      <Stack.Screen name="event/[id]" options={{ headerShown: false }} />
     </Stack>
   );
 }
