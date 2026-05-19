@@ -1259,10 +1259,24 @@ class ChatView {
     old.replaceWith(fresh);
   }
 
+  // Names eligible for the `<span class="mention">` highlight pass in
+  // renderMarkdown(). Previously this only pulled from self +
+  // live-presence peers + cached message authors, which meant a
+  // teammate who is offline AND has never authored a message in any
+  // cached channel never got highlighted — even though the @-mention
+  // autocomplete popup happily offered them (see _mentionCandidates,
+  // which already iterates this.mesh.roster). The asymmetry showed
+  // up in the wild as: "@Rachid @Leigh ..." rendered with only the
+  // first name as a styled pill, because Leigh was rosterable but
+  // not yet a known author. Pulling the roster + _mentionDirectory
+  // in here makes the renderer a superset of the autocomplete: every
+  // name we suggest is also a name we highlight.
   _knownNames() {
     const set = new Set();
     if (this.mesh.name) set.add(this.mesh.name);
+    for (const p of this.mesh.roster?.values?.() || []) set.add(p.name);
     for (const p of this.mesh.peerInfo.values()) set.add(p.name);
+    for (const v of this._mentionDirectory.values()) set.add(v.name);
     for (const arr of this.byChannel.values()) for (const m of arr) set.add(m.authorName);
     set.delete('');
     return [...set];
