@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, Alert, FlatList } from 'react-native';
-import { Stack, router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useKeepAwake } from 'expo-keep-awake';
 import {
   AudioSession,
@@ -39,7 +39,6 @@ export default function CallScreen() {
   if (error) {
     return (
       <View style={styles.center}>
-        <Stack.Screen options={{ title: 'Call' }} />
         <Text style={{ color: colors.danger, textAlign: 'center', marginBottom: space(4) }}>{error}</Text>
         <TouchableOpacity onPress={() => router.back()}><Text style={{ color: colors.accent }}>Back</Text></TouchableOpacity>
       </View>
@@ -48,7 +47,6 @@ export default function CallScreen() {
   if (!grant) {
     return (
       <View style={styles.center}>
-        <Stack.Screen options={{ title: name ? String(name) : 'Call' }} />
         <ActivityIndicator color={colors.accent} />
         <Text style={{ color: colors.textDim, marginTop: space(3) }}>Connecting…</Text>
       </View>
@@ -65,7 +63,6 @@ export default function CallScreen() {
       options={{ adaptiveStream: { pixelDensity: 'screen' } }}
       onDisconnected={() => router.back()}
     >
-      <Stack.Screen options={{ title: name ? String(name) : 'Call', headerShown: false }} />
       <CallView title={name ? String(name) : 'Call'} />
     </LiveKitRoom>
   );
