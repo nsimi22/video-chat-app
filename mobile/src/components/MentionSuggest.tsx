@@ -21,7 +21,10 @@ type Props = {
 
 // Exported so the parent can reuse it for the insert-token logic
 // (replace the same substring it triggers on).
-export const MENTION_TOKEN_RE = /(?:^|\s)@(\w*)$/;
+// Char class matches `extractMentions` in mobile/src/lib/api.ts: word
+// chars + dot + dash. Without `.` / `-`, a teammate named "first.last"
+// would close the picker the moment they typed the dot.
+export const MENTION_TOKEN_RE = /(?:^|\s)@([\w.\-]*)$/;
 
 export function MentionSuggest({ text, caretPos, roster, meId, onSelect }: Props) {
   const before = text.slice(0, caretPos);

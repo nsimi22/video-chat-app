@@ -170,26 +170,28 @@ function escapeRegex(s: string): string {
 // Walk through a stretch of plain text and emit alternating plain / mention
 // Text nodes. Mentions only fire when `@<Name>` is preceded by start-of-
 // string or whitespace (so `nick@example.com` doesn't get a pill on `@e`)
-// AND when `<Name>` matches an entry in `mentionNames`.
+// AND when `<Name>` matches an entry in the precompiled `mentionRe`.
+//
+// The regex is supplied by the caller — it's expensive to recompile (and
+// per-message message bodies can produce several plain-text segments,
+// each calling this function), so MarkdownImpl compiles it once per
+// memo cycle and threads it through. The `/g` flag means we have to
+// reset lastIndex before each call.
 function pushTextWithMentions(
   out: React.ReactNode[],
   text: string,
   keyPrefix: string,
-  mentionNames?: string[],
+  mentionRe: RegExp | null,
 ): void {
-  if (!mentionNames || mentionNames.length === 0 || !text) {
+  if (!mentionRe || !text) {
     if (text) out.push(<Text key={keyPrefix}>{text}</Text>);
     return;
   }
-  const alt = mentionNames.map(escapeRegex).join('|');
-  // Same shape as renderer/markdown.js's mention regex but matches the
-  // leading whitespace as part of the match (no lookbehind, for engine
-  // portability) so we can split the segment without consuming it.
-  const re = new RegExp(`(^|\\s)@(${alt})\\b`, 'gi');
+  mentionRe.lastIndex = 0;
   let last = 0;
   let i = 0;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
+  while ((m = mentionRe.exec(text)) !== null) {
     const atIdx = m.index + m[1].length; // position of the `@`
     if (atIdx > last) {
       out.push(<Text key={`${keyPrefix}t${i++}`}>{text.slice(last, atIdx)}</Text>);
@@ -217,7 +219,7 @@ function pushTextWithMentions(
 function renderInline(
   text: string,
   prefix: string,
-  mentionNames?: string[],
+  mentionRe: RegExp | null,
 ): React.ReactNode[] {
   const out: React.ReactNode[] = [];
   let last = 0;
@@ -227,7 +229,7 @@ function renderInline(
   let m: RegExpExecArray | null;
   while ((m = INLINE_RE.exec(text)) !== null) {
     if (m.index > last) {
-      pushTextWithMentions(out, text.slice(last, m.index), `${prefix}p${i++}`, mentionNames);
+      pushTextWithMentions(out, text.slice(last, m.index), `${prefix}p${i++}`, mentionRe);
     }
     const tok = m[0];
     if (tok.startsWith('**')) {
@@ -255,7 +257,7 @@ function renderInline(
     last = m.index + tok.length;
   }
   if (last < text.length) {
-    pushTextWithMentions(out, text.slice(last), `${prefix}p${i++}`, mentionNames);
+    pushTextWithMentions(out, text.slice(last), `${prefix}p${i++}`, mentionRe);
   }
   return out;
 }
@@ -276,6 +278,14 @@ function MarkdownImpl({
   baseStyle?: TextStyle;
   mentionNames?: string[];
 }) {
+  // Compile the mention regex once per Markdown render (i.e. once per
+  // memo cycle — invalidated only when `mentionNames` identity changes).
+  // Previously this happened inside pushTextWithMentions, which is hit
+  // once per plain-text segment per block, so a 50-message channel was
+  // burning hundreds of regex compilations per render pass.
+  const mentionRe = mentionNames && mentionNames.length
+    ? new RegExp(`(^|\\s)@(${mentionNames.map(escapeRegex).join('|')})\\b`, 'gi')
+    : null;
   // Block-level: contiguous `> ` lines render as a quoted block (left border
   // + dim text); everything else is a paragraph. Paragraphs keep newlines so
   // multi-line bodies don't run together.
@@ -290,14 +300,14 @@ function MarkdownImpl({
       blocks.push(
         <View key={`q${bi}`} style={{ borderLeftWidth: 3, borderLeftColor: colors.border, paddingLeft: space(2), marginVertical: 2 }}>
           <Text style={[{ color: colors.textDim, fontSize: 15, lineHeight: 21 }, baseStyle]}>
-            {renderInline(text, `q${bi}-`, mentionNames)}
+            {renderInline(text, `q${bi}-`, mentionRe)}
           </Text>
         </View>,
       );
     } else {
       blocks.push(
         <Text key={`p${bi}`} style={[{ color: colors.text, fontSize: 15, lineHeight: 21 }, baseStyle]}>
-            {renderInline(text, `p${bi}-`, mentionNames)}
+            {renderInline(text, `p${bi}-`, mentionRe)}
         </Text>,
       );
     }
