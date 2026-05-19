@@ -1,25 +1,27 @@
 # Huddle Mobile (Expo)
 
 Native iOS + Android client for Huddle. Talks to the **same Supabase project**
-as the desktop app (`jwqvrdgjpftjiwvgdrck`) — no backend changes for chat. Video
-calls use a hosted **LiveKit** SFU instead of the desktop full-mesh, brokered by
-the `livekit-token` Supabase Edge Function.
+as the desktop app (`jwqvrdgjpftjiwvgdrck`) — no backend changes for chat.
+Audio calls use a **WebRTC mesh** signaled over the existing
+`call:<team>:<channel>` Supabase Realtime topic (the same topic the desktop
+mesh uses), so a mobile caller and a desktop caller can join the same call
+and hear each other.
 
 ## Status
 
-MVP scope: **chat + receive-only calls**.
+MVP scope: **chat + audio calls**.
 
 - ✅ Email-OTP auth, profile setup, team picker (mirrors `renderer/api.js`)
 - ✅ Channel / DM list (live via `postgres_changes`)
 - ✅ Chat: history pagination, realtime, reactions, pins, attachments (images), typing
 - ✅ Push notifications (DMs + @-mentions) via Expo push + `notify-on-message`
-- ✅ Calls: join a channel call, see/hear participants, publish camera/mic, mute/flip/leave (LiveKit)
-- ⛔ Not yet: screen-share send, annotations, whiteboard, threads UI, search UI, GIF picker, integration API keys, CallKit/ConnectionService, cross-platform A/V with desktop (desktop still on mesh)
+- ✅ Calls: join a channel call, hear participants, publish mic, mute/leave (WebRTC mesh)
+- ⛔ Not yet: video send/receive on mobile, screen-share, annotations, whiteboard, threads UI, search UI, GIF picker, integration API keys, CallKit/ConnectionService
 
 ## Develop
 
 This package is **not** part of the Electron app's build; it's a standalone Expo
-project. WebRTC/LiveKit need a dev client (Expo Go won't work).
+project. `react-native-webrtc` needs a dev client (Expo Go won't work).
 
 ```bash
 cd mobile
@@ -34,18 +36,33 @@ npm run typecheck
 Supabase URL / anon key are in `app.json` → `expo.extra` (same public values as
 the desktop default). Override per build if you self-host.
 
-## LiveKit setup (calls)
+## Calls (WebRTC mesh)
 
-1. Create a LiveKit Cloud project (or self-host).
-2. Set Edge Function secrets in Supabase:
-   ```bash
-   supabase secrets set LIVEKIT_URL=wss://<your>.livekit.cloud \
-     LIVEKIT_API_KEY=... LIVEKIT_API_SECRET=...
-   supabase functions deploy livekit-token
-   ```
-3. The app calls `livekit-token` (see `src/lib/livekit.ts`); it verifies the
-   caller's session + channel membership (`can_see_channel`) before signing a
-   token for room `call:<team_id>:<channel_id>`.
+Calls are full-mesh: every participant holds one `RTCPeerConnection` per other
+participant. Plenty for audio-only up through ~6–8 people; revisit if the
+typical call gets larger. The signaling protocol is identical to the desktop's
+(`renderer/webrtc.js` + `renderer/api.js`), so mobile ↔ desktop calls Just
+Work — desktop publishes video too, mobile peers ignore the video track.
+
+**TURN** is optional but strongly recommended for cellular: STUN-only fails on
+symmetric NATs. The `ice-servers` Edge Function returns short-lived
+credentials from Cloudflare TURN (or Twilio NTS, or just public STUN if
+nothing is configured):
+
+```bash
+# Cloudflare (free tier: ~1 TB/month)
+supabase secrets set \
+  CLOUDFLARE_TURN_TOKEN_ID=<id> \
+  CLOUDFLARE_TURN_API_TOKEN=<token>
+
+# …or Twilio (pay-as-you-go)
+supabase secrets set TWILIO_ACCOUNT_SID=<sid> TWILIO_AUTH_TOKEN=<token>
+
+supabase functions deploy ice-servers
+```
+
+The function 401s any caller without a Supabase session, so TURN credentials
+aren't handed to anonymous users.
 
 ## Push setup
 

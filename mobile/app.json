@@ -38,7 +38,14 @@
         "expo-camera",
         { "cameraPermission": "Huddle uses your camera for video calls." }
       ],
-      "expo-notifications"
+      "expo-notifications",
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "cameraPermission": "Huddle uses your camera for video calls.",
+          "microphonePermission": "Huddle uses your microphone for calls."
+        }
+      ]
     ],
     "extra": {
       "supabaseUrl": "https://jwqvrdgjpftjiwvgdrck.supabase.co",
