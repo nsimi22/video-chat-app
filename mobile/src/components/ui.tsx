@@ -159,9 +159,68 @@ export function Avatar({ name, color, size = 36, uri, ai }: { name: string; colo
 
 // Tiny markdown renderer for chat bodies — mirrors renderer/markdown.js:
 // **bold**, *italic*, `inline code`, blockquote (lines starting with `> `),
-// and autolinked http(s) URLs. Pure regex; no markdown library.
+// autolinked http(s) URLs, and styled @mention chips for any name that
+// matches the team roster. Pure regex; no markdown library.
 const INLINE_RE = /(\*\*[^*]+\*\*)|(\*[^*]+\*)|(`[^`]+`)|(https?:\/\/[^\s<>'"]+)/g;
-function renderInline(text: string, prefix: string): React.ReactNode[] {
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Walk through a stretch of plain text and emit alternating plain / mention
+// Text nodes. Mentions only fire when `@<Name>` is preceded by start-of-
+// string or whitespace (so `nick@example.com` doesn't get a pill on `@e`)
+// AND when `<Name>` matches an entry in the precompiled `mentionRe`.
+//
+// The regex is supplied by the caller — it's expensive to recompile (and
+// per-message message bodies can produce several plain-text segments,
+// each calling this function), so MarkdownImpl compiles it once per
+// memo cycle and threads it through. The `/g` flag means we have to
+// reset lastIndex before each call.
+function pushTextWithMentions(
+  out: React.ReactNode[],
+  text: string,
+  keyPrefix: string,
+  mentionRe: RegExp | null,
+): void {
+  if (!mentionRe || !text) {
+    if (text) out.push(<Text key={keyPrefix}>{text}</Text>);
+    return;
+  }
+  mentionRe.lastIndex = 0;
+  let last = 0;
+  let i = 0;
+  let m: RegExpExecArray | null;
+  while ((m = mentionRe.exec(text)) !== null) {
+    const atIdx = m.index + m[1].length; // position of the `@`
+    if (atIdx > last) {
+      out.push(<Text key={`${keyPrefix}t${i++}`}>{text.slice(last, atIdx)}</Text>);
+    }
+    const tokenEnd = atIdx + 1 + m[2].length; // `@` + name
+    out.push(
+      <Text
+        key={`${keyPrefix}m${i++}`}
+        style={{
+          color: colors.accent,
+          backgroundColor: colors.surfaceAlt,
+          fontWeight: '600',
+        }}
+      >
+        {text.slice(atIdx, tokenEnd)}
+      </Text>,
+    );
+    last = tokenEnd;
+  }
+  if (last < text.length) {
+    out.push(<Text key={`${keyPrefix}t${i++}`}>{text.slice(last)}</Text>);
+  }
+}
+
+function renderInline(
+  text: string,
+  prefix: string,
+  mentionRe: RegExp | null,
+): React.ReactNode[] {
   const out: React.ReactNode[] = [];
   let last = 0;
   let i = 0;
@@ -169,7 +228,9 @@ function renderInline(text: string, prefix: string): React.ReactNode[] {
   INLINE_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = INLINE_RE.exec(text)) !== null) {
-    if (m.index > last) out.push(<Text key={`${prefix}t${i++}`}>{text.slice(last, m.index)}</Text>);
+    if (m.index > last) {
+      pushTextWithMentions(out, text.slice(last, m.index), `${prefix}p${i++}`, mentionRe);
+    }
     const tok = m[0];
     if (tok.startsWith('**')) {
       out.push(<Text key={`${prefix}b${i++}`} style={{ fontWeight: '700' }}>{tok.slice(2, -2)}</Text>);
@@ -195,15 +256,36 @@ function renderInline(text: string, prefix: string): React.ReactNode[] {
     }
     last = m.index + tok.length;
   }
-  if (last < text.length) out.push(<Text key={`${prefix}t${i++}`}>{text.slice(last)}</Text>);
+  if (last < text.length) {
+    pushTextWithMentions(out, text.slice(last), `${prefix}p${i++}`, mentionRe);
+  }
   return out;
 }
 
 // Memoised because every chat-row render would otherwise re-walk the body via
 // regex + rebuild the JSX tree. With a typical channel of 50+ messages on
 // every reaction / typing / scroll tick, that's the hottest path in the list.
+// `mentionNames` is included in the prop signature so the memo invalidates
+// when the roster changes — a teammate join shouldn't leave previously-
+// rendered messages with unhighlighted @mentions.
 export const Markdown = React.memo(MarkdownImpl);
-function MarkdownImpl({ body, baseStyle }: { body: string; baseStyle?: TextStyle }) {
+function MarkdownImpl({
+  body,
+  baseStyle,
+  mentionNames,
+}: {
+  body: string;
+  baseStyle?: TextStyle;
+  mentionNames?: string[];
+}) {
+  // Compile the mention regex once per Markdown render (i.e. once per
+  // memo cycle — invalidated only when `mentionNames` identity changes).
+  // Previously this happened inside pushTextWithMentions, which is hit
+  // once per plain-text segment per block, so a 50-message channel was
+  // burning hundreds of regex compilations per render pass.
+  const mentionRe = mentionNames && mentionNames.length
+    ? new RegExp(`(^|\\s)@(${mentionNames.map(escapeRegex).join('|')})\\b`, 'gi')
+    : null;
   // Block-level: contiguous `> ` lines render as a quoted block (left border
   // + dim text); everything else is a paragraph. Paragraphs keep newlines so
   // multi-line bodies don't run together.
@@ -218,14 +300,14 @@ function MarkdownImpl({ body, baseStyle }: { body: string; baseStyle?: TextStyle
       blocks.push(
         <View key={`q${bi}`} style={{ borderLeftWidth: 3, borderLeftColor: colors.border, paddingLeft: space(2), marginVertical: 2 }}>
           <Text style={[{ color: colors.textDim, fontSize: 15, lineHeight: 21 }, baseStyle]}>
-            {renderInline(text, `q${bi}-`)}
+            {renderInline(text, `q${bi}-`, mentionRe)}
           </Text>
         </View>,
       );
     } else {
       blocks.push(
         <Text key={`p${bi}`} style={[{ color: colors.text, fontSize: 15, lineHeight: 21 }, baseStyle]}>
-          {renderInline(text, `p${bi}-`)}
+            {renderInline(text, `p${bi}-`, mentionRe)}
         </Text>,
       );
     }

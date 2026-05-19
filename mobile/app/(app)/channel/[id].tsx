@@ -17,6 +17,7 @@ import * as Clipboard from 'expo-clipboard';
 import { Pin, Paperclip, Phone, Plus } from 'lucide-react-native';
 import { MessageActionSheet } from '@/components/MessageActionSheet';
 import { SlashSuggest } from '@/components/SlashSuggest';
+import { MentionSuggest, MENTION_TOKEN_RE } from '@/components/MentionSuggest';
 import { GifPicker } from '@/components/GifPicker';
 import { ComposerMenu } from '@/components/ComposerMenu';
 import { EmojiPanel } from '@/components/EmojiPanel';
@@ -158,6 +159,33 @@ export default function ChannelScreen() {
   };
 
   const onSelectSlash = (cmd: SlashCommand) => setText(`/${cmd.name} `);
+
+  // Replace the in-progress `@<partial>` token at the caret with `@Name `
+  // and reposition the caret at the end of the inserted token. The regex
+  // is exported from MentionSuggest so the trigger detection here stays
+  // in lockstep with the popup's matching logic.
+  const onSelectMention = (p: Profile) => {
+    const before = text.slice(0, selection.start);
+    const after = text.slice(selection.start);
+    const m = MENTION_TOKEN_RE.exec(before);
+    if (!m) return;
+    // match[0] is either "@partial" (at string start) or " @partial"
+    // (after whitespace). The `@` position is the end of `before`
+    // minus the partial length minus 1.
+    const tokenStart = before.length - m[0].length + (m[0].startsWith('@') ? 0 : 1);
+    const replacement = `@${p.name} `;
+    const newBefore = before.slice(0, tokenStart) + replacement;
+    setText(newBefore + after);
+    const cursor = newBefore.length;
+    setSelection({ start: cursor, end: cursor });
+  };
+
+  // Names we feed to the message renderer to gate which @-tokens become
+  // styled pills — same approach as desktop's MessageList._knownNames.
+  const mentionNames = useMemo(
+    () => roster.map((p) => p.name).filter((n): n is string => !!n),
+    [roster],
+  );
 
   const insertEmoji = (emoji: string) => {
     const { start, end } = selection;
@@ -311,7 +339,7 @@ export default function ChannelScreen() {
                   )}
                   {!!item.body && (
                     <View>
-                      <Markdown body={item.body} />
+                      <Markdown body={item.body} mentionNames={mentionNames} />
                       {item.edited_ts ? <Text style={{ color: colors.textDim, fontSize: 11, marginTop: 2 }}>(edited)</Text> : null}
                     </View>
                   )}
@@ -343,6 +371,13 @@ export default function ChannelScreen() {
         />
       )}
       <SlashSuggest text={text} onSelect={onSelectSlash} />
+      <MentionSuggest
+        text={text}
+        caretPos={selection.start}
+        roster={roster}
+        meId={userId ?? null}
+        onSelect={onSelectMention}
+      />
       {aiThinking && (
         <Text style={{ color: colors.textDim, fontSize: 12, paddingHorizontal: space(4), paddingBottom: 2 }}>
           AI is thinking…
