@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { View, Text, TouchableOpacity, ActivityIndicator, FlatList } from 'react-native';
+import { View, Text, TouchableOpacity, ActivityIndicator, FlatList, Linking } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useKeepAwake } from 'expo-keep-awake';
 import { useAuth } from '@/context/AuthContext';
@@ -58,7 +58,7 @@ function CallActive({
   teamId: string; channelId: string; title: string;
   myPeerId: string; myName: string; myColor: string;
 }) {
-  const { state, error, toggleMic, leave } = useMesh({
+  const { state, error, toggleMic, leave, retry } = useMesh({
     teamId, channelId, myPeerId, myName, myColor,
     onLeave: () => router.back(),
   });
@@ -74,13 +74,35 @@ function CallActive({
   }, [state.peers, state.micOn, myPeerId, myName, myColor]);
 
   if (error) {
+    const isPermission = error.kind === 'permission_denied';
+    const isNoMic = error.kind === 'no_microphone';
+    const headline = isPermission
+      ? 'Microphone access needed'
+      : isNoMic
+      ? 'No microphone available'
+      : 'Couldn’t join the call';
+    const body = isPermission
+      ? 'Huddle needs the microphone to make audio calls. Enable it in Settings to continue.'
+      : isNoMic
+      ? 'No microphone hardware was detected on this device.'
+      : error.message || 'Something went wrong reaching the call server.';
+    // Only offer Retry when retrying could plausibly succeed without the
+    // user changing OS state. Permission flips happen in Settings, not by
+    // tapping a button — so we offer "Open Settings" there instead, and the
+    // user re-enters the call after granting access.
+    const showRetry = !isPermission && !isNoMic;
     return (
       <View style={centerStyle}>
         <Stack.Screen options={{ title: 'Call' }} />
-        <Text style={{ color: colors.danger, textAlign: 'center', marginBottom: space(4) }}>{error}</Text>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Text style={{ color: colors.accent }}>Back</Text>
-        </TouchableOpacity>
+        <Text style={{ color: colors.text, fontSize: 18, fontWeight: '600', textAlign: 'center' }}>{headline}</Text>
+        <Text style={{ color: colors.textDim, textAlign: 'center', marginTop: space(2), marginBottom: space(5) }}>{body}</Text>
+        <View style={{ flexDirection: 'row', gap: space(3) }}>
+          {isPermission ? (
+            <CtrlButton label="Open Settings" active onPress={() => { Linking.openSettings().catch(() => {}); }} />
+          ) : null}
+          {showRetry ? <CtrlButton label="Retry" active onPress={retry} /> : null}
+          <CtrlButton label="Back" onPress={() => router.back()} />
+        </View>
       </View>
     );
   }
@@ -91,11 +113,20 @@ function CallActive({
       <View style={{ position: 'absolute', top: space(12), left: 0, right: 0, alignItems: 'center', zIndex: 1 }}>
         <Text style={{ color: '#fff', fontSize: 18, fontWeight: '600' }}>{title}</Text>
         <Text style={{ color: colors.textDim, marginTop: space(1) }}>
-          {state.joined
-            ? `${tiles.length} ${tiles.length === 1 ? 'person' : 'people'} on the call`
-            : 'Connecting…'}
+          {!state.joined
+            ? 'Connecting…'
+            : state.reconnecting
+            ? 'Reconnecting…'
+            : `${tiles.length} ${tiles.length === 1 ? 'person' : 'people'} on the call`}
         </Text>
       </View>
+      {state.reconnecting ? (
+        <View style={{ position: 'absolute', top: space(20), left: space(4), right: space(4), backgroundColor: colors.surfaceAlt, borderRadius: radius.md, padding: space(3), zIndex: 1, borderWidth: 1, borderColor: colors.border }}>
+          <Text style={{ color: colors.textDim, textAlign: 'center', fontSize: 13 }}>
+            Network blip — reconnecting to the call.
+          </Text>
+        </View>
+      ) : null}
       <FlatList
         data={tiles}
         keyExtractor={(p) => p.id}

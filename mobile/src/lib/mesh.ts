@@ -47,7 +47,27 @@ export type MeshState = {
   // True once we've subscribed to the call channel and acquired the mic.
   // The UI uses this to stop showing the "Connecting…" spinner.
   joined: boolean;
+  // True when we were joined and then lost the realtime channel — supabase-js
+  // is auto-reconnecting in the background. UI should show a "Reconnecting…"
+  // banner without unmounting the call.
+  reconnecting: boolean;
 };
+
+// Categorise failures so the UI can branch (permission UX vs. generic retry).
+export type MeshErrorKind =
+  | 'permission_denied'   // user said no to the mic prompt; recoverable via Settings
+  | 'no_microphone'       // device has no mic / hardware unavailable
+  | 'realtime_failed'     // Supabase Realtime subscribe / RLS failure
+  | 'unknown';
+
+export class MeshError extends Error {
+  kind: MeshErrorKind;
+  constructor(kind: MeshErrorKind, message: string) {
+    super(message);
+    this.name = 'MeshError';
+    this.kind = kind;
+  }
+}
 
 // SDP + ICE-candidate payloads round-trip through Supabase Realtime as JSON.
 // We pin our own shapes here so the wire format is independent of which
@@ -234,6 +254,7 @@ export class Mesh {
   private iceServers: IceServer[] = [];
   private _micOn = true;
   private _joined = false;
+  private _reconnecting = false;
   private listeners = new Set<(s: MeshState) => void>();
   private disposed = false;
 
@@ -254,6 +275,7 @@ export class Mesh {
       peers: [...this.peerInfo.values()],
       micOn: this._micOn,
       joined: this._joined,
+      reconnecting: this._reconnecting,
     };
   }
 
@@ -263,12 +285,27 @@ export class Mesh {
   }
 
   async connect(): Promise<void> {
-    if (this.disposed) throw new Error('mesh disposed');
+    if (this.disposed) throw new MeshError('unknown', 'mesh disposed');
     // Order matters: acquire ICE first (network call, may take a beat) and
     // mic second (permission prompt). Subscribing to realtime LAST means we
     // can't receive a 'signal' before we're ready to handle it.
     this.iceServers = await fetchIceServers();
-    this.localStream = await mediaDevices.getUserMedia({ audio: true, video: false });
+    try {
+      this.localStream = await mediaDevices.getUserMedia({ audio: true, video: false });
+    } catch (err) {
+      // RN-WebRTC mirrors the W3C MediaStreamError names. NotAllowedError /
+      // PermissionDeniedError = user said no. NotFoundError = no mic
+      // hardware. Other errors fall through as generic.
+      const name = (err as { name?: string } | null)?.name ?? '';
+      const message = err instanceof Error ? err.message : String(err);
+      if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || /denied|permission/i.test(message)) {
+        throw new MeshError('permission_denied', 'Microphone permission denied');
+      }
+      if (name === 'NotFoundError' || /not.*found|no.*microphone/i.test(message)) {
+        throw new MeshError('no_microphone', 'No microphone available');
+      }
+      throw new MeshError('unknown', message);
+    }
 
     const topic = callTopic(this.opts.teamId, this.opts.channelId);
     const ch = supabase.channel(topic, {
@@ -338,22 +375,25 @@ export class Mesh {
     });
 
     await new Promise<void>((resolve, reject) => {
-      // Match the desktop's belt-and-braces timeout — Realtime's subscribe()
-      // doesn't time out internally, so a denied RLS / network hiccup
-      // mid-handshake would otherwise hang forever and leave the UI stuck on
-      // "Connecting…".
-      let settled = false;
-      const finish = (ok: boolean, err?: unknown) => {
-        if (settled) return;
-        settled = true;
+      // Belt-and-braces initial timeout — Realtime's subscribe() doesn't time
+      // out internally, so a denied RLS / network hiccup mid-handshake would
+      // otherwise hang forever and leave the UI stuck on "Connecting…".
+      // The single subscribe() callback handles both initial connect and
+      // subsequent reconnect cycles: `initialSettled` gates which path runs.
+      let initialSettled = false;
+      const initialDone = (ok: boolean, err?: unknown) => {
+        if (initialSettled) return;
+        initialSettled = true;
         clearTimeout(timer);
         if (ok) resolve();
         else {
           try { ch.unsubscribe(); } catch { /* already gone */ }
-          reject(err instanceof Error ? err : new Error(String(err ?? 'subscribe failed')));
+          const message = err instanceof Error ? err.message : String(err ?? 'subscribe failed');
+          reject(err instanceof MeshError ? err : new MeshError('realtime_failed', message));
         }
       };
-      const timer = setTimeout(() => finish(false, new Error('realtime call subscribe timed out')), 8000);
+      const timer = setTimeout(() => initialDone(false, new Error('Couldn’t reach the call server')), 12000);
+
       ch.subscribe(async (status, err) => {
         if (status === 'SUBSCRIBED') {
           try {
@@ -362,19 +402,57 @@ export class Mesh {
               color: this.opts.myColor,
               online_at: new Date().toISOString(),
             });
-            if (trackResult !== 'ok') return finish(false, new Error('presence track ' + trackResult));
-            finish(true);
+            if (trackResult !== 'ok') {
+              if (!initialSettled) initialDone(false, new Error('presence track ' + trackResult));
+              return;
+            }
           } catch (e) {
-            finish(false, e);
+            if (!initialSettled) initialDone(false, e);
+            return;
+          }
+          if (!initialSettled) {
+            initialDone(true);
+          } else if (!this.disposed) {
+            // Reconnected after a mid-call drop. supabase-js re-established
+            // the channel for us; tear down all PCs (their ICE/DTLS state is
+            // stale relative to the peers' new view of the call) and let the
+            // presence-sync handler rebuild them.
+            this.rebuildAfterReconnect();
           }
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-          finish(false, err ?? new Error('realtime ' + status));
+          if (!initialSettled) {
+            initialDone(false, err ?? new Error('realtime ' + status));
+          } else if (!this.disposed) {
+            // Mid-call drop. Flag reconnecting so the UI shows a banner;
+            // supabase-js will retry and the SUBSCRIBED branch above
+            // takes over from there.
+            if (!this._reconnecting) {
+              this._reconnecting = true;
+              this.emit();
+            }
+          }
         }
       });
     });
 
     this.channel = ch;
     this._joined = true;
+    this.emit();
+  }
+
+  // Mid-call realtime reconnect: drop every peer connection so we can
+  // re-negotiate from scratch on the next presence sync. Keeping the old
+  // PCs would mean the peers' ICE candidates from before the gap are still
+  // mapped to closed UDP tuples — audio appears stuck even though Realtime
+  // is back. Far cleaner to start fresh; the bandwidth cost of one extra
+  // SDP exchange per peer is invisible vs. the user-visible silence.
+  private rebuildAfterReconnect() {
+    for (const conn of this.peers.values()) conn.close();
+    this.peers.clear();
+    // peerInfo (UI-visible roster) is left in place so the call screen
+    // doesn't flicker to empty during the reconnect; entries are reconciled
+    // when the presence-sync event fires moments later.
+    this._reconnecting = false;
     this.emit();
   }
 

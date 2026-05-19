@@ -64,6 +64,31 @@ supabase functions deploy ice-servers
 The function 401s any caller without a Supabase session, so TURN credentials
 aren't handed to anonymous users.
 
+### Known limitations
+
+- **Android background audio.** The `FOREGROUND_SERVICE` /
+  `FOREGROUND_SERVICE_MICROPHONE` permissions are declared, but the app
+  does not yet start a foreground service when a call begins — so on
+  Android, locking the screen will let the OS kill the call after a
+  while. `useKeepAwake()` keeps the screen on while the app is in the
+  foreground, which is enough for the common case. Proper background
+  calling needs a foreground service (likely via `expo-task-manager` or
+  a small custom config plugin) — tracked as follow-up work.
+- **No speaker / earpiece toggle.** RN-WebRTC routes audio to the
+  earpiece by default. AirPods and other Bluetooth headsets are picked
+  up automatically by the OS. Loudspeaker requires a native helper
+  (`AudioManager.setSpeakerphoneOn` on Android,
+  `AVAudioSession.overrideOutputAudioPort` on iOS) which rn-webrtc
+  doesn't expose; follow-up.
+- **Incoming-call notifications.** Tapping into a call is opt-in — if
+  you're not looking at the channel, you won't know someone started a
+  call. Push-on-call is a follow-up that needs a small DB schema +
+  Edge Function webhook (mirroring `notify-on-message`).
+- **Same user on two devices.** Presence keys on `userId`, so a user
+  signed in on both desktop and mobile collides in the call channel.
+  Pre-existing in the desktop renderer too — needs a coordinated
+  per-device peer-id scheme to fix properly.
+
 ## Push setup
 
 1. `npx eas credentials` — configure APNs key + FCM.
