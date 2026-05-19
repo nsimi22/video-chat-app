@@ -80,10 +80,6 @@ aren't handed to anonymous users.
   (`AudioManager.setSpeakerphoneOn` on Android,
   `AVAudioSession.overrideOutputAudioPort` on iOS) which rn-webrtc
   doesn't expose; follow-up.
-- **Incoming-call notifications.** Tapping into a call is opt-in — if
-  you're not looking at the channel, you won't know someone started a
-  call. Push-on-call is a follow-up that needs a small DB schema +
-  Edge Function webhook (mirroring `notify-on-message`).
 - **Same user on two devices.** Presence keys on `userId`, so a user
   signed in on both desktop and mobile collides in the call channel.
   Pre-existing in the desktop renderer too — needs a coordinated
@@ -92,16 +88,23 @@ aren't handed to anonymous users.
 ## Push setup
 
 1. `npx eas credentials` — configure APNs key + FCM.
-2. Apply the migration `supabase/migrations/20260512000000_huddle_device_tokens.sql`.
-3. Deploy + wire the webhook:
+2. Apply the migrations:
+   - `supabase/migrations/20260512000000_huddle_device_tokens.sql`
+   - `supabase/migrations/20260519000000_huddle_active_calls.sql`
+3. Deploy + wire the webhooks:
    ```bash
    supabase secrets set NOTIFY_WEBHOOK_SECRET="$(openssl rand -hex 24)"
    supabase functions deploy notify-on-message --no-verify-jwt
+   supabase functions deploy notify-on-call --no-verify-jwt
    ```
-   Then in the dashboard add a Database Webhook on `public.messages` INSERT →
-   HTTP POST to the `notify-on-message` function, with an
-   `x-webhook-secret: <NOTIFY_WEBHOOK_SECRET>` header (the function is deployed
-   without JWT verification, so this header is its only auth).
+   Then in the dashboard add two Database Webhooks (both with the
+   `x-webhook-secret: <NOTIFY_WEBHOOK_SECRET>` header — the functions are
+   deployed without JWT verification, so this header is their only auth):
+   - On `public.messages` INSERT → HTTP POST to `notify-on-message`.
+   - On `public.active_calls` **INSERT only** → HTTP POST to `notify-on-call`.
+     **Do not** enable UPDATE on this webhook — every participant heartbeats
+     the row every 30 s, and re-firing the push on each heartbeat would
+     spam everyone in the channel.
 
 ## Branding assets
 

@@ -21,6 +21,7 @@ import type { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 import { callTopic } from './topics';
 import { fetchIceServers, type IceServer } from './iceServers';
+import { createCallAnnouncer, type CallAnnouncer } from './call-announce';
 
 // react-native-webrtc's connection-state values per spec. We model it as a
 // union of literals rather than importing the DOM lib's RTCPeerConnectionState
@@ -257,6 +258,10 @@ export class Mesh {
   private _reconnecting = false;
   private listeners = new Set<(s: MeshState) => void>();
   private disposed = false;
+  // Drives the `active_calls` table heartbeat that powers push notifications.
+  // Separate from the realtime channel because Postgres webhooks can't read
+  // realtime presence — we have to give them a row to watch.
+  private announcer: CallAnnouncer | null = null;
 
   constructor(opts: MeshOptions) {
     this.opts = opts;
@@ -438,6 +443,16 @@ export class Mesh {
     this.channel = ch;
     this._joined = true;
     this.emit();
+
+    // Announce on the `active_calls` table so the notify-on-call webhook
+    // fires push notifications to everyone in the channel. Fire-and-forget;
+    // if it fails we still want the call to work locally.
+    this.announcer = createCallAnnouncer({
+      teamId: this.opts.teamId,
+      channelId: this.opts.channelId,
+      startedBy: this.opts.myPeerId,
+    });
+    this.announcer.start().catch((err) => console.warn('[mesh] announce failed', err));
   }
 
   // Mid-call realtime reconnect: drop every peer connection so we can
@@ -533,6 +548,15 @@ export class Mesh {
   async disconnect(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    // Stop the active_calls heartbeat. We deliberately don't delete the row
+    // — see call-announce.ts / the migration comment: a delete-on-leave
+    // races other participants' heartbeats and would re-fire the push.
+    // The row goes stale 5 min after the last heartbeat and the next call
+    // attempt sweeps it.
+    if (this.announcer) {
+      this.announcer.stop();
+      this.announcer = null;
+    }
     for (const conn of this.peers.values()) conn.close();
     this.peers.clear();
     this.peerInfo.clear();
