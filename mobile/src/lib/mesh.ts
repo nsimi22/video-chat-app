@@ -285,6 +285,7 @@ export class Mesh {
         Array<{ name?: string; color?: string }>
       >;
       const seen = new Set<string>();
+      let newPeerJoined = false;
       for (const key of Object.keys(state)) {
         seen.add(key);
         if (key === this.opts.myPeerId) continue;
@@ -298,6 +299,7 @@ export class Mesh {
             micOn: true,
             connectionState: 'new',
           });
+          newPeerJoined = true;
         } else {
           // Refresh name/color in case the peer updated their profile mid-call.
           existing.name = meta.name ?? existing.name;
@@ -312,6 +314,12 @@ export class Mesh {
       for (const id of [...this.peerInfo.keys()]) {
         if (!seen.has(id)) this.dropPeer(id);
       }
+      // Re-broadcast our mute state so a late joiner sees the right mic
+      // icon. The call channel is `broadcast: { self: false }` so this
+      // never echoes; it costs one packet per new peer. Without it, a
+      // peer who joined after we muted would render us as un-muted until
+      // we toggled again.
+      if (newPeerJoined && this.channel) this.publishMuteState();
       this.emit();
     });
 
@@ -431,13 +439,17 @@ export class Mesh {
     const next = !this._micOn;
     for (const t of this.localStream.getAudioTracks()) t.enabled = next;
     this._micOn = next;
+    this.publishMuteState();
+    this.emit();
+    return next;
+  }
+
+  private publishMuteState() {
     this.channel?.send({
       type: 'broadcast',
       event: 'mute-state',
-      payload: { from: this.opts.myPeerId, micOn: next, camOn: false },
+      payload: { from: this.opts.myPeerId, micOn: this._micOn, camOn: false },
     });
-    this.emit();
-    return next;
   }
 
   async disconnect(): Promise<void> {

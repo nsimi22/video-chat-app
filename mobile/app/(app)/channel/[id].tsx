@@ -31,6 +31,7 @@ import { supabase } from '@/lib/supabase';
 import { teamTopic } from '@/lib/topics';
 import { Avatar, Markdown } from '@/components/ui';
 import { MessageUnfurls } from '@/components/Unfurl';
+import { PhoneIcon } from '@/components/icons';
 import { colors, radius, space } from '@/theme';
 
 const QUICK = ['👍', '✅', '🎉', '❤️', '😂', '👀'];
@@ -165,7 +166,7 @@ export default function ChannelScreen() {
               hitSlop={8}
               style={{ paddingHorizontal: 4 }}
             >
-              <Text style={{ fontSize: 22 }}>📞</Text>
+              <PhoneIcon size={22} color={colors.accent} />
             </TouchableOpacity>
           ),
         }}
