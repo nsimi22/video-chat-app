@@ -21,7 +21,9 @@
       "infoPlist": {
         "NSCameraUsageDescription": "Huddle uses your camera for video calls.",
         "NSMicrophoneUsageDescription": "Huddle uses your microphone for calls.",
-        "UIBackgroundModes": ["audio"]
+        "UIBackgroundModes": [
+          "audio"
+        ]
       }
     },
     "android": {
@@ -42,15 +44,20 @@
       "expo-secure-store",
       [
         "expo-camera",
-        { "cameraPermission": "Huddle uses your camera for video calls." }
+        {
+          "cameraPermission": "Huddle uses your camera for video calls."
+        }
       ],
       "expo-notifications",
-      "@livekit/react-native-expo-plugin"
+      "@livekit/react-native-expo-plugin",
+      "@react-native-community/datetimepicker"
     ],
     "extra": {
       "supabaseUrl": "https://jwqvrdgjpftjiwvgdrck.supabase.co",
       "supabaseAnonKey": "sb_publishable_5eJWwJEHWHSLuhFEs2iUlw_tu4fGOvn",
-      "eas": { "projectId": "" }
+      "eas": {
+        "projectId": ""
+      }
     }
   }
 }

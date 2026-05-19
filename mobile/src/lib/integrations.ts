@@ -17,6 +17,8 @@ export type JiraSettings = { host?: string; email?: string; token?: string; defa
 export type GithubSettings = { token?: string };
 export type AiTicketSettings = { context?: string; githubRepo?: string };
 export type GiphySettings = { key?: string };
+export type CalendarSubscription = { name: string; url: string };
+export type CalendarSettings = { subscriptions?: CalendarSubscription[] };
 
 type Cache = {
   userId: string;
@@ -26,6 +28,7 @@ type Cache = {
   ai: AiSettings | null;
   aiTicket: AiTicketSettings | null;
   giphy: GiphySettings | null;
+  calendar: CalendarSettings | null;
 };
 
 let cache: Cache | null = null;
@@ -43,6 +46,7 @@ async function load(userId: string): Promise<Cache> {
     ai?: AiSettings;
     aiTicket?: AiTicketSettings;
     giphy?: GiphySettings;
+    calendar?: CalendarSettings;
   };
   return {
     userId,
@@ -52,6 +56,7 @@ async function load(userId: string): Promise<Cache> {
     ai: settings.ai ?? null,
     aiTicket: settings.aiTicket ?? null,
     giphy: settings.giphy ?? null,
+    calendar: settings.calendar ?? null,
   };
 }
 
@@ -84,6 +89,18 @@ export async function getAiTicketSettings(userId: string): Promise<AiTicketSetti
 export async function getGiphyKey(userId: string): Promise<string | null> {
   const c = await get(userId);
   return c.giphy?.key || null;
+}
+
+// Read-only on mobile — the desktop Settings panel is the one place that
+// adds/edits subscriptions. Mobile fetches each .ics URL directly (no CORS
+// on RN) and merges results into the Calendar tab.
+export async function getCalendarSubscriptions(userId: string): Promise<CalendarSubscription[]> {
+  const c = await get(userId);
+  const subs = c.calendar?.subscriptions;
+  if (!Array.isArray(subs)) return [];
+  return subs.filter((s): s is CalendarSubscription =>
+    !!s && typeof s.url === 'string' && s.url.length > 0,
+  );
 }
 
 // Force a reload on next get() — call after the user edits their settings.

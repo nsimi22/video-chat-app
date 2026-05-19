@@ -1,5 +1,5 @@
 import { Tabs } from 'expo-router';
-import { MessageSquare, Users, Settings as SettingsIcon } from 'lucide-react-native';
+import { Calendar as CalendarIcon, MessageSquare, Users, Settings as SettingsIcon } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
 import { colors } from '@/theme';
 
@@ -25,6 +25,7 @@ export default function TabsLayout() {
     >
       <Tabs.Screen name="channels" options={{ title: 'Messages', tabBarIcon: tabIcon(MessageSquare), headerShown: false }} />
       <Tabs.Screen name="people" options={{ title: 'People', tabBarIcon: tabIcon(Users) }} />
+      <Tabs.Screen name="calendar" options={{ title: 'Calendar', tabBarIcon: tabIcon(CalendarIcon), headerShown: false }} />
       <Tabs.Screen name="settings" options={{ title: 'Settings', tabBarIcon: tabIcon(SettingsIcon) }} />
     </Tabs>
   );
