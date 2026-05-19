@@ -124,12 +124,13 @@ export default function ChannelScreen() {
     try {
       // Slash commands only fire when there are no attachments — an image
       // upload that happens to be captioned with "/me" should be a normal
-      // message, not a /me command on the caption.
-      if (!attachments.length && body.startsWith('/')) {
+      // message, not a /me command on the caption. Skip when userId isn't
+      // resolved yet: every dispatch path needs an authenticated author.
+      if (!attachments.length && body.startsWith('/') && userId) {
         const consumed = await runSlash(body, {
           teamId,
           channelId: String(channelId),
-          userId: userId!,
+          userId,
           roster,
           recentMessages: messages,
           onAiThinking: setAiThinking,

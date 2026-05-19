@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Modal,
   View,
@@ -32,22 +32,11 @@ export function GifPicker({ visible, apiKey, onClose, onSelect }: Props) {
   const seqRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    if (!visible) {
-      setQuery('');
-      setResults([]);
-      setError(null);
-      return;
-    }
-    if (!apiKey) {
-      setError('No Giphy API key configured. Open Settings (⚙) on desktop → Giphy.');
-      return;
-    }
-    void fetchNow('');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, apiKey]);
-
-  const fetchNow = async (q: string) => {
+  // Memoized so the effect below can list it as a dep without re-binding on
+  // every render. `seqRef` is a stable ref, so apiKey is the only real
+  // input — bumping the seq lets late responses (for a stale apiKey/query)
+  // get dropped on the floor.
+  const fetchNow = useCallback(async (q: string) => {
     if (!apiKey) return;
     const seq = ++seqRef.current;
     setLoading(true);
@@ -63,7 +52,33 @@ export function GifPicker({ visible, apiKey, onClose, onSelect }: Props) {
     } finally {
       if (seq === seqRef.current) setLoading(false);
     }
-  };
+  }, [apiKey]);
+
+  useEffect(() => {
+    if (!visible) {
+      setQuery('');
+      setResults([]);
+      setError(null);
+      return;
+    }
+    if (!apiKey) {
+      setError('No Giphy API key configured. Open Settings (⚙) on desktop → Giphy.');
+      return;
+    }
+    void fetchNow('');
+    // Clear any pending debounced search if the picker closes / apiKey
+    // changes / the component unmounts mid-debounce — prevents a setState
+    // after unmount.
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      // Bump the seq so any in-flight fetch sees a stale id and returns
+      // before touching state.
+      seqRef.current += 1;
+    };
+  }, [visible, apiKey, fetchNow]);
 
   const onChangeQuery = (t: string) => {
     setQuery(t);

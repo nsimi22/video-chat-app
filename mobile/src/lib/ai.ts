@@ -101,7 +101,7 @@ export class AiClient {
       });
       const text = await res.text();
       if (!res.ok) throw new Error(`Anthropic ${res.status}: ${parseProviderError(text)}`);
-      const json = JSON.parse(text);
+      const json = safeJsonParse(text, `Anthropic ${res.status} returned non-JSON body`);
       const blocks: Array<{ type: string; text?: string; name?: string; id?: string; input?: Record<string, unknown> }> = json.content || [];
       const toolBlocks = blocks.filter((b) => b.type === 'tool_use');
       if (!apiTools || lastRound || toolBlocks.length === 0) {
@@ -160,7 +160,7 @@ export class AiClient {
       });
       const text = await res.text();
       if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${parseProviderError(text)}`);
-      const json = JSON.parse(text);
+      const json = safeJsonParse(text, `OpenRouter ${res.status} returned non-JSON body`);
       const message = json.choices?.[0]?.message || {};
       const calls: Array<{ id: string; function: { name: string; arguments: string } }> = message.tool_calls || [];
       if (!apiTools || lastRound || calls.length === 0) {
@@ -211,6 +211,18 @@ export async function summarize(
     .join('\n');
   const user = (topicHint ? `Topic: ${topicHint}\n\n` : '') + `Transcript:\n${lines || '(no messages)'}`;
   return client.chat({ system, messages: [{ role: 'user', content: user }] });
+}
+
+// 2xx-from-proxy-but-HTML, gateway timeout pages, and CDN error blobs
+// are all real in production — `JSON.parse` on those throws SyntaxError
+// which surfaces uselessly. Re-throw with a clean message that includes
+// a short slice of the offending body for debugging.
+function safeJsonParse(body: string, context: string): any {
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new Error(`${context}: ${body.slice(0, 200)}`);
+  }
 }
 
 function parseProviderError(body: string): string {
