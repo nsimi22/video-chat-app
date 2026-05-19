@@ -11,10 +11,10 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, router, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
-import { Pin, Paperclip, Plus } from 'lucide-react-native';
+import { Pin, Paperclip, Phone, Plus } from 'lucide-react-native';
 import { MessageActionSheet } from '@/components/MessageActionSheet';
 import { SlashSuggest } from '@/components/SlashSuggest';
 import { GifPicker } from '@/components/GifPicker';
@@ -224,10 +224,17 @@ export default function ChannelScreen() {
       <Stack.Screen
         options={{
           title: headerTitle,
-          // Call button hidden for v1 — mobile<->mobile calls require a
-          // RN-compatible LiveKit polyfill stack we haven't landed. Edge
-          // function + call/[id].tsx + LiveKit deps remain in place for
-          // future re-enable; just restore the headerRight TouchableOpacity.
+          headerRight: () => (
+            <TouchableOpacity
+              onPress={() => router.push({ pathname: '/(app)/call/[id]', params: { id: String(channelId), name: headerTitle } })}
+              accessibilityLabel="Start call"
+              accessibilityRole="button"
+              hitSlop={8}
+              style={{ paddingHorizontal: 4 }}
+            >
+              <Phone size={22} color={colors.accent} strokeWidth={2} />
+            </TouchableOpacity>
+          ),
         }}
       />
       {loading ? (
