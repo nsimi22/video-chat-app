@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Huddle">
+  <title>Huddle</title>
+  <rect width="32" height="32" rx="6" fill="#2e63e6"></rect>
+  <circle cx="16" cy="19.2" r="1.9" fill="#e8eef9"></circle>
+  <path d="M 8 19.2 A 8 8 0 0 1 24 19.2" fill="none" stroke="#f3f5f9" stroke-width="2.4" stroke-linecap="round"></path>
+  <path d="M 4.8 19.2 A 11.2 11.2 0 0 1 14.4 8.2" fill="none" stroke="#f3f5f9" stroke-width="2.4" stroke-linecap="round"></path>
+  <path d="M 17.6 8.2 A 11.2 11.2 0 0 1 27.2 19.2" fill="none" stroke="#f3f5f9" stroke-width="2.4" stroke-linecap="round"></path>
+</svg>

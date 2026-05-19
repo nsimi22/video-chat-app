@@ -8,8 +8,10 @@
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "backgroundColor": "#0b0b0d",
-    "primaryColor": "#5b8cff",
+    "primaryColor": "#2e63e6",
+    "icon": "./assets/icon.png",
     "splash": {
+      "image": "./assets/splash.png",
       "backgroundColor": "#0b0b0d",
       "resizeMode": "contain"
     },
@@ -24,6 +26,10 @@
     },
     "android": {
       "package": "com.huddle.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0b0b0d"
+      },
       "permissions": [
         "CAMERA",
         "RECORD_AUDIO",
@@ -38,7 +44,8 @@
         "expo-camera",
         { "cameraPermission": "Huddle uses your camera for video calls." }
       ],
-      "expo-notifications"
+      "expo-notifications",
+      "@livekit/react-native-expo-plugin"
     ],
     "extra": {
       "supabaseUrl": "https://jwqvrdgjpftjiwvgdrck.supabase.co",

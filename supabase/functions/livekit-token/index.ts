@@ -18,8 +18,11 @@
 // Deploy:  supabase functions deploy livekit-token
 // Local:   supabase functions serve livekit-token --env-file supabase/.env.local
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { AccessToken } from 'https://esm.sh/livekit-server-sdk@2.9.0';
+// Use Supabase Edge Runtime's native npm specifier — esm.sh's shim of
+// livekit-server-sdk's JWT-signing crypto path can exceed the boot
+// timeout and surfaces as BOOT_ERROR.
+import { createClient } from 'npm:@supabase/supabase-js@2';
+import { AccessToken } from 'npm:livekit-server-sdk@2.9.0';
 import { corsHeaders, json } from '../_shared/cors.ts';
 
 const LIVEKIT_URL = Deno.env.get('LIVEKIT_URL')!;

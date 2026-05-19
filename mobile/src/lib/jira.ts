@@ -53,6 +53,59 @@ export function jiraIssueUrl(host: string, key: string): string {
   return `https://${normHost(host)}/browse/${encodeURIComponent(key)}`;
 }
 
+// Create a new Jira issue via REST API v3. Used by /ai-ticket. Description is
+// converted to ADF (Atlassian Document Format) — required since v3; plain text
+// isn't accepted by /rest/api/3/issue.
+export async function createJiraIssue(
+  s: JiraSettings,
+  projectKey: string,
+  summary: string,
+  description: string,
+  issueType: string = 'Task',
+): Promise<{ key: string; url: string }> {
+  if (!jiraIsConfigured(s)) throw new Error('Jira is not configured.');
+  if (!projectKey) throw new Error('Jira default project key not set in Settings.');
+  const host = normHost(s.host);
+  const adf = {
+    type: 'doc',
+    version: 1,
+    content: description
+      .split(/\n\n+/)
+      .map((para) => ({
+        type: 'paragraph',
+        content: [{ type: 'text', text: para }],
+      })),
+  };
+  const auth = b64(`${s.email}:${s.token}`);
+  const res = await fetch(`https://${host}/rest/api/3/issue`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${auth}`,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      fields: {
+        project: { key: projectKey },
+        summary,
+        description: adf,
+        issuetype: { name: issueType },
+      },
+    }),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    let detail = text;
+    try {
+      const j = JSON.parse(text);
+      detail = j.errorMessages?.join('; ') || Object.values(j.errors || {}).join('; ') || text;
+    } catch {}
+    throw new Error(`Jira create failed (${res.status}): ${detail.slice(0, 300)}`);
+  }
+  const json = JSON.parse(text);
+  return { key: json.key, url: jiraIssueUrl(host, json.key) };
+}
+
 export async function fetchJiraIssue(s: JiraSettings, key: string, hostOverride?: string): Promise<JiraIssue | null> {
   if (!jiraIsConfigured(s)) return null;
   const host = normHost(hostOverride || s.host);

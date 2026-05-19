@@ -11,8 +11,18 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { Stack, router, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import * as Clipboard from 'expo-clipboard';
+import { Pin, Paperclip, Plus } from 'lucide-react-native';
+import { MessageActionSheet } from '@/components/MessageActionSheet';
+import { SlashSuggest } from '@/components/SlashSuggest';
+import { GifPicker } from '@/components/GifPicker';
+import { ComposerMenu } from '@/components/ComposerMenu';
+import { EmojiPanel } from '@/components/EmojiPanel';
+import { runSlash, type SlashCommand } from '@/lib/slash';
+import { getGiphyKey } from '@/lib/integrations';
+import type { GiphyResult } from '@/lib/giphy';
 import { useChannelMessages } from '@/hooks/useChannelMessages';
 import {
   deleteMessage,
@@ -33,8 +43,6 @@ import { Avatar, Markdown } from '@/components/ui';
 import { MessageUnfurls } from '@/components/Unfurl';
 import { colors, radius, space } from '@/theme';
 
-const QUICK = ['👍', '✅', '🎉', '❤️', '😂', '👀'];
-
 export default function ChannelScreen() {
   const { id: channelId, name } = useLocalSearchParams<{ id: string; name?: string }>();
   const { activeTeam, userId } = useAuth();
@@ -44,6 +52,16 @@ export default function ChannelScreen() {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [typingNames, setTypingNames] = useState<string[]>([]);
+  const [sheetMessage, setSheetMessage] = useState<Message | null>(null);
+  const [aiThinking, setAiThinking] = useState(false);
+  const [gifPickerOpen, setGifPickerOpen] = useState(false);
+  const [giphyKey, setGiphyKey] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  // Track TextInput selection so emoji insert lands at the cursor instead
+  // of always appending — matters when the user has typed text and tapped
+  // back into the middle of it.
+  const [selection, setSelection] = useState({ start: 0, end: 0 });
   const listRef = useRef<FlatList<Message>>(null);
   const teamChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const lastTypingSent = useRef(0);
@@ -52,6 +70,10 @@ export default function ChannelScreen() {
   useEffect(() => {
     if (teamId) listTeamProfiles(teamId).then(setRoster).catch(() => {});
   }, [teamId]);
+
+  useEffect(() => {
+    if (userId) getGiphyKey(userId).then(setGiphyKey).catch(() => {});
+  }, [userId]);
 
   // Typing indicator over the team:<id> broadcast topic (same as desktop).
   // The topic is RLS-gated, so the channel must be marked `private`.
@@ -100,6 +122,25 @@ export default function ChannelScreen() {
     if (!body && !attachments.length) return;
     setSending(true);
     try {
+      // Slash commands only fire when there are no attachments — an image
+      // upload that happens to be captioned with "/me" should be a normal
+      // message, not a /me command on the caption. Skip when userId isn't
+      // resolved yet: every dispatch path needs an authenticated author.
+      if (!attachments.length && body.startsWith('/') && userId) {
+        const consumed = await runSlash(body, {
+          teamId,
+          channelId: String(channelId),
+          userId,
+          roster,
+          recentMessages: messages,
+          onAiThinking: setAiThinking,
+          onError: (msg) => Alert.alert('Slash command', msg),
+        });
+        if (consumed) {
+          setText('');
+          return;
+        }
+      }
       await sendMessage({
         teamId,
         channelId: String(channelId),
@@ -114,6 +155,41 @@ export default function ChannelScreen() {
     } finally {
       setSending(false);
     }
+  };
+
+  const onSelectSlash = (cmd: SlashCommand) => setText(`/${cmd.name} `);
+
+  const insertEmoji = (emoji: string) => {
+    const { start, end } = selection;
+    const before = text.slice(0, start);
+    const after = text.slice(end);
+    const next = `${before}${emoji}${after}`;
+    setText(next);
+    const cursor = start + emoji.length;
+    setSelection({ start: cursor, end: cursor });
+  };
+
+  // Posting a Giphy GIF: forward the hosted URL as an `image/gif` attachment.
+  // No upload to Supabase Storage — Giphy hosts the file. The receiver-side
+  // image render (channel/[id].tsx attachment loop) picks it up via the
+  // `type`/`contentType` MIME check we added earlier.
+  const onSelectGif = (gif: GiphyResult) => {
+    setGifPickerOpen(false);
+    sendMessage({
+      teamId,
+      channelId: String(channelId),
+      authorId: userId!,
+      body: '',
+      attachments: [
+        {
+          url: gif.url,
+          name: (gif.title || 'giphy.gif').slice(0, 80),
+          size: gif.size || undefined,
+          type: 'image/gif',
+          contentType: 'image/gif',
+        },
+      ],
+    }).catch((e: any) => Alert.alert('Could not send', e?.message ?? String(e)));
   };
 
   const attachImage = async () => {
@@ -137,16 +213,7 @@ export default function ChannelScreen() {
     }
   };
 
-  const onLongPressMessage = (m: Message) => {
-    const isMine = m.author_id === userId;
-    // Lightweight action sheet via Alert for portability.
-    Alert.alert('Message', undefined, [
-      ...QUICK.map((e) => ({ text: e, onPress: () => toggleReaction(m.id, e, userId!).catch(() => {}) })),
-      { text: m.pinned_at ? 'Unpin' : 'Pin', onPress: () => setPin(m.id, !m.pinned_at).catch(() => {}) },
-      ...(isMine ? [{ text: 'Delete', style: 'destructive' as const, onPress: () => deleteMessage(m.id).catch(() => {}) }] : []),
-      { text: 'Cancel', style: 'cancel' as const },
-    ]);
-  };
+  const onLongPressMessage = (m: Message) => setSheetMessage(m);
 
   const headerTitle = useMemo(() => (name ? String(name) : '#channel'), [name]);
 
@@ -157,11 +224,10 @@ export default function ChannelScreen() {
       <Stack.Screen
         options={{
           title: headerTitle,
-          headerRight: () => (
-            <TouchableOpacity onPress={() => router.push({ pathname: '/(app)/call/[id]', params: { id: String(channelId), name: headerTitle } })}>
-              <Text style={{ color: colors.accent, fontSize: 15 }}>Call</Text>
-            </TouchableOpacity>
-          ),
+          // Call button hidden for v1 — mobile<->mobile calls require a
+          // RN-compatible LiveKit polyfill stack we haven't landed. Edge
+          // function + call/[id].tsx + LiveKit deps remain in place for
+          // future re-enable; just restore the headerRight TouchableOpacity.
         }}
       />
       {loading ? (
@@ -213,14 +279,18 @@ export default function ChannelScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   {!grouped && (
-                    <Text style={{ color: colors.text, fontWeight: '600', marginBottom: 2 }}>
-                      {isAi ? 'AI' : (p?.name ?? 'Unknown')}{'  '}
-                      <Text style={{ color: colors.textDim, fontWeight: '400', fontSize: 11 }}>
-                        {isAi && p ? `via ${p.name} · ` : ''}
-                        {new Date(item.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 2 }}>
+                      <Text style={{ color: colors.text, fontWeight: '600' }}>
+                        {isAi ? 'AI' : (p?.name ?? 'Unknown')}{'  '}
+                        <Text style={{ color: colors.textDim, fontWeight: '400', fontSize: 11 }}>
+                          {isAi && p ? `via ${p.name} · ` : ''}
+                          {new Date(item.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </Text>
                       </Text>
-                      {item.pinned_at ? '  📌' : ''}
-                    </Text>
+                      {item.pinned_at ? (
+                        <Pin size={12} color={colors.textDim} style={{ marginLeft: 6 }} />
+                      ) : null}
+                    </View>
                   )}
                   {!!item.body && (
                     <View>
@@ -229,13 +299,17 @@ export default function ChannelScreen() {
                     </View>
                   )}
                   {!!item.body && <MessageUnfurls body={item.body} viewerId={userId} />}
-                  {(item.attachments ?? []).map((a, i) => (
-                    a.type?.startsWith('image/') ? (
+                  {(item.attachments ?? []).map((a, i) => {
+                    const mime = a.type ?? a.contentType ?? '';
+                    return mime.startsWith('image/') ? (
                       <Image key={i} source={{ uri: a.url }} style={{ width: 220, height: 160, borderRadius: radius.sm, marginTop: space(1.5), backgroundColor: colors.surfaceAlt }} resizeMode="cover" />
                     ) : (
-                      <Text key={i} style={{ color: colors.accent, marginTop: space(1) }}>📎 {a.name}</Text>
-                    )
-                  ))}
+                      <View key={i} style={{ flexDirection: 'row', alignItems: 'center', marginTop: space(1) }}>
+                        <Paperclip size={14} color={colors.accent} style={{ marginRight: 6 }} />
+                        <Text style={{ color: colors.accent }}>{a.name}</Text>
+                      </View>
+                    );
+                  })}
                   {item.reactions && Object.keys(item.reactions).length > 0 && (
                     <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: space(1.5) }}>
                       {Object.entries(item.reactions).map(([emoji, users]) => (
@@ -251,18 +325,26 @@ export default function ChannelScreen() {
           }}
         />
       )}
+      <SlashSuggest text={text} onSelect={onSelectSlash} />
+      {aiThinking && (
+        <Text style={{ color: colors.textDim, fontSize: 12, paddingHorizontal: space(4), paddingBottom: 2 }}>
+          AI is thinking…
+        </Text>
+      )}
       {typingNames.length > 0 && (
         <Text style={{ color: colors.textDim, fontSize: 12, paddingHorizontal: space(4), paddingBottom: 2 }}>
           {typingNames.join(', ')} {typingNames.length === 1 ? 'is' : 'are'} typing…
         </Text>
       )}
       <View style={{ flexDirection: 'row', alignItems: 'flex-end', padding: space(2.5), borderTopWidth: 1, borderTopColor: colors.border, gap: space(2) }}>
-        <TouchableOpacity onPress={attachImage} style={{ paddingBottom: space(2.5) }}>
-          <Text style={{ color: colors.textDim, fontSize: 22 }}>＋</Text>
+        <TouchableOpacity onPress={() => setMenuOpen(true)} style={{ paddingBottom: space(2.5) }} hitSlop={8}>
+          <Plus size={22} color={colors.textDim} />
         </TouchableOpacity>
         <TextInput
           value={text}
           onChangeText={onChangeText}
+          onSelectionChange={(e) => setSelection(e.nativeEvent.selection)}
+          selection={selection}
           placeholder={`Message ${headerTitle}`}
           placeholderTextColor={colors.textDim}
           multiline
@@ -272,6 +354,41 @@ export default function ChannelScreen() {
           <Text style={{ color: colors.accent, fontWeight: '600', fontSize: 15 }}>Send</Text>
         </TouchableOpacity>
       </View>
+      <ComposerMenu
+        visible={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        onPickPhoto={attachImage}
+        onPickGif={() => setGifPickerOpen(true)}
+        onPickEmoji={() => setEmojiOpen(true)}
+      />
+      <GifPicker
+        visible={gifPickerOpen}
+        apiKey={giphyKey}
+        onClose={() => setGifPickerOpen(false)}
+        onSelect={onSelectGif}
+      />
+      <EmojiPanel
+        visible={emojiOpen}
+        onClose={() => setEmojiOpen(false)}
+        onPick={(e) => { insertEmoji(e); setEmojiOpen(false); }}
+      />
+      <MessageActionSheet
+        message={sheetMessage}
+        isMine={sheetMessage?.author_id === userId}
+        onClose={() => setSheetMessage(null)}
+        onReact={(emoji) => {
+          if (sheetMessage) toggleReaction(sheetMessage.id, emoji, userId!).catch(() => {});
+        }}
+        onCopy={() => {
+          if (sheetMessage?.body) Clipboard.setStringAsync(sheetMessage.body).catch(() => {});
+        }}
+        onTogglePin={() => {
+          if (sheetMessage) setPin(sheetMessage.id, !sheetMessage.pinned_at).catch(() => {});
+        }}
+        onDelete={() => {
+          if (sheetMessage) deleteMessage(sheetMessage.id).catch(() => {});
+        }}
+      />
     </KeyboardAvoidingView>
   );
 }

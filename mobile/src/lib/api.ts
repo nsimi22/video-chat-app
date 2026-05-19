@@ -16,7 +16,10 @@ export type Channel = {
   created_by?: string | null;
 };
 export type Profile = { user_id: string; name: string; color: string | null; bio?: string | null; avatar_url?: string | null };
-export type Attachment = { url: string; name: string; size?: number; type?: string };
+// Both `type` and `contentType` carry the MIME — desktop (renderer/chat.js)
+// writes `contentType`, mobile originally wrote `type`. We read either and
+// write both so attachments render bidirectionally.
+export type Attachment = { url: string; name: string; size?: number; type?: string; contentType?: string };
 export type Message = {
   id: string;
   team_id: string;
@@ -141,6 +144,8 @@ export async function sendMessage(args: {
   parentId?: string | null;
   attachments?: Attachment[];
   mentions?: string[];
+  aiGenerated?: boolean;
+  aiModel?: string;
 }): Promise<void> {
   const { error } = await supabase.from('messages').insert({
     team_id: args.teamId,
@@ -151,6 +156,7 @@ export async function sendMessage(args: {
     attachments: args.attachments ?? [],
     mentions: args.mentions ?? [],
     reactions: {},
+    ...(args.aiGenerated ? { ai_generated: true, ai_model: args.aiModel ?? null } : {}),
   });
   if (error) throw error;
 }
@@ -232,7 +238,7 @@ export async function uploadAttachment(userId: string, file: { uri: string; name
   });
   if (error) throw error;
   const { data } = supabase.storage.from('uploads').getPublicUrl(objectPath);
-  return { url: data.publicUrl, name: file.name, size: bytes.byteLength, type: file.mime };
+  return { url: data.publicUrl, name: file.name, size: bytes.byteLength, type: file.mime, contentType: file.mime };
 }
 
 // Client-side @mention extraction, same approach as the desktop renderer:
