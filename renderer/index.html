@@ -12,19 +12,19 @@
     <div id="login" class="modal-backdrop login-backdrop">
       <div class="modal login-modal">
         <div class="login-hero">
-          <!-- Three overlapping circles = huddle. Cyan → iOS-blue
-               gradient defined inline below to keep brand warmth on
-               an otherwise dark login chrome. -->
-          <svg class="login-logo" width="56" height="56" viewBox="0 0 56 56" aria-hidden="true">
-            <defs>
-              <linearGradient id="hud-grad" x1="0" y1="0" x2="56" y2="56" gradientUnits="userSpaceOnUse">
-                <stop offset="0" stop-color="#64d2ff"/>
-                <stop offset="1" stop-color="#0a84ff"/>
-              </linearGradient>
-            </defs>
-            <circle cx="20" cy="22" r="11" fill="url(#hud-grad)" opacity="0.92"/>
-            <circle cx="36" cy="22" r="11" fill="url(#hud-grad)" opacity="0.92"/>
-            <circle cx="28" cy="36" r="11" fill="url(#hud-grad)"/>
+          <!-- Canonical huddle mark: brand-blue dot + three concentric
+               arcs "leaning in". Geometry mirrors the mobile Logo
+               component (mobile/src/components/ui.tsx) so the two
+               clients render the same brand. White arcs on the dark
+               login surface; the .login-logo CSS drop-shadow keeps
+               the blue glow that defined the previous mark. -->
+          <svg class="login-logo" width="56" height="56" viewBox="0 0 200 200" aria-hidden="true">
+            <circle cx="100" cy="120" r="12" fill="var(--brand-blue)"/>
+            <g fill="none" stroke="var(--text)" stroke-width="14" stroke-linecap="round">
+              <path d="M 50 120 A 50 50 0 0 1 150 120"/>
+              <path d="M 30 120 A 70 70 0 0 1 90 51.6"/>
+              <path d="M 110 51.6 A 70 70 0 0 1 170 120"/>
+            </g>
           </svg>
           <h1 class="login-title">Huddle</h1>
           <p class="login-tagline">Team video, screen-share, and chat — in one window.</p>
