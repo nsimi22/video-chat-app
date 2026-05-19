@@ -152,6 +152,7 @@ const els = {
   // single column; ChatView.setChannel still writes to chatChannelName,
   // so we alias it to the same DOM node.
   chatChannelName: $('#channel-name'),
+  chatChannelPrefix: $('#channel-name-prefix'),
   threadBack: $('#chat-thread-back'),
   messages: $('#messages'),
   typing: $('#typing-indicator'),
@@ -2032,7 +2033,7 @@ function onCallPresence({ channelId, count }) {
 function notifyCallStarted(channelId) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   const channel = state.channelMeta.get(channelId);
-  // displayLabelFor gives "# general" / "🔒 secret" / "@ Alice" — the
+  // displayLabelFor gives "# general" / "secret" / "@ Alice" — the
   // same labels the sidebar uses, so DM calls name the person.
   const where = channel ? displayLabelFor(channel) : `#${channelId}`;
   try {
@@ -2145,6 +2146,22 @@ function appendChannelToSidebar(channel, makeActive) {
   if (isChannelMuted(channel.id)) li.classList.add('muted');
   else if (isChannelNotifyAll(channel.id)) li.classList.add('notify-all');
 
+  // Group DMs get a Users SVG before the name; private channels get
+  // a Lock SVG. Matches the lucide Users / Lock icons mobile uses in
+  // its sidebar (mobile/app/(app)/(tabs)/channels.tsx). For 1:1 DMs
+  // and public channels the `@` / `#` textual prefix in
+  // displayLabelFor handles distinction.
+  if (isGroupDm(channel)) {
+    const icon = document.createElement('span');
+    icon.className = 'ch-icon';
+    icon.innerHTML = window.HuddleIcons.users;
+    li.appendChild(icon);
+  } else if (channel.type === 'private') {
+    const icon = document.createElement('span');
+    icon.className = 'ch-icon';
+    icon.innerHTML = window.HuddleIcons.lock;
+    li.appendChild(icon);
+  }
   const label = document.createElement('span');
   label.className = 'ch-name';
   label.textContent = displayLabelFor(channel);
@@ -2194,7 +2211,10 @@ function appendChannelToSidebar(channel, makeActive) {
     del.onclick = async (e) => {
       e.stopPropagation();
       const verb = isDm ? 'Close' : 'Delete';
-      const target = isDm ? `your DM with ${displayLabelFor(channel).replace(/^[@👥]\s*/, '')}` : `#${channel.name}`;
+      // displayLabelFor for DMs returns either "@ Name" (1:1) or
+      // "Name" (group). Strip a leading "@ " so the dialog reads
+      // "your DM with Alice" / "your DM with Alice, Bob".
+      const target = isDm ? `your DM with ${displayLabelFor(channel).replace(/^@\s*/, '')}` : `#${channel.name}`;
       if (!confirm(`${verb} ${target}? This is permanent.`)) return;
       try {
         await state.huddle.deleteChannel(channel.id);
@@ -2219,7 +2239,7 @@ function focusChannel(channelId) {
   const list = channel.type === 'dm' ? els.dms : els.channels;
   const li = list.querySelector(`[data-id="${cssEscape(channel.id)}"]`);
   if (li) li.classList.add('active');
-  state.chat.setChannel(channel.id, channel.topic, displayLabelFor(channel));
+  state.chat.setChannel(channel.id, channel.topic, displayLabelFor(channel), channel.type);
   refreshPinnedCount();
   closePinnedDrawer();
   // Make sure this channel's call presence is being watched (it always
@@ -2390,7 +2410,7 @@ function onChannelUpdated({ channelId, memberIds, members } = {}) {
   const li = els.dms.querySelector(sel) || els.channels.querySelector(sel);
   const lbl = li?.querySelector('.ch-name');
   if (lbl) lbl.textContent = displayLabelFor(ch);
-  state.chat?.setLabel(channelId, displayLabelFor(ch));
+  state.chat?.setLabel(channelId, displayLabelFor(ch), ch.type);
 }
 
 // A "group DM" is a type='dm' channel with a `gdm:<uuid>` id (or, defensively,
@@ -2401,8 +2421,14 @@ function isGroupDm(channel) {
 }
 
 function displayLabelFor(channel) {
-  if (channel.type === 'dm') return `${isGroupDm(channel) ? '👥' : '@'} ${dmLabelFor(channel)}`;
-  if (channel.type === 'private') return `🔒 ${channel.name}`;
+  // Group DMs no longer carry a 👥 prefix and private channels no
+  // longer carry a 🔒 prefix in the text label — the sidebar row
+  // renders a Users / Lock SVG instead (see appendChannelRow's
+  // `.ch-icon` injection). Everything that uses this label in
+  // strings (toast text, dialog confirmations, chat header) gets
+  // cleaner copy as a side effect.
+  if (channel.type === 'dm') return `${isGroupDm(channel) ? '' : '@ '}${dmLabelFor(channel)}`;
+  if (channel.type === 'private') return channel.name;
   return `# ${channel.name}`;
 }
 
