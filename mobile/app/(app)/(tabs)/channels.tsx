@@ -112,7 +112,7 @@ export default function ChannelsScreen() {
               {dm && otherProfile ? (
                 <Avatar name={otherProfile.name} color={otherProfile.color} size={30} uri={otherProfile.avatar_url} />
               ) : (
-                <View style={{ width: 30, alignItems: 'center', justifyContent: 'center' }}>
+                <View style={{ width: 30, height: 30, alignItems: 'center', justifyContent: 'center' }}>
                   {isGroupDm ? (
                     <Users size={18} color={colors.textDim} strokeWidth={2} />
                   ) : item.type === 'private' ? (
