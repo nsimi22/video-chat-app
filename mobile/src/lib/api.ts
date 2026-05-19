@@ -95,6 +95,205 @@ export async function openDm(teamId: string, meId: string, otherId: string, othe
   return ch as Channel;
 }
 
+// Channel-name slugifier — mirrors renderer/api.js slugify(). Lowercases,
+// strips non-`[a-z0-9_-]` to dashes, trims edge dashes, caps at 30 chars,
+// and refuses anything that resolves to a `dm:`-prefixed id.
+export function slugifyChannelName(raw: string): string | null {
+  if (typeof raw !== 'string') return null;
+  const id = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 30);
+  if (id.length < 2) return null;
+  if (id.startsWith('dm:')) return null;
+  return id;
+}
+
+// Public/private channel create. Mirrors renderer/api.js createChannel —
+// idempotent (returns the existing row if the slug is taken in this team),
+// careful not to chain .select() on the insert because the channels_read
+// RLS for private/dm types is gated on is_channel_member, and the
+// on_channel_after_insert trigger that grants membership fires AFTER
+// RETURNING evaluates. For private channels, invited memberUserIds are
+// inserted into channel_members after the channel row lands.
+export async function createChannel(args: {
+  teamId: string;
+  creatorId: string;
+  name: string;
+  topic?: string;
+  isPrivate?: boolean;
+  // Direct uuids on mobile — avoids the renderer's name-lookup round-trip,
+  // since the channel-create UI will have the people picker handing us
+  // ids already.
+  memberUserIds?: string[];
+}): Promise<Channel> {
+  const id = slugifyChannelName(args.name);
+  if (!id) throw new Error('invalid channel name');
+  const { data: existing } = await supabase
+    .from('channels')
+    .select('*')
+    .eq('team_id', args.teamId)
+    .eq('id', id)
+    .maybeSingle();
+  if (existing) return existing as Channel;
+  const type = args.isPrivate ? 'private' : 'public';
+  const { error } = await supabase.from('channels').insert({
+    team_id: args.teamId,
+    id,
+    name: id,
+    topic: args.topic ?? '',
+    type,
+    protected: false,
+    created_by: args.creatorId,
+  });
+  if (error) throw error;
+  if (args.isPrivate && args.memberUserIds?.length) {
+    // Surface batch failures: silently swallowing would leave a private
+    // channel without its invitees, which surfaces as "exists but
+    // invisible" to everyone except the creator.
+    const rows = args.memberUserIds
+      .filter((uid) => uid && uid !== args.creatorId)
+      .map((uid) => ({ team_id: args.teamId, channel_id: id, user_id: uid }));
+    if (rows.length) {
+      const { error: memErr } = await supabase.from('channel_members').insert(rows);
+      if (memErr) throw memErr;
+    }
+  }
+  return {
+    team_id: args.teamId,
+    id,
+    name: id,
+    topic: args.topic ?? '',
+    type,
+    protected: false,
+    created_by: args.creatorId,
+  };
+}
+
+// Group DM create. Mirrors renderer/api.js createGroupDm but assumes the
+// caller hands us uuids directly (no presence cache to consult).
+//
+// Server-side dedup goes through the `join_dm_by_member_sig` SECURITY
+// DEFINER RPC: it takes the canonical sorted-uuid signature, finds an
+// existing gdm with that membership, adds the caller to channel_members
+// in one atomic step, and returns the channel id (or null on miss). That
+// single RPC is what lets channel_members' RLS stay tight — we can't
+// self-insert into a gdm we aren't already a member of from client code.
+//
+// On race (two clicks beat each other to the insert), the (team_id,
+// member_sig) partial unique index throws 23505; we recover by re-calling
+// the RPC against the winner.
+export async function createGroupDm(args: {
+  teamId: string;
+  creatorId: string;
+  otherUserIds: string[];
+  // Optional label override. If omitted, the channel.name is left as
+  // a comma-joined list of the other participants' display names —
+  // caller is expected to pass a resolved name list for the label.
+  otherUserNames?: string[];
+}): Promise<Channel> {
+  const others = [...new Set((args.otherUserIds || []).filter(Boolean))].filter(
+    (id) => id !== args.creatorId,
+  );
+  if (others.length < 2) throw new Error('a group DM needs at least two other people');
+
+  const memberSig = [args.creatorId, ...others].sort().join(',');
+
+  const { data: existingId, error: lookupErr } = await supabase.rpc('join_dm_by_member_sig', {
+    t: args.teamId,
+    sig: memberSig,
+  });
+  if (lookupErr) throw lookupErr;
+  if (existingId) return await openExistingGroupDm(args.teamId, existingId, others);
+
+  // Build a readable label from the optional names list. Cap at 200 so the
+  // channel.name CHECK constraint doesn't trip.
+  const sortedNames = (args.otherUserNames ?? others.map(() => 'someone')).slice().sort((a, b) =>
+    a.localeCompare(b),
+  );
+  const label = sortedNames.join(', ').slice(0, 200) || 'Group';
+
+  const id = 'gdm:' + cryptoRandomUuid();
+  const { error: chErr } = await supabase.from('channels').insert({
+    team_id: args.teamId,
+    id,
+    name: label,
+    topic: '',
+    type: 'dm',
+    protected: false,
+    created_by: args.creatorId,
+    member_sig: memberSig,
+  });
+  if (chErr) {
+    if (chErr.code === '23505') {
+      const { data: conflictId, error: rpcErr } = await supabase.rpc('join_dm_by_member_sig', {
+        t: args.teamId,
+        sig: memberSig,
+      });
+      if (rpcErr) throw rpcErr;
+      if (conflictId) return await openExistingGroupDm(args.teamId, conflictId, others);
+    }
+    throw chErr;
+  }
+
+  // Trigger added us; add the rest. Creator branch of channel_members_
+  // insert_self lets us insert other users' rows. .insert() is atomic so
+  // a single failed row aborts the whole batch — surface that loudly.
+  const rows = others.map((uid) => ({ team_id: args.teamId, channel_id: id, user_id: uid }));
+  const { error: memErr } = await supabase.from('channel_members').insert(rows);
+  if (memErr) throw memErr;
+
+  return {
+    team_id: args.teamId,
+    id,
+    name: label,
+    topic: '',
+    type: 'dm',
+    protected: false,
+    created_by: args.creatorId,
+  };
+}
+
+// Re-open a gdm we found via the dedup RPC. The RPC already added us to
+// channel_members; this just makes sure any intended-but-departed
+// participants are pulled back in (branch 3 of channel_members_insert_self
+// — is_channel_member + type='dm') and returns the channel row.
+async function openExistingGroupDm(
+  teamId: string,
+  channelId: string,
+  otherUserIds: string[],
+): Promise<Channel> {
+  const rows = otherUserIds.map((uid) => ({
+    team_id: teamId,
+    channel_id: channelId,
+    user_id: uid,
+  }));
+  if (rows.length) {
+    const { error: othersErr } = await supabase
+      .from('channel_members')
+      .upsert(rows, { onConflict: 'team_id,channel_id,user_id', ignoreDuplicates: true });
+    if (othersErr) throw othersErr;
+  }
+  const { data, error } = await supabase
+    .from('channels')
+    .select('*')
+    .eq('team_id', teamId)
+    .eq('id', channelId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error('dm vanished between lookup and join');
+  return data as Channel;
+}
+
+// expo-crypto.randomUUID() is sync and matches the renderer's
+// `crypto.randomUUID()` semantics — safer than Date.now()+Math.random()
+// for collision avoidance even at the channel-id scope.
+function cryptoRandomUuid(): string {
+  return Crypto.randomUUID();
+}
+
 export async function listTeamProfiles(teamId: string): Promise<Profile[]> {
   const { data: mem, error } = await supabase.from('team_members').select('user_id').eq('team_id', teamId);
   if (error) throw error;
