@@ -1166,8 +1166,14 @@ class ChatView {
 
     const visible = this._visibleList(all);
     let prev = null;
+    // Compute the @mention name set once per render — _knownNames
+    // iterates the roster + cached messages + presence peers + author
+    // directory, and the result is identical for every message in the
+    // same render pass. Pre-fix this was an O(N²) hot path on the
+    // initial render of a large channel.
+    const mentionNames = this._knownNames();
     for (const m of visible) {
-      const node = this._renderMessage(m, all, prev);
+      const node = this._renderMessage(m, all, prev, mentionNames);
       this.nodeById.set(m.id, node);
       container.appendChild(node);
       prev = m;
@@ -1218,6 +1224,7 @@ class ChatView {
 
   _appendIncremental(m) {
     if (this._isInCurrentView(m)) {
+      // Single message — one _knownNames call is fine, default fallthrough.
       const node = this._renderMessage(m, this._messages(), this._lastRendered);
       this.nodeById.set(m.id, node);
       this.els.messages.appendChild(node);
@@ -1239,10 +1246,14 @@ class ChatView {
     if (id && this.nodeById.has(id)) this._replaceNodeById(id);
   }
   refreshAllMessages() {
-    for (const id of [...this.nodeById.keys()]) this._replaceNodeById(id);
+    // Profile renames / save-cache updates rebuild every visible row.
+    // Same O(N²) trap as the initial render; pre-compute once and pass
+    // the cached mention names through.
+    const mentionNames = this._knownNames();
+    for (const id of [...this.nodeById.keys()]) this._replaceNodeById(id, mentionNames);
   }
 
-  _replaceNodeById(id) {
+  _replaceNodeById(id, mentionNames) {
     const old = this.nodeById.get(id);
     if (!old) return;
     const all = this._messages();
@@ -1254,7 +1265,7 @@ class ChatView {
     const visible = this._visibleList(all);
     const idx = visible.findIndex((x) => x.id === id);
     const prev = idx > 0 ? visible[idx - 1] : null;
-    const fresh = this._renderMessage(target, all, prev);
+    const fresh = this._renderMessage(target, all, prev, mentionNames);
     this.nodeById.set(id, fresh);
     old.replaceWith(fresh);
   }
@@ -1282,7 +1293,7 @@ class ChatView {
     return [...set];
   }
 
-  _renderMessage(m, all, prev) {
+  _renderMessage(m, all, prev, mentionNames) {
     const wrap = document.createElement('div');
     wrap.className = 'msg';
     wrap.dataset.messageId = m.id;
@@ -1388,7 +1399,11 @@ class ChatView {
       body = document.createElement('div');
       body.className = 'msg-body';
       body.innerHTML = window.renderMarkdown(m.text || '', {
-        mentionNames: this._knownNames(),
+        // The hot-loop callers (_render, refreshAllMessages) pre-compute
+        // this once per pass and pass it through. Single-shot callers
+        // (_appendIncremental, refreshMessageById → _replaceNodeById)
+        // pass undefined and we fall back to one fresh call here.
+        mentionNames: mentionNames || this._knownNames(),
         myName,
       });
     }
