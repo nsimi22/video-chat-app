@@ -66,13 +66,24 @@ export async function listChannels(teamId: string): Promise<Channel[]> {
 export async function openDm(teamId: string, meId: string, otherId: string, otherName?: string): Promise<Channel> {
   if (meId === otherId) throw new Error("can't DM yourself");
   const id = 'dm:' + (meId < otherId ? `${meId}::${otherId}` : `${otherId}::${meId}`);
+
+  // Plain `.insert()` rather than `.upsert(..., { ignoreDuplicates: true })`.
+  // The upsert variant failed `channels_insert` RLS (42501) on React
+  // Native even when the server confirmed auth.uid() === meId,
+  // role='authenticated', and is_team_member(team_id)=true (verified via
+  // a temporary whoami() RPC). Plain insert with the same body succeeds.
+  // The desktop renderer still uses upsert and works under Electron's
+  // fetch; the discrepancy looks like an RN-fetch quirk with
+  // `Prefer: resolution=ignore-duplicates`. We tolerate 23505 below for
+  // the "DM row already exists (created by the other side)" case, which
+  // is exactly the no-op the upsert was achieving.
   const { error: chErr } = await supabase
     .from('channels')
-    .upsert(
-      { team_id: teamId, id, name: otherName ?? 'Direct message', topic: '', type: 'dm', protected: false, created_by: meId },
-      { onConflict: 'team_id,id', ignoreDuplicates: true },
-    );
-  if (chErr && chErr.code !== '23505') throw chErr;
+    .insert({ team_id: teamId, id, name: otherName ?? 'Direct message', topic: '', type: 'dm', protected: false, created_by: meId });
+  if (chErr && chErr.code !== '23505') {
+    console.warn('openDm channels.insert failed', { teamId, meId, otherId, id, code: chErr.code, message: chErr.message, details: chErr.details, hint: chErr.hint });
+    throw new Error(`${chErr.message}${chErr.code ? ` [${chErr.code}]` : ''}${chErr.hint ? ` — ${chErr.hint}` : ''}`);
+  }
   const { error: meErr } = await supabase
     .from('channel_members')
     .upsert(
