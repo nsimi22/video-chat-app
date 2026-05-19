@@ -78,8 +78,10 @@ export function Button({
 
 // Brand mark — blue dot with three concentric arcs above it. Geometry is a
 // direct port of mobile/assets/brand/huddle-mark.svg (viewBox 0 0 200 200).
-// `mono` renders dot + arcs in a single color (defaults to text); the default
-// is the canonical full-color brand (blue dot on navy arcs).
+// `mono` renders dot + arcs in a single color (defaults to text); the
+// default is the on-dark brand treatment: brand-blue dot accent with
+// white arcs, since the mobile app is uniformly dark and the canonical
+// navy arcs are invisible against `colors.bg`.
 import Svg, { Circle, Path } from 'react-native-svg';
 
 export function Logo({ size = 56, mono, color }: { size?: number; mono?: boolean; color?: string }) {
@@ -87,9 +89,9 @@ export function Logo({ size = 56, mono, color }: { size?: number; mono?: boolean
   return (
     <Svg width={size} height={size} viewBox="0 0 200 200">
       <Circle cx={100} cy={120} r={12} fill={tint ?? colors.brandBlue} />
-      <Path d="M 50 120 A 50 50 0 0 1 150 120" fill="none" stroke={tint ?? colors.brandNavy} strokeWidth={14} strokeLinecap="round" />
-      <Path d="M 30 120 A 70 70 0 0 1 90 51.6" fill="none" stroke={tint ?? colors.brandNavy} strokeWidth={14} strokeLinecap="round" />
-      <Path d="M 110 51.6 A 70 70 0 0 1 170 120" fill="none" stroke={tint ?? colors.brandNavy} strokeWidth={14} strokeLinecap="round" />
+      <Path d="M 50 120 A 50 50 0 0 1 150 120" fill="none" stroke={tint ?? colors.text} strokeWidth={14} strokeLinecap="round" />
+      <Path d="M 30 120 A 70 70 0 0 1 90 51.6" fill="none" stroke={tint ?? colors.text} strokeWidth={14} strokeLinecap="round" />
+      <Path d="M 110 51.6 A 70 70 0 0 1 170 120" fill="none" stroke={tint ?? colors.text} strokeWidth={14} strokeLinecap="round" />
     </Svg>
   );
 }
