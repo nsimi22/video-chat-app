@@ -10,6 +10,7 @@ import {
   VideoTrack,
   useTracks,
   useLocalParticipant,
+  useParticipants,
   isTrackReference,
 } from '@livekit/react-native';
 import { Track } from 'livekit-client';
@@ -89,6 +90,7 @@ function CallView({ title }: { title: string }) {
     { onlySubscribed: false },
   );
   const { localParticipant } = useLocalParticipant();
+  const participants = useParticipants();
   const [mic, setMic] = useState(true);
   const [cam, setCam] = useState(true);
 
@@ -135,7 +137,7 @@ function CallView({ title }: { title: string }) {
           {title}
         </Text>
         <Text style={{ color: colors.textDim, fontSize: 12, marginTop: 2 }}>
-          {tracks.length} {tracks.length === 1 ? 'participant' : 'participants'}
+          {participants.length} {participants.length === 1 ? 'participant' : 'participants'}
         </Text>
       </View>
 
