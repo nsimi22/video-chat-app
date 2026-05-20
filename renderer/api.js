@@ -567,16 +567,14 @@
       // no-op.
       this._lastMessageTs = new Date().toISOString();
       this._firstDbSubscribe = true;
+      const onMessageRow = (eventName) => (p) => {
+        if (p.new.ts && p.new.ts > this._lastMessageTs) this._lastMessageTs = p.new.ts;
+        this.dispatchEvent(new CustomEvent(eventName, { detail: { message: this._marshalMessage(p.new) } }));
+      };
       ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: teamFilter },
-        (p) => {
-          if (p.new.ts && p.new.ts > this._lastMessageTs) this._lastMessageTs = p.new.ts;
-          this.dispatchEvent(new CustomEvent('chat-message', { detail: { message: this._marshalMessage(p.new) } }));
-        });
+        onMessageRow('chat-message'));
       ch.on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: teamFilter },
-        (p) => {
-          if (p.new.ts && p.new.ts > this._lastMessageTs) this._lastMessageTs = p.new.ts;
-          this.dispatchEvent(new CustomEvent('chat-update', { detail: { message: this._marshalMessage(p.new) } }));
-        });
+        onMessageRow('chat-update'));
       ch.on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages', filter: teamFilter },
         (p) => this.dispatchEvent(new CustomEvent('chat-message-deleted', { detail: { channelId: p.old.channel_id, messageId: p.old.id } })));
       ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'channels', filter: teamFilter },
@@ -675,20 +673,30 @@
     // failure mode is "I sent a message and the other side didn't see
     // it", and INSERTs are exactly what this handles.
     async _catchUpMessages() {
-      const since = this._lastMessageTs;
-      if (!since) return;
-      const { data, error } = await this.supabase
-        .from('messages')
-        .select('*')
-        .eq('team_id', this.team.id)
-        .gt('ts', since)
-        .order('ts', { ascending: true })
-        .limit(500);
-      if (error) { console.warn('chat catch-up query failed', error); return; }
-      if (!data || data.length === 0) return;
-      for (const row of data) {
-        if (row.ts > this._lastMessageTs) this._lastMessageTs = row.ts;
-        this.dispatchEvent(new CustomEvent('chat-message', { detail: { message: this._marshalMessage(row) } }));
+      if (!this._lastMessageTs) return;
+      // Page through in batches until a short batch tells us we're caught
+      // up. Without this loop, anyone returning after a long absence
+      // (>500 missed messages) would silently lose everything past the
+      // first batch — a permanent gap, because loadOlder only looks
+      // backwards from the start of the in-memory window.
+      const BATCH = 500;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const since = this._lastMessageTs;
+        const { data, error } = await this.supabase
+          .from('messages')
+          .select('*')
+          .eq('team_id', this.team.id)
+          .gt('ts', since)
+          .order('ts', { ascending: true })
+          .limit(BATCH);
+        if (error) { console.warn('chat catch-up query failed', error); return; }
+        if (!data || data.length === 0) return;
+        for (const row of data) {
+          if (row.ts > this._lastMessageTs) this._lastMessageTs = row.ts;
+          this.dispatchEvent(new CustomEvent('chat-message', { detail: { message: this._marshalMessage(row) } }));
+        }
+        if (data.length < BATCH) return;
       }
     }
 
