@@ -146,9 +146,16 @@ function parseRrule(s: string): ParsedRrule | null {
         // RFC 5545 §3.3.10: a date-only UNTIL is inclusive of that whole
         // day. parseDate yields local midnight; bump to last ms of the
         // day so a 10:00 AM occurrence on that date isn't excluded.
-        out.until = p.allDay
-          ? new Date(p.date.getTime() + 24 * 60 * 60 * 1000 - 1)
-          : p.date;
+        // Use setDate to add a day rather than a fixed 24h offset — DST
+        // transitions make days 23 or 25 hours long and the arithmetic
+        // version cuts off / over-includes occurrences on those nights.
+        if (p.allDay) {
+          const next = new Date(p.date);
+          next.setDate(next.getDate() + 1);
+          out.until = new Date(next.getTime() - 1);
+        } else {
+          out.until = p.date;
+        }
       }
     } else if (k === 'BYDAY') {
       const days = v.split(',').map(parseDayCode).filter((d): d is number => d !== null);
@@ -235,7 +242,11 @@ function expandSeries(event: IcsEvent, horizonDate: Date | null): IcsEvent[] {
     yielded++;
     emitted++;
   }
-  return out.length ? out : [event];
+  // When EXDATE excludes every occurrence (or COUNT=0 paths slip through),
+  // return an empty array — re-emitting the bare event would violate
+  // RFC 5545 §3.8.5.1. The "rule failed to parse" fallback is handled
+  // upstream by the early `return [event]` when parseRrule returns null.
+  return out;
 }
 
 function* generateOccurrences(
@@ -282,7 +293,12 @@ function* generateOccurrences(
   }
 
   if (rule.freq === 'MONTHLY') {
-    const bymonthday = rule.bymonthday?.length ? rule.bymonthday : [start.getDate()];
+    // Sort ascending so BYMONTHDAY=31,1 yields 1st before 31st within a
+    // month — order matters for COUNT and for the calendar list which
+    // assumes chronological iteration.
+    const bymonthday = rule.bymonthday?.length
+      ? [...rule.bymonthday].sort((a, b) => a - b)
+      : [start.getDate()];
     // Start at i=0 so multi-day rules (BYMONTHDAY=1,15 with DTSTART on the
     // 1st) still emit the 15th of the first month. The "occ <= start" skip
     // below removes DTSTART itself, which we already yielded at the top.
