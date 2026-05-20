@@ -180,6 +180,10 @@
       // Channel maps store readiness promises — resolve them and await
       // the unsubscribes before clearing the maps so the page isn't
       // unloaded mid-handshake (which leaks subscriptions server-side).
+      if (this._onVisibilityChange && typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', this._onVisibilityChange);
+        this._onVisibilityChange = null;
+      }
       const direct = [this._teamChannel, this._dbChannel, this._callChannel];
       // Screen + whiteboard maps still store raw promise<RealtimeChannel>;
       // _lurkers values are now {channel, ready} pairs.
@@ -554,10 +558,23 @@
       const ch = this.supabase.channel(`db:team:${this.team.id}`);
       this._dbChannel = ch;
       const teamFilter = `team_id=eq.${this.team.id}`;
+      // Supabase postgres_changes is at-most-once: any INSERT/UPDATE that
+      // fires while the websocket is reconnecting (laptop sleep, network
+      // switch, server-side rebalance) is silently dropped. Track the
+      // newest ts we've forwarded; on every re-SUBSCRIBED *and* on window
+      // visibility regain, fetch anything newer and re-emit it. chat.js
+      // already dedupes by id, so an overlap with live realtime is a
+      // no-op.
+      this._lastMessageTs = new Date().toISOString();
+      this._firstDbSubscribe = true;
+      const onMessageRow = (eventName) => (p) => {
+        if (p.new.ts && p.new.ts > this._lastMessageTs) this._lastMessageTs = p.new.ts;
+        this.dispatchEvent(new CustomEvent(eventName, { detail: { message: this._marshalMessage(p.new) } }));
+      };
       ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: teamFilter },
-        (p) => this.dispatchEvent(new CustomEvent('chat-message', { detail: { message: this._marshalMessage(p.new) } })));
+        onMessageRow('chat-message'));
       ch.on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: teamFilter },
-        (p) => this.dispatchEvent(new CustomEvent('chat-update', { detail: { message: this._marshalMessage(p.new) } })));
+        onMessageRow('chat-update'));
       ch.on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages', filter: teamFilter },
         (p) => this.dispatchEvent(new CustomEvent('chat-message-deleted', { detail: { channelId: p.old.channel_id, messageId: p.old.id } })));
       ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'channels', filter: teamFilter },
@@ -614,10 +631,84 @@
         (p) => this.dispatchEvent(new CustomEvent('saved-message-removed', { detail: { messageId: p.old.message_id } })));
       await new Promise((resolve, reject) => {
         ch.subscribe((status, err) => {
-          if (status === 'SUBSCRIBED') resolve();
-          else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') reject(err || new Error('db channel ' + status));
+          if (status === 'SUBSCRIBED') {
+            if (this._firstDbSubscribe) {
+              this._firstDbSubscribe = false;
+              resolve();
+            } else {
+              // Reconnect after a transient drop — fill any gap.
+              this._catchUpMessages().catch((e) => console.warn('chat catch-up failed', e));
+            }
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            if (this._firstDbSubscribe) reject(err || new Error('db channel ' + status));
+            // Post-boot drops aren't fatal — Realtime auto-reconnects and
+            // the next SUBSCRIBED triggers catch-up above.
+          }
         });
       });
+
+      // Belt-and-suspenders: when the window has been backgrounded and
+      // returns to the foreground, the WS sometimes auto-reconnects
+      // silently *before* our SUBSCRIBED handler observes it. Run
+      // catch-up on visibility regain too.
+      this._onVisibilityChange = () => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+          this._catchUpMessages().catch((e) => console.warn('chat catch-up failed', e));
+        }
+      };
+      if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', this._onVisibilityChange);
+      }
+    }
+
+    // Pull any messages newer than the last one we've forwarded and
+    // re-emit them as chat-message events. The chat.js mesh handler
+    // dedupes by message id (see `arr.some((x) => x.id === m.id)`), so
+    // rows already in the in-memory list are skipped — only true
+    // gap-fills make it through to the DOM.
+    //
+    // Edits to old messages and DELETEs that happened during the gap
+    // can't be recovered from a `ts > x` query; that's accepted (the
+    // user can still hard-reload to fully reconcile). The dominant
+    // failure mode is "I sent a message and the other side didn't see
+    // it", and INSERTs are exactly what this handles.
+    async _catchUpMessages() {
+      if (!this._lastMessageTs) return;
+      // Re-SUBSCRIBED and visibilitychange can both fire on the same
+      // foreground-return, and the dispatchEvent path is synchronous,
+      // so without a guard we'd issue two parallel batch loops walking
+      // the same window. chat.js dedupes by id (no double renders),
+      // but we'd still be paying for duplicate round-trips.
+      if (this._catchUpInFlight) return;
+      this._catchUpInFlight = true;
+      try {
+        // Page through in batches until a short batch tells us we're
+        // caught up. Without this loop, anyone returning after a long
+        // absence (>500 missed messages) would silently lose everything
+        // past the first batch — a permanent gap, because loadOlder
+        // only looks backwards from the start of the in-memory window.
+        const BATCH = 500;
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const since = this._lastMessageTs;
+          const { data, error } = await this.supabase
+            .from('messages')
+            .select('*')
+            .eq('team_id', this.team.id)
+            .gt('ts', since)
+            .order('ts', { ascending: true })
+            .limit(BATCH);
+          if (error) { console.warn('chat catch-up query failed', error); return; }
+          if (!data || data.length === 0) return;
+          for (const row of data) {
+            if (row.ts > this._lastMessageTs) this._lastMessageTs = row.ts;
+            this.dispatchEvent(new CustomEvent('chat-message', { detail: { message: this._marshalMessage(row) } }));
+          }
+          if (data.length < BATCH) return;
+        }
+      } finally {
+        this._catchUpInFlight = false;
+      }
     }
 
     async _loadInitialChannels() {
