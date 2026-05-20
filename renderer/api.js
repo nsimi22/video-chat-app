@@ -674,29 +674,40 @@
     // it", and INSERTs are exactly what this handles.
     async _catchUpMessages() {
       if (!this._lastMessageTs) return;
-      // Page through in batches until a short batch tells us we're caught
-      // up. Without this loop, anyone returning after a long absence
-      // (>500 missed messages) would silently lose everything past the
-      // first batch — a permanent gap, because loadOlder only looks
-      // backwards from the start of the in-memory window.
-      const BATCH = 500;
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const since = this._lastMessageTs;
-        const { data, error } = await this.supabase
-          .from('messages')
-          .select('*')
-          .eq('team_id', this.team.id)
-          .gt('ts', since)
-          .order('ts', { ascending: true })
-          .limit(BATCH);
-        if (error) { console.warn('chat catch-up query failed', error); return; }
-        if (!data || data.length === 0) return;
-        for (const row of data) {
-          if (row.ts > this._lastMessageTs) this._lastMessageTs = row.ts;
-          this.dispatchEvent(new CustomEvent('chat-message', { detail: { message: this._marshalMessage(row) } }));
+      // Re-SUBSCRIBED and visibilitychange can both fire on the same
+      // foreground-return, and the dispatchEvent path is synchronous,
+      // so without a guard we'd issue two parallel batch loops walking
+      // the same window. chat.js dedupes by id (no double renders),
+      // but we'd still be paying for duplicate round-trips.
+      if (this._catchUpInFlight) return;
+      this._catchUpInFlight = true;
+      try {
+        // Page through in batches until a short batch tells us we're
+        // caught up. Without this loop, anyone returning after a long
+        // absence (>500 missed messages) would silently lose everything
+        // past the first batch — a permanent gap, because loadOlder
+        // only looks backwards from the start of the in-memory window.
+        const BATCH = 500;
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const since = this._lastMessageTs;
+          const { data, error } = await this.supabase
+            .from('messages')
+            .select('*')
+            .eq('team_id', this.team.id)
+            .gt('ts', since)
+            .order('ts', { ascending: true })
+            .limit(BATCH);
+          if (error) { console.warn('chat catch-up query failed', error); return; }
+          if (!data || data.length === 0) return;
+          for (const row of data) {
+            if (row.ts > this._lastMessageTs) this._lastMessageTs = row.ts;
+            this.dispatchEvent(new CustomEvent('chat-message', { detail: { message: this._marshalMessage(row) } }));
+          }
+          if (data.length < BATCH) return;
         }
-        if (data.length < BATCH) return;
+      } finally {
+        this._catchUpInFlight = false;
       }
     }
 
