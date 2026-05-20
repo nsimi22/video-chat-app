@@ -64,10 +64,16 @@ export default function ChannelScreen() {
   // of always appending — matters when the user has typed text and tapped
   // back into the middle of it.
   const [selection, setSelection] = useState({ start: 0, end: 0 });
-  const listRef = useRef<FlatList<Message>>(null);
   const teamChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const lastTypingSent = useRef(0);
-  const lastTailId = useRef<string | null>(null);
+
+  // Render newest-first so the visible bottom is the latest message. This
+  // is the standard chat-list pattern (Slack/Discord/iMessage all do this)
+  // and removes the scrollToEnd-on-mount race that fought Fabric layout
+  // timing on iOS 26 / RN 0.81. With `inverted`, FlatList anchors data[0]
+  // at the visual bottom, so reversing the ascending `messages` puts the
+  // newest message there for free — no programmatic scroll needed.
+  const reversed = useMemo(() => [...messages].reverse(), [messages]);
 
   useEffect(() => {
     if (teamId) listTeamProfiles(teamId).then(setRoster).catch(() => {});
@@ -290,28 +296,14 @@ export default function ChannelScreen() {
         </View>
       ) : (
         <FlatList
-          ref={listRef}
-          data={messages}
+          data={reversed}
+          inverted
           keyExtractor={(m) => m.id}
           contentContainerStyle={{ paddingVertical: space(3) }}
-          onContentSizeChange={() => {
-            // Stick to the bottom on initial load and when a new message
-            // arrives at the tail — but NOT when older messages are prepended
-            // (that doesn't change the last id), so "Load earlier" doesn't yank.
-            const tail = messages[messages.length - 1]?.id ?? null;
-            if (tail !== lastTailId.current) {
-              lastTailId.current = tail;
-              // Defer one frame so iOS finishes the layout pass before we
-              // scroll — on RN 0.81 / iOS 26 a synchronous scrollToEnd
-              // inside onContentSizeChange lands at the top of the list
-              // because contentSize was just measured but the layout
-              // pass hasn't applied yet.
-              requestAnimationFrame(() => {
-                listRef.current?.scrollToEnd({ animated: false });
-              });
-            }
-          }}
-          ListHeaderComponent={
+          // ListFooterComponent renders at the visual top under `inverted`,
+          // so the "Load earlier" pill sits above the oldest message — same
+          // mental model as before, just wired through the inverted axis.
+          ListFooterComponent={
             hasMore ? (
               <TouchableOpacity onPress={loadOlder} style={{ padding: space(3), alignItems: 'center' }}>
                 <Text style={{ color: colors.textDim }}>Load earlier messages</Text>
@@ -319,7 +311,9 @@ export default function ChannelScreen() {
             ) : null
           }
           renderItem={({ item, index }) => {
-            const prev = messages[index - 1];
+            // `reversed` is newest-first, so the visually-above neighbour
+            // (the older message in time) lives at index + 1, not - 1.
+            const prev = reversed[index + 1];
             // AI messages never group — they should always show the robot
             // avatar + "AI · via <user>" header so it's clear which lines are
             // model output (vs the human's own messages, even when they share
