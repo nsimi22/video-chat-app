@@ -298,6 +298,13 @@ export default function ChannelScreen() {
         <FlatList
           data={reversed}
           inverted
+          // renderItem closes over `roster` (author name + avatar lookup),
+          // which loads asynchronously after the first paint. Without
+          // extraData FlatList's virtualised cells reuse their cached
+          // render and authors stay "Unknown" until something else
+          // forces a re-render. userId is set once via auth before the
+          // screen mounts, so it doesn't need to be in the dep tuple.
+          extraData={roster}
           keyExtractor={(m) => m.id}
           contentContainerStyle={{ paddingVertical: space(3) }}
           // ListFooterComponent renders at the visual top under `inverted`,
