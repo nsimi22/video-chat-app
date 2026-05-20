@@ -251,6 +251,8 @@ export default function ChannelScreen() {
   const screenOptions = useMemo(
     () => ({
       title: headerTitle,
+      headerBackButtonDisplayMode: 'minimal' as const,
+      headerBackTitle: '',
       headerRight: () => (
         <TouchableOpacity
           // navigate (not push) so a quick double-tap can't stack two call

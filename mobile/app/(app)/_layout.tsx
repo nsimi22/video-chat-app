@@ -25,6 +25,13 @@ export default function AppLayout() {
         headerStyle: { backgroundColor: colors.surface },
         headerTintColor: colors.text,
         contentStyle: { backgroundColor: colors.bg },
+        // expo-router 6 / React Navigation 7 surfaces the parent route's
+        // name as the back-button label; without this, pushing from
+        // (tabs) shows the literal string "(tabs)" next to the chevron.
+        // `minimal` is the RN-Nav-7 idiomatic way (forces chevron-only);
+        // headerBackTitle:'' alone wasn't enough on iOS 26.
+        headerBackButtonDisplayMode: 'minimal',
+        headerBackTitle: '',
       }}
     >
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
