@@ -444,7 +444,7 @@ export async function uploadAttachment(userId: string, file: { uri: string; name
   const safeName = file.name.replace(/[^\w.\-]+/g, '_') || 'file';
   const objectPath = `${userId}/${Crypto.randomUUID()}/${safeName}`;
   const info = await FileSystem.getInfoAsync(file.uri);
-  if (info.exists && typeof info.size === 'number' && info.size > UPLOAD_MAX_BYTES) {
+  if (info.exists && info.size > UPLOAD_MAX_BYTES) {
     throw new Error(`File too large (${(info.size / 1024 / 1024).toFixed(1)} MB; max 25 MB)`);
   }
   const b64 = await FileSystem.readAsStringAsync(file.uri, { encoding: FileSystem.EncodingType.Base64 });
