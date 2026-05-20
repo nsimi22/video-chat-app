@@ -293,9 +293,15 @@ function EventBlock({ block, onPress }: { block: Block; onPress: (id: string) =>
           {block.title}
         </Text>
       </View>
-      <Text style={{ fontSize: 11, fontWeight: '500', color: block.color, opacity: 0.9 }}>
-        {fmtTime(startDate)} – {fmtTime(endDate)}
-      </Text>
+      {/* Hide the time row when the tile isn't tall enough to fit both
+          the title and the time without clipping (≤ 30-min events
+          render at the floor of 28px, which only fits the title).
+          The week scale also surfaces it via the timeline gridline. */}
+      {height >= 44 && (
+        <Text style={{ fontSize: 11, fontWeight: '500', color: block.color, opacity: 0.9 }}>
+          {fmtTime(startDate)} – {fmtTime(endDate)}
+        </Text>
+      )}
     </TouchableOpacity>
   );
 }

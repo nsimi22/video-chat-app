@@ -37,18 +37,25 @@ export default function ChannelsScreen() {
   const [newChannelOpen, setNewChannelOpen] = useState(false);
   const [newDmOpen, setNewDmOpen] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async ({ pull = false }: { pull?: boolean } = {}) => {
     if (!activeTeam) return;
-    setRefreshing(true);
+    // Only flip the RefreshControl when the user actually pulled. On the
+    // initial focus load we render the spinner instead; otherwise iOS 26
+    // can leave the contentInset stuck in the pulled-down position even
+    // after refreshing goes false (visible as a ~80px empty band at the
+    // top of every tab until the user manually pulls again).
+    if (pull) setRefreshing(true);
     try {
       const [ch, pr] = await Promise.all([listChannels(activeTeam.id), listTeamProfiles(activeTeam.id)]);
       setChannels(ch);
       setProfiles(pr);
     } finally {
       setLoading(false);
-      setRefreshing(false);
+      if (pull) setRefreshing(false);
     }
   }, [activeTeam]);
+
+  const onPullRefresh = useCallback(() => { load({ pull: true }); }, [load]);
 
   // useFocusEffect fires on first focus too, so it doubles as the initial
   // load — no separate useEffect needed.
@@ -106,7 +113,7 @@ export default function ChannelsScreen() {
       <SectionList
         sections={sections}
         keyExtractor={(c) => `${c.team_id}/${c.id}`}
-        refreshControl={<RefreshControl tintColor={colors.accent} refreshing={refreshing} onRefresh={load} />}
+        refreshControl={<RefreshControl tintColor={colors.accent} refreshing={refreshing} onRefresh={onPullRefresh} />}
         stickySectionHeadersEnabled={false}
         renderSectionHeader={({ section }) => {
           // Mirror desktop's section-header-row: title + ghost "+" button.
