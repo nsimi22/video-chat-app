@@ -14,7 +14,14 @@ export default function AppLayout() {
   }, [loading, session, activeTeam]);
 
   useEffect(() => {
-    if (userId) registerForPush(userId).catch(() => {});
+    if (!userId) return;
+    // Surface failures to the console — push registration is the most
+    // common silent failure mode (permission gate, missing projectId,
+    // device_tokens RLS, expired Expo project). Logging here is the
+    // first place a "push doesn't work" report lands.
+    registerForPush(userId).catch((err) => {
+      console.error('[push] registerForPush failed at app layout:', err);
+    });
   }, [userId]);
 
   // The (tabs) group is the bottom-tab shell; chat and call screens push
@@ -25,6 +32,13 @@ export default function AppLayout() {
         headerStyle: { backgroundColor: colors.surface },
         headerTintColor: colors.text,
         contentStyle: { backgroundColor: colors.bg },
+        // expo-router 6 / React Navigation 7 surfaces the parent route's
+        // name as the back-button label; without this, pushing from
+        // (tabs) shows the literal string "(tabs)" next to the chevron.
+        // `minimal` is the RN-Nav-7 idiomatic way (forces chevron-only);
+        // headerBackTitle:'' alone wasn't enough on iOS 26.
+        headerBackButtonDisplayMode: 'minimal',
+        headerBackTitle: '',
       }}
     >
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

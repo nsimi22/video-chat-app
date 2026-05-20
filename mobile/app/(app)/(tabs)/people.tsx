@@ -15,9 +15,11 @@ export default function PeopleScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async ({ pull = false }: { pull?: boolean } = {}) => {
     if (!activeTeam) return;
-    setRefreshing(true);
+    // Only flip the RefreshControl when the user actually pulled — same
+    // iOS 26 stuck-pulled-down workaround as channels.tsx.
+    if (pull) setRefreshing(true);
     try {
       const pr = await listTeamProfiles(activeTeam.id);
       setProfiles(pr);
@@ -29,9 +31,11 @@ export default function PeopleScreen() {
       Alert.alert('Could not load team', e?.message ?? String(e));
     } finally {
       setLoading(false);
-      setRefreshing(false);
+      if (pull) setRefreshing(false);
     }
   }, [activeTeam]);
+
+  const onPullRefresh = useCallback(() => { load({ pull: true }); }, [load]);
 
   // useFocusEffect fires on first focus too, so it doubles as the initial load.
   useFocusEffect(useCallback(() => { load(); }, [load]));
@@ -51,7 +55,7 @@ export default function PeopleScreen() {
       style={{ flex: 1, backgroundColor: colors.bg }}
       data={others}
       keyExtractor={(p) => p.user_id}
-      refreshControl={<RefreshControl tintColor={colors.accent} refreshing={refreshing} onRefresh={load} />}
+      refreshControl={<RefreshControl tintColor={colors.accent} refreshing={refreshing} onRefresh={onPullRefresh} />}
       ListEmptyComponent={
         <View style={{ padding: space(6), alignItems: 'center' }}>
           <Text style={{ color: colors.textDim, fontSize: 14 }}>You're the only one on this team so far.</Text>

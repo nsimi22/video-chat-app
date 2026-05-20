@@ -1,5 +1,9 @@
 import * as Crypto from 'expo-crypto';
-import * as FileSystem from 'expo-file-system';
+// SDK 54 split expo-file-system into a new File/Directory API. The
+// `/legacy` export keeps `EncodingType` and async helpers; size is now
+// always returned by `getInfoAsync` so the old `{ size: true }` option
+// is gone. Migrating to the new API is a separate follow-up.
+import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from './supabase';
 
 // Thin data layer mirroring the relevant parts of renderer/api.js (HuddleClient).
@@ -439,8 +443,8 @@ const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 export async function uploadAttachment(userId: string, file: { uri: string; name: string; mime: string }): Promise<Attachment> {
   const safeName = file.name.replace(/[^\w.\-]+/g, '_') || 'file';
   const objectPath = `${userId}/${Crypto.randomUUID()}/${safeName}`;
-  const info = await FileSystem.getInfoAsync(file.uri, { size: true });
-  if (info.exists && typeof info.size === 'number' && info.size > UPLOAD_MAX_BYTES) {
+  const info = await FileSystem.getInfoAsync(file.uri);
+  if (info.exists && info.size > UPLOAD_MAX_BYTES) {
     throw new Error(`File too large (${(info.size / 1024 / 1024).toFixed(1)} MB; max 25 MB)`);
   }
   const b64 = await FileSystem.readAsStringAsync(file.uri, { encoding: FileSystem.EncodingType.Base64 });

@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
+import { useHeaderHeight } from '@react-navigation/elements';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
 import { Pin, Paperclip, Phone, Plus } from 'lucide-react-native';
@@ -251,6 +252,8 @@ export default function ChannelScreen() {
   const screenOptions = useMemo(
     () => ({
       title: headerTitle,
+      headerBackButtonDisplayMode: 'minimal' as const,
+      headerBackTitle: '',
       headerRight: () => (
         <TouchableOpacity
           // navigate (not push) so a quick double-tap can't stack two call
@@ -270,10 +273,16 @@ export default function ChannelScreen() {
     [headerTitle, channelId],
   );
 
+  // Read live so the offset tracks the actual stack header height — a
+  // hard-coded 88 was right for older iPhones but iOS 26's dynamic-island
+  // header runs ~96-100, which leaves the composer partially behind the
+  // keyboard.
+  const headerHeight = useHeaderHeight();
+
   if (!activeTeam) return null;
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.bg }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={88}>
+    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.bg }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={headerHeight}>
       <Stack.Screen options={screenOptions} />
       {loading ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
@@ -292,7 +301,14 @@ export default function ChannelScreen() {
             const tail = messages[messages.length - 1]?.id ?? null;
             if (tail !== lastTailId.current) {
               lastTailId.current = tail;
-              listRef.current?.scrollToEnd({ animated: false });
+              // Defer one frame so iOS finishes the layout pass before we
+              // scroll — on RN 0.81 / iOS 26 a synchronous scrollToEnd
+              // inside onContentSizeChange lands at the top of the list
+              // because contentSize was just measured but the layout
+              // pass hasn't applied yet.
+              requestAnimationFrame(() => {
+                listRef.current?.scrollToEnd({ animated: false });
+              });
             }
           }}
           ListHeaderComponent={
