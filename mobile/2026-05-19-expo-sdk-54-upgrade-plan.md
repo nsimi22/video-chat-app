@@ -21,6 +21,11 @@ each Expo SDK is paired with a specific Xcode version. Overriding `image`
 to `xcode-26` on SDK 52 is not a supported combination. SDK 54 is the
 floor that unblocks App Store submission.
 
+> **Why the Xcode 16 → 26 jump:** Apple switched Xcode to year-aligned
+> versioning in 2026 — Xcode 26 (with the iOS 26 SDK) follows Xcode 16,
+> skipping 17–25. This is not a typo or a misread of the EAS docs; it
+> mirrors the macOS / iOS 26 numbering reset that landed at WWDC 2026.
+
 ## What changes
 
 ### Direct version bumps (`mobile/package.json`)
@@ -41,6 +46,11 @@ floor that unblocks App Store submission.
   - `@livekit/react-native-expo-plugin` (currently `^1.0.2`)
   - `@livekit/react-native-webrtc` (currently `^125.0.0`)
   - `@react-native-community/datetimepicker` (currently `8.2.0`)
+  - **`react-native-reanimated`: `~3.16.0` → `~4.1.x` (major bump)**
+    and its new peer **`react-native-worklets`** (Reanimated 4 split
+    its worklet runtime into a separate package). The babel plugin
+    also moves: `react-native-reanimated/plugin` →
+    `react-native-worklets/plugin` in `babel.config.js`.
   - `react-native-svg`, `react-native-gesture-handler`,
     `react-native-safe-area-context`, `react-native-screens`
 - JS-only deps: usually fine as-is; `livekit-client` and `lucide-react-native`
@@ -82,38 +92,55 @@ floor that unblocks App Store submission.
    metadata.
 4. **`npx expo install --check`** — lists every dep that needs version
    surgery for SDK 54.
-5. **`npx expo install --fix`** — applies the fixes.
+5. **`npx expo install --fix`** — applies the fixes. After this:
+   - Bump devDeps `expo install --fix` skips (`@types/react`, `typescript`)
+     by hand to match the SDK 54 expected versions.
+   - Add `babel-preset-expo` as an explicit devDep
+     (`npm install --save-dev babel-preset-expo@~54.0.10`) — SDK 54
+     wants it declared rather than picked up transitively.
+   - If `npm install` ERESOLVEs on react/react-dom peers, add
+     `mobile/.npmrc` with `legacy-peer-deps=true`. `@livekit/react-native`
+     nests its own `react-dom@19.2.x` while SDK 54 pins `react@19.1.0`.
 6. **`npx expo prebuild --clean`** — regenerates iOS/Android native dirs.
-7. **`npm run ios`** in `mobile/` — local sim build. First failure mode
+   After it completes, **check the Worklets pod version**:
+   `grep RNWorklets ios/Podfile.lock` (currently `0.8.3`). Then bump
+   `react-native-worklets` in `package.json` to match (e.g. `^0.8.3`)
+   and add it to `expo.install.exclude` so a future `expo install --fix`
+   won't downgrade it back to Expo's stale pin. See the matching risk
+   below.
+7. **Update `babel.config.js`**: replace `react-native-reanimated/plugin`
+   with `react-native-worklets/plugin` (Reanimated 4 moved the babel
+   plugin to the new worklets package).
+8. **`npm run ios`** in `mobile/` — local sim build. First failure mode
    to watch for: LiveKit polyfill stack (we already fought it on SDK 52).
-   Second: `expo-router` 4.x → 5.x route conventions (we use it heavily;
+   Second: `expo-router` 4.x → 6.x route conventions (we use it heavily;
    group folders, dynamic params, `useLocalSearchParams` typing).
-8. **Smoke test in the simulator**: sign in, browse channels, send a
+9. **Smoke test in the simulator**: sign in, browse channels, send a
    message, open the calendar, open the create-channel/DM sheets, tap
    the phone icon to open the call screen, verify the LiveKitRoom mounts
    and the placeholder tile renders.
-9. **Set the EAS image** in `eas.json` (use the alias so we follow
-   Xcode patch updates without hand-editing):
-   ```json
-   "production": {
-     "channel": "production",
-     "autoIncrement": true,
-     "ios": { "image": "sdk-54" }
-   }
-   ```
-   `sdk-54` currently resolves to `macos-sequoia-15.6-xcode-26.0`
-   (Xcode 26.0 / iOS 26 SDK).
-10. **`eas build --platform ios --profile production`** — should now
+10. **Set the EAS image** in `eas.json` (use the alias so we follow
+    Xcode patch updates without hand-editing):
+    ```json
+    "production": {
+      "channel": "production",
+      "autoIncrement": true,
+      "ios": { "image": "sdk-54" }
+    }
+    ```
+    `sdk-54` currently resolves to `macos-sequoia-15.6-xcode-26.0`
+    (Xcode 26.0 / iOS 26 SDK).
+11. **`eas build --platform ios --profile production`** — should now
     compile against the iOS 26 SDK.
-11. **`eas submit --platform ios --profile production --latest --non-interactive`**
+12. **`eas submit --platform ios --profile production --latest --non-interactive`**
     — credentials and ASC app id are cached from the earlier attempt.
-12. **TestFlight processing** (~5–30 min), then internal-test the binary
+13. **TestFlight processing** (~5–30 min), then internal-test the binary
     on a real iPhone. This is where we finally verify the real-device
     camera path the simulator could never test.
 
 ## Risks and mitigations
 
-- **expo-router major bump.** Likely 4.x → 5.x. Breaking changes have
+- **expo-router major bump.** 4.x → 6.x (two majors). Breaking changes have
   historically been around: nested `Stack.Screen` options (we use these
   for the call screen and channel header), `useLocalSearchParams`
   generics, group folder semantics. Mitigation: read the 5.0 changelog
@@ -141,8 +168,24 @@ floor that unblocks App Store submission.
   remedy. After a clean prebuild, that should not recur, but worth being
   ready to clear Metro again.
 - **Push notifications.** `expo-notifications` keeps breaking minor
-  things between SDKs (sound, channel id formats). Likely a small fix,
-  not a blocker.
+  things between SDKs. SDK 54 makes `shouldShowBanner` and
+  `shouldShowList` required on `NotificationBehavior` (replacing the
+  optional/deprecated `shouldShowAlert`). One-line fix in
+  `src/lib/push.ts`. Also: `expo-file-system` was rewritten in SDK 54
+  with a new `File`/`Directory` API; the easiest migration is to
+  import from `expo-file-system/legacy` and migrate properly later.
+- **Worklets ABI version skew (Reanimated 4).** Expected red herring
+  at first boot. Reanimated 4.1.7's CocoaPod pulls `RNWorklets 0.8.3`
+  natively, but `expo install --fix` pins the **JS** package to
+  `react-native-worklets@0.5.1` (the lower bound of Reanimated's peer
+  range `0.5 - 0.8`). Result: runtime warning "Mismatch between C++
+  code version and JavaScript code version (0.8.3 vs. 0.5.1)" on every
+  app boot. Mitigation: after `expo install --fix`, manually bump
+  `react-native-worklets` to match the native pod (`^0.8.3` at the
+  time of writing) and add it to `expo.install.exclude` in
+  `package.json` so a future `--fix` doesn't drag it back down. Check
+  the actual pod version via `grep RNWorklets ios/Podfile.lock` after
+  prebuild and pin the JS package to whatever that says.
 - **App still ships on SDK 52 desktop renderer.** Electron app is
   unrelated to Expo SDK — it stays on whatever it is. No coupling.
 
