@@ -343,6 +343,30 @@ export async function fetchMessages(
   return ((data ?? []) as Message[]).reverse();
 }
 
+// Fetch up to 500 messages strictly newer than `sinceTs`, in chronological
+// order. A single round-trip primitive — callers that need to handle
+// long-absence gaps should loop on the result (calling again with the
+// last ts they received) until the returned batch is short. Caller-side
+// looping keeps this function a thin query and lets the caller stop
+// early or merge with other state between batches.
+export async function fetchMessagesSince(
+  teamId: string,
+  channelId: string,
+  sinceTs: string,
+): Promise<Message[]> {
+  const { data, error } = await supabase
+    .from('messages')
+    .select('*')
+    .eq('team_id', teamId)
+    .eq('channel_id', channelId)
+    .is('parent_id', null)
+    .gt('ts', sinceTs)
+    .order('ts', { ascending: true })
+    .limit(500);
+  if (error) throw error;
+  return (data ?? []) as Message[];
+}
+
 export async function fetchThread(messageId: string): Promise<Message[]> {
   const { data, error } = await supabase
     .from('messages')
