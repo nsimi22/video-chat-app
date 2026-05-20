@@ -339,6 +339,30 @@ export async function fetchMessages(
   return ((data ?? []) as Message[]).reverse();
 }
 
+// Fetch messages strictly newer than `sinceTs` in chronological order.
+// Used by useChannelMessages to reconcile after a realtime-subscription
+// gap (mobile WS is killed every time the app backgrounds). Cap is
+// intentionally higher than PAGE — if someone returns after a long
+// absence we'd rather pull the full tail in one round-trip than have
+// them re-scroll forever.
+export async function fetchMessagesSince(
+  teamId: string,
+  channelId: string,
+  sinceTs: string,
+): Promise<Message[]> {
+  const { data, error } = await supabase
+    .from('messages')
+    .select('*')
+    .eq('team_id', teamId)
+    .eq('channel_id', channelId)
+    .is('parent_id', null)
+    .gt('ts', sinceTs)
+    .order('ts', { ascending: true })
+    .limit(500);
+  if (error) throw error;
+  return (data ?? []) as Message[];
+}
+
 export async function fetchThread(messageId: string): Promise<Message[]> {
   const { data, error } = await supabase
     .from('messages')
