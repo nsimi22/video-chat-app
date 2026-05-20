@@ -339,12 +339,12 @@ export async function fetchMessages(
   return ((data ?? []) as Message[]).reverse();
 }
 
-// Fetch messages strictly newer than `sinceTs` in chronological order.
-// Used by useChannelMessages to reconcile after a realtime-subscription
-// gap (mobile WS is killed every time the app backgrounds). Cap is
-// intentionally higher than PAGE — if someone returns after a long
-// absence we'd rather pull the full tail in one round-trip than have
-// them re-scroll forever.
+// Fetch up to 500 messages strictly newer than `sinceTs`, in chronological
+// order. A single round-trip primitive — callers that need to handle
+// long-absence gaps should loop on the result (calling again with the
+// last ts they received) until the returned batch is short. Caller-side
+// looping keeps this function a thin query and lets the caller stop
+// early or merge with other state between batches.
 export async function fetchMessagesSince(
   teamId: string,
   channelId: string,

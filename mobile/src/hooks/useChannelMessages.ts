@@ -12,8 +12,10 @@ import { fetchMessages, fetchMessagesSince, type Message } from '@/lib/api';
 // websocket is reconnecting is silently dropped. Mobile is doubly exposed
 // because the WS is torn down every time the app backgrounds. We therefore
 // run a catch-up query (a) when the channel re-SUBSCRIBES after a transient
-// drop and (b) when AppState returns to 'active', then merge by message id
-// (the existing INSERT dedupe handles realtime/catch-up overlap).
+// drop and (b) when AppState returns to 'active'. Catch-up batches are
+// merged by id (dedup against live realtime) and the resulting list is
+// re-sorted by ts — without the sort, a realtime INSERT that beats the
+// catch-up response leaves the array out of chronological order.
 export function useChannelMessages(teamId: string, channelId: string) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,6 +31,10 @@ export function useChannelMessages(teamId: string, channelId: string) {
     oldestTs.current = null;
     latestTs.current = null;
     let firstSubscribe = true;
+    // Both SUBSCRIBED and AppState 'active' can fire ~simultaneously when
+    // the app returns to the foreground. Without this guard, we'd issue
+    // two parallel catch-up loops that both walk the same window.
+    let catchUpInFlight = false;
 
     fetchMessages(teamId, channelId)
       .then((rows) => {
@@ -46,22 +52,37 @@ export function useChannelMessages(teamId: string, channelId: string) {
         setLoading(false);
       });
 
+    const BATCH = 500;
     const catchUp = async () => {
       if (!active || !latestTs.current) return;
+      if (catchUpInFlight) return;
+      catchUpInFlight = true;
       try {
-        const since = latestTs.current;
-        const rows = await fetchMessagesSince(teamId, channelId, since);
-        if (!active || rows.length === 0) return;
-        setMessages((prev) => {
-          const have = new Set(prev.map((m) => m.id));
-          const adds = rows.filter((m) => !m.parent_id && !have.has(m.id));
-          if (adds.length === 0) return prev;
-          return [...prev, ...adds];
-        });
-        const newest = rows[rows.length - 1]?.ts;
-        if (newest && newest > (latestTs.current ?? '')) latestTs.current = newest;
+        // Page until a short batch tells us we're caught up. A single
+        // capped query would leave a permanent gap after a long absence
+        // (>500 missed messages), since loadOlder only walks backwards
+        // from the head of the in-memory window.
+        while (active) {
+          const since = latestTs.current;
+          if (!since) return;
+          const rows = await fetchMessagesSince(teamId, channelId, since);
+          if (!active || rows.length === 0) return;
+          setMessages((prev) => {
+            const have = new Set(prev.map((m) => m.id));
+            const adds = rows.filter((m) => !m.parent_id && !have.has(m.id));
+            if (adds.length === 0) return prev;
+            const merged = [...prev, ...adds];
+            merged.sort((a, b) => a.ts.localeCompare(b.ts));
+            return merged;
+          });
+          const newest = rows[rows.length - 1]?.ts;
+          if (newest && newest > (latestTs.current ?? '')) latestTs.current = newest;
+          if (rows.length < BATCH) return;
+        }
       } catch (e) {
         console.warn('chat catch-up failed', e);
+      } finally {
+        catchUpInFlight = false;
       }
     };
 
