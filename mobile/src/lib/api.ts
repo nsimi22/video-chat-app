@@ -415,17 +415,16 @@ export async function deleteMessage(messageId: string): Promise<void> {
   if (error) throw error;
 }
 
-export async function toggleReaction(messageId: string, emoji: string, userId: string): Promise<void> {
-  const { data, error } = await supabase.from('messages').select('reactions').eq('id', messageId).single();
+export async function toggleReaction(messageId: string, emoji: string, _userId: string): Promise<void> {
+  // Routed through a security-definer RPC because messages_update_own
+  // RLS only lets the author UPDATE the row — a direct client UPDATE for
+  // a reaction on someone else's message matches zero rows and silently
+  // no-ops. The server reads auth.uid() from the JWT, so the userId
+  // argument is now ignored (kept in the signature so existing call
+  // sites compile unchanged). See migration
+  // 20260520000000_huddle_toggle_message_reaction_rpc.
+  const { error } = await supabase.rpc('toggle_message_reaction', { p_message_id: messageId, p_emoji: emoji });
   if (error) throw error;
-  const r: Record<string, string[]> = { ...(data?.reactions ?? {}) };
-  const arr = new Set(r[emoji] ?? []);
-  if (arr.has(userId)) arr.delete(userId);
-  else arr.add(userId);
-  if (arr.size) r[emoji] = [...arr];
-  else delete r[emoji];
-  const { error: uErr } = await supabase.from('messages').update({ reactions: r }).eq('id', messageId);
-  if (uErr) throw uErr;
 }
 
 export async function setPin(messageId: string, pinned: boolean): Promise<void> {
