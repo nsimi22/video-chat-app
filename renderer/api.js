@@ -1071,14 +1071,12 @@
     // Reactions live on a jsonb column. We read-modify-write under a
     // optimistic concurrency model; collisions are rare and self-healing.
     async toggleReaction(messageId, emoji) {
-      const { data, error } = await this.supabase.from('messages').select('reactions').eq('id', messageId).single();
-      if (error || !data) return;
-      const r = { ...(data.reactions || {}) };
-      const list = Array.isArray(r[emoji]) ? r[emoji].slice() : [];
-      const idx = list.indexOf(this.peerId);
-      if (idx === -1) list.push(this.peerId); else list.splice(idx, 1);
-      if (list.length === 0) delete r[emoji]; else r[emoji] = list;
-      await this.supabase.from('messages').update({ reactions: r }).eq('id', messageId);
+      // Routed through a security-definer RPC because messages_update_own
+      // RLS only lets the author UPDATE the row — a direct client UPDATE
+      // for a reaction on someone else's message matches zero rows and
+      // silently no-ops. See migration 20260520000000_huddle_toggle_message_reaction_rpc.
+      const { error } = await this.supabase.rpc('toggle_message_reaction', { p_message_id: messageId, p_emoji: emoji });
+      if (error) console.warn('toggleReaction failed', error);
     }
 
     async createChannel({ name, topic, isPrivate, memberNames }) {
