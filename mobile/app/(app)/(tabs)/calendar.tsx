@@ -91,9 +91,12 @@ export default function CalendarScreen() {
           console.warn('[calendar] unexpected content-type', s.url, ct);
         }
         const body = await res.text();
-        const parsed = parseIcs(body);
         const cutoff = Date.now() + ICS_MAX_HORIZON_MS;
         const floor = Date.now() - ICS_BACKLOG_MS;
+        // Cap recurrence expansion at the display cutoff so a weekly rule
+        // with no UNTIL doesn't try to emit thousands of occurrences only
+        // to have most of them filtered out below.
+        const parsed = parseIcs(body, { expandUntil: new Date(cutoff) });
         const horizon = parsed.events.filter(
           (e) => e.start && e.start.getTime() >= floor && e.start.getTime() <= cutoff,
         );
