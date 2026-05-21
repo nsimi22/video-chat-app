@@ -89,10 +89,20 @@ function CallView({ title }: { title: string }) {
     ],
     { onlySubscribed: false },
   );
-  const { localParticipant } = useLocalParticipant();
+  // Drive the mic/cam button state from LiveKit's live observer rather
+  // than a local intent flag — if auto-publish fails (denied permission,
+  // hardware busy, etc.) the underlying state stays false and the
+  // button needs to reflect that so the user can see something's wrong
+  // instead of staring at an "on" icon over a "Camera off" tile.
+  const {
+    localParticipant,
+    isMicrophoneEnabled,
+    isCameraEnabled,
+    lastCameraError,
+  } = useLocalParticipant();
   const participants = useParticipants();
-  const [mic, setMic] = useState(true);
-  const [cam, setCam] = useState(true);
+  const mic = isMicrophoneEnabled;
+  const cam = isCameraEnabled;
 
   // iOS Simulator has no camera hardware; LiveKit publishes nothing for
   // the local participant regardless of `cam=true`. Detect this so the
@@ -100,14 +110,10 @@ function CallView({ title }: { title: string }) {
   const isSim = !Device.isDevice;
 
   const toggleMic = async () => {
-    const next = !mic;
-    setMic(next);
-    await localParticipant.setMicrophoneEnabled(next);
+    await localParticipant.setMicrophoneEnabled(!mic);
   };
   const toggleCam = async () => {
-    const next = !cam;
-    setCam(next);
-    await localParticipant.setCameraEnabled(next);
+    await localParticipant.setCameraEnabled(!cam);
   };
   const flipCamera = async () => {
     // @livekit/react-native augments the local camera track with switchCamera().
@@ -154,8 +160,17 @@ function CallView({ title }: { title: string }) {
           flexGrow: 1,
         }}
         renderItem={({ item }) => {
-          const isLocal = isTrackReference(item) && item.participant.isLocal;
-          const showSimHint = isSim && (!isTrackReference(item) || isLocal);
+          // TrackReference and TrackReferencePlaceholder both expose `participant`;
+          // only TrackReference has a `publication`. Walking through the
+          // placeholder vs real-track decisions:
+          //   - simulator                      → no hardware ever, say so
+          //   - local placeholder + lastCameraError → permission/hardware denied
+          //   - local placeholder otherwise    → user toggled their camera off
+          //   - remote placeholder             → that person has their camera off
+          const isPlaceholder = !isTrackReference(item);
+          const isLocal = item.participant.isLocal;
+          const showSimHint = isSim && (isPlaceholder || isLocal);
+          const showCamBlocked = !isSim && isPlaceholder && isLocal && !!lastCameraError;
           return (
             <View
               style={{
@@ -173,7 +188,11 @@ function CallView({ title }: { title: string }) {
               ) : (
                 <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: space(3) }}>
                   <Text style={{ color: colors.textDim, textAlign: 'center' }}>
-                    {showSimHint ? 'Camera unavailable\n(iOS Simulator)' : 'Camera off'}
+                    {showSimHint
+                      ? 'Camera unavailable\n(iOS Simulator)'
+                      : showCamBlocked
+                        ? 'Camera blocked\nEnable it in Settings → Huddle'
+                        : 'Camera off'}
                   </Text>
                 </View>
               )}
