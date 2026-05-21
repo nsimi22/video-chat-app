@@ -721,6 +721,11 @@
     <script src="infinite-canvas.js"></script>
     <script src="whiteboard.js"></script>
     <script src="webrtc.js"></script>
+    <!-- LiveKit UMD + Phase 1 spike client. Mesh stays the default;
+         the call wrapper checks localStorage['huddle.useLivekit']
+         to decide which transport to construct. -->
+    <script src="vendor/livekit.js"></script>
+    <script src="livekit.js"></script>
     <script src="profile-card.js"></script>
     <script src="chat.js"></script>
     <script src="calendar.js"></script>

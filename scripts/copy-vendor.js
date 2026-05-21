@@ -6,6 +6,10 @@
 //   - @supabase/supabase-js UMD bundle
 //   - @mediapipe/selfie_segmentation (JS + WASM + model assets) for
 //     the call-time background-blur pipeline
+//   - livekit-client UMD bundle (Phase 1 spike — the renderer mostly
+//     uses the hand-rolled WebRTC mesh in webrtc.js, but this bundle
+//     ships so a feature-flagged LiveKit transport can run alongside
+//     it without rebuilding the renderer as ES modules)
 const fs = require('fs');
 const path = require('path');
 
@@ -56,6 +60,26 @@ if (supabaseSrc) {
   copyFile(supabaseSrc, path.join(VENDOR_DIR, 'supabase.js'));
 } else {
   console.warn('[copy-vendor] supabase-js UMD not found; run `npm install` first.');
+}
+
+// ---------------------------------------------------------------------------
+// livekit-client UMD
+//
+// livekit-client's package.json exports map only exposes `.` and the
+// worker entry points, so we can't `require.resolve` the UMD subpath
+// directly the way Supabase lets us. Resolve the package's main entry
+// instead and walk to dist/livekit-client.umd.js.
+// ---------------------------------------------------------------------------
+const livekitMain = tryResolve('livekit-client');
+let livekitSrc = null;
+if (livekitMain) {
+  const candidate = path.join(path.dirname(livekitMain), 'livekit-client.umd.js');
+  if (fs.existsSync(candidate)) livekitSrc = candidate;
+}
+if (livekitSrc) {
+  copyFile(livekitSrc, path.join(VENDOR_DIR, 'livekit.js'));
+} else {
+  console.warn('[copy-vendor] livekit-client UMD not found; run `npm install` first.');
 }
 
 // ---------------------------------------------------------------------------

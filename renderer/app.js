@@ -1021,7 +1021,8 @@ async function bootCallPopout(cfg) {
 async function startPopoutCall(channelId) {
   const huddle = state.huddle;
   if (!huddle || state.mesh) return;
-  const mesh = new MeshClient(huddle);
+  const useLk = typeof window.huddleUseLivekit === 'function' && window.huddleUseLivekit();
+  const mesh = useLk ? new window.LivekitCallClient(huddle) : new MeshClient(huddle);
   mesh.addEventListener('peer-joined', (e) => onCallPeerJoined(e.detail));
   mesh.addEventListener('peer-left', (e) => onCallPeerLeft(e.detail));
   mesh.addEventListener('track', (e) => onTrack(e.detail));
@@ -1035,6 +1036,7 @@ async function startPopoutCall(channelId) {
   mesh.addEventListener('camera-stream-changed', (e) => onLocalCameraStreamChanged(e.detail));
   try {
     await huddle.joinCall(channelId);
+    if (useLk) await mesh.connect(channelId);
   } catch (err) {
     showCallError('Could not join the call: ' + (err?.message || err));
     mesh.disconnect();
@@ -1513,7 +1515,15 @@ async function startCall(channelId) {
   // events for existing participants would otherwise fire into the
   // void (no MeshClient listener yet) and we'd never form WebRTC
   // connections to them.
-  const mesh = new MeshClient(state.huddle);
+  //
+  // Phase 1 LiveKit spike: when window.huddleUseLivekit() is true the
+  // call goes through a LiveKit SFU instead of the hand-rolled mesh.
+  // Same event surface, so the listener wiring below is unchanged.
+  // Toggle with `localStorage.setItem('huddle.useLivekit', 'true')` in
+  // DevTools; default is the mesh. See renderer/livekit.js header for
+  // what's NOT supported in this mode yet.
+  const useLk = typeof window.huddleUseLivekit === 'function' && window.huddleUseLivekit();
+  const mesh = useLk ? new window.LivekitCallClient(state.huddle) : new MeshClient(state.huddle);
   mesh.addEventListener('peer-joined', (e) => onCallPeerJoined(e.detail));
   mesh.addEventListener('peer-left', (e) => onCallPeerLeft(e.detail));
   mesh.addEventListener('track', (e) => onTrack(e.detail));
@@ -1527,6 +1537,10 @@ async function startCall(channelId) {
   mesh.addEventListener('camera-stream-changed', (e) => onLocalCameraStreamChanged(e.detail));
   try {
     await state.huddle.joinCall(channelId);
+    // LiveKit needs an explicit room connect on top of the team-side
+    // presence join. Mesh handles its own connections off peer-joined
+    // events from huddle and doesn't need this step.
+    if (useLk) await mesh.connect(channelId);
   } catch (err) {
     console.warn('joinCall failed', err);
     // Surface the failure to the user (see showCallError) instead
