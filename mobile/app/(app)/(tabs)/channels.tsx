@@ -354,20 +354,23 @@ function ChannelRow({
       friction={2}
       rightThreshold={40}
       overshootRight={false}
-      renderRightActions={() => (
-        <TouchableOpacity
-          accessibilityLabel={isGroupDm(item) ? 'Leave group' : item.type === 'dm' ? 'Close DM' : 'Delete channel'}
-          onPress={() => onRequestDelete(() => swipeRef.current?.close())}
-          style={{
-            backgroundColor: colors.danger,
-            justifyContent: 'center',
-            alignItems: 'center',
-            width: 80,
-          }}
-        >
-          <Trash2 size={22} color="#fff" strokeWidth={2} />
-        </TouchableOpacity>
-      )}
+      renderRightActions={() => {
+        const verb = isGroupDm(item) ? 'Leave' : item.type === 'dm' ? 'Close DM with' : 'Delete';
+        return (
+          <TouchableOpacity
+            accessibilityLabel={`${verb} ${label}`}
+            onPress={() => onRequestDelete(() => swipeRef.current?.close())}
+            style={{
+              backgroundColor: colors.danger,
+              justifyContent: 'center',
+              alignItems: 'center',
+              width: 80,
+            }}
+          >
+            <Trash2 size={22} color="#fff" strokeWidth={2} />
+          </TouchableOpacity>
+        );
+      }}
     >
       {row}
     </ReanimatedSwipeable>
