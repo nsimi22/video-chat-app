@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, ActivityIndicator, FlatList, Platform, Alert, Linking } from 'react-native';
+import { View, Text, TouchableOpacity, ActivityIndicator, FlatList, Platform, Alert, Linking, useWindowDimensions } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useKeepAwake } from 'expo-keep-awake';
@@ -26,6 +26,7 @@ import {
 import type { LucideIcon } from 'lucide-react-native';
 import { getCallToken, type LiveKitGrant } from '@/lib/livekit';
 import { useAuth } from '@/context/AuthContext';
+import { Avatar } from '@/components/ui';
 import { colors, radius, space } from '@/theme';
 
 export default function CallScreen() {
@@ -101,6 +102,7 @@ export default function CallScreen() {
 
 function CallView({ title, perms }: { title: string; perms: { camera: boolean; mic: boolean } }) {
   const insets = useSafeAreaInsets();
+  const { height: winHeight } = useWindowDimensions();
   const tracks = useTracks(
     [
       { source: Track.Source.Camera, withPlaceholder: true },
@@ -170,9 +172,19 @@ function CallView({ title, perms }: { title: string; perms: { camera: boolean; m
     else await track?.restartTrack?.();
   };
 
-  // Tile grid columns scale with participant count, matching desktop's
-  // huddle grid: 1 column when alone, 2 columns once a peer joins.
-  const numColumns = tracks.length <= 1 ? 1 : 2;
+  // 1-up fills the viewport (solo or 1:1, stacked); 3+ tiles fall into a 2-col grid.
+  const numColumns = tracks.length <= 2 ? 1 : 2;
+  // FlatList items don't auto-flex inside the scroll container, so size
+  // 1-up tiles explicitly to the available vertical space (window minus
+  // header and control bar) divided by the visible tile count.
+  const tileHeight =
+    numColumns === 1
+      ? Math.max(
+          240,
+          (winHeight - (insets.top + space(14)) - (insets.bottom + space(20))) /
+            Math.max(1, tracks.length),
+        )
+      : undefined;
 
   return (
     <View style={{ flex: 1, backgroundColor: '#000' }}>
@@ -207,33 +219,37 @@ function CallView({ title, perms }: { title: string; perms: { camera: boolean; m
         }}
         renderItem={({ item }) => {
           // TrackReference and TrackReferencePlaceholder both expose `participant`;
-          // only TrackReference has a `publication`. Walking through the
-          // placeholder vs real-track decisions:
-          //   - simulator                      → no hardware ever, say so
-          //   - local placeholder + lastCameraError → permission/hardware denied
-          //   - local placeholder otherwise    → user toggled their camera off
-          //   - remote placeholder             → that person has their camera off
+          // only TrackReference has a `publication`. A muted publication
+          // (camera toggled off mid-call) is treated the same as a
+          // placeholder so we don't render a frozen last frame.
           const isPlaceholder = !isTrackReference(item);
+          const isMuted = !isPlaceholder && item.publication.isMuted;
+          const showVideo = !isPlaceholder && !isMuted;
           const isLocal = item.participant.isLocal;
           const showSimHint = isSim && (isPlaceholder || isLocal);
           const showCamBlocked = !isSim && isPlaceholder && isLocal && !!lastCameraError;
+          const displayName = item.participant.name || item.participant.identity;
           return (
             <View
               style={{
                 flex: 1 / numColumns,
                 aspectRatio: numColumns === 1 ? undefined : 1,
-                ...(numColumns === 1 ? { minHeight: 240 } : null),
+                height: tileHeight,
                 margin: space(1),
                 borderRadius: radius.md,
                 overflow: 'hidden',
                 backgroundColor: colors.surfaceAlt,
               }}
             >
-              {isTrackReference(item) ? (
-                <VideoTrack trackRef={item} style={{ flex: 1 }} />
+              {showVideo ? (
+                <VideoTrack
+                  trackRef={item}
+                  style={isLocal ? { flex: 1, transform: [{ scaleX: -1 }] } : { flex: 1 }}
+                />
               ) : (
                 <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: space(3) }}>
-                  <Text style={{ color: colors.textDim, textAlign: 'center' }}>
+                  <Avatar name={displayName} size={96} />
+                  <Text style={{ color: colors.textDim, textAlign: 'center', marginTop: space(3) }}>
                     {showSimHint
                       ? 'Camera unavailable\n(iOS Simulator)'
                       : showCamBlocked
@@ -255,7 +271,7 @@ function CallView({ title, perms }: { title: string; perms: { camera: boolean; m
                   textShadowRadius: 3,
                 }}
               >
-                {isTrackReference(item) ? item.participant.name || item.participant.identity : ''}
+                {displayName}
               </Text>
             </View>
           );
@@ -285,12 +301,14 @@ function CallView({ title, perms }: { title: string; perms: { camera: boolean; m
           a11yLabel={mic ? 'Mute microphone' : 'Unmute microphone'}
           onPress={toggleMic}
           active={mic}
+          off={!mic}
         />
         <CtrlButton
           icon={cam ? VideoIcon : VideoOff}
           a11yLabel={cam ? 'Turn camera off' : 'Turn camera on'}
           onPress={toggleCam}
           active={cam}
+          off={!cam}
         />
         <CtrlButton icon={SwitchCamera} a11yLabel="Flip camera" onPress={flipCamera} active />
         <CtrlButton icon={PhoneOff} a11yLabel="Leave call" onPress={() => router.back()} danger />
@@ -304,15 +322,19 @@ function CtrlButton({
   a11yLabel,
   onPress,
   active,
+  off,
   danger,
 }: {
   icon: LucideIcon;
   a11yLabel: string;
   onPress: () => void;
   active?: boolean;
+  off?: boolean;
   danger?: boolean;
 }) {
-  const bg = danger ? colors.danger : active ? colors.surfaceAlt : colors.surface;
+  // Off-state (mic/cam disabled) gets the same red treatment as the
+  // leave-call button so the user can see at a glance that they're muted.
+  const bg = danger || off ? colors.danger : active ? colors.surfaceAlt : colors.surface;
   return (
     <TouchableOpacity
       onPress={onPress}
@@ -326,7 +348,7 @@ function CtrlButton({
         alignItems: 'center',
         justifyContent: 'center',
         backgroundColor: bg,
-        borderWidth: danger ? 0 : 1,
+        borderWidth: danger || off ? 0 : 1,
         borderColor: colors.border,
       }}
     >
