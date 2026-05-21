@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, ActivityIndicator, FlatList, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, ActivityIndicator, FlatList, Platform, Alert, Linking } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useKeepAwake } from 'expo-keep-awake';
 import * as Device from 'expo-device';
+import { Camera } from 'expo-camera';
 import {
   AudioSession,
   LiveKitRoom,
@@ -32,11 +33,29 @@ export default function CallScreen() {
   const { activeTeam } = useAuth();
   const [grant, setGrant] = useState<LiveKitGrant | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // perms tracks the user's decision on the iOS/Android camera + mic
+  // prompts. We have to ask explicitly *before* LiveKit's auto-publish
+  // fires its own getUserMedia, otherwise iOS treats the underlying
+  // RNWebRTC getUserMedia call as a denied-without-prompt no-op and
+  // setCameraEnabled/setMicrophoneEnabled silently fail forever. null
+  // means we haven't asked yet; once decided we pass the grants to
+  // LiveKitRoom so it only tries to publish what the OS will allow.
+  const [perms, setPerms] = useState<{ camera: boolean; mic: boolean } | null>(null);
   useKeepAwake();
 
   useEffect(() => {
     let active = true;
     AudioSession.startAudioSession();
+    (async () => {
+      // Native prompts; safe to call repeatedly — both functions return
+      // the existing decision without re-prompting once the user has
+      // answered.
+      const [camRes, micRes] = await Promise.all([
+        Camera.requestCameraPermissionsAsync(),
+        Camera.requestMicrophonePermissionsAsync(),
+      ]);
+      if (active) setPerms({ camera: camRes.granted, mic: micRes.granted });
+    })().catch((e) => active && setError(e?.message ?? String(e)));
     if (activeTeam) {
       getCallToken(activeTeam.id, String(channelId))
         .then((g) => active && setGrant(g))
@@ -56,7 +75,7 @@ export default function CallScreen() {
       </SafeAreaView>
     );
   }
-  if (!grant) {
+  if (!grant || !perms) {
     return (
       <SafeAreaView style={styles.center}>
         <ActivityIndicator color={colors.accent} />
@@ -70,17 +89,17 @@ export default function CallScreen() {
       serverUrl={grant.url}
       token={grant.token}
       connect
-      audio
-      video
+      audio={perms.mic}
+      video={perms.camera}
       options={{ adaptiveStream: { pixelDensity: 'screen' } }}
       onDisconnected={() => router.back()}
     >
-      <CallView title={name ? String(name) : 'Call'} />
+      <CallView title={name ? String(name) : 'Call'} perms={perms} />
     </LiveKitRoom>
   );
 }
 
-function CallView({ title }: { title: string }) {
+function CallView({ title, perms }: { title: string; perms: { camera: boolean; mic: boolean } }) {
   const insets = useSafeAreaInsets();
   const tracks = useTracks(
     [
@@ -110,10 +129,37 @@ function CallView({ title }: { title: string }) {
   const isSim = !Device.isDevice;
 
   const toggleMic = async () => {
-    await localParticipant.setMicrophoneEnabled(!mic);
+    if (!perms.mic && !mic) {
+      // The grant we captured at call entry can be stale — the user
+      // might have denied, gone to Settings, flipped it on, and come
+      // back. Re-read the OS state before we tell them their perm is
+      // still denied and route them back to Settings.
+      const { granted } = await Camera.getMicrophonePermissionsAsync();
+      if (!granted) {
+        promptOpenSettings('Microphone');
+        return;
+      }
+    }
+    try {
+      await localParticipant.setMicrophoneEnabled(!mic);
+    } catch (e) {
+      Alert.alert("Couldn't toggle microphone", (e as Error)?.message ?? String(e));
+    }
   };
   const toggleCam = async () => {
-    await localParticipant.setCameraEnabled(!cam);
+    if (!perms.camera && !cam) {
+      // Same recover-from-settings dance as mic.
+      const { granted } = await Camera.getCameraPermissionsAsync();
+      if (!granted) {
+        promptOpenSettings('Camera');
+        return;
+      }
+    }
+    try {
+      await localParticipant.setCameraEnabled(!cam);
+    } catch (e) {
+      Alert.alert("Couldn't toggle camera", (e as Error)?.message ?? String(e));
+    }
   };
   const flipCamera = async () => {
     // @livekit/react-native augments the local camera track with switchCamera().
@@ -286,6 +332,20 @@ function CtrlButton({
     >
       <Icon size={24} color="#fff" strokeWidth={2} />
     </TouchableOpacity>
+  );
+}
+
+// Confirm dialog → deep-link to the app's settings page so the user
+// can flip the camera/mic permission. Linking.openSettings() handles
+// both platforms (iOS app-settings: deep link, Android intent).
+function promptOpenSettings(label: 'Camera' | 'Microphone') {
+  Alert.alert(
+    `${label} access denied`,
+    `Huddle needs ${label.toLowerCase()} access to publish your ${label === 'Camera' ? 'video' : 'audio'}. Open Settings to grant it.`,
+    [
+      { text: 'Not now', style: 'cancel' },
+      { text: 'Open Settings', onPress: () => Linking.openSettings() },
+    ],
   );
 }
 
