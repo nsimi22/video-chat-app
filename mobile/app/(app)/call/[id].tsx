@@ -130,11 +130,15 @@ function CallView({ title, perms }: { title: string; perms: { camera: boolean; m
 
   const toggleMic = async () => {
     if (!perms.mic && !mic) {
-      // Permission was denied at the OS level when we asked on call
-      // entry; setMicrophoneEnabled would just throw silently. Send
-      // the user somewhere they can actually fix it.
-      promptOpenSettings('Microphone');
-      return;
+      // The grant we captured at call entry can be stale — the user
+      // might have denied, gone to Settings, flipped it on, and come
+      // back. Re-read the OS state before we tell them their perm is
+      // still denied and route them back to Settings.
+      const { granted } = await Camera.getMicrophonePermissionsAsync();
+      if (!granted) {
+        promptOpenSettings('Microphone');
+        return;
+      }
     }
     try {
       await localParticipant.setMicrophoneEnabled(!mic);
@@ -144,8 +148,12 @@ function CallView({ title, perms }: { title: string; perms: { camera: boolean; m
   };
   const toggleCam = async () => {
     if (!perms.camera && !cam) {
-      promptOpenSettings('Camera');
-      return;
+      // Same recover-from-settings dance as mic.
+      const { granted } = await Camera.getCameraPermissionsAsync();
+      if (!granted) {
+        promptOpenSettings('Camera');
+        return;
+      }
     }
     try {
       await localParticipant.setCameraEnabled(!cam);
