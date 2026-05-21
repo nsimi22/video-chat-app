@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, ActivityIndicator, FlatList } from 'react-native';
+import { View, Text, TouchableOpacity, ActivityIndicator, FlatList, Platform } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useKeepAwake } from 'expo-keep-awake';
@@ -191,7 +191,9 @@ function CallView({ title }: { title: string }) {
                     {showSimHint
                       ? 'Camera unavailable\n(iOS Simulator)'
                       : showCamBlocked
-                        ? 'Camera blocked\nEnable it in Settings → Huddle'
+                        ? Platform.OS === 'ios'
+                          ? 'Camera blocked\nEnable it in Settings → Huddle'
+                          : 'Camera blocked\nEnable it in your device settings'
                         : 'Camera off'}
                   </Text>
                 </View>
