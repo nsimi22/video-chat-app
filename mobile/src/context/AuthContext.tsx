@@ -25,25 +25,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
-      setLoading(false);
+      // Keep `loading` true if we have a session so the restore-team
+      // effect below can finish before Index routes. If there's no
+      // session at all there's nothing to restore — flip false now so
+      // the user lands on the login screen immediately.
+      if (!data.session) setLoading(false);
     });
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
       setSession(s);
-      if (!s) setActiveTeamState(null);
+      if (!s) {
+        setActiveTeamState(null);
+        // Defensive: covers the case where the user signs out while
+        // the restore is still in flight; without this `loading`
+        // would stay true forever and Index would never re-route.
+        setLoading(false);
+      }
     });
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // Restore the last-used team once we have a session.
+  // Restore the last-used team once we have a session. Keep `loading`
+  // true throughout so Index doesn't bounce to the team picker before
+  // we've had a chance to read SecureStore — otherwise the user is
+  // forced to re-pick a team on every cold launch even though their
+  // selection is persisted correctly.
   useEffect(() => {
     if (!session) return;
     let cancelled = false;
+    setLoading(true);
     (async () => {
       const teams = await listTeams().catch(() => [] as Team[]);
       if (cancelled) return;
       const savedId = await SecureStore.getItemAsync(TEAM_KEY).catch(() => null);
       const pick = teams.find((t) => t.id === savedId) ?? (teams.length === 1 ? teams[0] : null);
       setActiveTeamState(pick);
+      setLoading(false);
     })();
     return () => {
       cancelled = true;
