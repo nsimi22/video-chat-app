@@ -60,6 +60,38 @@ export async function listChannels(teamId: string): Promise<Channel[]> {
   return (data ?? []) as Channel[];
 }
 
+// Delete a channel (or close a 1:1 DM). RLS gates which rows can go:
+// public/private channels only succeed for the creator, protected
+// channels (#general etc.) never succeed, DMs succeed for any member.
+// Cascading FKs on channel_members, messages, etc. clean up the rest.
+// Throw on failure so the caller can surface the reason.
+export async function deleteChannel(teamId: string, channelId: string): Promise<void> {
+  const { error } = await supabase
+    .from('channels')
+    .delete()
+    .eq('team_id', teamId)
+    .eq('id', channelId);
+  if (error) throw error;
+}
+
+// Leave a group DM by dropping just our own membership row. The channel
+// (and other members) stay; RLS will hide it from our next list. Used
+// instead of deleteChannel for gdms, where "delete-for-everyone" would
+// be surprising. (RLS: channel_members_delete_self, user_id = auth.uid().)
+export async function leaveDmChannel(
+  teamId: string,
+  channelId: string,
+  userId: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from('channel_members')
+    .delete()
+    .eq('team_id', teamId)
+    .eq('channel_id', channelId)
+    .eq('user_id', userId);
+  if (error) throw error;
+}
+
 // Open-or-create a 1:1 DM channel with another team member. Mirrors
 // renderer/api.js createDm: the channel id is deterministic from the sorted
 // pair of uuids, so re-opening returns the same row. on_channel_after_insert

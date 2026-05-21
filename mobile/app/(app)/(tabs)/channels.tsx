@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
-import { RefreshControl, Text, TouchableOpacity, View, ActivityIndicator, SectionList } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, RefreshControl, Text, TouchableOpacity, View, ActivityIndicator, SectionList } from 'react-native';
+import ReanimatedSwipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { router, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Lock, Plus, Users } from 'lucide-react-native';
-import { listChannels, listTeamProfiles, type Channel, type Profile } from '@/lib/api';
+import { Lock, Plus, Trash2, Users } from 'lucide-react-native';
+import { deleteChannel, leaveDmChannel, listChannels, listTeamProfiles, type Channel, type Profile } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { Avatar, Logo } from '@/components/ui';
@@ -26,6 +27,23 @@ function channelLabel(c: Channel, profiles: Profile[], me: string | null): strin
     return c.name || 'Group DM';
   }
   return c.name;
+}
+
+// Group DMs use a `gdm:<uuid>` channel id; 1:1 DMs use `dm:<a>::<b>`.
+function isGroupDm(c: Channel): boolean {
+  return c.type === 'dm' && c.id.startsWith('gdm:');
+}
+
+// Mirrors desktop's canDelete() (renderer/app.js): protected channels
+// (#general, etc.) are never deletable; any DM member can close their
+// DM or leave their group; named channels are only deletable by their
+// creator. RLS enforces the same rules server-side — this just skips
+// wrapping the row in a swipe gesture so users can't even reveal a
+// trash button for something the backend would reject.
+function canDelete(c: Channel, userId: string): boolean {
+  if (c.protected) return false;
+  if (c.type === 'dm') return true;
+  return !!c.created_by && c.created_by === userId;
 }
 
 export default function ChannelsScreen() {
@@ -96,6 +114,62 @@ export default function ChannelsScreen() {
     router.push({ pathname: '/(app)/channel/[id]', params: { id, name } });
   }
 
+  // Swipe-left on a row exposes a red trash button (see ChannelRow); tapping
+  // it lands here, opens a confirm Alert, then deletes (or closes/leaves).
+  // Mirrors desktop's sidebar X-button (renderer/app.js). DELETE on the
+  // channels table fans out via the realtime subscription above and
+  // refreshes the list; the leave-group branch only changes
+  // channel_members, so we reload manually after success.
+  function confirmDelete(item: Channel, label: string, closeSwipe: () => void) {
+    if (!userId) return;
+    if (isGroupDm(item)) {
+      Alert.alert(
+        `Leave "${label}"?`,
+        "You won't get new messages unless someone adds you back.",
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Leave',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await leaveDmChannel(item.team_id, item.id, userId);
+                closeSwipe();
+                load();
+              } catch (err) {
+                Alert.alert('Could not leave', (err as Error)?.message ?? String(err));
+              }
+            },
+          },
+        ],
+      );
+      return;
+    }
+    const isDm = item.type === 'dm';
+    const verb = isDm ? 'Close' : 'Delete';
+    const target = isDm ? `your DM with ${label}` : `#${item.name}`;
+    Alert.alert(
+      `${verb} ${target}?`,
+      'This is permanent.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: verb,
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteChannel(item.team_id, item.id);
+              closeSwipe();
+              // channels realtime DELETE event will trigger load()
+            } catch (err) {
+              Alert.alert(`Could not ${verb.toLowerCase()}`, (err as Error)?.message ?? String(err));
+            }
+          },
+        },
+      ],
+    );
+  }
+
   return (
     <SafeAreaView edges={['top']} style={{ flex: 1, backgroundColor: colors.bg }}>
       {/* Brand header. Sits above the SectionList so the workspace name
@@ -163,32 +237,18 @@ export default function ChannelsScreen() {
           ) : null
         }
         renderItem={({ item }) => {
-          const dm = item.type === 'dm';
-          const other = dm ? dmPeerId(item.id, userId) : null;
-          const otherProfile = other ? profiles.find((p) => p.user_id === other) : null;
-          const isGroupDm = dm && !other;
+          const label = channelLabel(item, profiles, userId);
+          const deletable = !!userId && canDelete(item, userId);
           return (
-            <TouchableOpacity
-              onPress={() => openChannel(item.id, channelLabel(item, profiles, userId))}
-              style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: space(4), paddingVertical: space(3.5), borderBottomWidth: 1, borderBottomColor: colors.border }}
-            >
-              {dm && otherProfile ? (
-                <Avatar name={otherProfile.name} color={otherProfile.color} size={30} uri={otherProfile.avatar_url} />
-              ) : (
-                <View style={{ width: 30, height: 30, alignItems: 'center', justifyContent: 'center' }}>
-                  {isGroupDm ? (
-                    <Users size={18} color={colors.textDim} strokeWidth={2} />
-                  ) : item.type === 'private' ? (
-                    <Lock size={16} color={colors.textDim} strokeWidth={2} />
-                  ) : (
-                    <Text style={{ color: colors.textDim, fontSize: 18 }}>#</Text>
-                  )}
-                </View>
-              )}
-              <Text style={{ color: colors.text, fontSize: 16, marginLeft: space(3), flex: 1 }} numberOfLines={1}>
-                {channelLabel(item, profiles, userId)}
-              </Text>
-            </TouchableOpacity>
+            <ChannelRow
+              item={item}
+              label={label}
+              profiles={profiles}
+              meId={userId}
+              deletable={deletable}
+              onOpen={() => openChannel(item.id, label)}
+              onRequestDelete={(close) => confirmDelete(item, label, close)}
+            />
           );
         }}
       />
@@ -220,5 +280,99 @@ export default function ChannelsScreen() {
         </>
       )}
     </SafeAreaView>
+  );
+}
+
+// Single channel/DM row. When `deletable`, wraps the row in a
+// swipe-left-reveals-trash gesture (iOS Mail / Messages convention).
+// The trash tap fires onRequestDelete with a close() callback so the
+// caller can collapse the swipe after a successful API call.
+function ChannelRow({
+  item,
+  label,
+  profiles,
+  meId,
+  deletable,
+  onOpen,
+  onRequestDelete,
+}: {
+  item: Channel;
+  label: string;
+  profiles: Profile[];
+  meId: string | null;
+  deletable: boolean;
+  onOpen: () => void;
+  onRequestDelete: (close: () => void) => void;
+}) {
+  const swipeRef = useRef<SwipeableMethods>(null);
+  const dm = item.type === 'dm';
+  const other = dm ? dmPeerId(item.id, meId) : null;
+  const otherProfile = other ? profiles.find((p) => p.user_id === other) : null;
+  const groupDm = dm && !other;
+
+  const row = (
+    // backgroundColor is required so the row paints over the red action
+    // panel during the swipe — without it the trash button bleeds through
+    // before the gesture fully exposes it.
+    <TouchableOpacity
+      onPress={onOpen}
+      activeOpacity={0.7}
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: colors.bg,
+        paddingHorizontal: space(4),
+        paddingVertical: space(3.5),
+        borderBottomWidth: 1,
+        borderBottomColor: colors.border,
+      }}
+    >
+      {dm && otherProfile ? (
+        <Avatar name={otherProfile.name} color={otherProfile.color} size={30} uri={otherProfile.avatar_url} />
+      ) : (
+        <View style={{ width: 30, height: 30, alignItems: 'center', justifyContent: 'center' }}>
+          {groupDm ? (
+            <Users size={18} color={colors.textDim} strokeWidth={2} />
+          ) : item.type === 'private' ? (
+            <Lock size={16} color={colors.textDim} strokeWidth={2} />
+          ) : (
+            <Text style={{ color: colors.textDim, fontSize: 18 }}>#</Text>
+          )}
+        </View>
+      )}
+      <Text style={{ color: colors.text, fontSize: 16, marginLeft: space(3), flex: 1 }} numberOfLines={1}>
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+
+  if (!deletable) return row;
+
+  return (
+    <ReanimatedSwipeable
+      ref={swipeRef}
+      friction={2}
+      rightThreshold={40}
+      overshootRight={false}
+      renderRightActions={() => {
+        const verb = isGroupDm(item) ? 'Leave' : item.type === 'dm' ? 'Close DM with' : 'Delete';
+        return (
+          <TouchableOpacity
+            accessibilityLabel={`${verb} ${label}`}
+            onPress={() => onRequestDelete(() => swipeRef.current?.close())}
+            style={{
+              backgroundColor: colors.danger,
+              justifyContent: 'center',
+              alignItems: 'center',
+              width: 80,
+            }}
+          >
+            <Trash2 size={22} color="#fff" strokeWidth={2} />
+          </TouchableOpacity>
+        );
+      }}
+    >
+      {row}
+    </ReanimatedSwipeable>
   );
 }
