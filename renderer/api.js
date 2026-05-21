@@ -337,7 +337,20 @@
         // otherwise the channel sits subscribed in supabase-js with
         // dangling handlers, and on a slow network we can ghost into
         // call presence after the local UI has already given up.
+        //
+        // The `disposed` guard is load-bearing: ch.unsubscribe() inside
+        // failClean re-triggers the subscribe status callback with
+        // CLOSED, which re-enters failClean and recurses until "Maximum
+        // call stack size exceeded". The LiveKit transport path (PR
+        // #133) made this latent bug reachable by adding the
+        // `await mesh.connect(channelId)` step after huddle.joinCall —
+        // that extra await is enough to land a CLOSED before the
+        // SUBSCRIBED resolution and exercise the failure path that
+        // mesh mode almost never hit.
+        let disposed = false;
         const failClean = (err) => {
+          if (disposed) return;
+          disposed = true;
           try { ch.unsubscribe(); } catch {}
           reject(err);
         };
