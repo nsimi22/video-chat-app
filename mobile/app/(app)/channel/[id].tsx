@@ -135,6 +135,10 @@ export default function ChannelScreen() {
     // composer keeps showing the original "/ai-ticket …" text for the
     // whole window, looking exactly like the send didn't fire.
     setText('');
+    // Restore the body only if the user hasn't started composing
+    // something new in the meantime — a long-running /ai-ticket can
+    // overlap with the user typing the next message.
+    const restoreBody = () => setText((curr) => (curr === '' ? body : curr));
     try {
       // Slash commands only fire when there are no attachments — an image
       // upload that happens to be captioned with "/me" should be a normal
@@ -150,7 +154,14 @@ export default function ChannelScreen() {
             roster,
             recentMessages: messages,
             onAiThinking: setAiThinking,
-            onError: (msg) => Alert.alert('Slash command', msg),
+            // Slash handlers catch their own internal errors and still
+            // return `true`, so the outer catch below never sees them.
+            // Restore the composer here so a failed /ai-ticket leaves
+            // the user with their text to edit + retry.
+            onError: (msg) => {
+              restoreBody();
+              Alert.alert('Slash command', msg);
+            },
           });
         } finally {
           // Safety net: any code path inside runSlash that flipped
@@ -170,9 +181,7 @@ export default function ChannelScreen() {
         mentions: extractMentions(body, roster),
       });
     } catch (e: any) {
-      // Restore the composer text so the user can edit + retry instead
-      // of having to retype from memory.
-      setText(body);
+      restoreBody();
       Alert.alert('Could not send', e?.message ?? String(e));
     } finally {
       setSending(false);
