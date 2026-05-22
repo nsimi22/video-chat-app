@@ -95,6 +95,16 @@
       this._blurOn = false;
       this._blurPipeline = null;
       this._rawTrack = null;
+      // Local screen shares. Mirrors MeshClient: map streamId -> entry so
+      // addScreen returns a real MediaStream the renderer can attach to a
+      // tile, and removeScreen can clean up by id. `_pendingScreens`
+      // reserves a slot while getUserMedia is in flight so rapid
+      // concurrent calls don't all pass the MAX cap check.
+      this._screenStreams = new Map(); // streamId -> { stream, label, publication }
+      this._pendingScreens = 0;
+      // Remote screen tracks indexed by track sid so trackUnsubscribed
+      // can find the MediaStream it created and tear the tile down.
+      this._remoteScreens = new Map(); // trackSid -> stream
       // Track-mute warnings only fire once per surface so a normal call
       // doesn't spam the console while the user is exploring features
       // that aren't ported yet.
@@ -131,7 +141,7 @@
     get teamMeta() { return this.huddle.team; }
     get url() { return this.huddle.url; }
     get raisedHands() { return this.huddle.raisedHands; }
-    get screenStreams() { return new Map(); } // none in Phase 1
+    get screenStreams() { return this._screenStreams; }
     get blurOn() { return this._blurOn; }
     // `peers` is mesh-internal — pollActiveSpeaker in app.js reaches
     // into it to do per-peer getStats() for the green "speaking"
@@ -162,12 +172,90 @@
     uploadFile(f)            { return this.huddle.uploadFile(f); }
 
     // --- Phase-2 stubs (logged once, then silent) -------------------------
-    addScreen()       { this._warnOnce('addScreen'); return Promise.reject(new Error('Screen share is not supported in the LiveKit spike yet')); }
-    removeScreen()    { this._warnOnce('removeScreen'); }
     sendDraw()        { /* whiteboard rides on huddle, not mesh; safe no-op */ }
     sendRaiseHand(r)  { return this.huddle.sendRaiseHand(r); }
     sendReaction(e)   { return this.huddle.sendReaction(e); }
-    get activeScreenCount() { return this.huddle.remoteScreenLabels.size; }
+    get activeScreenCount() {
+      return this._screenStreams.size + this._pendingScreens + this.huddle.remoteScreenLabels.size;
+    }
+
+    // --- Screen share -----------------------------------------------------
+    //
+    // Local: Electron desktopCapturer getUserMedia → publish as LK
+    // ScreenShare source with the user-facing label as the publication
+    // name. Multi-screen works because publishTrack creates an
+    // additional publication each call (setScreenShareEnabled only
+    // manages a single LK-tracked screen, which would cap us at 1).
+    //
+    // Remote: trackSubscribed with source=ScreenShare lands a screen
+    // track; we wrap it in its own MediaStream (separate from the
+    // participant's camera stream) and populate huddle.remoteScreenLabels
+    // locally so the renderer's onTrack lookup matches by stream.id.
+    // No cross-client sendScreenAnnounce broadcast is needed — LK's
+    // track.source tells us directly.
+
+    async addScreen(sourceId, label) {
+      if (!this.room) throw new Error('addScreen before connect');
+      const MAX = window.MAX_CONCURRENT_SCREENS || 3;
+      if (this.activeScreenCount >= MAX) {
+        throw new Error(`Screen-share limit reached (${MAX} max).`);
+      }
+      // Reserve a slot before awaiting getUserMedia so two quick clicks
+      // can't both pass the check (matches MeshClient).
+      this._pendingScreens++;
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            mandatory: {
+              chromeMediaSource: 'desktop',
+              chromeMediaSourceId: sourceId,
+              maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30,
+            },
+          },
+        });
+      } finally {
+        this._pendingScreens--;
+      }
+      const screenTrack = stream.getVideoTracks()[0];
+      if (!screenTrack) {
+        for (const t of stream.getTracks()) t.stop();
+        throw new Error('screen capture returned no video track');
+      }
+      let publication;
+      try {
+        publication = await this.room.localParticipant.publishTrack(screenTrack, {
+          source: LK.Track.Source.ScreenShare,
+          name: label,
+        });
+      } catch (err) {
+        for (const t of stream.getTracks()) t.stop();
+        throw err;
+      }
+      this._screenStreams.set(stream.id, { stream, label, publication });
+      // OS-level "stop sharing" indicator ends the track; route that
+      // back through removeScreen so the publication is unpublished
+      // and tiles drop on every client.
+      screenTrack.addEventListener('ended', () => this.removeScreen(stream.id));
+      return stream;
+    }
+
+    async removeScreen(streamId) {
+      const entry = this._screenStreams.get(streamId);
+      if (!entry) return;
+      this._screenStreams.delete(streamId);
+      try {
+        if (entry.publication?.track) {
+          await this.room?.localParticipant.unpublishTrack(entry.publication.track);
+        }
+      } catch (err) {
+        console.warn('[livekit] unpublishTrack failed', err);
+      }
+      for (const t of entry.stream.getTracks()) {
+        try { t.stop(); } catch {}
+      }
+    }
 
     // --- Background blur --------------------------------------------------
     //
@@ -340,12 +428,30 @@
     }
 
     _onTrackSubscribed(track, pub, participant) {
-      // Wrap the LiveKit track in a per-participant synthesized
-      // MediaStream so the renderer's onTrack handler (which keys
-      // tiles off stream.id) only creates one tile per remote
-      // participant instead of one per track.
-      const stream = this._streams.get(participant.identity);
       const mediaStreamTrack = track.mediaStreamTrack;
+      if (track.source === LK.Track.Source.ScreenShare) {
+        // Each remote screen gets its own MediaStream so the renderer's
+        // tile keying (which uses stream.id) treats it as a distinct
+        // surface from the participant's camera.
+        const stream = new MediaStream();
+        if (mediaStreamTrack) stream.addTrack(mediaStreamTrack);
+        // Populate huddle.remoteScreenLabels locally so the renderer's
+        // onTrack lookup classifies this as a screen instead of waiting
+        // for the (never-arriving) camera-vs-screen commit timer.
+        this.huddle.remoteScreenLabels.set(stream.id, {
+          label: pub.trackName || 'Screen',
+          fromName: participant.name || participant.identity,
+          from: participant.identity,
+        });
+        if (pub.trackSid) this._remoteScreens.set(pub.trackSid, stream);
+        this.dispatchEvent(new CustomEvent('track', {
+          detail: { stream, track: mediaStreamTrack, fromId: participant.identity },
+        }));
+        return;
+      }
+      // Camera (default) — share one MediaStream per participant so
+      // audio + video subscribed separately land in the same tile.
+      const stream = this._streams.get(participant.identity);
       if (mediaStreamTrack && !stream.getTracks().includes(mediaStreamTrack)) {
         stream.addTrack(mediaStreamTrack);
       }
@@ -355,11 +461,25 @@
     }
 
     _onTrackUnsubscribed(track, pub, participant) {
-      const stream = this._streams.get(participant.identity);
       const mediaStreamTrack = track.mediaStreamTrack;
+      if (track.source === LK.Track.Source.ScreenShare) {
+        // Drop the per-screen MediaStream and tear down the tile.
+        const stream = pub.trackSid ? this._remoteScreens.get(pub.trackSid) : null;
+        if (stream) {
+          this.huddle.remoteScreenLabels.delete(stream.id);
+          this._remoteScreens.delete(pub.trackSid);
+          this.dispatchEvent(new CustomEvent('remote-stream-ended', {
+            detail: { fromId: participant.identity, streamId: stream.id },
+          }));
+        }
+        return;
+      }
+      // Camera — leave the per-participant MediaStream in place and let
+      // the <video> element naturally stop rendering the unsubscribed
+      // track. peer-left from participantDisconnected does the full
+      // tile teardown.
+      const stream = this._streams.get(participant.identity);
       if (mediaStreamTrack) stream.removeTrack(mediaStreamTrack);
-      // No event emitted — the renderer's tile keeps the stream object
-      // and the <video> element naturally stops showing the track.
     }
 
     _syncLocalMuteFromPub(pub) {
@@ -431,6 +551,16 @@
     }
 
     disconnect() {
+      // Stop any active local screen captures before we close the room —
+      // unpublishTrack would error on a disconnected room and OS-level
+      // capture indicators must go away regardless.
+      for (const entry of this._screenStreams.values()) {
+        for (const t of entry.stream.getTracks()) {
+          try { t.stop(); } catch {}
+        }
+      }
+      this._screenStreams.clear();
+      this._remoteScreens.clear();
       if (this._blurPipeline) {
         try { this._blurPipeline.stop(); } catch {}
         this._blurPipeline = null;
