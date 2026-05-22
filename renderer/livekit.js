@@ -241,6 +241,15 @@
       // drawing strokes from this side match the same key on remote
       // receivers (who also stash trackSid in _onTrackSubscribed).
       stream.__huddleShareId = publication.trackSid;
+      // Drawing strokes ride a per-screen Supabase channel named
+      // `screen:${shareId}` — mesh subscribes both ends inside
+      // sendScreenAnnounce. The LK transport doesn't call that, so we
+      // open the drawing channel directly. Without this, the sender's
+      // sendDraw broadcasts land on a channel nobody (including the
+      // sender itself) is subscribed to.
+      if (publication.trackSid) {
+        this.huddle._ensureScreenChannel(publication.trackSid).catch(() => {});
+      }
       this._screenStreams.set(stream.id, { stream, label, publication });
       // OS-level "stop sharing" indicator ends the track; route that
       // back through removeScreen so the publication is unpublished
@@ -497,7 +506,15 @@
           fromName: participant.name || participant.identity,
           from: participant.identity,
         });
-        if (pub.trackSid) this._remoteScreens.set(pub.trackSid, { stream, fromId: participant.identity });
+        if (pub.trackSid) {
+          this._remoteScreens.set(pub.trackSid, { stream, fromId: participant.identity });
+          // Pre-subscribe to the sender's drawing channel so their
+          // strokes flow through to onRemoteDraw. Mesh receivers do
+          // this on the screen-announce broadcast (api.js:291); the
+          // LK transport handles screen-announce locally so we wire
+          // the subscription directly.
+          this.huddle._ensureScreenChannel(pub.trackSid).catch(() => {});
+        }
         this.dispatchEvent(new CustomEvent('track', {
           detail: { stream, track: mediaStreamTrack, fromId: participant.identity },
         }));
