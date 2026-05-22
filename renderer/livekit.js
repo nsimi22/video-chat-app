@@ -87,6 +87,14 @@
       this._micOn = true;
       this._camOn = true;
       this._streams = makeParticipantStreamCache();
+      // Background-blur state. _rawTrack is a long-lived clone of the
+      // LK-published raw camera track — needed because replaceTrack
+      // stops the previous MediaStreamTrack, and a stopped track can
+      // never resume. Cloning lets us swap back to a still-live source
+      // when blur is toggled off.
+      this._blurOn = false;
+      this._blurPipeline = null;
+      this._rawTrack = null;
       // Track-mute warnings only fire once per surface so a normal call
       // doesn't spam the console while the user is exploring features
       // that aren't ported yet.
@@ -124,7 +132,7 @@
     get url() { return this.huddle.url; }
     get raisedHands() { return this.huddle.raisedHands; }
     get screenStreams() { return new Map(); } // none in Phase 1
-    get blurOn() { return false; }            // none in Phase 1
+    get blurOn() { return this._blurOn; }
     // `peers` is mesh-internal — pollActiveSpeaker in app.js reaches
     // into it to do per-peer getStats() for the green "speaking"
     // outline. LiveKit has a built-in room.activeSpeakers list we
@@ -156,11 +164,99 @@
     // --- Phase-2 stubs (logged once, then silent) -------------------------
     addScreen()       { this._warnOnce('addScreen'); return Promise.reject(new Error('Screen share is not supported in the LiveKit spike yet')); }
     removeScreen()    { this._warnOnce('removeScreen'); }
-    setBlurBackground() { this._warnOnce('setBlurBackground'); return Promise.resolve(); }
     sendDraw()        { /* whiteboard rides on huddle, not mesh; safe no-op */ }
     sendRaiseHand(r)  { return this.huddle.sendRaiseHand(r); }
     sendReaction(e)   { return this.huddle.sendReaction(e); }
     get activeScreenCount() { return this.huddle.remoteScreenLabels.size; }
+
+    // --- Background blur --------------------------------------------------
+    //
+    // Same MediaPipe-driven pipeline mesh uses (renderer/blur-pipeline.js).
+    // The pipeline takes a MediaStream in and emits a canvas-derived
+    // MediaStream out; we wire that canvas track into LK by calling
+    // `LocalVideoTrack.replaceTrack(canvasTrack)` — LK's equivalent of
+    // mesh's per-sender replaceTrack. Going back to raw means another
+    // replaceTrack with our cloned raw source.
+    //
+    // Deferred (Phase 2.1 if it ever matters): re-running the pipeline
+    // after `flipCamera` / `restartTrack`. The current code holds a clone
+    // of the *original* raw track; switching cameras would create a new
+    // underlying source that we wouldn't be piping through the pipeline.
+    // The user has flagged flip-camera as broken regardless, so this
+    // ordering is fine for now.
+    async setBlurBackground(on) {
+      on = !!on;
+      if (this._blurOn === on) return;
+      if (!this.room) {
+        // Camera not up yet — record the preference; the next setCamera
+        // or applyPersistedBlurPreference loop will re-call us.
+        this._blurOn = on;
+        return;
+      }
+      const camPub = this.room.localParticipant.getTrackPublication(LK.Track.Source.Camera);
+      const lkTrack = camPub?.videoTrack;
+      if (!lkTrack) {
+        this._blurOn = on;
+        return;
+      }
+
+      if (on) {
+        if (!window.BlurPipeline?.isAvailable()) {
+          throw new Error('Blur pipeline is not available');
+        }
+        // Snapshot a long-lived clone of the raw camera track. We clone
+        // (a) so LK can stop "its" track when replaceTrack swaps in the
+        // canvas, without ending our copy; (b) only once per call, so
+        // repeated blur on/off cycles don't accumulate live clones.
+        if (!this._rawTrack || this._rawTrack.readyState === 'ended') {
+          this._rawTrack = lkTrack.mediaStreamTrack.clone();
+        }
+        const rawStream = new MediaStream([this._rawTrack]);
+        const pipeline = new window.BlurPipeline();
+        let blurredStream;
+        try {
+          blurredStream = await pipeline.start(rawStream);
+        } catch (err) {
+          try { pipeline.stop(); } catch {}
+          throw err;
+        }
+        const canvasTrack = blurredStream.getVideoTracks()[0];
+        if (!canvasTrack) {
+          try { pipeline.stop(); } catch {}
+          throw new Error('blur pipeline returned no video track');
+        }
+        try {
+          await lkTrack.replaceTrack(canvasTrack);
+        } catch (err) {
+          try { pipeline.stop(); } catch {}
+          throw err;
+        }
+        this._blurPipeline = pipeline;
+        this._blurOn = true;
+      } else {
+        if (this._rawTrack && this._rawTrack.readyState !== 'ended') {
+          // Pass a fresh clone — LK may stop the track it accepts here,
+          // and we want _rawTrack to stay alive in case the user toggles
+          // blur back on without leaving the call.
+          try {
+            await lkTrack.replaceTrack(this._rawTrack.clone());
+          } catch (err) {
+            console.warn('[livekit] replaceTrack(raw) failed', err);
+          }
+        }
+        if (this._blurPipeline) {
+          try { this._blurPipeline.stop(); } catch {}
+          this._blurPipeline = null;
+        }
+        this._blurOn = false;
+      }
+
+      // The self-cam tile binds <video>.srcObject to this.cameraStream.
+      // Swapping the publication's underlying track changes the
+      // MediaStream identity our composite reports, so refresh + dispatch
+      // camera-stream-changed for the renderer to re-point its srcObject.
+      this._refreshLocalCameraStream();
+    }
 
     _warnOnce(name) {
       if (this._warnedMissing.has(name)) return;
@@ -335,6 +431,15 @@
     }
 
     disconnect() {
+      if (this._blurPipeline) {
+        try { this._blurPipeline.stop(); } catch {}
+        this._blurPipeline = null;
+      }
+      if (this._rawTrack) {
+        try { this._rawTrack.stop(); } catch {}
+        this._rawTrack = null;
+      }
+      this._blurOn = false;
       if (this.room) {
         try { this.room.disconnect(); } catch (err) { console.warn('[livekit] disconnect', err); }
         this.room = null;
