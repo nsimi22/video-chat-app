@@ -125,6 +125,13 @@
     get raisedHands() { return this.huddle.raisedHands; }
     get screenStreams() { return new Map(); } // none in Phase 1
     get blurOn() { return false; }            // none in Phase 1
+    // `peers` is mesh-internal — pollActiveSpeaker in app.js reaches
+    // into it to do per-peer getStats() for the green "speaking"
+    // outline. LiveKit has a built-in room.activeSpeakers list we
+    // should plumb through in Phase 2; for now expose an empty Map so
+    // collectSpeakerSamples runs to completion (no-op) instead of
+    // throwing `Cannot read properties of undefined` 60 times a second.
+    get peers() { return new Map(); }
 
     // --- Chat passthroughs (verbatim mirror of MeshClient) ----------------
     sendMessage(args)        { return this.huddle.sendMessage(args); }
