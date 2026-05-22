@@ -103,8 +103,11 @@
       this._screenStreams = new Map(); // streamId -> { stream, label, publication }
       this._pendingScreens = 0;
       // Remote screen tracks indexed by track sid so trackUnsubscribed
-      // can find the MediaStream it created and tear the tile down.
-      this._remoteScreens = new Map(); // trackSid -> stream
+      // (and participantDisconnected if it races ahead of per-track
+      // unsubscribes) can find the MediaStream and tear the tile down.
+      // Value carries the participant identity so we can clean up all
+      // of a leaving participant's screens at once.
+      this._remoteScreens = new Map(); // trackSid -> { stream, fromId }
       // Track-mute warnings only fire once per surface so a normal call
       // doesn't spam the console while the user is exploring features
       // that aren't ported yet.
@@ -423,6 +426,22 @@
     }
 
     _onParticipantDisconnected(p) {
+      // Tear down any screen-share tiles for this participant before the
+      // peer-left handler removes their main tile. LK *should* fire
+      // TrackUnsubscribed for each publication before
+      // ParticipantDisconnected, but the SDK doesn't guarantee that
+      // order — and a missed cleanup leaves the screen tile orphaned
+      // with a dead <video> until reload. Walk our map and emit the
+      // synthetic remote-stream-ended for every screen owned by the
+      // leaving participant.
+      for (const [trackSid, entry] of this._remoteScreens) {
+        if (entry.fromId !== p.identity) continue;
+        this.huddle.remoteScreenLabels.delete(entry.stream.id);
+        this._remoteScreens.delete(trackSid);
+        this.dispatchEvent(new CustomEvent('remote-stream-ended', {
+          detail: { fromId: p.identity, streamId: entry.stream.id },
+        }));
+      }
       this._streams.drop(p.identity);
       this.dispatchEvent(new CustomEvent('peer-left', { detail: p.identity }));
     }
@@ -443,7 +462,7 @@
           fromName: participant.name || participant.identity,
           from: participant.identity,
         });
-        if (pub.trackSid) this._remoteScreens.set(pub.trackSid, stream);
+        if (pub.trackSid) this._remoteScreens.set(pub.trackSid, { stream, fromId: participant.identity });
         this.dispatchEvent(new CustomEvent('track', {
           detail: { stream, track: mediaStreamTrack, fromId: participant.identity },
         }));
@@ -464,12 +483,12 @@
       const mediaStreamTrack = track.mediaStreamTrack;
       if (track.source === LK.Track.Source.ScreenShare) {
         // Drop the per-screen MediaStream and tear down the tile.
-        const stream = pub.trackSid ? this._remoteScreens.get(pub.trackSid) : null;
-        if (stream) {
-          this.huddle.remoteScreenLabels.delete(stream.id);
+        const entry = pub.trackSid ? this._remoteScreens.get(pub.trackSid) : null;
+        if (entry) {
+          this.huddle.remoteScreenLabels.delete(entry.stream.id);
           this._remoteScreens.delete(pub.trackSid);
           this.dispatchEvent(new CustomEvent('remote-stream-ended', {
-            detail: { fromId: participant.identity, streamId: stream.id },
+            detail: { fromId: participant.identity, streamId: entry.stream.id },
           }));
         }
         return;
