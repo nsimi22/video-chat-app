@@ -103,8 +103,11 @@
       this._screenStreams = new Map(); // streamId -> { stream, label, publication }
       this._pendingScreens = 0;
       // Remote screen tracks indexed by track sid so trackUnsubscribed
-      // can find the MediaStream it created and tear the tile down.
-      this._remoteScreens = new Map(); // trackSid -> stream
+      // (and participantDisconnected if it races ahead of per-track
+      // unsubscribes) can find the MediaStream and tear the tile down.
+      // Value carries the participant identity so we can clean up all
+      // of a leaving participant's screens at once.
+      this._remoteScreens = new Map(); // trackSid -> { stream, fromId }
       // Track-mute warnings only fire once per surface so a normal call
       // doesn't spam the console while the user is exploring features
       // that aren't ported yet.
@@ -233,6 +236,20 @@
         for (const t of stream.getTracks()) t.stop();
         throw err;
       }
+      // Stamp the LK trackSid as a cross-client share id. The renderer
+      // (shareIdFor in app.js) reads this for tile / draw-layer keys so
+      // drawing strokes from this side match the same key on remote
+      // receivers (who also stash trackSid in _onTrackSubscribed).
+      stream.__huddleShareId = publication.trackSid;
+      // Drawing strokes ride a per-screen Supabase channel named
+      // `screen:${shareId}` — mesh subscribes both ends inside
+      // sendScreenAnnounce. The LK transport doesn't call that, so we
+      // open the drawing channel directly. Without this, the sender's
+      // sendDraw broadcasts land on a channel nobody (including the
+      // sender itself) is subscribed to.
+      if (publication.trackSid) {
+        this.huddle._ensureScreenChannel(publication.trackSid).catch(() => {});
+      }
       this._screenStreams.set(stream.id, { stream, label, publication });
       // OS-level "stop sharing" indicator ends the track; route that
       // back through removeScreen so the publication is unpublished
@@ -255,6 +272,16 @@
       for (const t of entry.stream.getTracks()) {
         try { t.stop(); } catch {}
       }
+      // Mesh's sendScreenStop locally dispatches `screen-stop` so the
+      // *sender's* tile (keyed by `screen:${shareId}`) gets torn down by
+      // onScreenStop — the broadcast itself doesn't echo back to sender.
+      // LK doesn't go through huddle for the screen lifecycle, so we
+      // have to dispatch the synthetic event ourselves or the local
+      // tile lingers with a frozen last frame.
+      const shareId = entry.stream.__huddleShareId || entry.stream.id;
+      this.dispatchEvent(new CustomEvent('screen-stop', {
+        detail: { from: this.peerId, streamId: shareId },
+      }));
     }
 
     // --- Background blur --------------------------------------------------
@@ -423,27 +450,71 @@
     }
 
     _onParticipantDisconnected(p) {
+      // Tear down any screen-share tiles for this participant before the
+      // peer-left handler removes their main tile. LK *should* fire
+      // TrackUnsubscribed for each publication before
+      // ParticipantDisconnected, but the SDK doesn't guarantee that
+      // order — and a missed cleanup leaves the screen tile orphaned
+      // with a dead <video> until reload.
+      for (const trackSid of [...this._remoteScreens.keys()]) {
+        if (this._remoteScreens.get(trackSid)?.fromId === p.identity) {
+          this._dropRemoteScreen(trackSid);
+        }
+      }
       this._streams.drop(p.identity);
       this.dispatchEvent(new CustomEvent('peer-left', { detail: p.identity }));
     }
 
+    // Shared teardown for a remote screen track — used both when LK
+    // sends TrackUnsubscribed and when ParticipantDisconnected races
+    // ahead of per-track unsubscribes. Idempotent; safe to call twice.
+    _dropRemoteScreen(trackSid) {
+      const entry = this._remoteScreens.get(trackSid);
+      if (!entry) return;
+      this._remoteScreens.delete(trackSid);
+      const shareId = entry.stream.__huddleShareId || entry.stream.id;
+      this.huddle.remoteScreenLabels.delete(shareId);
+      this.dispatchEvent(new CustomEvent('remote-stream-ended', {
+        detail: { fromId: entry.fromId, streamId: shareId },
+      }));
+    }
+
     _onTrackSubscribed(track, pub, participant) {
       const mediaStreamTrack = track.mediaStreamTrack;
+      // Defensive null-check — TrackSubscribed normally hands us a
+      // mediaStreamTrack, but the SDK leaves it nullable in the type
+      // signature. Skip rather than dispatch an empty stream that would
+      // render as a frozen black tile.
+      if (!mediaStreamTrack) return;
       if (track.source === LK.Track.Source.ScreenShare) {
         // Each remote screen gets its own MediaStream so the renderer's
-        // tile keying (which uses stream.id) treats it as a distinct
-        // surface from the participant's camera.
+        // tile keying treats it as a distinct surface from the
+        // participant's camera. Stamp the trackSid as the share id so
+        // drawing strokes from the sender (also keyed by trackSid via
+        // their __huddleShareId stamp in addScreen) match.
         const stream = new MediaStream();
-        if (mediaStreamTrack) stream.addTrack(mediaStreamTrack);
+        stream.addTrack(mediaStreamTrack);
+        if (pub.trackSid) stream.__huddleShareId = pub.trackSid;
         // Populate huddle.remoteScreenLabels locally so the renderer's
         // onTrack lookup classifies this as a screen instead of waiting
         // for the (never-arriving) camera-vs-screen commit timer.
-        this.huddle.remoteScreenLabels.set(stream.id, {
+        // Keyed by the share id (= trackSid) to stay consistent with
+        // the tile / draw-layer key the renderer uses.
+        const shareId = stream.__huddleShareId || stream.id;
+        this.huddle.remoteScreenLabels.set(shareId, {
           label: pub.trackName || 'Screen',
           fromName: participant.name || participant.identity,
           from: participant.identity,
         });
-        if (pub.trackSid) this._remoteScreens.set(pub.trackSid, stream);
+        if (pub.trackSid) {
+          this._remoteScreens.set(pub.trackSid, { stream, fromId: participant.identity });
+          // Pre-subscribe to the sender's drawing channel so their
+          // strokes flow through to onRemoteDraw. Mesh receivers do
+          // this on the screen-announce broadcast (api.js:291); the
+          // LK transport handles screen-announce locally so we wire
+          // the subscription directly.
+          this.huddle._ensureScreenChannel(pub.trackSid).catch(() => {});
+        }
         this.dispatchEvent(new CustomEvent('track', {
           detail: { stream, track: mediaStreamTrack, fromId: participant.identity },
         }));
@@ -452,7 +523,7 @@
       // Camera (default) — share one MediaStream per participant so
       // audio + video subscribed separately land in the same tile.
       const stream = this._streams.get(participant.identity);
-      if (mediaStreamTrack && !stream.getTracks().includes(mediaStreamTrack)) {
+      if (!stream.getTracks().includes(mediaStreamTrack)) {
         stream.addTrack(mediaStreamTrack);
       }
       this.dispatchEvent(new CustomEvent('track', {
@@ -461,17 +532,8 @@
     }
 
     _onTrackUnsubscribed(track, pub, participant) {
-      const mediaStreamTrack = track.mediaStreamTrack;
       if (track.source === LK.Track.Source.ScreenShare) {
-        // Drop the per-screen MediaStream and tear down the tile.
-        const stream = pub.trackSid ? this._remoteScreens.get(pub.trackSid) : null;
-        if (stream) {
-          this.huddle.remoteScreenLabels.delete(stream.id);
-          this._remoteScreens.delete(pub.trackSid);
-          this.dispatchEvent(new CustomEvent('remote-stream-ended', {
-            detail: { fromId: participant.identity, streamId: stream.id },
-          }));
-        }
+        if (pub.trackSid) this._dropRemoteScreen(pub.trackSid);
         return;
       }
       // Camera — leave the per-participant MediaStream in place and let
@@ -479,6 +541,7 @@
       // track. peer-left from participantDisconnected does the full
       // tile teardown.
       const stream = this._streams.get(participant.identity);
+      const mediaStreamTrack = track.mediaStreamTrack;
       if (mediaStreamTrack) stream.removeTrack(mediaStreamTrack);
     }
 

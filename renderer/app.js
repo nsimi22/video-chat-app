@@ -3608,22 +3608,41 @@ function onLocalCameraStreamChanged({ stream }) {
   if (video) video.srcObject = stream;
 }
 
+// Cross-client identifier for a screen share. Mesh peers see the same
+// MediaStream.id on both sender + receiver because the stream propagates
+// over a PeerConnection, so stream.id works as the "share id" used for
+// tile keys, drawing layer keys, and screen-stop event payloads. LiveKit
+// breaks that — each side has a freshly-generated local MediaStream.id —
+// so the LK transport stamps `__huddleShareId` (= LK trackSid) on the
+// stream before handing it back to the renderer. We canonicalize through
+// this helper everywhere a draw layer or tile is keyed by a screen.
+function shareIdFor(stream) {
+  return stream.__huddleShareId || stream.id;
+}
+
 function addLocalScreenTile(stream, label) {
-  const key = `screen:${stream.id}`;
+  const shareId = shareIdFor(stream);
+  const key = `screen:${shareId}`;
   const tile = makeTile({ key, label: `${label} — you`, kind: 'screen' });
-  tile.dataset.streamId = stream.id;
+  tile.dataset.streamId = shareId;
   tile.querySelector('video').srcObject = stream;
-  attachDrawingLayer(tile, stream.id, /*owner*/ true);
+  attachDrawingLayer(tile, shareId, /*owner*/ true);
   const stopBtn = document.createElement('button');
   stopBtn.className = 'tile-action-stop';
   stopBtn.title = 'Stop sharing'; stopBtn.setAttribute('aria-label', 'Stop sharing');
   stopBtn.innerHTML = `${window.HuddleIcons.stop}<span>Stop</span>`;
+  // removeScreen takes the LOCAL MediaStream.id (the LK transport
+  // keys _screenStreams off that, not the share id). Mesh treats them
+  // as the same so there's no divergence in that codepath.
   stopBtn.onclick = () => state.mesh.removeScreen(stream.id);
   tile.querySelector('.tile-actions').appendChild(stopBtn);
 }
 
 function onTrack({ stream, track, fromId }) {
-  const screen = state.mesh.remoteScreenLabels.get(stream.id);
+  // Use shareIdFor (= LK trackSid for LK screens, = stream.id for mesh)
+  // because the LK transport populates remoteScreenLabels keyed by the
+  // share id so it stays consistent with tile / draw-layer keying.
+  const screen = state.mesh.remoteScreenLabels.get(shareIdFor(stream));
   if (screen) { renderRemoteScreen(stream, screen); return; }
   if (state.pendingStreams.has(stream.id)) return;
   const timer = setTimeout(() => commitStreamAsCamera(stream.id), STREAM_DECISION_MS);
@@ -3652,16 +3671,17 @@ function commitStreamAsCamera(streamId) {
 }
 
 function renderRemoteScreen(stream, screen) {
-  const key = `screen:${stream.id}`;
+  const shareId = shareIdFor(stream);
+  const key = `screen:${shareId}`;
   if (state.tilesByKey.has(key)) {
     state.tilesByKey.get(key).querySelector('.tile-label').textContent =
       `${screen.label} — ${screen.fromName}`;
     return;
   }
   const tile = makeTile({ key, label: `${screen.label} — ${screen.fromName}`, kind: 'screen', userId: screen.from });
-  tile.dataset.streamId = stream.id;
+  tile.dataset.streamId = shareId;
   tile.querySelector('video').srcObject = stream;
-  attachDrawingLayer(tile, stream.id, /*owner*/ false);
+  attachDrawingLayer(tile, shareId, /*owner*/ false);
 }
 
 function onScreenAnnounce(detail) {
