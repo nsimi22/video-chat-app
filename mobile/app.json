@@ -22,8 +22,7 @@
         "NSCameraUsageDescription": "Huddle uses your camera for video calls.",
         "NSMicrophoneUsageDescription": "Huddle uses your microphone for calls.",
         "UIBackgroundModes": [
-          "audio",
-          "voip"
+          "audio"
         ],
         "ITSAppUsesNonExemptEncryption": false
       }

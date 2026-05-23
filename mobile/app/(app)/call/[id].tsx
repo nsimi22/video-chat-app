@@ -269,7 +269,12 @@ function CallView({ title, perms }: { title: string; perms: { camera: boolean; m
                       ? {
                           enabled: true,
                           startAutomatically: true,
-                          preferredSize: { width: 16, height: 9 },
+                          // Honour the track's real aspect (portrait camera,
+                          // wide screenshare, etc.) so iOS doesn't letterbox.
+                          // Fall back to 16:9 before the first frame lands
+                          // and dimensions are still undefined.
+                          preferredSize:
+                            item.publication.dimensions ?? { width: 16, height: 9 },
                         }
                       : undefined
                   }
