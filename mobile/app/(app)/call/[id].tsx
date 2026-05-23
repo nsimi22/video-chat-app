@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, FlatList, Platform, Alert, Linking, useWindowDimensions } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -13,6 +13,7 @@ import {
   useLocalParticipant,
   useParticipants,
   isTrackReference,
+  type TrackReference,
 } from '@livekit/react-native';
 import { Track } from 'livekit-client';
 import {
@@ -122,6 +123,24 @@ function CallView({ title, perms }: { title: string; perms: { camera: boolean; m
     lastCameraError,
   } = useLocalParticipant();
   const participants = useParticipants();
+  // PiP can only bind to one track at a time (iOS is a system-level
+  // singleton). Pick the most interesting remote track: a screenshare
+  // if anyone's sharing, otherwise the first remote camera. Local
+  // tracks are excluded because iOS stops the local capture as soon
+  // as the app backgrounds, so a local PiP source goes black almost
+  // immediately. When the user is alone in the room this resolves to
+  // null and no tile registers PiP at all.
+  const pipTrack = useMemo<TrackReference | null>(() => {
+    const remotes = tracks.filter(
+      (t): t is TrackReference =>
+        isTrackReference(t) && !t.participant.isLocal && !t.publication.isMuted,
+    );
+    return (
+      remotes.find((t) => t.source === Track.Source.ScreenShare) ??
+      remotes.find((t) => t.source === Track.Source.Camera) ??
+      null
+    );
+  }, [tracks]);
   const mic = isMicrophoneEnabled;
   const cam = isCameraEnabled;
 
@@ -245,6 +264,15 @@ function CallView({ title, perms }: { title: string; perms: { camera: boolean; m
                 <VideoTrack
                   trackRef={item}
                   style={isLocal ? { flex: 1, transform: [{ scaleX: -1 }] } : { flex: 1 }}
+                  iosPIP={
+                    pipTrack && item === pipTrack
+                      ? {
+                          enabled: true,
+                          startAutomatically: true,
+                          preferredSize: { width: 16, height: 9 },
+                        }
+                      : undefined
+                  }
                 />
               ) : (
                 <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: space(3) }}>
