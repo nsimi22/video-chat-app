@@ -129,25 +129,48 @@ export default function ChannelScreen() {
     const body = text.trim();
     if (!body && !attachments.length) return;
     setSending(true);
+    // Clear the composer up front so the user can see their send went
+    // through. /ai-ticket and /summarize can take 10–30s end-to-end
+    // (AI inference + Jira create + sendMessage) — without this the
+    // composer keeps showing the original "/ai-ticket …" text for the
+    // whole window, looking exactly like the send didn't fire.
+    setText('');
+    // Restore the body only if the user hasn't started composing
+    // something new in the meantime — a long-running /ai-ticket can
+    // overlap with the user typing the next message.
+    const restoreBody = () => setText((curr) => (curr === '' ? body : curr));
     try {
       // Slash commands only fire when there are no attachments — an image
       // upload that happens to be captioned with "/me" should be a normal
       // message, not a /me command on the caption. Skip when userId isn't
       // resolved yet: every dispatch path needs an authenticated author.
       if (!attachments.length && body.startsWith('/') && userId) {
-        const consumed = await runSlash(body, {
-          teamId,
-          channelId: String(channelId),
-          userId,
-          roster,
-          recentMessages: messages,
-          onAiThinking: setAiThinking,
-          onError: (msg) => Alert.alert('Slash command', msg),
-        });
-        if (consumed) {
-          setText('');
-          return;
+        let consumed = false;
+        try {
+          consumed = await runSlash(body, {
+            teamId,
+            channelId: String(channelId),
+            userId,
+            roster,
+            recentMessages: messages,
+            onAiThinking: setAiThinking,
+            // Slash handlers catch their own internal errors and still
+            // return `true`, so the outer catch below never sees them.
+            // Restore the composer here so a failed /ai-ticket leaves
+            // the user with their text to edit + retry.
+            onError: (msg) => {
+              restoreBody();
+              Alert.alert('Slash command', msg);
+            },
+          });
+        } finally {
+          // Safety net: any code path inside runSlash that flipped
+          // aiThinking true and then threw before flipping it back
+          // would otherwise leave the "AI is thinking…" indicator
+          // stuck on screen.
+          setAiThinking(false);
         }
+        if (consumed) return;
       }
       await sendMessage({
         teamId,
@@ -157,8 +180,8 @@ export default function ChannelScreen() {
         attachments,
         mentions: extractMentions(body, roster),
       });
-      setText('');
     } catch (e: any) {
+      restoreBody();
       Alert.alert('Could not send', e?.message ?? String(e));
     } finally {
       setSending(false);
