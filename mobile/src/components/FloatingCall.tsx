@@ -10,9 +10,10 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import { Mic, MicOff, PhoneOff, type LucideIcon } from 'lucide-react-native';
 import { Avatar } from '@/components/ui';
+import { PipFallbackView } from '@/components/PipFallbackView';
 import { colors, radius, space } from '@/theme';
 import { useCall } from '@/context/CallContext';
-import { PIP_WINDOW_FALLBACK, usePipTrack } from '@/lib/pipTrack';
+import { PIP_WINDOW_FALLBACK, useIsAppBackgrounded, usePipTrack } from '@/lib/pipTrack';
 
 // Mini call window pinned over the route content while the user
 // navigates around (channels, settings, etc.). Tap the video to
@@ -52,6 +53,18 @@ export function FloatingCall() {
   // Same selection rule as the full-screen PiP — shared so both
   // surfaces agree on what gets the singleton AVPictureInPictureController.
   const floaterTrack = usePipTrack();
+  const isBackgrounded = useIsAppBackgrounded();
+  // Local cam capture is suspended by iOS when the app backgrounds, so
+  // the PiP layer would freeze on its last frame. Swap to an undefined
+  // trackRef in that case — the native PIPController interprets the
+  // resulting nil videoTrack as "show the fallbackView" instead.
+  // Remote tracks keep streaming over WebRTC regardless and don't need
+  // the workaround.
+  const showFrozenFallback = !!floaterTrack && floaterTrack.participant.isLocal && isBackgrounded;
+  // VideoTrack's trackRef prop is TrackReference | undefined — coerce
+  // the usePipTrack null to undefined to match (this branch only fires
+  // when floaterTrack is non-null anyway).
+  const videoTrackForPip = showFrozenFallback ? undefined : floaterTrack ?? undefined;
 
   // Corner bounds. These are screen-relative top/left positions
   // (Reanimated drives translateX/Y from {0,0}, so the four corners
@@ -156,7 +169,11 @@ export function FloatingCall() {
         >
           {floaterTrack ? (
             <VideoTrack
-              trackRef={floaterTrack}
+              // When local + backgrounded, drop to undefined so the
+              // native PIPController sees a nil video track and swaps
+              // to the fallbackView (an "Audio only" panel) instead
+              // of freezing on the last frame iOS gave us.
+              trackRef={videoTrackForPip}
               // Mirror the local cam preview so it matches the
               // full-screen view's self-tile.
               style={
@@ -167,23 +184,12 @@ export function FloatingCall() {
               // Native iOS Picture-in-Picture: when the user
               // backgrounds the whole app (home button / app switcher),
               // iOS will pop the floater out into a system-level PiP
-              // window overlaying the home screen / other apps. Only
-              // wired to the floater (not the full call view) because
-              // the floater is the *persistent* track across routes —
-              // wiring iosPIP in two places at once would race for the
-              // single AVPictureInPictureController iOS gives us.
+              // window overlaying the home screen / other apps.
               iosPIP={{
                 enabled: true,
                 startAutomatically: true,
-                // AVPictureInPictureController treats this as a size
-                // hint in points on some iOS code paths, not strictly
-                // an aspect ratio — falling back to {16, 9} would
-                // render an invisible PiP window during the brief
-                // window before the first frame populates
-                // `publication.dimensions`. Use the floater's own
-                // dimensions instead: a sensible portrait default
-                // that matches what the user was just looking at.
                 preferredSize: floaterTrack.publication.dimensions ?? PIP_WINDOW_FALLBACK,
+                fallbackView: <PipFallbackView name={activeCall.name} />,
               }}
             />
           ) : (
