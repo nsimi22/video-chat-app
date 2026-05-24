@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, FlatList, Platform, Alert, Linking, useWindowDimensions } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -6,14 +6,11 @@ import { useKeepAwake } from 'expo-keep-awake';
 import * as Device from 'expo-device';
 import { Camera } from 'expo-camera';
 import {
-  AudioSession,
-  LiveKitRoom,
   VideoTrack,
   useTracks,
   useLocalParticipant,
   useParticipants,
   isTrackReference,
-  type TrackReference,
 } from '@livekit/react-native';
 import { Track } from 'livekit-client';
 import {
@@ -25,59 +22,65 @@ import {
   PhoneOff,
 } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
-import { getCallToken, type LiveKitGrant } from '@/lib/livekit';
-import { useAuth } from '@/context/AuthContext';
+import { useCall, type CallPerms } from '@/context/CallContext';
 import { Avatar } from '@/components/ui';
 import { colors, radius, space } from '@/theme';
 
+// Full-screen call view. As of the room-hoist refactor, this screen
+// no longer owns the LiveKitRoom — the room lives in (app)/_layout.tsx
+// so it survives navigation (the user can pop back to a channel and
+// the call keeps running, with a floating tile pinned to the corner).
+// This screen is now a consumer that:
+//   1. ensures CallProvider has the right activeCall for the route id
+//      (kicks off startCall if not, or replaces a mismatched one)
+//   2. renders the grid + control bar against the room mounted above
 export default function CallScreen() {
   const { id: channelId, name } = useLocalSearchParams<{ id: string; name?: string }>();
-  const { activeTeam } = useAuth();
-  const [grant, setGrant] = useState<LiveKitGrant | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  // perms tracks the user's decision on the iOS/Android camera + mic
-  // prompts. We have to ask explicitly *before* LiveKit's auto-publish
-  // fires its own getUserMedia, otherwise iOS treats the underlying
-  // RNWebRTC getUserMedia call as a denied-without-prompt no-op and
-  // setCameraEnabled/setMicrophoneEnabled silently fail forever. null
-  // means we haven't asked yet; once decided we pass the grants to
-  // LiveKitRoom so it only tries to publish what the OS will allow.
-  const [perms, setPerms] = useState<{ camera: boolean; mic: boolean } | null>(null);
+  const { activeCall, perms, starting, error, startCall, endCall, clearError } = useCall();
   useKeepAwake();
 
+  const routeId = String(channelId);
+  const routeName = name ? String(name) : undefined;
+  // Tracks whether we've ever observed activeCall match this route
+  // during this mount. Used to distinguish "still waiting for the
+  // initial start" from "the call ended out from under us" — without
+  // this, an externally-triggered endCall (server disconnect, hangup
+  // from elsewhere) would race with startCall in a re-render loop.
+  const sawMatch = useRef(false);
+
   useEffect(() => {
-    let active = true;
-    AudioSession.startAudioSession();
-    (async () => {
-      // Native prompts; safe to call repeatedly — both functions return
-      // the existing decision without re-prompting once the user has
-      // answered.
-      const [camRes, micRes] = await Promise.all([
-        Camera.requestCameraPermissionsAsync(),
-        Camera.requestMicrophonePermissionsAsync(),
-      ]);
-      if (active) setPerms({ camera: camRes.granted, mic: micRes.granted });
-    })().catch((e) => active && setError(e?.message ?? String(e)));
-    if (activeTeam) {
-      getCallToken(activeTeam.id, String(channelId))
-        .then((g) => active && setGrant(g))
-        .catch((e) => active && setError(e?.message ?? String(e)));
+    if (activeCall?.channelId === routeId) {
+      sawMatch.current = true;
+      return;
     }
-    return () => {
-      active = false;
-      AudioSession.stopAudioSession();
-    };
-  }, [activeTeam, channelId]);
+    if (sawMatch.current && !error) {
+      // We had a matching call; now we don't. Pop back to whatever
+      // route opened us. Skip while error is set so the user can
+      // read the error screen before dismissing it manually.
+      router.back();
+      return;
+    }
+    if (error) return;
+    // Initial mount, different channel, or recovery after a cleared
+    // error → start (or last-wins switch to) this call.
+    startCall(routeId, routeName).catch(() => {});
+  }, [activeCall, routeId, routeName, startCall, error]);
 
   if (error) {
     return (
       <SafeAreaView style={styles.center}>
         <Text style={{ color: colors.danger, textAlign: 'center', marginBottom: space(4) }}>{error}</Text>
-        <TouchableOpacity onPress={() => router.back()}><Text style={{ color: colors.accent }}>Back</Text></TouchableOpacity>
+        <TouchableOpacity onPress={() => { clearError(); endCall(); router.back(); }}>
+          <Text style={{ color: colors.accent }}>Back</Text>
+        </TouchableOpacity>
       </SafeAreaView>
     );
   }
-  if (!grant || !perms) {
+
+  // No matching active call yet → startCall is in flight (or the
+  // layout hasn't mounted LiveKitRoom). LiveKit hooks would throw if
+  // we tried to render CallView before the room mounts.
+  if (!activeCall || activeCall.channelId !== routeId || !perms || starting) {
     return (
       <SafeAreaView style={styles.center}>
         <ActivityIndicator color={colors.accent} />
@@ -86,22 +89,18 @@ export default function CallScreen() {
     );
   }
 
-  return (
-    <LiveKitRoom
-      serverUrl={grant.url}
-      token={grant.token}
-      connect
-      audio={perms.mic}
-      video={perms.camera}
-      options={{ adaptiveStream: { pixelDensity: 'screen' } }}
-      onDisconnected={() => router.back()}
-    >
-      <CallView title={name ? String(name) : 'Call'} perms={perms} />
-    </LiveKitRoom>
-  );
+  return <CallView title={activeCall.name} perms={perms} onHangUp={() => { endCall(); router.back(); }} />;
 }
 
-function CallView({ title, perms }: { title: string; perms: { camera: boolean; mic: boolean } }) {
+function CallView({
+  title,
+  perms,
+  onHangUp,
+}: {
+  title: string;
+  perms: CallPerms;
+  onHangUp: () => void;
+}) {
   const insets = useSafeAreaInsets();
   const { height: winHeight } = useWindowDimensions();
   const tracks = useTracks(
@@ -123,24 +122,6 @@ function CallView({ title, perms }: { title: string; perms: { camera: boolean; m
     lastCameraError,
   } = useLocalParticipant();
   const participants = useParticipants();
-  // PiP can only bind to one track at a time (iOS is a system-level
-  // singleton). Pick the most interesting remote track: a screenshare
-  // if anyone's sharing, otherwise the first remote camera. Local
-  // tracks are excluded because iOS stops the local capture as soon
-  // as the app backgrounds, so a local PiP source goes black almost
-  // immediately. When the user is alone in the room this resolves to
-  // null and no tile registers PiP at all.
-  const pipTrack = useMemo<TrackReference | null>(() => {
-    const remotes = tracks.filter(
-      (t): t is TrackReference =>
-        isTrackReference(t) && !t.participant.isLocal && !t.publication.isMuted,
-    );
-    return (
-      remotes.find((t) => t.source === Track.Source.ScreenShare) ??
-      remotes.find((t) => t.source === Track.Source.Camera) ??
-      null
-    );
-  }, [tracks]);
   const mic = isMicrophoneEnabled;
   const cam = isCameraEnabled;
 
@@ -264,20 +245,6 @@ function CallView({ title, perms }: { title: string; perms: { camera: boolean; m
                 <VideoTrack
                   trackRef={item}
                   style={isLocal ? { flex: 1, transform: [{ scaleX: -1 }] } : { flex: 1 }}
-                  iosPIP={
-                    pipTrack && item === pipTrack
-                      ? {
-                          enabled: true,
-                          startAutomatically: true,
-                          // Honour the track's real aspect (portrait camera,
-                          // wide screenshare, etc.) so iOS doesn't letterbox.
-                          // Fall back to 16:9 before the first frame lands
-                          // and dimensions are still undefined.
-                          preferredSize:
-                            item.publication.dimensions ?? { width: 16, height: 9 },
-                        }
-                      : undefined
-                  }
                 />
               ) : (
                 <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: space(3) }}>
@@ -344,7 +311,10 @@ function CallView({ title, perms }: { title: string; perms: { camera: boolean; m
           off={!cam}
         />
         <CtrlButton icon={SwitchCamera} a11yLabel="Flip camera" onPress={flipCamera} active />
-        <CtrlButton icon={PhoneOff} a11yLabel="Leave call" onPress={() => router.back()} danger />
+        {/* End-call button actually ends the call; the user can also
+            navigate away (back gesture / back button) which leaves the
+            call running and surfaces the floating tile. */}
+        <CtrlButton icon={PhoneOff} a11yLabel="Leave call" onPress={onHangUp} danger />
       </View>
     </View>
   );
