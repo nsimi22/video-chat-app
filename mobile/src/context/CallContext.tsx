@@ -47,16 +47,28 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const startingRef = useRef(false);
 
   const endCall = useCallback(() => {
-    // Order: clear React state first so the LiveKitRoom in the
-    // layout unmounts (it's gated on activeCall), then stop the iOS
-    // audio session. Stopping the session before disconnect logs a
-    // warning on iOS about deactivating an in-use audio session.
+    // Drop call state synchronously; the layout's CallRoomShell
+    // re-renders next tick and unmounts the LiveKitRoom. The audio
+    // session stop is deferred to a useEffect (see below) so it
+    // runs *after* React commits the unmount — otherwise we tear
+    // down the iOS audio session while the room is still using it
+    // and iOS logs an "audio session deactivated while in use" warning.
     setActiveCall(null);
     setPerms(null);
     setStarting(false);
     startingRef.current = false;
-    AudioSession.stopAudioSession();
   }, []);
+
+  // Audio session lifecycle is split across two places intentionally:
+  //   - startCall() calls startAudioSession() inline (before any LiveKit
+  //     work; iOS needs the session active for getUserMedia to capture)
+  //   - here, we stop the session only after `activeCall` has flipped to
+  //     null and React has committed the LiveKitRoom unmount.
+  useEffect(() => {
+    if (!activeCall && !startingRef.current) {
+      AudioSession.stopAudioSession();
+    }
+  }, [activeCall]);
 
   const startCall = useCallback(
     async (channelId: string, name?: string) => {

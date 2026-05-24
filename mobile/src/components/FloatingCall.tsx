@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { TouchableOpacity, View } from 'react-native';
+import { Platform, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import {
@@ -17,15 +17,20 @@ import { useCall } from '@/context/CallContext';
 // while the user navigates around (channels, settings, etc.). Tapping
 // it returns to the full call view. Only rendered by (app)/_layout.tsx
 // when there's an active call AND the current route isn't /call/[id]
-// itself. Sits above the tab bar via insets.bottom + a tab-bar fudge.
+// itself. Sits above the tab bar via insets.bottom + the platform
+// default tab bar content height.
 
 // Match the LocalParticipantTile portrait aspect; landscape cams get
 // letterboxed but on a phone-sized floater that's fine.
 const FLOATER_WIDTH = 110;
 const FLOATER_HEIGHT = 150;
-// Approximate room for the bottom-tab strip; safer than parsing the
-// runtime tab-bar height which requires being inside the tab navigator.
-const TAB_BAR_OFFSET = 56;
+// react-navigation's default bottom-tab content heights (sans
+// safe-area inset, which we add separately). Keep this in sync if we
+// override `tabBarStyle.height` in (app)/(tabs)/_layout.tsx — there's
+// no React hook for it from outside the tab navigator, so we mirror
+// the default by hand. See `getDefaultTabBarHeight()` in
+// node_modules/@react-navigation/bottom-tabs.
+const TAB_BAR_CONTENT_HEIGHT = Platform.OS === 'ios' ? 49 : 56;
 
 export function FloatingCall() {
   const insets = useSafeAreaInsets();
@@ -73,7 +78,7 @@ export function FloatingCall() {
       style={{
         position: 'absolute',
         right: space(3),
-        bottom: insets.bottom + TAB_BAR_OFFSET + space(2),
+        bottom: insets.bottom + TAB_BAR_CONTENT_HEIGHT + space(2),
         width: FLOATER_WIDTH,
         height: FLOATER_HEIGHT,
         borderRadius: radius.md,
