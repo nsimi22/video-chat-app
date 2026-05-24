@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import { Camera } from 'expo-camera';
 import { AudioSession } from '@livekit/react-native';
 import { getCallToken, type LiveKitGrant } from '@/lib/livekit';
+import { startCallForegroundService, stopCallForegroundService } from '@/lib/callForegroundService';
 import { useAuth } from '@/context/AuthContext';
 
 // Owns the in-progress call so the LiveKit room can outlive the
@@ -64,9 +65,12 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   //     work; iOS needs the session active for getUserMedia to capture)
   //   - here, we stop the session only after `activeCall` has flipped to
   //     null and React has committed the LiveKitRoom unmount.
+  // Same logic applies to the Android foreground service (which itself
+  // is a no-op on iOS — see lib/callForegroundService).
   useEffect(() => {
     if (!activeCall && !startingRef.current) {
       AudioSession.stopAudioSession();
+      stopCallForegroundService();
     }
   }, [activeCall]);
 
@@ -99,9 +103,15 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         ]);
         setPerms({ camera: camRes.granted, mic: micRes.granted });
         setActiveCall({ channelId, name: name ?? 'Call', grant });
+        // Android: drop a persistent "in call" notification that
+        // promotes our process to a foreground service. iOS no-op.
+        // Failures here don't block the call — the helper logs and
+        // continues. See lib/callForegroundService.
+        startCallForegroundService(name ?? 'Call');
       } catch (e) {
         setError((e as Error)?.message ?? String(e));
         AudioSession.stopAudioSession();
+        stopCallForegroundService();
       } finally {
         startingRef.current = false;
         setStarting(false);

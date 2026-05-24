@@ -37,7 +37,10 @@
         "CAMERA",
         "RECORD_AUDIO",
         "MODIFY_AUDIO_SETTINGS",
-        "POST_NOTIFICATIONS"
+        "POST_NOTIFICATIONS",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_MICROPHONE",
+        "FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ]
     },
     "plugins": [
@@ -51,7 +54,8 @@
       ],
       "expo-notifications",
       "@livekit/react-native-expo-plugin",
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      "./plugins/withForegroundService.js"
     ],
     "extra": {
       "supabaseUrl": "https://jwqvrdgjpftjiwvgdrck.supabase.co",

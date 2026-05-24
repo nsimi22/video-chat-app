@@ -13,7 +13,11 @@
 // where the room would connect but setCameraEnabled / setMicrophoneEnabled
 // would silently no-op despite permissions being granted.
 import { registerGlobals } from '@livekit/react-native';
+import { registerCallForegroundServiceHandler } from './src/lib/callForegroundService';
 
 registerGlobals();
+// Must run before any notifee.displayNotification({ asForegroundService })
+// fires — notifee throws otherwise. No-op on iOS.
+registerCallForegroundServiceHandler();
 
 import 'expo-router/entry';
