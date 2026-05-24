@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, FlatList, Platform, Alert, Linking, useWindowDimensions } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useKeepAwake } from 'expo-keep-awake';
 import * as Device from 'expo-device';
 import { Camera } from 'expo-camera';
+import { startIOSPIP } from '@livekit/react-native-webrtc';
 import {
   AudioSession,
   LiveKitRoom,
@@ -22,6 +23,7 @@ import {
   Video as VideoIcon,
   VideoOff,
   SwitchCamera,
+  PictureInPicture,
   PhoneOff,
 } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
@@ -124,23 +126,30 @@ function CallView({ title, perms }: { title: string; perms: { camera: boolean; m
   } = useLocalParticipant();
   const participants = useParticipants();
   // PiP can only bind to one track at a time (iOS is a system-level
-  // singleton). Pick the most interesting remote track: a screenshare
-  // if anyone's sharing, otherwise the first remote camera. Local
-  // tracks are excluded because iOS stops the local capture as soon
-  // as the app backgrounds, so a local PiP source goes black almost
-  // immediately. When the user is alone in the room this resolves to
-  // null and no tile registers PiP at all.
+  // singleton). Selection order:
+  //   1. a remote screenshare (most likely the thing the user wants to
+  //      keep watching)
+  //   2. a remote camera (audio + their face stays visible)
+  //   3. the local camera as a last resort, so a solo caller can still
+  //      open PiP from the in-app button — iOS WILL stop the local
+  //      capture on background and the window will go black, but the
+  //      PiP mechanism itself still works (and the moment anyone joins
+  //      and turns on a camera, this swaps to the remote tile).
   const pipTrack = useMemo<TrackReference | null>(() => {
-    const remotes = tracks.filter(
-      (t): t is TrackReference =>
-        isTrackReference(t) && !t.participant.isLocal && !t.publication.isMuted,
+    const reals = tracks.filter(
+      (t): t is TrackReference => isTrackReference(t) && !t.publication.isMuted,
     );
+    const remotes = reals.filter((t) => !t.participant.isLocal);
     return (
       remotes.find((t) => t.source === Track.Source.ScreenShare) ??
       remotes.find((t) => t.source === Track.Source.Camera) ??
+      reals.find((t) => t.participant.isLocal && t.source === Track.Source.Camera) ??
       null
     );
   }, [tracks]);
+  // Captured at render-time on whichever <VideoTrack> matches pipTrack.
+  // Passed to startIOSPIP() when the user taps the PiP control button.
+  const pipRef = useRef<ComponentRef<typeof VideoTrack>>(null);
   const mic = isMicrophoneEnabled;
   const cam = isCameraEnabled;
 
@@ -263,6 +272,9 @@ function CallView({ title, perms }: { title: string; perms: { camera: boolean; m
               {showVideo ? (
                 <VideoTrack
                   trackRef={item}
+                  // Attach the PiP ref only to the matching tile so the
+                  // PiP button can target this specific RTCPIPView.
+                  ref={item === pipTrack ? pipRef : null}
                   style={isLocal ? { flex: 1, transform: [{ scaleX: -1 }] } : { flex: 1 }}
                   iosPIP={
                     pipTrack && item === pipTrack
@@ -344,6 +356,22 @@ function CallView({ title, perms }: { title: string; perms: { camera: boolean; m
           off={!cam}
         />
         <CtrlButton icon={SwitchCamera} a11yLabel="Flip camera" onPress={flipCamera} active />
+        {Platform.OS === 'ios' && (
+          // Manual PiP trigger. iOS's `startAutomatically: true` covers
+          // the home-button / app-switcher case, but a lot of users
+          // expect an explicit in-app PiP button (Safari, YouTube,
+          // FaceTime all have one). Disabled until there's a track to
+          // bind to — see pipTrack selection above.
+          <CtrlButton
+            icon={PictureInPicture}
+            a11yLabel="Picture in Picture"
+            onPress={() => {
+              if (pipRef.current) startIOSPIP(pipRef);
+            }}
+            active={!!pipTrack}
+            disabled={!pipTrack}
+          />
+        )}
         <CtrlButton icon={PhoneOff} a11yLabel="Leave call" onPress={() => router.back()} danger />
       </View>
     </View>
@@ -357,6 +385,7 @@ function CtrlButton({
   active,
   off,
   danger,
+  disabled,
 }: {
   icon: LucideIcon;
   a11yLabel: string;
@@ -364,6 +393,7 @@ function CtrlButton({
   active?: boolean;
   off?: boolean;
   danger?: boolean;
+  disabled?: boolean;
 }) {
   // Off-state (mic/cam disabled) gets the same red treatment as the
   // leave-call button so the user can see at a glance that they're muted.
@@ -371,8 +401,10 @@ function CtrlButton({
   return (
     <TouchableOpacity
       onPress={onPress}
+      disabled={disabled}
       accessibilityLabel={a11yLabel}
       accessibilityRole="button"
+      accessibilityState={{ disabled: !!disabled }}
       hitSlop={8}
       style={{
         width: 56,
@@ -383,6 +415,7 @@ function CtrlButton({
         backgroundColor: bg,
         borderWidth: danger || off ? 0 : 1,
         borderColor: colors.border,
+        opacity: disabled ? 0.4 : 1,
       }}
     >
       <Icon size={24} color="#fff" strokeWidth={2} />
