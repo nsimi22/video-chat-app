@@ -12,7 +12,8 @@ import {
   useParticipants,
   isTrackReference,
 } from '@livekit/react-native';
-import { PIP_WINDOW_FALLBACK, usePipTrack } from '@/lib/pipTrack';
+import { PIP_WINDOW_FALLBACK, useIsAppActive, usePipTrack } from '@/lib/pipTrack';
+import { PipFallbackView } from '@/components/PipFallbackView';
 import { Track } from 'livekit-client';
 import {
   Mic,
@@ -130,6 +131,11 @@ function CallView({
   // same time (floater hides when on /call/[id]) so they don't race
   // for AVPictureInPictureController, the iOS singleton.
   const pipTrack = usePipTrack();
+  const isActive = useIsAppActive();
+  // Same local-cam-on-background workaround as the floater: hand the
+  // native PIPController a nil track when iOS has paused our local
+  // capture, so it shows the fallbackView instead of a frozen frame.
+  const liveInPip = pipTrack && !(pipTrack.participant.isLocal && !isActive);
   const mic = isMicrophoneEnabled;
   const cam = isCameraEnabled;
 
@@ -262,7 +268,13 @@ function CallView({
             >
               {showVideo ? (
                 <VideoTrack
-                  trackRef={item}
+                  // On the pipTile only: clear trackRef while iOS has
+                  // suspended local capture so the PIPController swaps
+                  // to its fallbackView instead of freezing on the last
+                  // frame. The in-app frame shows black for a moment
+                  // until foreground returns — fine because by then
+                  // the user isn't looking at the call screen anyway.
+                  trackRef={isPipTile && !liveInPip ? undefined : item}
                   style={isLocal ? { flex: 1, transform: [{ scaleX: -1 }] } : { flex: 1 }}
                   // Only the chosen pipTrack tile registers iosPIP, so
                   // we don't fight the floater's iosPIP for iOS's
@@ -276,6 +288,7 @@ function CallView({
                           enabled: true,
                           startAutomatically: true,
                           preferredSize: item.publication.dimensions ?? PIP_WINDOW_FALLBACK,
+                          fallbackView: <PipFallbackView name={displayName} />,
                         }
                       : undefined
                   }

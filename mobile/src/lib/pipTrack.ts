@@ -1,4 +1,5 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { AppState } from 'react-native';
 import {
   isTrackReference,
   useTracks,
@@ -52,4 +53,29 @@ export function usePipTrack(): TrackReference | null {
       null
     );
   }, [tracks]);
+}
+
+/**
+ * Tracks the foreground/background state of the app so callers can swap
+ * `trackRef` to `undefined` for iOS PiP when a *local* camera publish
+ * stops producing frames. iOS suspends camera capture as soon as the app
+ * backgrounds (no entitlement is available for non-native apps to keep
+ * the camera live), so the AVSampleBufferDisplayLayer otherwise draws
+ * the last received frame indefinitely — the "PiP is frozen" symptom.
+ *
+ * With this, callers can set `trackRef={undefined}` when local + not
+ * active, which signals the native PIPController to swap to its
+ * `fallbackView` (we provide one via `iosPIP.fallbackView`). Remote
+ * tracks are unaffected — their frames arrive over WebRTC regardless
+ * of our app's foreground state.
+ */
+export function useIsAppActive(): boolean {
+  const [active, setActive] = useState(() => AppState.currentState === 'active');
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      setActive(state === 'active');
+    });
+    return () => sub.remove();
+  }, []);
+  return active;
 }
