@@ -12,7 +12,7 @@ import {
 import { Track } from 'livekit-client';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
-import { Mic, MicOff, PhoneOff } from 'lucide-react-native';
+import { Mic, MicOff, PhoneOff, type LucideIcon } from 'lucide-react-native';
 import { Avatar } from '@/components/ui';
 import { colors, radius, space } from '@/theme';
 import { useCall } from '@/context/CallContext';
@@ -196,7 +196,16 @@ export function FloatingCall() {
               iosPIP={{
                 enabled: true,
                 startAutomatically: true,
-                preferredSize: floaterTrack.publication.dimensions ?? { width: 16, height: 9 },
+                // AVPictureInPictureController treats this as a size
+                // hint in points on some iOS code paths, not strictly
+                // an aspect ratio — falling back to {16, 9} would
+                // render an invisible PiP window during the brief
+                // window before the first frame populates
+                // `publication.dimensions`. Use the floater's own
+                // dimensions instead: a sensible portrait default
+                // that matches what the user was just looking at.
+                preferredSize:
+                  floaterTrack.publication.dimensions ?? { width: FLOATER_WIDTH, height: FLOATER_HEIGHT },
               }}
             />
           ) : (
@@ -241,7 +250,7 @@ function FloatBtn({
   a11y,
   tint,
 }: {
-  icon: typeof Mic;
+  icon: LucideIcon;
   onPress: () => void;
   a11y: string;
   tint: string;
