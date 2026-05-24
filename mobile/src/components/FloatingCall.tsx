@@ -4,18 +4,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import {
   VideoTrack,
-  isTrackReference,
   useLocalParticipant,
-  useTracks,
-  type TrackReference,
 } from '@livekit/react-native';
-import { Track } from 'livekit-client';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import { Mic, MicOff, PhoneOff, type LucideIcon } from 'lucide-react-native';
 import { Avatar } from '@/components/ui';
 import { colors, radius, space } from '@/theme';
 import { useCall } from '@/context/CallContext';
+import { PIP_WINDOW_FALLBACK, usePipTrack } from '@/lib/pipTrack';
 
 // Mini call window pinned over the route content while the user
 // navigates around (channels, settings, etc.). Tap the video to
@@ -26,9 +23,11 @@ import { useCall } from '@/context/CallContext';
 // the current route isn't /call/[id] itself.
 
 // Match the LocalParticipantTile portrait aspect; landscape cams get
-// letterboxed but on a phone-sized floater that's fine.
-const FLOATER_WIDTH = 110;
-const FLOATER_HEIGHT = 150;
+// letterboxed but on a phone-sized floater that's fine. Shared with
+// the iosPIP `preferredSize` fallback over in lib/pipTrack so the
+// system PiP window matches the floater the user just had on screen.
+const FLOATER_WIDTH = PIP_WINDOW_FALLBACK.width;
+const FLOATER_HEIGHT = PIP_WINDOW_FALLBACK.height;
 const FLOATER_CONTROLS_HEIGHT = 32;
 // react-navigation's default bottom-tab content heights (sans safe-area
 // inset, which we add separately). Keep this in sync if we override
@@ -50,29 +49,9 @@ export function FloatingCall() {
   const { width: winWidth, height: winHeight } = useWindowDimensions();
   const { activeCall, endCall } = useCall();
   const { localParticipant, isMicrophoneEnabled } = useLocalParticipant();
-  const tracks = useTracks(
-    [
-      { source: Track.Source.Camera, withPlaceholder: false },
-      { source: Track.Source.ScreenShare, withPlaceholder: false },
-    ],
-    { onlySubscribed: false },
-  );
-
-  // Same selection rule as the full-screen PiP: prefer a remote
-  // screenshare, then a remote camera, then the local camera as a
-  // last resort so a solo caller still sees themself in the floater.
-  const floaterTrack = useMemo<TrackReference | null>(() => {
-    const reals = tracks.filter(
-      (t): t is TrackReference => isTrackReference(t) && !t.publication.isMuted,
-    );
-    const remotes = reals.filter((t) => !t.participant.isLocal);
-    return (
-      remotes.find((t) => t.source === Track.Source.ScreenShare) ??
-      remotes.find((t) => t.source === Track.Source.Camera) ??
-      reals.find((t) => t.participant.isLocal && t.source === Track.Source.Camera) ??
-      null
-    );
-  }, [tracks]);
+  // Same selection rule as the full-screen PiP — shared so both
+  // surfaces agree on what gets the singleton AVPictureInPictureController.
+  const floaterTrack = usePipTrack();
 
   // Corner bounds. These are screen-relative top/left positions
   // (Reanimated drives translateX/Y from {0,0}, so the four corners
@@ -204,8 +183,7 @@ export function FloatingCall() {
                 // `publication.dimensions`. Use the floater's own
                 // dimensions instead: a sensible portrait default
                 // that matches what the user was just looking at.
-                preferredSize:
-                  floaterTrack.publication.dimensions ?? { width: FLOATER_WIDTH, height: FLOATER_HEIGHT },
+                preferredSize: floaterTrack.publication.dimensions ?? PIP_WINDOW_FALLBACK,
               }}
             />
           ) : (

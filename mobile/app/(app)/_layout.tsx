@@ -74,20 +74,25 @@ export default function AppLayout() {
   );
 }
 
-// Mount <LiveKitRoom> only while there's an active call, with both
-// the navigator (so /call/[id] can use LiveKit hooks) and the floater
-// as descendants — same context for both. When no call is active,
-// children pass through so the rest of the app renders normally.
+// Wrap the navigator + floater in <LiveKitRoom> permanently — connect
+// is gated on activeCall+perms, so when there's no call the room
+// instance sits idle (no socket, no media). Doing it this way matters:
+// the previous "conditionally render LiveKitRoom" version meant the
+// JSX type of CallRoomShell's child changed (Fragment → LiveKitRoom)
+// the instant a call started, which causes react-native-screens to
+// rebuild the entire Stack and bounces the user to (tabs) mid-startCall.
+// They'd then see the floater on the channels list because activeCall
+// was set — exactly the "starts in PiP mode" bug reported on #150.
 function CallRoomShell({ children }: { children: React.ReactNode }) {
   const { activeCall, perms, endCall } = useCall();
-  if (!activeCall || !perms) return <>{children}</>;
+  const ready = !!activeCall && !!perms;
   return (
     <LiveKitRoom
-      serverUrl={activeCall.grant.url}
-      token={activeCall.grant.token}
-      connect
-      audio={perms.mic}
-      video={perms.camera}
+      serverUrl={ready ? activeCall!.grant.url : undefined}
+      token={ready ? activeCall!.grant.token : undefined}
+      connect={ready}
+      audio={ready ? perms!.mic : false}
+      video={ready ? perms!.camera : false}
       options={{ adaptiveStream: { pixelDensity: 'screen' } }}
       // Server-side disconnect (kicked, network drop, room closed)
       // should also reset our state so the floater disappears and the

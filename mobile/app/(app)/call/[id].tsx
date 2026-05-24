@@ -12,6 +12,7 @@ import {
   useParticipants,
   isTrackReference,
 } from '@livekit/react-native';
+import { PIP_WINDOW_FALLBACK, usePipTrack } from '@/lib/pipTrack';
 import { Track } from 'livekit-client';
 import {
   Mic,
@@ -19,6 +20,7 @@ import {
   Video as VideoIcon,
   VideoOff,
   SwitchCamera,
+  PictureInPicture,
   PhoneOff,
 } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
@@ -122,6 +124,12 @@ function CallView({
     lastCameraError,
   } = useLocalParticipant();
   const participants = useParticipants();
+  // We wire iosPIP on the same track the floater would have picked,
+  // so iOS auto-PiP fires whether the user backgrounds from the full
+  // call view or the floater. The two views are never mounted at the
+  // same time (floater hides when on /call/[id]) so they don't race
+  // for AVPictureInPictureController, the iOS singleton.
+  const pipTrack = usePipTrack();
   const mic = isMicrophoneEnabled;
   const cam = isCameraEnabled;
 
@@ -245,6 +253,21 @@ function CallView({
                 <VideoTrack
                   trackRef={item}
                   style={isLocal ? { flex: 1, transform: [{ scaleX: -1 }] } : { flex: 1 }}
+                  // Only the chosen pipTrack tile registers iosPIP, so
+                  // we don't fight the floater's iosPIP for iOS's
+                  // singleton AVPictureInPictureController. Honour the
+                  // track's real aspect when available; floater
+                  // dimensions are the right "looked at this last"
+                  // fallback before the first frame lands.
+                  iosPIP={
+                    pipTrack && item === pipTrack
+                      ? {
+                          enabled: true,
+                          startAutomatically: true,
+                          preferredSize: item.publication.dimensions ?? PIP_WINDOW_FALLBACK,
+                        }
+                      : undefined
+                  }
                 />
               ) : (
                 <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: space(3) }}>
@@ -311,6 +334,15 @@ function CallView({
           off={!cam}
         />
         <CtrlButton icon={SwitchCamera} a11yLabel="Flip camera" onPress={flipCamera} active />
+        {/* Minimize: pop back to the previous route, which surfaces
+            the in-app floater. Same outcome as the OS back gesture
+            but discoverable from the in-call control bar. */}
+        <CtrlButton
+          icon={PictureInPicture}
+          a11yLabel="Minimize call"
+          onPress={() => router.back()}
+          active
+        />
         {/* End-call button actually ends the call; the user can also
             navigate away (back gesture / back button) which leaves the
             call running and surfaces the floating tile. */}
