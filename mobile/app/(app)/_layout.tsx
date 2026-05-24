@@ -1,6 +1,10 @@
 import { useEffect } from 'react';
-import { Stack, router } from 'expo-router';
+import { View } from 'react-native';
+import { Stack, router, useSegments } from 'expo-router';
+import { LiveKitRoom } from '@livekit/react-native';
 import { useAuth } from '@/context/AuthContext';
+import { CallProvider, useCall } from '@/context/CallContext';
+import { FloatingCall } from '@/components/FloatingCall';
 import { registerForPush } from '@/lib/push';
 import { colors } from '@/theme';
 
@@ -24,37 +28,86 @@ export default function AppLayout() {
     });
   }, [userId]);
 
-  // The (tabs) group is the bottom-tab shell; chat and call screens push
-  // *over* the tabs at this Stack level.
+  // CallProvider has to wrap the navigator so /(app)/call/[id] can
+  // call useCall() to read activeCall and the floater (rendered as a
+  // layout-level sibling) can stay mounted across route changes.
+  // CallRoomShell then conditionally wraps the navigator in
+  // <LiveKitRoom> whenever a call is active, so the room (and its
+  // peer connection) survives navigating between channels.
   return (
-    <Stack
-      screenOptions={{
-        headerStyle: { backgroundColor: colors.surface },
-        headerTintColor: colors.text,
-        contentStyle: { backgroundColor: colors.bg },
-        // expo-router 6 / React Navigation 7 surfaces the parent route's
-        // name as the back-button label; without this, pushing from
-        // (tabs) shows the literal string "(tabs)" next to the chevron.
-        // `minimal` is the RN-Nav-7 idiomatic way (forces chevron-only);
-        // headerBackTitle:'' alone wasn't enough on iOS 26.
-        headerBackButtonDisplayMode: 'minimal',
-        headerBackTitle: '',
-      }}
-    >
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="channel/[id]" options={{ title: '' }} />
-      <Stack.Screen
-        name="call/[id]"
-        options={{
-          // headerShown declared once here so the call screen never has to
-          // toggle it at runtime. Modal screens that change header visibility
-          // mid-render get remounted by react-native-screens, which
-          // unmounts LiveKitRoom and kills the in-flight signal connection.
-          headerShown: false,
-          presentation: 'fullScreenModal',
-        }}
-      />
-      <Stack.Screen name="event/[id]" options={{ headerShown: false }} />
-    </Stack>
+    <CallProvider>
+      <CallRoomShell>
+        <View style={{ flex: 1, backgroundColor: colors.bg }}>
+          <Stack
+            screenOptions={{
+              headerStyle: { backgroundColor: colors.surface },
+              headerTintColor: colors.text,
+              contentStyle: { backgroundColor: colors.bg },
+              // expo-router 6 / React Navigation 7 surfaces the parent route's
+              // name as the back-button label; without this, pushing from
+              // (tabs) shows the literal string "(tabs)" next to the chevron.
+              // `minimal` is the RN-Nav-7 idiomatic way (forces chevron-only);
+              // headerBackTitle:'' alone wasn't enough on iOS 26.
+              headerBackButtonDisplayMode: 'minimal',
+              headerBackTitle: '',
+            }}
+          >
+            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+            <Stack.Screen name="channel/[id]" options={{ title: '' }} />
+            <Stack.Screen
+              name="call/[id]"
+              options={{
+                // headerShown declared once here so the call screen never has to
+                // toggle it at runtime. Modal screens that change header visibility
+                // mid-render get remounted by react-native-screens, which
+                // unmounts LiveKitRoom and kills the in-flight signal connection.
+                headerShown: false,
+                presentation: 'fullScreenModal',
+              }}
+            />
+            <Stack.Screen name="event/[id]" options={{ headerShown: false }} />
+          </Stack>
+          <FloatingCallOverlay />
+        </View>
+      </CallRoomShell>
+    </CallProvider>
   );
+}
+
+// Mount <LiveKitRoom> only while there's an active call, with both
+// the navigator (so /call/[id] can use LiveKit hooks) and the floater
+// as descendants — same context for both. When no call is active,
+// children pass through so the rest of the app renders normally.
+function CallRoomShell({ children }: { children: React.ReactNode }) {
+  const { activeCall, perms, endCall } = useCall();
+  if (!activeCall || !perms) return <>{children}</>;
+  return (
+    <LiveKitRoom
+      serverUrl={activeCall.grant.url}
+      token={activeCall.grant.token}
+      connect
+      audio={perms.mic}
+      video={perms.camera}
+      options={{ adaptiveStream: { pixelDensity: 'screen' } }}
+      // Server-side disconnect (kicked, network drop, room closed)
+      // should also reset our state so the floater disappears and the
+      // call screen, if visible, navigates back.
+      onDisconnected={endCall}
+    >
+      {children}
+    </LiveKitRoom>
+  );
+}
+
+// Hide the floater when the user is already on the full call screen
+// (no point doubling the video), or when there's no active call.
+function FloatingCallOverlay() {
+  const { activeCall } = useCall();
+  const segments = useSegments();
+  if (!activeCall) return null;
+  // segments is an array like ['(app)', 'call', '[id]'] (group prefix
+  // included on expo-router v6). The 'call' check covers it whether
+  // the group is included or not.
+  if (segments.some((s) => s === 'call')) return null;
+  return <FloatingCall />;
 }
