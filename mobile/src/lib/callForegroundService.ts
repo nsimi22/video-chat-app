@@ -46,10 +46,14 @@ export async function startCallForegroundService(label: string): Promise<void> {
   try {
     // Channel must exist before any notification on it. Creating an
     // existing channel is a no-op so it's safe to call every time.
+    // DEFAULT importance is the documented pattern for foreground-
+    // service notifications: it stays visible in the drawer (which
+    // is the whole point), without triggering the heads-up peek that
+    // would slide over the user's call view every time we start.
     await notifee.createChannel({
       id: CHANNEL_ID,
       name: 'Active call',
-      importance: AndroidImportance.HIGH,
+      importance: AndroidImportance.DEFAULT,
     });
     await notifee.displayNotification({
       id: NOTIFICATION_ID,
