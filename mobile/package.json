@@ -16,6 +16,7 @@
     "@livekit/react-native": "~2.10.3",
     "@livekit/react-native-expo-plugin": "^1.0.2",
     "@livekit/react-native-webrtc": "~144.0.0",
+    "@notifee/react-native": "^9.1.8",
     "@react-native-community/datetimepicker": "8.4.4",
     "@supabase/supabase-js": "2.106.0",
     "expo": "~54.0.0",
