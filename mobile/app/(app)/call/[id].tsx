@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, FlatList, Platform, Alert, Linking, useWindowDimensions } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -11,6 +11,7 @@ import {
   useLocalParticipant,
   useParticipants,
   isTrackReference,
+  type TrackReference,
 } from '@livekit/react-native';
 import { Track } from 'livekit-client';
 import {
@@ -19,6 +20,7 @@ import {
   Video as VideoIcon,
   VideoOff,
   SwitchCamera,
+  PictureInPicture,
   PhoneOff,
 } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
@@ -122,6 +124,27 @@ function CallView({
     lastCameraError,
   } = useLocalParticipant();
   const participants = useParticipants();
+  // Pick a single track for native iOS PiP: remote screenshare first,
+  // then remote camera, then local cam as a last resort. Mirrors the
+  // floater's selection (see components/FloatingCall.tsx). We wire
+  // iosPIP here too so iOS auto-PiP fires when the user backgrounds
+  // straight from the full call view (without first popping back to
+  // the floater). AVPictureInPictureController is a singleton, but
+  // the full call view and floater are never mounted at the same
+  // time (floater hides when on /call/[id]), so only one iosPIP is
+  // ever active at a time.
+  const pipTrack = useMemo<TrackReference | null>(() => {
+    const reals = tracks.filter(
+      (t): t is TrackReference => isTrackReference(t) && !t.publication.isMuted,
+    );
+    const remotes = reals.filter((t) => !t.participant.isLocal);
+    return (
+      remotes.find((t) => t.source === Track.Source.ScreenShare) ??
+      remotes.find((t) => t.source === Track.Source.Camera) ??
+      reals.find((t) => t.participant.isLocal && t.source === Track.Source.Camera) ??
+      null
+    );
+  }, [tracks]);
   const mic = isMicrophoneEnabled;
   const cam = isCameraEnabled;
 
@@ -245,6 +268,21 @@ function CallView({
                 <VideoTrack
                   trackRef={item}
                   style={isLocal ? { flex: 1, transform: [{ scaleX: -1 }] } : { flex: 1 }}
+                  // Only the chosen pipTrack tile registers iosPIP, so
+                  // we don't fight the floater's iosPIP for iOS's
+                  // singleton AVPictureInPictureController. Honour the
+                  // track's real aspect when available; floater
+                  // dimensions are the right "looked at this last"
+                  // fallback before the first frame lands.
+                  iosPIP={
+                    pipTrack && item === pipTrack
+                      ? {
+                          enabled: true,
+                          startAutomatically: true,
+                          preferredSize: item.publication.dimensions ?? { width: 110, height: 150 },
+                        }
+                      : undefined
+                  }
                 />
               ) : (
                 <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: space(3) }}>
@@ -311,6 +349,15 @@ function CallView({
           off={!cam}
         />
         <CtrlButton icon={SwitchCamera} a11yLabel="Flip camera" onPress={flipCamera} active />
+        {/* Minimize: pop back to the previous route, which surfaces
+            the in-app floater. Same outcome as the OS back gesture
+            but discoverable from the in-call control bar. */}
+        <CtrlButton
+          icon={PictureInPicture}
+          a11yLabel="Minimize call"
+          onPress={() => router.back()}
+          active
+        />
         {/* End-call button actually ends the call; the user can also
             navigate away (back gesture / back button) which leaves the
             call running and surfaces the floating tile. */}
