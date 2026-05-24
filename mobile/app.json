@@ -3,7 +3,7 @@
     "name": "Huddle",
     "slug": "huddle",
     "scheme": "huddle",
-    "version": "1.0.8",
+    "version": "1.0.9",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
