@@ -13,7 +13,7 @@ import { Avatar } from '@/components/ui';
 import { PipFallbackView } from '@/components/PipFallbackView';
 import { colors, radius, space } from '@/theme';
 import { useCall } from '@/context/CallContext';
-import { PIP_WINDOW_FALLBACK, useIsAppActive, usePipTrack } from '@/lib/pipTrack';
+import { PIP_WINDOW_FALLBACK, useIsAppBackgrounded, usePipTrack } from '@/lib/pipTrack';
 
 // Mini call window pinned over the route content while the user
 // navigates around (channels, settings, etc.). Tap the video to
@@ -53,15 +53,18 @@ export function FloatingCall() {
   // Same selection rule as the full-screen PiP — shared so both
   // surfaces agree on what gets the singleton AVPictureInPictureController.
   const floaterTrack = usePipTrack();
-  const isActive = useIsAppActive();
+  const isBackgrounded = useIsAppBackgrounded();
   // Local cam capture is suspended by iOS when the app backgrounds, so
   // the PiP layer would freeze on its last frame. Swap to an undefined
   // trackRef in that case — the native PIPController interprets the
   // resulting nil videoTrack as "show the fallbackView" instead.
   // Remote tracks keep streaming over WebRTC regardless and don't need
   // the workaround.
-  const liveInPip = floaterTrack && !(floaterTrack.participant.isLocal && !isActive);
-  const videoTrackForPip = liveInPip ? floaterTrack : undefined;
+  const showFrozenFallback = !!floaterTrack && floaterTrack.participant.isLocal && isBackgrounded;
+  // VideoTrack's trackRef prop is TrackReference | undefined — coerce
+  // the usePipTrack null to undefined to match (this branch only fires
+  // when floaterTrack is non-null anyway).
+  const videoTrackForPip = showFrozenFallback ? undefined : floaterTrack ?? undefined;
 
   // Corner bounds. These are screen-relative top/left positions
   // (Reanimated drives translateX/Y from {0,0}, so the four corners

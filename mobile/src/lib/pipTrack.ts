@@ -56,26 +56,35 @@ export function usePipTrack(): TrackReference | null {
 }
 
 /**
- * Tracks the foreground/background state of the app so callers can swap
- * `trackRef` to `undefined` for iOS PiP when a *local* camera publish
- * stops producing frames. iOS suspends camera capture as soon as the app
- * backgrounds (no entitlement is available for non-native apps to keep
- * the camera live), so the AVSampleBufferDisplayLayer otherwise draws
- * the last received frame indefinitely — the "PiP is frozen" symptom.
+ * Tracks whether the app is currently backgrounded (true == backgrounded)
+ * so callers can swap `trackRef` to `undefined` for iOS PiP when a *local*
+ * camera publish stops producing frames. iOS suspends camera capture as
+ * soon as the app backgrounds (no entitlement is available for non-native
+ * apps to keep the camera live), so the AVSampleBufferDisplayLayer
+ * otherwise draws the last received frame indefinitely — the "PiP is
+ * frozen" symptom.
  *
- * With this, callers can set `trackRef={undefined}` when local + not
- * active, which signals the native PIPController to swap to its
- * `fallbackView` (we provide one via `iosPIP.fallbackView`). Remote
- * tracks are unaffected — their frames arrive over WebRTC regardless
- * of our app's foreground state.
+ * With this, callers can set `trackRef={undefined}` when the underlying
+ * track is local and the app is backgrounded; the native PIPController
+ * sees a nil videoTrack and swaps to its `fallbackView` (we provide one
+ * via `iosPIP.fallbackView`). Remote tracks are unaffected — their
+ * frames arrive over WebRTC regardless of our app's foreground state.
+ *
+ * Specifically watches for the `background` state, not `!== active` —
+ * iOS fires `inactive` for transient things (Control Center pulled down,
+ * incoming phone call interrupt) where the app isn't really gone and
+ * PiP hasn't started. Treating those as backgrounded would flash the
+ * in-app floater to black when the user opens Control Center.
  */
-export function useIsAppActive(): boolean {
-  const [active, setActive] = useState(() => AppState.currentState === 'active');
+export function useIsAppBackgrounded(): boolean {
+  const [backgrounded, setBackgrounded] = useState(
+    () => AppState.currentState === 'background',
+  );
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
-      setActive(state === 'active');
+      setBackgrounded(state === 'background');
     });
     return () => sub.remove();
   }, []);
-  return active;
+  return backgrounded;
 }

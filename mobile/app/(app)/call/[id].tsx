@@ -12,7 +12,7 @@ import {
   useParticipants,
   isTrackReference,
 } from '@livekit/react-native';
-import { PIP_WINDOW_FALLBACK, useIsAppActive, usePipTrack } from '@/lib/pipTrack';
+import { PIP_WINDOW_FALLBACK, useIsAppBackgrounded, usePipTrack } from '@/lib/pipTrack';
 import { PipFallbackView } from '@/components/PipFallbackView';
 import { Track } from 'livekit-client';
 import {
@@ -131,11 +131,11 @@ function CallView({
   // same time (floater hides when on /call/[id]) so they don't race
   // for AVPictureInPictureController, the iOS singleton.
   const pipTrack = usePipTrack();
-  const isActive = useIsAppActive();
+  const isBackgrounded = useIsAppBackgrounded();
   // Same local-cam-on-background workaround as the floater: hand the
   // native PIPController a nil track when iOS has paused our local
   // capture, so it shows the fallbackView instead of a frozen frame.
-  const liveInPip = pipTrack && !(pipTrack.participant.isLocal && !isActive);
+  const showFrozenFallback = !!pipTrack && pipTrack.participant.isLocal && isBackgrounded;
   const mic = isMicrophoneEnabled;
   const cam = isCameraEnabled;
 
@@ -274,7 +274,7 @@ function CallView({
                   // frame. The in-app frame shows black for a moment
                   // until foreground returns — fine because by then
                   // the user isn't looking at the call screen anyway.
-                  trackRef={isPipTile && !liveInPip ? undefined : item}
+                  trackRef={isPipTile && showFrozenFallback ? undefined : item}
                   style={isLocal ? { flex: 1, transform: [{ scaleX: -1 }] } : { flex: 1 }}
                   // Only the chosen pipTrack tile registers iosPIP, so
                   // we don't fight the floater's iosPIP for iOS's
