@@ -237,6 +237,17 @@ function CallView({
           const showSimHint = isSim && (isPlaceholder || isLocal);
           const showCamBlocked = !isSim && isPlaceholder && isLocal && !!lastCameraError;
           const displayName = item.participant.name || item.participant.identity;
+          // `pipTrack` comes from a *separate* useTracks subscription
+          // (usePipTrack only watches non-placeholder real tracks). Even
+          // for the same underlying track LiveKit hands out different
+          // object instances per subscription, so `item === pipTrack`
+          // is always false and iosPIP never gets wired. Match by
+          // participant identity + source instead.
+          const isPipTile =
+            !isPlaceholder &&
+            pipTrack !== null &&
+            item.participant.identity === pipTrack.participant.identity &&
+            item.source === pipTrack.source;
           return (
             <View
               style={{
@@ -260,7 +271,7 @@ function CallView({
                   // dimensions are the right "looked at this last"
                   // fallback before the first frame lands.
                   iosPIP={
-                    pipTrack && item === pipTrack
+                    isPipTile
                       ? {
                           enabled: true,
                           startAutomatically: true,
