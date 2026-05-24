@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, FlatList, Platform, Alert, Linking, useWindowDimensions } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -11,8 +11,8 @@ import {
   useLocalParticipant,
   useParticipants,
   isTrackReference,
-  type TrackReference,
 } from '@livekit/react-native';
+import { PIP_WINDOW_FALLBACK, usePipTrack } from '@/lib/pipTrack';
 import { Track } from 'livekit-client';
 import {
   Mic,
@@ -124,27 +124,12 @@ function CallView({
     lastCameraError,
   } = useLocalParticipant();
   const participants = useParticipants();
-  // Pick a single track for native iOS PiP: remote screenshare first,
-  // then remote camera, then local cam as a last resort. Mirrors the
-  // floater's selection (see components/FloatingCall.tsx). We wire
-  // iosPIP here too so iOS auto-PiP fires when the user backgrounds
-  // straight from the full call view (without first popping back to
-  // the floater). AVPictureInPictureController is a singleton, but
-  // the full call view and floater are never mounted at the same
-  // time (floater hides when on /call/[id]), so only one iosPIP is
-  // ever active at a time.
-  const pipTrack = useMemo<TrackReference | null>(() => {
-    const reals = tracks.filter(
-      (t): t is TrackReference => isTrackReference(t) && !t.publication.isMuted,
-    );
-    const remotes = reals.filter((t) => !t.participant.isLocal);
-    return (
-      remotes.find((t) => t.source === Track.Source.ScreenShare) ??
-      remotes.find((t) => t.source === Track.Source.Camera) ??
-      reals.find((t) => t.participant.isLocal && t.source === Track.Source.Camera) ??
-      null
-    );
-  }, [tracks]);
+  // We wire iosPIP on the same track the floater would have picked,
+  // so iOS auto-PiP fires whether the user backgrounds from the full
+  // call view or the floater. The two views are never mounted at the
+  // same time (floater hides when on /call/[id]) so they don't race
+  // for AVPictureInPictureController, the iOS singleton.
+  const pipTrack = usePipTrack();
   const mic = isMicrophoneEnabled;
   const cam = isCameraEnabled;
 
@@ -279,7 +264,7 @@ function CallView({
                       ? {
                           enabled: true,
                           startAutomatically: true,
-                          preferredSize: item.publication.dimensions ?? { width: 110, height: 150 },
+                          preferredSize: item.publication.dimensions ?? PIP_WINDOW_FALLBACK,
                         }
                       : undefined
                   }
