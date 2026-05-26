@@ -86,12 +86,22 @@ export function ImageLightbox({ uri, onClose }: Props) {
             the ScrollView's height (which would have left the
             full-screen Pressable child taller than its container and
             produced unwanted vertical scroll at zoom = 1).
-            pointerEvents="box-none" lets pinch/scroll on the
+            style.pointerEvents='box-none' lets pinch/scroll on the
             ScrollView pass through the SafeAreaView's empty space. */}
         <SafeAreaView
-          style={{ position: 'absolute', top: space(2), right: space(2), zIndex: 1 }}
+          // pointerEvents lives on style now (the deprecated prop form
+          // emits a LogBox warning on RN 0.81+). box-none lets pinch /
+          // scroll on the ScrollView pass through this view's empty
+          // space — only the close-button Pressable inside catches
+          // taps.
+          style={{
+            position: 'absolute',
+            top: space(2),
+            right: space(2),
+            zIndex: 1,
+            pointerEvents: 'box-none',
+          }}
           edges={['top']}
-          pointerEvents="box-none"
         >
           <Pressable
             onPress={onClose}
