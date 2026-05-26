@@ -10,6 +10,7 @@ import { supabase } from '@/lib/supabase';
 import { Avatar, Logo } from '@/components/ui';
 import { NewChannelSheet } from '@/components/NewChannelSheet';
 import { NewDmSheet } from '@/components/NewDmSheet';
+import { UnreadBadge } from '@/components/UnreadBadge';
 import { colors, space } from '@/theme';
 
 // DM channel ids look like `dm:<a>::<b>` with the two user uuids sorted
@@ -343,6 +344,7 @@ function ChannelRow({
       <Text style={{ color: colors.text, fontSize: 16, marginLeft: space(3), flex: 1 }} numberOfLines={1}>
         {label}
       </Text>
+      <UnreadBadge channelId={item.id} />
     </TouchableOpacity>
   );
 
