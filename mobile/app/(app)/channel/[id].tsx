@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AppState,
+  type AppStateStatus,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -44,6 +46,7 @@ import { supabase } from '@/lib/supabase';
 import { teamTopic } from '@/lib/topics';
 import { Avatar, Markdown } from '@/components/ui';
 import { MessageUnfurls } from '@/components/Unfurl';
+import { DateBanner, isSameLocalDay } from '@/components/DateBanner';
 import { colors, radius, space } from '@/theme';
 
 export default function ChannelScreen() {
@@ -75,6 +78,28 @@ export default function ChannelScreen() {
   // at the visual bottom, so reversing the ascending `messages` puts the
   // newest message there for free — no programmatic scroll needed.
   const reversed = useMemo(() => [...messages].reverse(), [messages]);
+
+  // Bump a primitive whenever the system day might have flipped so the
+  // FlatList re-renders and "Today" / "Yesterday" banners refresh. Without
+  // this, a user sitting in a channel as the clock rolls past midnight
+  // would see yesterday's messages still labelled "Today" until the next
+  // incoming message forced a re-render. AppState 'active' on returning
+  // from background covers the common case (overnight backgrounded app);
+  // a real-time interval-based refresh is unnecessary on mobile because
+  // keeping a screen actively foregrounded across midnight is rare.
+  const [dayKey, setDayKey] = useState(0);
+  useEffect(() => {
+    const onChange = (state: AppStateStatus) => {
+      if (state === 'active') setDayKey((k) => k + 1);
+    };
+    const sub = AppState.addEventListener('change', onChange);
+    return () => sub.remove();
+  }, []);
+
+  // Memoize the FlatList extraData tuple — a fresh array literal in JSX
+  // would defeat virtualization (FlatList does an Object.is identity
+  // check and would re-render every cell on every parent render).
+  const flatListExtra = useMemo(() => [roster, dayKey], [roster, dayKey]);
 
   useEffect(() => {
     if (teamId) listTeamProfiles(teamId).then(setRoster).catch(() => {});
@@ -352,7 +377,9 @@ export default function ChannelScreen() {
           // render and authors stay "Unknown" until something else
           // forces a re-render. userId is set once via auth before the
           // screen mounts, so it doesn't need to be in the dep tuple.
-          extraData={roster}
+          // dayKey bumps on AppState 'active' so the Today/Yesterday
+          // banners refresh after the app sits across local midnight.
+          extraData={flatListExtra}
           keyExtractor={(m) => m.id}
           contentContainerStyle={{ paddingVertical: space(3) }}
           // ListFooterComponent renders at the visual top under `inverted`,
@@ -369,16 +396,22 @@ export default function ChannelScreen() {
             // `reversed` is newest-first, so the visually-above neighbour
             // (the older message in time) lives at index + 1, not - 1.
             const prev = reversed[index + 1];
+            // First chronological message of a local day gets a banner
+            // above it (and also at the very top of the list when there
+            // is no prev). Crossing midnight also breaks the followup
+            // grouping below so the ungrouped header reinforces the
+            // "new day" separation visually.
+            const showDateBanner = !prev || !isSameLocalDay(prev.ts, item.ts);
             // AI messages never group — they should always show the robot
             // avatar + "AI · via <user>" header so it's clear which lines are
             // model output (vs the human's own messages, even when they share
             // an author_id).
             const isAi = !!item.ai_generated;
             const prevIsAi = !!prev?.ai_generated;
-            const grouped = !isAi && !prevIsAi && prev && prev.author_id === item.author_id
+            const grouped = !showDateBanner && !isAi && !prevIsAi && prev && prev.author_id === item.author_id
               && new Date(item.ts).getTime() - new Date(prev.ts).getTime() < 5 * 60_000;
             const p = profileFor(item.author_id);
-            return (
+            const row = (
               <TouchableOpacity activeOpacity={0.7} onLongPress={() => onLongPressMessage(item)} style={{ flexDirection: 'row', paddingHorizontal: space(3), paddingTop: grouped ? 2 : space(2.5) }}>
                 <View style={{ width: 36, marginRight: space(2.5) }}>
                   {!grouped && (
@@ -432,6 +465,18 @@ export default function ChannelScreen() {
                 </View>
               </TouchableOpacity>
             );
+            // Banner appears visually above the message it announces;
+            // because the FlatList is `inverted`, "above in render order"
+            // means "above in JSX order" within the same cell. The
+            // <View> wrapper keeps the cell a single React element so
+            // FlatList's per-item key (item.id) still uniquely identifies
+            // the row.
+            return showDateBanner ? (
+              <View>
+                <DateBanner ts={item.ts} />
+                {row}
+              </View>
+            ) : row;
           }}
         />
       )}
