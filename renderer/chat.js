@@ -678,6 +678,48 @@ class ChatView {
     this._mentionDirectory.set(k, { name: n, color: color || '#8a8f98' });
   }
 
+  // Resolve a user id to a display name by walking the same sources
+  // we use for @mentions — live roster first (current canonical name),
+  // then in-call presence, then the historical-author cache (covers
+  // former members who reacted to old messages). Returns null when
+  // nothing matches so callers can decide how to render the gap.
+  _nameForUserId(uid) {
+    if (!uid) return null;
+    const roster = this.mesh.roster?.get?.(uid);
+    if (roster?.name) return roster.name;
+    const presence = this.mesh.peerInfo?.get?.(uid);
+    if (presence?.name) return presence.name;
+    const cached = this._mentionDirectory?.get?.(uid);
+    if (cached?.name) return cached.name;
+    return null;
+  }
+
+  // Build the native-tooltip string shown on hover of a reaction pill.
+  // "you" sorts first when present; everyone else is by lookup order.
+  // Long lists collapse to "…and N others" so the tooltip stays
+  // readable even on a 50-person 👍.
+  _reactionTooltip(emoji, peers) {
+    const myId = this.mesh.peerId;
+    const names = [];
+    let unknown = 0;
+    // Self goes first so the user can confirm at a glance which
+    // reactions they themselves contributed to.
+    if (peers.includes(myId)) names.push('you');
+    for (const uid of peers) {
+      if (uid === myId) continue;
+      const n = this._nameForUserId(uid);
+      if (n) names.push(n);
+      else unknown++;
+    }
+    if (unknown > 0) names.push(unknown === 1 ? 'someone' : `${unknown} others`);
+    let who;
+    if (names.length === 0) who = 'no one';
+    else if (names.length === 1) who = names[0];
+    else if (names.length === 2) who = `${names[0]} and ${names[1]}`;
+    else who = `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+    return `${who} reacted with ${emoji}`;
+  }
+
   // Teammates that can be @-mentioned: the live team roster (current
   // profile names by user_id) plus presence peers plus self, then any
   // historical message authors not in the roster (e.g. former
@@ -1466,6 +1508,11 @@ class ChatView {
       const pill = document.createElement('span');
       pill.className = 'reaction' + (peers.includes(this.mesh.peerId) ? ' mine' : '');
       pill.textContent = `${emoji} ${peers.length}`;
+      // Native title tooltip lists everyone who reacted with this emoji
+      // so the user can tell *who* reacted without us building a custom
+      // popover. Slack-style phrasing — "you, Alice and 2 others
+      // reacted with 👍".
+      pill.title = this._reactionTooltip(emoji, peers);
       pill.onclick = () => this.mesh.toggleReaction(m.id, emoji);
       reactions.appendChild(pill);
     }
