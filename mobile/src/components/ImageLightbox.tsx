@@ -1,8 +1,7 @@
-import { useEffect, useRef } from 'react';
-import { Animated, Image, Modal, Platform, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
+import { Image, Modal, Platform, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { X } from 'lucide-react-native';
-import { colors, space } from '@/theme';
+import { space } from '@/theme';
 
 // Full-screen viewer for an inline image attachment. Tapping a thumbnail
 // in the chat list opens this; backdrop tap or close-button dismisses.
@@ -24,37 +23,81 @@ type Props = {
 export function ImageLightbox({ uri, onClose }: Props) {
   const { width: winWidth, height: winHeight } = useWindowDimensions();
   const visible = !!uri;
-  const fade = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    Animated.timing(fade, {
-      toValue: visible ? 1 : 0,
-      duration: 180,
-      useNativeDriver: true,
-    }).start();
-  }, [visible, fade]);
 
   return (
     <Modal
       visible={visible}
       transparent
-      animationType="none"
+      // Native fade for both open + close. A JS-driven fade-out
+      // couldn't run because Modal unmounts the instant `visible`
+      // flips false — the fade-out animation never got a chance.
+      animationType="fade"
       onRequestClose={onClose}
       statusBarTranslucent
     >
-      <Animated.View style={{ flex: 1, backgroundColor: '#000', opacity: fade }}>
-        <SafeAreaView style={{ flex: 1 }} edges={['top', 'bottom']}>
-          {/* Close button — top-right so the gesture target doesn't
-              compete with pinch + scroll on the image itself. */}
+      <View style={{ flex: 1, backgroundColor: '#000' }}>
+        <ScrollView
+          // iOS only — Android ignores these, but the layout below
+          // still produces a fit-to-screen image so the user can
+          // see the whole thing.
+          minimumZoomScale={1}
+          maximumZoomScale={Platform.OS === 'ios' ? 4 : 1}
+          // flexGrow (not flex) on the content container lets the
+          // ScrollView grow past the viewport when the user pinches
+          // to zoom; flex: 1 would lock content to viewport size and
+          // break panning at zoom > 1.
+          contentContainerStyle={{
+            flexGrow: 1,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          style={{ flex: 1 }}
+          showsHorizontalScrollIndicator={false}
+          showsVerticalScrollIndicator={false}
+        >
+          <Pressable
+            onPress={onClose}
+            // Backdrop dismisses on tap. The inner Pressable around the
+            // image absorbs its own taps (RN bubbles touch up to the
+            // first responder ancestor by default), so the photo
+            // itself doesn't close the lightbox.
+            style={{ width: winWidth, height: winHeight, alignItems: 'center', justifyContent: 'center' }}
+          >
+            {uri ? (
+              <Pressable onPress={() => { /* swallow taps on the image itself */ }}>
+                <Image
+                  source={{ uri }}
+                  // Fit to window without cropping: contain keeps the
+                  // full aspect ratio in view regardless of source size.
+                  style={{ width: winWidth, height: winHeight }}
+                  resizeMode="contain"
+                  accessibilityLabel="Attachment image"
+                />
+              </Pressable>
+            ) : (
+              <View />
+            )}
+          </Pressable>
+        </ScrollView>
+
+        {/* Close button absolutely positioned over the scroll view —
+            putting it inside a SafeAreaView with edges=['top'] keeps
+            it clear of the notch / dynamic island without shrinking
+            the ScrollView's height (which would have left the
+            full-screen Pressable child taller than its container and
+            produced unwanted vertical scroll at zoom = 1).
+            pointerEvents="box-none" lets pinch/scroll on the
+            ScrollView pass through the SafeAreaView's empty space. */}
+        <SafeAreaView
+          style={{ position: 'absolute', top: space(2), right: space(2), zIndex: 1 }}
+          edges={['top']}
+          pointerEvents="box-none"
+        >
           <Pressable
             onPress={onClose}
             accessibilityLabel="Close image"
             hitSlop={12}
             style={{
-              position: 'absolute',
-              top: space(2),
-              right: space(2),
-              zIndex: 1,
               width: 36,
               height: 36,
               borderRadius: 18,
@@ -65,49 +108,8 @@ export function ImageLightbox({ uri, onClose }: Props) {
           >
             <X size={20} color="#fff" strokeWidth={2} />
           </Pressable>
-
-          <ScrollView
-            // iOS only — Android ignores these, but the layout below
-            // still produces a fit-to-screen image so the user can
-            // see the whole thing.
-            minimumZoomScale={1}
-            maximumZoomScale={Platform.OS === 'ios' ? 4 : 1}
-            // contentContainerStyle centers the image when not zoomed.
-            contentContainerStyle={{
-              flex: 1,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-            style={{ flex: 1 }}
-            showsHorizontalScrollIndicator={false}
-            showsVerticalScrollIndicator={false}
-          >
-            <Pressable
-              onPress={onClose}
-              // Backdrop dismiss everywhere outside the image itself.
-              // The image absorbs its own taps (no onPress on <Image>),
-              // so a tap on the photo doesn't close — only the
-              // surrounding negative space does.
-              style={{ width: winWidth, height: winHeight, alignItems: 'center', justifyContent: 'center' }}
-            >
-              {uri ? (
-                <Image
-                  source={{ uri }}
-                  // Fit to window without cropping: contain keeps the
-                  // full aspect ratio in view regardless of source size.
-                  // The container is the full window minus the safe-area
-                  // padding the SafeAreaView already applied.
-                  style={{ width: winWidth, height: winHeight }}
-                  resizeMode="contain"
-                  accessibilityLabel="Attachment image"
-                />
-              ) : (
-                <View />
-              )}
-            </Pressable>
-          </ScrollView>
         </SafeAreaView>
-      </Animated.View>
+      </View>
     </Modal>
   );
 }
