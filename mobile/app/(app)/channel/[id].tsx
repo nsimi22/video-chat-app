@@ -48,6 +48,7 @@ import { Avatar, Markdown } from '@/components/ui';
 import { MessageUnfurls } from '@/components/Unfurl';
 import { DateBanner, isSameLocalDay } from '@/components/DateBanner';
 import { ReactorSheet } from '@/components/ReactorSheet';
+import { ImageLightbox } from '@/components/ImageLightbox';
 import { colors, radius, space } from '@/theme';
 
 export default function ChannelScreen() {
@@ -65,6 +66,11 @@ export default function ChannelScreen() {
   // routes here. Single piece of state covers any (message, emoji)
   // pair since we never need to surface two sheets at once.
   const [reactorSheet, setReactorSheet] = useState<{ emoji: string; userIds: string[] } | null>(null);
+  // Tapped-image preview. Holds just the source URI — re-rendering the
+  // Lightbox with a different URI swaps the displayed image cleanly
+  // without unmounting the Modal (cheaper than open/close churn when
+  // tapping multiple attachments in the same message).
+  const [lightboxUri, setLightboxUri] = useState<string | null>(null);
   const [aiThinking, setAiThinking] = useState(false);
   const [gifPickerOpen, setGifPickerOpen] = useState(false);
   const [giphyKey, setGiphyKey] = useState<string | null>(null);
@@ -451,7 +457,17 @@ export default function ChannelScreen() {
                   {(item.attachments ?? []).map((a, i) => {
                     const mime = a.type ?? a.contentType ?? '';
                     return mime.startsWith('image/') ? (
-                      <Image key={i} source={{ uri: a.url }} style={{ width: 220, height: 160, borderRadius: radius.sm, marginTop: space(1.5), backgroundColor: colors.surfaceAlt }} resizeMode="cover" />
+                      // Tap an image attachment to open the full-screen
+                      // lightbox. activeOpacity matches the rest of the
+                      // chat row so the press feedback feels consistent.
+                      <TouchableOpacity
+                        key={i}
+                        activeOpacity={0.85}
+                        onPress={() => setLightboxUri(a.url)}
+                        accessibilityLabel={`Open image ${a.name ?? 'attachment'}`}
+                      >
+                        <Image source={{ uri: a.url }} style={{ width: 220, height: 160, borderRadius: radius.sm, marginTop: space(1.5), backgroundColor: colors.surfaceAlt }} resizeMode="cover" />
+                      </TouchableOpacity>
                     ) : (
                       <View key={i} style={{ flexDirection: 'row', alignItems: 'center', marginTop: space(1) }}>
                         <Paperclip size={14} color={colors.accent} style={{ marginRight: 6 }} />
@@ -575,6 +591,7 @@ export default function ChannelScreen() {
         meId={userId ?? null}
         onClose={() => setReactorSheet(null)}
       />
+      <ImageLightbox uri={lightboxUri} onClose={() => setLightboxUri(null)} />
     </KeyboardAvoidingView>
   );
 }
