@@ -205,10 +205,9 @@ window.SLASH_COMMANDS = SLASH_COMMANDS;
 
 class ChatView {
   constructor({ huddle, els, hooks }) {
-    // ChatView used to take a MeshClient (`mesh`); the MeshClient was
-    // a passthrough to HuddleClient for chat ops + an event forwarder
-    // for chat-* events. Now that calls are on-demand and Mesh isn't
-    // always alive, ChatView talks to HuddleClient directly. The
+    // ChatView talks to HuddleClient directly for chat ops + chat-*
+    // event subscriptions; the call client is constructed on demand
+    // when the user starts a call and isn't always alive. The
     // accessor name `this.mesh` is kept on the instance for backwards
     // compatibility with internal call sites; both names point at the
     // same HuddleClient.

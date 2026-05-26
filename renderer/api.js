@@ -3,11 +3,10 @@
 // Replaces the old WebSocket signaling server. Major moving parts:
 //
 //   HuddleClient (event target) — initialized after sign-in. Carries the
-//     active team + user, owns the realtime channel for signaling/presence/
-//     drawing/typing broadcasts, and dispatches the same events the old
-//     MeshClient produced (`welcome`, `peer-joined`, `peer-left`, `signal`,
-//     `screen-announce`, `screen-stop`, `draw`, `chat-message`, etc.) so
-//     downstream code (chat.js, app.js, webrtc.js) keeps the same shape.
+//     active team + user, owns the realtime channel for chat / presence /
+//     typing / drawing broadcasts, and dispatches events (`welcome`,
+//     `chat-message`, `raise-hand`, `reaction`, `mute-state`, `draw`,
+//     etc.) consumed by chat.js, app.js, and the LiveKit call client.
 //
 //   Auth — `signInWithOtp({ email })` + `verifyOtp({ email, token, type:
 //     'email' })`. Works in Electron without custom URL schemes; user copies
@@ -90,7 +89,6 @@
       this.peerId = session.user.id; // user uuid doubles as peer id
       this.name = profile.name;
       this.color = profile.color;
-      // Mirrors the MeshClient's API for the rest of the renderer:
       this.peerInfo = new Map(); // user_id -> { id, name, color }
       // Full team roster, populated on start() and read by the
       // sidebar + DM picker + member picker so offline teammates
@@ -98,14 +96,14 @@
       // avatar_url }.
       this.roster = new Map();
       this.remoteScreenLabels = new Map();
-      this.activeScreens = new Map(); // streamId -> { from, label, owner: bool }
       // Peer ids whose hand is currently raised. Cleared when the peer
       // lowers their hand or leaves the call.
       this.raisedHands = new Set();
       // Per-peer mic/cam state in the active call. Default assumption for
       // a newly-joined peer is both on; the peer broadcasts a mute-state
-      // event (and re-broadcasts on every peer-joined) so receivers
-      // converge to the truth quickly. Cleared on peer-left / leaveCall.
+      // event when their tracks change, and the call client rebroadcasts
+      // on every participant-joined so late joiners catch up. Cleared
+      // on peer-left / leaveCall.
       this.peerMediaState = new Map(); // peerId -> { micOn, camOn }
       this.url = _config.url;
       this._teamChannel = null;
@@ -115,8 +113,9 @@
       this._myChannelIds = new Set();       // channel ids we have a membership row in (private + dm)
       this._memberRefreshTimers = new Map(); // channelId -> debounce timer, coalescing realtime member-change events
       // Per-channel call topic (call:<team>:<channel>). Only one active
-      // call at a time. Presence on this channel drives WebRTC
-      // peer-joined/peer-left events.
+      // call at a time. Presence on this channel drives the lurker
+      // "Join call · N" pill; the LiveKit room handles media-plane
+      // peer-joined/peer-left events directly.
       this._callChannel = null;
       this._callChannelId = null;     // channel.id of the active call, if any
       this._callPeerInfo = new Map(); // user_id -> { id, name, color }
@@ -210,14 +209,14 @@
       this.roster.clear();
     }
 
-    // --- Call channel: per-channel presence + signaling + screen events --
+    // --- Call channel: per-channel presence + call-side broadcasts -----
     //
     // Subscribed lazily when the user clicks "Start call" / "Join call".
-    // Topic: call:<team_id>:<channel_id>. Presence drives WebRTC
-    // peer-joined / peer-left events. Signaling, screen-announce, and
-    // screen-stop broadcasts ride this channel too — only call
-    // participants pay the bandwidth cost; teammates merely lurking on
-    // a channel see counts but no media traffic.
+    // Topic: call:<team_id>:<channel_id>. Presence keeps the lurker
+    // pill ("Join call · N") accurate. Raise-hand, reactions, and
+    // mute-state broadcasts ride this channel — only call participants
+    // pay the bandwidth cost; teammates merely lurking on a channel see
+    // counts but no in-call traffic.
     async joinCall(channelId) {
       if (this._callChannelId === channelId) return; // already in this call
       if (this._callChannel) await this.leaveCall();
@@ -255,6 +254,11 @@
         },
       });
 
+      // Mirror call-channel presence into _callPeerInfo so callers can
+      // look up the name/color for a peer they only know by id (the
+      // tile renderer falls back to this when the team-wide presence
+      // hasn't seen the user yet). Media-plane peer-joined/peer-left
+      // events are emitted by the LiveKit room, not from here.
       ch.on('presence', { event: 'sync' }, () => {
         const newState = ch.presenceState();
         const seen = new Set();
@@ -264,9 +268,7 @@
           seen.add(key);
           if (key === this.peerId) continue;
           if (!this._callPeerInfo.has(key)) {
-            const peer = { id: key, name: meta.name, color: meta.color };
-            this._callPeerInfo.set(key, peer);
-            this.dispatchEvent(new CustomEvent('peer-joined', { detail: peer }));
+            this._callPeerInfo.set(key, { id: key, name: meta.name, color: meta.color });
           }
         }
         for (const id of [...this._callPeerInfo.keys()]) {
@@ -274,33 +276,10 @@
             this._callPeerInfo.delete(id);
             this.raisedHands.delete(id);
             this.peerMediaState.delete(id);
-            this.dispatchEvent(new CustomEvent('peer-left', { detail: id }));
           }
         }
       });
 
-      ch.on('broadcast', { event: 'signal' }, ({ payload }) => {
-        if (payload.to !== this.peerId) return;
-        this.dispatchEvent(new CustomEvent('signal', { detail: { from: payload.from, payload: payload.payload } }));
-      });
-      ch.on('broadcast', { event: 'screen-announce' }, ({ payload }) => {
-        this.activeScreens.set(payload.streamId, { fromId: payload.from, label: payload.label });
-        this.remoteScreenLabels.set(payload.streamId, { label: payload.label, fromName: payload.fromName, from: payload.from });
-        // Receivers also need to join the per-screen broadcast channel,
-        // otherwise drawing strokes from other peers never reach them.
-        this._ensureScreenChannel(payload.streamId).catch(() => {});
-        this.dispatchEvent(new CustomEvent('screen-announce', { detail: payload }));
-      });
-      ch.on('broadcast', { event: 'screen-stop' }, ({ payload }) => {
-        this.activeScreens.delete(payload.streamId);
-        this.remoteScreenLabels.delete(payload.streamId);
-        const cached = this._screenChannels.get(payload.streamId);
-        if (cached) {
-          Promise.resolve(cached).then((c) => { try { c.unsubscribe(); } catch {} }).catch(() => {});
-          this._screenChannels.delete(payload.streamId);
-        }
-        this.dispatchEvent(new CustomEvent('screen-stop', { detail: payload }));
-      });
       ch.on('broadcast', { event: 'raise-hand' }, ({ payload }) => {
         if (payload.raised) this.raisedHands.add(payload.from);
         else this.raisedHands.delete(payload.from);
@@ -398,11 +377,6 @@
       if (!this._callChannel) return;
       const ch = this._callChannel;
       const wasIn = this._callChannelId;
-      // Emit synthetic peer-left for everyone we were connected to so
-      // the renderer (MeshClient + tile grid) drops them cleanly.
-      for (const id of [...this._callPeerInfo.keys()]) {
-        this.dispatchEvent(new CustomEvent('peer-left', { detail: id }));
-      }
       this._callPeerInfo.clear();
       this.raisedHands.clear();
       this.peerMediaState.clear();
@@ -419,7 +393,6 @@
         ...screenUnsubs,
       ]);
       this._screenChannels.clear();
-      this.activeScreens.clear();
       this.remoteScreenLabels.clear();
       this.dispatchEvent(new CustomEvent('call-left', { detail: { channelId: wasIn } }));
     }
@@ -794,9 +767,6 @@
           team: this.team,
           channels: this._initialChannels || [],
           peers: [...this.peerInfo.values()],
-          activeScreens: [...this.activeScreens.entries()].map(([streamId, info]) => ({
-            streamId, from: info.fromId, fromName: this.peerInfo.get(info.fromId)?.name || 'someone', label: info.label,
-          })),
         },
       }));
       this.dispatchEvent(new CustomEvent('connected', { detail: { isFirst: true } }));
@@ -804,33 +774,6 @@
 
     // --- Outgoing operations --------------------------------------------
 
-    sendSignal(to, payload) {
-      // Signal/screen events ride the call channel — only call
-      // participants receive them, so a teammate lurking on chat in
-      // a different channel pays no media bandwidth.
-      this._callChannel?.send({ type: 'broadcast', event: 'signal', payload: { from: this.peerId, to, payload } });
-    }
-    sendScreenAnnounce(streamId, label) {
-      this._callChannel?.send({ type: 'broadcast', event: 'screen-announce', payload: { from: this.peerId, fromName: this.name, streamId, label } });
-      this.activeScreens.set(streamId, { fromId: this.peerId, label });
-      // Owner also subscribes so they receive strokes drawn by other peers.
-      this._ensureScreenChannel(streamId).catch(() => {});
-    }
-    sendScreenStop(streamId) {
-      this._callChannel?.send({ type: 'broadcast', event: 'screen-stop', payload: { from: this.peerId, streamId } });
-      this.activeScreens.delete(streamId);
-      const cached = this._screenChannels.get(streamId);
-      if (cached) {
-        Promise.resolve(cached).then((c) => { try { c.unsubscribe(); } catch {} }).catch(() => {});
-        this._screenChannels.delete(streamId);
-      }
-      // The call channel is configured `broadcast: { self: false }`, so
-      // the 'screen-stop' broadcast above doesn't echo back to us —
-      // without a local dispatch the renderer never tears down our own
-      // screen tile when we stop sharing. Mirror what a remote peer
-      // would receive.
-      this.dispatchEvent(new CustomEvent('screen-stop', { detail: { from: this.peerId, streamId } }));
-    }
     sendRaiseHand(raised) {
       if (raised) this.raisedHands.add(this.peerId);
       else this.raisedHands.delete(this.peerId);

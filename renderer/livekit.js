@@ -1,25 +1,11 @@
-// LiveKit transport — Phase 1 spike (PR #X, see desktop/livekit-spike).
+// LiveKit transport — sole call client on desktop.
 //
-// Hand-rolled WebRTC mesh in webrtc.js stays the default; this file
-// lets the desktop join a call through a LiveKit SFU instead, so a
-// desktop client can finally see a mobile client (which has always
-// been LiveKit-only). Selected at startCall time by reading
-// localStorage['huddle.useLivekit'] === 'true' — Phase 2 will move
-// the toggle into the Settings UI.
+// The mobile app is LiveKit-only, so desktop joining the same room
+// is the only way the two ends can see each other in a call. The
+// hand-rolled WebRTC mesh that used to live in renderer/webrtc.js
+// has been removed; this is now the only path.
 //
-// Public API matches the subset of MeshClient that the rest of the
-// renderer (app.js, chat.js, popout) consumes for a basic camera+mic
-// call. Surfaces deliberately deferred to Phase 2:
-//   - addScreen / removeScreen / screen-announce / screen-stop
-//   - background blur (setBlurBackground, blurOn)
-//   - drawing (sendDraw)
-//   - raise-hand (sendRaiseHand)
-//   - reactions overlay (sendReaction, REACTION_EMOJI floating)
-//   - simulcast / per-tier screen encoding bookkeeping
-// Those methods exist as no-ops so consumers don't throw; they log a
-// one-line "not supported in LiveKit mode" the first time each is hit.
-//
-// Event mapping (LiveKit → mesh-shaped event):
+// Event mapping (LiveKit → renderer-shaped event):
 //   participantConnected     → peer-joined { id, name, color }
 //   participantDisconnected  → peer-left   (remoteId string)
 //   trackSubscribed (remote) → track       { stream, track, fromId }
@@ -32,13 +18,10 @@
 //   localTrackUnpublished /  → mute-state  { from, micOn, camOn }
 //   trackMuted / trackUnmuted
 //
-// Identity coexistence note: a user joining via LiveKit also calls
-// huddle.joinCall(channelId) to keep team-side presence accurate
-// (lurker counts, "Join call · N" pill). Mesh users in the same
-// channel will see this user in presence but can't form a PeerConn
-// with them — that's expected behavior for the spike. Phase 2 will
-// either ship the LiveKit transport to everyone or add a
-// transport-aware presence filter.
+// huddle.joinCall(channelId) is still called alongside room.connect:
+// it tracks team-side presence on the call topic so other team
+// members see the "Join call · N" lurker pill. The LiveKit room
+// handles the media plane (peer-joined / peer-left / track) directly.
 
 (function () {
   const LK = window.LivekitClient;
@@ -46,6 +29,14 @@
     console.warn('[livekit] LivekitClient global is missing; vendor/livekit.js may not have loaded');
     return;
   }
+
+  // Cap concurrent screen shares across the call (local + remote combined).
+  // Enforced optimistically per-client; a brief overshoot is possible if two
+  // peers start sharing simultaneously, which is acceptable for a soft limit.
+  // Exposed on window so the renderer's source-picker guard
+  // (renderer/app.js:openSourcePicker) can compare against it without
+  // reaching back into this module — same shape the deleted webrtc.js used.
+  const MAX_CONCURRENT_SCREENS = 3;
 
   // Per-participant synthesized MediaStream cache. LiveKit gives us
   // individual MediaStreamTracks per `trackSubscribed`; the renderer's
@@ -95,11 +86,10 @@
       this._blurOn = false;
       this._blurPipeline = null;
       this._rawTrack = null;
-      // Local screen shares. Mirrors MeshClient: map streamId -> entry so
-      // addScreen returns a real MediaStream the renderer can attach to a
-      // tile, and removeScreen can clean up by id. `_pendingScreens`
-      // reserves a slot while getUserMedia is in flight so rapid
-      // concurrent calls don't all pass the MAX cap check.
+      // Local screen shares. addScreen returns a real MediaStream the
+      // renderer can attach to a tile, and removeScreen can clean up by
+      // id. `_pendingScreens` reserves a slot while getUserMedia is in
+      // flight so rapid concurrent calls don't all pass the MAX cap check.
       this._screenStreams = new Map(); // streamId -> { stream, label, publication }
       this._pendingScreens = 0;
       // Remote screen tracks indexed by track sid so trackUnsubscribed
@@ -108,10 +98,6 @@
       // Value carries the participant identity so we can clean up all
       // of a leaving participant's screens at once.
       this._remoteScreens = new Map(); // trackSid -> { stream, fromId }
-      // Track-mute warnings only fire once per surface so a normal call
-      // doesn't spam the console while the user is exploring features
-      // that aren't ported yet.
-      this._warnedMissing = new Set();
 
       this._bound = [];
       const wire = (event, handler) => {
@@ -119,8 +105,9 @@
         this._bound.push([event, handler]);
       };
       // Pass-through events from the HuddleClient so listeners attached
-      // to this client receive them just like they would from MeshClient.
-      // Media-plane events (peer-joined / peer-left / track) are NOT in
+      // to this client receive call-channel broadcasts (raise-hand,
+      // reactions, mute-state) and chat events. Media-plane events
+      // (peer-joined / peer-left / track / active-speaker) are NOT in
       // this list — they come from the LiveKit room directly.
       const FORWARD = [
         'welcome', 'connected',
@@ -135,7 +122,7 @@
       }
     }
 
-    // --- Pass-through accessors (match MeshClient public API) -------------
+    // --- Pass-through accessors -------------------------------------------
     get peerId() { return this.huddle.peerId; }
     get name() { return this.huddle.name; }
     get color() { return this.huddle.color; }
@@ -146,15 +133,8 @@
     get raisedHands() { return this.huddle.raisedHands; }
     get screenStreams() { return this._screenStreams; }
     get blurOn() { return this._blurOn; }
-    // `peers` is mesh-internal — pollActiveSpeaker in app.js reaches
-    // into it to do per-peer getStats() for the green "speaking"
-    // outline. LiveKit has a built-in room.activeSpeakers list we
-    // should plumb through in Phase 2; for now expose an empty Map so
-    // collectSpeakerSamples runs to completion (no-op) instead of
-    // throwing `Cannot read properties of undefined` 60 times a second.
-    get peers() { return new Map(); }
 
-    // --- Chat passthroughs (verbatim mirror of MeshClient) ----------------
+    // --- Chat passthroughs ------------------------------------------------
     sendMessage(args)        { return this.huddle.sendMessage(args); }
     sendAiMessage(args)      { return this.huddle.sendAiMessage(args); }
     editMessage(id, text)    { return this.huddle.editMessage(id, text); }
@@ -174,8 +154,10 @@
     searchMessages(q, c)     { return this.huddle.searchMessages(q, c); }
     uploadFile(f)            { return this.huddle.uploadFile(f); }
 
-    // --- Phase-2 stubs (logged once, then silent) -------------------------
-    sendDraw()        { /* whiteboard rides on huddle, not mesh; safe no-op */ }
+    // --- Call-channel passthroughs (raise-hand + reactions ride the
+    //     huddle broadcast like chat events). Drawing on a shared screen
+    //     calls state.huddle.sendDraw directly from app.js, so it isn't
+    //     mirrored here.
     sendRaiseHand(r)  { return this.huddle.sendRaiseHand(r); }
     sendReaction(e)   { return this.huddle.sendReaction(e); }
     get activeScreenCount() {
@@ -194,17 +176,16 @@
     // track; we wrap it in its own MediaStream (separate from the
     // participant's camera stream) and populate huddle.remoteScreenLabels
     // locally so the renderer's onTrack lookup matches by stream.id.
-    // No cross-client sendScreenAnnounce broadcast is needed — LK's
-    // track.source tells us directly.
+    // LK's track.source classifies camera vs screen directly — no
+    // separate cross-client announce broadcast is needed.
 
     async addScreen(sourceId, label) {
       if (!this.room) throw new Error('addScreen before connect');
-      const MAX = window.MAX_CONCURRENT_SCREENS || 3;
-      if (this.activeScreenCount >= MAX) {
-        throw new Error(`Screen-share limit reached (${MAX} max).`);
+      if (this.activeScreenCount >= MAX_CONCURRENT_SCREENS) {
+        throw new Error(`Screen-share limit reached (${MAX_CONCURRENT_SCREENS} max).`);
       }
       // Reserve a slot before awaiting getUserMedia so two quick clicks
-      // can't both pass the check (matches MeshClient).
+      // can't both pass the check.
       this._pendingScreens++;
       let stream;
       try {
@@ -242,11 +223,10 @@
       // receivers (who also stash trackSid in _onTrackSubscribed).
       stream.__huddleShareId = publication.trackSid;
       // Drawing strokes ride a per-screen Supabase channel named
-      // `screen:${shareId}` — mesh subscribes both ends inside
-      // sendScreenAnnounce. The LK transport doesn't call that, so we
-      // open the drawing channel directly. Without this, the sender's
-      // sendDraw broadcasts land on a channel nobody (including the
-      // sender itself) is subscribed to.
+      // `screen:${shareId}`. Open it eagerly here (and again on the
+      // receiver side in _onTrackSubscribed) so the first sendDraw
+      // broadcast from app.js lands on a channel both ends are
+      // subscribed to.
       if (publication.trackSid) {
         this.huddle._ensureScreenChannel(publication.trackSid).catch(() => {});
       }
@@ -272,12 +252,10 @@
       for (const t of entry.stream.getTracks()) {
         try { t.stop(); } catch {}
       }
-      // Mesh's sendScreenStop locally dispatches `screen-stop` so the
-      // *sender's* tile (keyed by `screen:${shareId}`) gets torn down by
-      // onScreenStop — the broadcast itself doesn't echo back to sender.
-      // LK doesn't go through huddle for the screen lifecycle, so we
-      // have to dispatch the synthetic event ourselves or the local
-      // tile lingers with a frozen last frame.
+      // Dispatch a local `screen-stop` so the sender's own tile
+      // (keyed by `screen:${shareId}`) gets torn down by onScreenStop.
+      // Without this the local tile lingers with a frozen last frame
+      // — remote tiles drop naturally via TrackUnsubscribed.
       const shareId = entry.stream.__huddleShareId || entry.stream.id;
       this.dispatchEvent(new CustomEvent('screen-stop', {
         detail: { from: this.peerId, streamId: shareId },
@@ -373,12 +351,6 @@
       this._refreshLocalCameraStream();
     }
 
-    _warnOnce(name) {
-      if (this._warnedMissing.has(name)) return;
-      this._warnedMissing.add(name);
-      console.warn(`[livekit] ${name}() is a no-op in the Phase 1 spike (mesh-only feature)`);
-    }
-
     // --- Connect / disconnect ---------------------------------------------
     //
     // joinCall(channelId) on the HuddleClient is the team-side presence
@@ -426,8 +398,8 @@
       room.on(RE.TrackSubscribed, (track, pub, participant) => this._onTrackSubscribed(track, pub, participant));
       room.on(RE.TrackUnsubscribed, (track, pub, participant) => this._onTrackUnsubscribed(track, pub, participant));
       // Local mute state changes — keep _micOn/_camOn truthful and
-      // broadcast over the huddle so mesh-mode peers (and future
-      // LK-mode peers) can update their tile overlays.
+      // broadcast over the huddle so remote peers can update their
+      // tile overlays.
       room.on(RE.LocalTrackPublished, (pub) => this._syncLocalMuteFromPub(pub));
       room.on(RE.LocalTrackUnpublished, (pub) => this._syncLocalMuteFromPub(pub));
       room.on(RE.TrackMuted, (pub, participant) => {
@@ -436,9 +408,23 @@
       room.on(RE.TrackUnmuted, (pub, participant) => {
         if (participant.isLocal) this._syncLocalMuteFromPub(pub);
       });
+      // LK applies its own audio-level threshold server-side; an empty
+      // array means nobody is above it (silence). Re-emit as a single
+      // 'active-speaker' event keyed by identity so the renderer can
+      // light up exactly one tile without running a per-pc getStats()
+      // poll loop.
+      room.on(RE.ActiveSpeakersChanged, (speakers) => {
+        const top = speakers[0];
+        this.dispatchEvent(new CustomEvent('active-speaker', {
+          detail: { peerId: top ? top.identity : null },
+        }));
+      });
       room.on(RE.Disconnected, () => {
-        // Surface unexpected disconnects to the renderer so it can
-        // clean up state (similar to mesh's connection-failure path).
+        // Disconnected fires both when WE call room.disconnect() (graceful
+        // leave) and when the SFU drops us (auth expired, network gone).
+        // Only surface the latter — the graceful path is already a
+        // user-initiated teardown via leaveCall.
+        if (this._closing) return;
         this.dispatchEvent(new CustomEvent('connection-failed', { detail: { reason: 'livekit disconnected' } }));
       });
     }
@@ -447,6 +433,14 @@
       this.dispatchEvent(new CustomEvent('peer-joined', {
         detail: { id: p.identity, name: p.name || p.identity, color: null },
       }));
+      // The new joiner doesn't see our current mic/cam state — LK carries
+      // an isMuted flag on each publication, but the renderer reads from
+      // huddle.peerMediaState which is only populated by mute-state
+      // broadcasts on the call channel. Re-emit our state so their tile
+      // overlay shows the right icons without waiting for our next toggle.
+      if (this.room?.localParticipant) {
+        this.huddle.sendMuteState(this._micOn, this._camOn);
+      }
     }
 
     _onParticipantDisconnected(p) {
@@ -582,8 +576,9 @@
       }
     }
 
-    // setCamera mirrors MeshClient's API for callers, but LiveKit
-    // owns getUserMedia internally — we just toggle publication.
+    // setCamera surfaces a single MediaStream (camera + mic combined)
+    // for the self-cam tile; LiveKit owns getUserMedia internally so
+    // we just toggle publication and bundle the resulting tracks.
     async setCamera(constraints = { video: true, audio: true }) {
       if (!this.room) throw new Error('setCamera before connect');
       await this.room.localParticipant.setMicrophoneEnabled(!!constraints.audio);
@@ -608,12 +603,11 @@
       return next;
     }
 
-    bootstrapExistingPeers() {
-      // No-op on LiveKit — connect() already iterated remoteParticipants
-      // before resolving. Kept for API parity with MeshClient.
-    }
-
     disconnect() {
+      // Signal the Disconnected handler that the upcoming room.disconnect
+      // is intentional, so it doesn't fire a spurious connection-failed
+      // event that would re-enter leaveCall with a misleading banner.
+      this._closing = true;
       // Stop any active local screen captures before we close the room —
       // unpublishTrack would error on a disconnected room and OS-level
       // capture indicators must go away regardless.
@@ -646,12 +640,6 @@
     }
   }
 
-  // Feature-flag readout. Phase 2 will move this into the Settings panel;
-  // for the spike a localStorage toggle is enough — flip it in DevTools:
-  //   localStorage.setItem('huddle.useLivekit', 'true')
-  window.huddleUseLivekit = function huddleUseLivekit() {
-    try { return localStorage.getItem('huddle.useLivekit') === 'true'; }
-    catch { return false; }
-  };
   window.LivekitCallClient = LivekitCallClient;
+  window.MAX_CONCURRENT_SCREENS = MAX_CONCURRENT_SCREENS;
 })();
