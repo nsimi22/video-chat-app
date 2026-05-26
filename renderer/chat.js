@@ -269,6 +269,12 @@ class ChatView {
     this._pendingDraft = null;
 
     this.typingClock = setInterval(() => this._refreshTyping(), 800);
+    // One-shot timer that fires just after the next local midnight to
+    // re-render the date dividers — without it a user sitting in a
+    // channel across midnight would see yesterday's messages still
+    // labelled "Today". Reschedules itself on every fire.
+    this._midnightTimer = null;
+    this._scheduleMidnightRefresh();
     this._wireDom();
     this._wireMesh();
     this._initEmojiPicker();
@@ -543,6 +549,8 @@ class ChatView {
   destroy() {
     if (this.typingClock) clearInterval(this.typingClock);
     this.typingClock = null;
+    if (this._midnightTimer) clearTimeout(this._midnightTimer);
+    this._midnightTimer = null;
     if (this._gifSearchTimer) clearTimeout(this._gifSearchTimer);
     this._gifSearchTimer = null;
     if (this._slashBlurTimer) clearTimeout(this._slashBlurTimer);
@@ -1197,6 +1205,12 @@ class ChatView {
     // initial render of a large channel.
     const mentionNames = this._knownNames();
     for (const m of visible) {
+      // Drop a date banner before the first visible message and at
+      // every local-day boundary so the user can tell at a glance
+      // which day a message belongs to.
+      if (!prev || !this._isSameLocalDay(prev.ts, m.ts)) {
+        container.appendChild(this._buildDateDivider(m.ts));
+      }
       const node = this._renderMessage(m, all, prev, mentionNames);
       this.nodeById.set(m.id, node);
       container.appendChild(node);
@@ -1212,6 +1226,65 @@ class ChatView {
       container.appendChild(this._buildEmptyState());
     }
     container.scrollTop = container.scrollHeight;
+  }
+
+  // Local-day equality. Date getters already operate in the user's
+  // local timezone, so a per-component compare gives the right answer
+  // for two messages that span local midnight — without paying the
+  // locale-formatting cost of toLocaleDateString on the render hot
+  // path (called once per visible message + once per incoming message).
+  _isSameLocalDay(tsA, tsB) {
+    const a = new Date(tsA);
+    const b = new Date(tsB);
+    return a.getFullYear() === b.getFullYear()
+      && a.getMonth() === b.getMonth()
+      && a.getDate() === b.getDate();
+  }
+
+  // "Today" / "Yesterday" / "Tuesday, May 26" — collapses recent days
+  // into friendly labels so the banner doesn't read like a log.
+  _formatDateDivider(ts) {
+    const d = new Date(ts);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    if (this._isSameLocalDay(d.getTime(), today.getTime())) return 'Today';
+    if (this._isSameLocalDay(d.getTime(), yesterday.getTime())) return 'Yesterday';
+    // Year omitted for the current calendar year; included otherwise so
+    // scrolling back into last year's archive isn't ambiguous.
+    const sameYear = d.getFullYear() === today.getFullYear();
+    return d.toLocaleDateString([], {
+      weekday: 'long', month: 'long', day: 'numeric',
+      ...(sameYear ? {} : { year: 'numeric' }),
+    });
+  }
+
+  _buildDateDivider(ts) {
+    const wrap = document.createElement('div');
+    wrap.className = 'date-divider';
+    const label = document.createElement('span');
+    label.className = 'date-divider-label';
+    label.textContent = this._formatDateDivider(ts);
+    wrap.appendChild(label);
+    return wrap;
+  }
+
+  // Re-render the current channel just after the next local midnight
+  // so the "Today" / "Yesterday" dividers refresh to reflect the new
+  // day. The 1-second buffer past midnight makes sure new Date()
+  // inside _formatDateDivider lands cleanly on the new day even
+  // accounting for setTimeout drift on a busy machine.
+  _scheduleMidnightRefresh() {
+    const now = new Date();
+    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 1);
+    const ms = Math.max(1000, nextMidnight.getTime() - now.getTime());
+    this._midnightTimer = setTimeout(() => {
+      this._midnightTimer = null;
+      // Only re-render when there's actually a channel mounted — on
+      // sign-out the timer has already been cleared by destroy().
+      if (this.currentChannel) this._render();
+      this._scheduleMidnightRefresh();
+    }, ms);
   }
 
   _buildEmptyState() {
@@ -1248,6 +1321,15 @@ class ChatView {
 
   _appendIncremental(m) {
     if (this._isInCurrentView(m)) {
+      // Drop a date banner when an incoming message lands on a different
+      // local day than the last one we rendered (or when this is the
+      // first message in an empty view). Without this branch the banner
+      // only appeared on full re-renders, so a user sitting in a channel
+      // across midnight would see today's messages with no `Today`
+      // marker until they switched channels and back.
+      if (!this._lastRendered || !this._isSameLocalDay(this._lastRendered.ts, m.ts)) {
+        this.els.messages.appendChild(this._buildDateDivider(m.ts));
+      }
       // Single message — one _knownNames call is fine, default fallthrough.
       const node = this._renderMessage(m, this._messages(), this._lastRendered);
       this.nodeById.set(m.id, node);
