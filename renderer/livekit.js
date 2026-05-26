@@ -1,25 +1,11 @@
-// LiveKit transport — Phase 1 spike (PR #X, see desktop/livekit-spike).
+// LiveKit transport — sole call client on desktop.
 //
-// Hand-rolled WebRTC mesh in webrtc.js stays the default; this file
-// lets the desktop join a call through a LiveKit SFU instead, so a
-// desktop client can finally see a mobile client (which has always
-// been LiveKit-only). Selected at startCall time by reading
-// localStorage['huddle.useLivekit'] === 'true' — Phase 2 will move
-// the toggle into the Settings UI.
+// The mobile app is LiveKit-only, so desktop joining the same room
+// is the only way the two ends can see each other in a call. The
+// hand-rolled WebRTC mesh that used to live in renderer/webrtc.js
+// has been removed; this is now the only path.
 //
-// Public API matches the subset of MeshClient that the rest of the
-// renderer (app.js, chat.js, popout) consumes for a basic camera+mic
-// call. Surfaces deliberately deferred to Phase 2:
-//   - addScreen / removeScreen / screen-announce / screen-stop
-//   - background blur (setBlurBackground, blurOn)
-//   - drawing (sendDraw)
-//   - raise-hand (sendRaiseHand)
-//   - reactions overlay (sendReaction, REACTION_EMOJI floating)
-//   - simulcast / per-tier screen encoding bookkeeping
-// Those methods exist as no-ops so consumers don't throw; they log a
-// one-line "not supported in LiveKit mode" the first time each is hit.
-//
-// Event mapping (LiveKit → mesh-shaped event):
+// Event mapping (LiveKit → renderer-shaped event):
 //   participantConnected     → peer-joined { id, name, color }
 //   participantDisconnected  → peer-left   (remoteId string)
 //   trackSubscribed (remote) → track       { stream, track, fromId }
@@ -32,13 +18,10 @@
 //   localTrackUnpublished /  → mute-state  { from, micOn, camOn }
 //   trackMuted / trackUnmuted
 //
-// Identity coexistence note: a user joining via LiveKit also calls
-// huddle.joinCall(channelId) to keep team-side presence accurate
-// (lurker counts, "Join call · N" pill). Mesh users in the same
-// channel will see this user in presence but can't form a PeerConn
-// with them — that's expected behavior for the spike. Phase 2 will
-// either ship the LiveKit transport to everyone or add a
-// transport-aware presence filter.
+// huddle.joinCall(channelId) is still called alongside room.connect:
+// it tracks team-side presence on the call topic so other team
+// members see the "Join call · N" lurker pill. The LiveKit room
+// handles the media plane (peer-joined / peer-left / track) directly.
 
 (function () {
   const LK = window.LivekitClient;
@@ -646,12 +629,5 @@
     }
   }
 
-  // Feature-flag readout. Phase 2 will move this into the Settings panel;
-  // for the spike a localStorage toggle is enough — flip it in DevTools:
-  //   localStorage.setItem('huddle.useLivekit', 'true')
-  window.huddleUseLivekit = function huddleUseLivekit() {
-    try { return localStorage.getItem('huddle.useLivekit') === 'true'; }
-    catch { return false; }
-  };
   window.LivekitCallClient = LivekitCallClient;
 })();

@@ -720,10 +720,9 @@
     <script src="github.js"></script>
     <script src="infinite-canvas.js"></script>
     <script src="whiteboard.js"></script>
-    <script src="webrtc.js"></script>
-    <!-- LiveKit UMD + Phase 1 spike client. Mesh stays the default;
-         the call wrapper checks localStorage['huddle.useLivekit']
-         to decide which transport to construct. -->
+    <!-- LiveKit UMD + call client. Sole call transport — the mobile
+         app is LiveKit-only, so desktop joining the same room is the
+         only way the two ends can see each other in a call. -->
     <script src="vendor/livekit.js"></script>
     <script src="livekit.js"></script>
     <script src="profile-card.js"></script>

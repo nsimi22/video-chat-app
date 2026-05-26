@@ -6,10 +6,8 @@
 //   - @supabase/supabase-js UMD bundle
 //   - @mediapipe/selfie_segmentation (JS + WASM + model assets) for
 //     the call-time background-blur pipeline
-//   - livekit-client UMD bundle (Phase 1 spike — the renderer mostly
-//     uses the hand-rolled WebRTC mesh in webrtc.js, but this bundle
-//     ships so a feature-flagged LiveKit transport can run alongside
-//     it without rebuilding the renderer as ES modules)
+//   - livekit-client UMD bundle (sole call transport — the renderer
+//     loads it as a <script> rather than rebuilding as ES modules)
 const fs = require('fs');
 const path = require('path');
 

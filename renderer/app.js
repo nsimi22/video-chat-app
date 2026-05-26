@@ -220,7 +220,7 @@ const els = {
 
 const state = {
   huddle: null,           // HuddleClient — alive while signed into a team
-  mesh: null,             // MeshClient — alive only while in a call
+  mesh: null,             // LivekitCallClient — alive only while in a call
   inCallChannelId: null,  // channel.id of the active call, if any
   callStarting: false,    // re-entrancy guard for startCall()
   lurkingChannelId: null, // channel.id we're watching call-presence on
@@ -895,7 +895,7 @@ async function bootCallPopout(cfg) {
     return b;
   };
   // Mic / Cam start disabled — startPopoutCall enables them once
-  // the MeshClient is wired and joinCall has resolved. Without
+  // the call client is wired and joinCall has resolved. Without
   // this, clicking either button during the brief handoff gap
   // (state.mesh still null) silently no-ops and the user thinks
   // the popout is broken.
@@ -964,8 +964,8 @@ async function bootCallPopout(cfg) {
   els.channelTopic = stub();
   els.callPresenceCount = stub();
 
-  // Wire popout-local controls. Mic/Cam toggle methods on MeshClient
-  // exist already; Leave closes the call AND the popout window.
+  // Wire popout-local controls. Mic/Cam toggle methods on the call
+  // client exist already; Leave closes the call AND the popout window.
   btnMic.onclick = () => {
     if (!state.mesh) return;
     const on = state.mesh.toggleMic();
@@ -1015,14 +1015,13 @@ async function bootCallPopout(cfg) {
   window.huddle.sendPopoutEvent({ event: 'call-popout-ready', channelId: cfg.channelId });
 }
 
-// Popout-local equivalent of startCall(). Same MeshClient setup +
+// Popout-local equivalent of startCall(). Same call-client setup +
 // joinCall + setCamera, but skips the start/join button toggles
 // and the in-flight guard (popout has its own UI).
 async function startPopoutCall(channelId) {
   const huddle = state.huddle;
   if (!huddle || state.mesh) return;
-  const useLk = typeof window.huddleUseLivekit === 'function' && window.huddleUseLivekit();
-  const mesh = useLk ? new window.LivekitCallClient(huddle) : new MeshClient(huddle);
+  const mesh = new window.LivekitCallClient(huddle);
   mesh.addEventListener('peer-joined', (e) => onCallPeerJoined(e.detail));
   mesh.addEventListener('peer-left', (e) => onCallPeerLeft(e.detail));
   mesh.addEventListener('track', (e) => onTrack(e.detail));
@@ -1036,7 +1035,7 @@ async function startPopoutCall(channelId) {
   mesh.addEventListener('camera-stream-changed', (e) => onLocalCameraStreamChanged(e.detail));
   try {
     await huddle.joinCall(channelId);
-    if (useLk) await mesh.connect(channelId);
+    await mesh.connect(channelId);
   } catch (err) {
     showCallError('Could not join the call: ' + (err?.message || err));
     mesh.disconnect();
@@ -1407,7 +1406,7 @@ async function _routeProtocolUrl(parsed, url) {
 
 // Spin up the HuddleClient (chat + team presence) and reveal the app.
 // Calls are now started on demand via startCall() — joining a team no
-// longer auto-grabs camera/mic or constructs MeshClient.
+// longer auto-grabs camera/mic or constructs a call client.
 async function joinTeamAndStart(teamId) {
   els.loginError.classList.add('hidden');
   // startHuddle returns an *un-started* HuddleClient so we can attach
@@ -1496,9 +1495,9 @@ async function joinTeamAndStart(teamId) {
   catch (err) { showError(err.message || 'Could not start huddle.'); return; }
 }
 
-// User clicked "Start call" or "Join call". Construct MeshClient first
-// (so its peer-joined listener is attached before huddle.joinCall fires
-// presence-sync events for everyone already in the call), then join.
+// User clicked "Start call" or "Join call". Construct the call client
+// first (so its event listeners are attached before huddle.joinCall
+// fires presence-sync events for everyone already in the call), then join.
 async function startCall(channelId) {
   if (!state.huddle || state.mesh) return; // already in a call or no team
   if (state.callStarting) return;          // double-click / re-entrancy guard
@@ -1510,20 +1509,11 @@ async function startCall(channelId) {
   // muted; otherwise the UI can lie about the live track state.
   els.btnMic.classList.remove('muted');
   els.btnCam.classList.remove('muted');
-  // Wire MeshClient before joinCall — joinCall's await resolves AFTER
-  // the realtime channel's initial presence sync, so peer-joined
+  // Wire the call client before joinCall — joinCall's await resolves
+  // AFTER the realtime channel's initial presence sync, so peer-joined
   // events for existing participants would otherwise fire into the
-  // void (no MeshClient listener yet) and we'd never form WebRTC
-  // connections to them.
-  //
-  // Phase 1 LiveKit spike: when window.huddleUseLivekit() is true the
-  // call goes through a LiveKit SFU instead of the hand-rolled mesh.
-  // Same event surface, so the listener wiring below is unchanged.
-  // Toggle with `localStorage.setItem('huddle.useLivekit', 'true')` in
-  // DevTools; default is the mesh. See renderer/livekit.js header for
-  // what's NOT supported in this mode yet.
-  const useLk = typeof window.huddleUseLivekit === 'function' && window.huddleUseLivekit();
-  const mesh = useLk ? new window.LivekitCallClient(state.huddle) : new MeshClient(state.huddle);
+  // void (no listener yet) and we'd miss them.
+  const mesh = new window.LivekitCallClient(state.huddle);
   mesh.addEventListener('peer-joined', (e) => onCallPeerJoined(e.detail));
   mesh.addEventListener('peer-left', (e) => onCallPeerLeft(e.detail));
   mesh.addEventListener('track', (e) => onTrack(e.detail));
@@ -1538,9 +1528,9 @@ async function startCall(channelId) {
   try {
     await state.huddle.joinCall(channelId);
     // LiveKit needs an explicit room connect on top of the team-side
-    // presence join. Mesh handles its own connections off peer-joined
-    // events from huddle and doesn't need this step.
-    if (useLk) await mesh.connect(channelId);
+    // presence join (joinCall keeps the "Join call · N" lurker pill
+    // accurate; mesh.connect wires the actual media transport).
+    await mesh.connect(channelId);
   } catch (err) {
     console.warn('joinCall failed', err);
     // Surface the failure to the user (see showCallError) instead
@@ -1993,12 +1983,12 @@ function renderCallHeader() {
 }
 
 function onCallPeerJoined(peer) {
-  // Per-call peer joined; MeshClient already opened the WebRTC
-  // connection — we just need to render an empty tile they can stream
+  // Per-call peer joined; the call client already opened the LiveKit
+  // subscription — we just need to render an empty tile they can stream
   // into. Track callbacks fill in the actual stream once it arrives.
-  // (For now, MeshClient's track event creates the tile imperatively;
-  // this is a no-op hook left for future "show participant before
-  // their first frame" UX.)
+  // (For now, the track event creates the tile imperatively; this is
+  // a no-op hook left for future "show participant before their first
+  // frame" UX.)
 }
 
 function onCallPeerLeft(peerId) {
@@ -3542,10 +3532,10 @@ function addLocalCameraTile(stream, name) {
 // ---------------------------------------------------------------------------
 // Background blur
 //
-// The MeshClient holds the segmentation pipeline and the swap logic;
+// The call client holds the segmentation pipeline and the swap logic;
 // the renderer just wires the toggle button + persists the preference
 // and re-points the self-cam tile's video at the new stream when the
-// mesh emits camera-stream-changed (since toggling blur mid-call
+// client emits camera-stream-changed (since toggling blur mid-call
 // replaces the published MediaStream).
 // ---------------------------------------------------------------------------
 const BLUR_PREF_KEY = 'huddle.blurBackground';
