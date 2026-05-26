@@ -33,7 +33,11 @@ export function formatDateBanner(ts: string | Date): string {
   if (isSameLocalDay(d, today)) return 'Today';
   if (isSameLocalDay(d, yesterday)) return 'Yesterday';
   const sameYear = d.getFullYear() === today.getFullYear();
-  return d.toLocaleDateString([], {
+  // `undefined` falls back to the device default locale. Older Hermes /
+  // JSC engines on Android reject the empty-array form with a "locale
+  // not supported" error; undefined is the spec-blessed default-locale
+  // argument and works on every JS engine RN ships with.
+  return d.toLocaleDateString(undefined, {
     weekday: 'long', month: 'long', day: 'numeric',
     ...(sameYear ? {} : { year: 'numeric' }),
   });
@@ -51,20 +55,17 @@ export function DateBanner({ ts }: { ts: string | Date }) {
       }}
     >
       <View style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
-      <Text
-        // allowFontScaling left at the default — the banner has flexible
-        // height so the user's text-size preference can scale this label
-        // without overlapping anything (unlike the fixed-height unread
-        // pill in #160).
+      {/* Container styles (border, background, radius) live on a View
+          wrapper — RN renders border + backgroundColor on Text reliably
+          on iOS but inconsistently on Android (text clipping, missing
+          borders, padding misalignment). Splitting keeps the styling
+          cross-platform safe and lets the inner Text only carry
+          type-specific rules. */}
+      <View
         style={{
           marginHorizontal: space(2.5),
           paddingHorizontal: 10,
           paddingVertical: 2,
-          fontSize: 11,
-          fontWeight: '600',
-          color: colors.textDim,
-          letterSpacing: 0.6,
-          textTransform: 'uppercase',
           borderWidth: 1,
           borderColor: colors.border,
           borderRadius: 12,
@@ -72,8 +73,22 @@ export function DateBanner({ ts }: { ts: string | Date }) {
           overflow: 'hidden',
         }}
       >
-        {formatDateBanner(ts)}
-      </Text>
+        <Text
+          // allowFontScaling left at the default — the banner has flexible
+          // height so the user's text-size preference can scale this label
+          // without overlapping anything (unlike the fixed-height unread
+          // pill in #160).
+          style={{
+            fontSize: 11,
+            fontWeight: '600',
+            color: colors.textDim,
+            letterSpacing: 0.6,
+            textTransform: 'uppercase',
+          }}
+        >
+          {formatDateBanner(ts)}
+        </Text>
+      </View>
       <View style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
     </View>
   );
