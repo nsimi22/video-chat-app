@@ -177,12 +177,18 @@ export default function ChannelScreen() {
     setText(t);
     const now = Date.now();
     if (now - lastTypingSent.current > 1500 && teamChannelRef.current) {
-      lastTypingSent.current = now;
+      // Skip the broadcast until the roster fetch has resolved our
+      // own profile — otherwise the receiver renders "Someone is
+      // typing" which is uglier than no indicator at all. The user
+      // typing within ~100ms of channel mount (before
+      // listTeamProfiles returns) is the realistic trigger.
       const me = profileFor(userId ?? '');
+      if (!me?.name) return;
+      lastTypingSent.current = now;
       teamChannelRef.current.send({
         type: 'broadcast',
         event: 'typing',
-        payload: { from: userId, name: me?.name ?? 'Someone', channelId: String(channelId) },
+        payload: { from: userId, name: me.name, channelId: String(channelId) },
       });
     }
   };
@@ -293,23 +299,37 @@ export default function ChannelScreen() {
   // No upload to Supabase Storage — Giphy hosts the file. The receiver-side
   // image render (channel/[id].tsx attachment loop) picks it up via the
   // `type`/`contentType` MIME check we added earlier.
-  const onSelectGif = (gif: GiphyResult) => {
+  const onSelectGif = async (gif: GiphyResult) => {
     setGifPickerOpen(false);
-    sendMessage({
-      teamId,
-      channelId: String(channelId),
-      authorId: userId!,
-      body: '',
-      attachments: [
-        {
-          url: gif.url,
-          name: (gif.title || 'giphy.gif').slice(0, 80),
-          size: gif.size || undefined,
-          type: 'image/gif',
-          contentType: 'image/gif',
-        },
-      ],
-    }).catch((e: any) => Alert.alert('Could not send', e?.message ?? String(e)));
+    // Gate re-entry. Without this, the user could re-open the GIF
+    // picker and pick again while the prior send was still in flight,
+    // producing duplicate messages. The composer's text-send path is
+    // already protected by disabling the send button on `sending`;
+    // the GIF path was the one entry that didn't go through doSend
+    // and so didn't toggle the flag.
+    if (sending) return;
+    setSending(true);
+    try {
+      await sendMessage({
+        teamId,
+        channelId: String(channelId),
+        authorId: userId!,
+        body: '',
+        attachments: [
+          {
+            url: gif.url,
+            name: (gif.title || 'giphy.gif').slice(0, 80),
+            size: gif.size || undefined,
+            type: 'image/gif',
+            contentType: 'image/gif',
+          },
+        ],
+      });
+    } catch (e: any) {
+      Alert.alert('Could not send', e?.message ?? String(e));
+    } finally {
+      setSending(false);
+    }
   };
 
   const attachImage = async () => {

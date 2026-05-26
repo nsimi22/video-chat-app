@@ -74,6 +74,24 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     }
   }, [activeCall]);
 
+  // Ref-mirror of the active team so the in-flight startCall path can
+  // detect a team-switch race without the useCallback closure capturing
+  // a stale value. `activeTeam` (the dep) is captured at startCall
+  // construction time; if the user switches teams while the perms +
+  // token-fetch promise is in flight, that closure still sees the old
+  // team and would otherwise resurrect a ghost call for it.
+  //
+  // Update via useEffect (post-commit) rather than during render — a
+  // concurrent-mode abort or retry that happened to fire between a
+  // render-phase ref write and the matching state commit would leave
+  // the ref ahead of the state React actually rendered, breaking the
+  // "ref reflects what's committed" invariant the abort-check
+  // depends on.
+  const activeTeamRef = useRef(activeTeam);
+  useEffect(() => {
+    activeTeamRef.current = activeTeam;
+  }, [activeTeam]);
+
   const startCall = useCallback(
     async (channelId: string, name?: string) => {
       if (!activeTeam) {
@@ -91,6 +109,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         // Last-wins: starting a new call ends the current one.
         endCall();
       }
+      const startTeamId = activeTeam.id;
       try {
         AudioSession.startAudioSession();
         // Run perms ask + token fetch in parallel. Native perm
@@ -101,6 +120,18 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
           Camera.requestMicrophonePermissionsAsync(),
           getCallToken(activeTeam.id, channelId),
         ]);
+        // Team-switch race: the user signed into a different team
+        // while perms + token were in flight. The grant we just
+        // fetched is tied to the old team and the team-switch
+        // teardown effect already ran (cleared activeCall, stopped
+        // audio session). Abandon this startCall — resurrecting
+        // activeCall here would surface a ghost call for the
+        // team the user is no longer viewing.
+        if (activeTeamRef.current?.id !== startTeamId) {
+          AudioSession.stopAudioSession();
+          stopCallForegroundService();
+          return;
+        }
         setPerms({ camera: camRes.granted, mic: micRes.granted });
         setActiveCall({ channelId, name: name ?? 'Call', grant });
         // Android: drop a persistent "in call" notification that
