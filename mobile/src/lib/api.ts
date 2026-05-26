@@ -399,6 +399,29 @@ export async function fetchMessagesSince(
   return (data ?? []) as Message[];
 }
 
+// Team-wide variant — fetches every top-level message across all channels
+// in the team since `sinceTs`. Used by the unread provider to catch up
+// after the realtime WebSocket has been torn down (mobile background
+// resume, network drop, etc.). Caller is responsible for filtering by
+// channel / author / mute state since this helper doesn't know about
+// any of those.
+export async function fetchTeamMessagesSince(
+  teamId: string,
+  sinceTs: string,
+  limit = 500,
+): Promise<Message[]> {
+  const { data, error } = await supabase
+    .from('messages')
+    .select('*')
+    .eq('team_id', teamId)
+    .is('parent_id', null)
+    .gt('ts', sinceTs)
+    .order('ts', { ascending: true })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []) as Message[];
+}
+
 export async function fetchThread(messageId: string): Promise<Message[]> {
   const { data, error } = await supabase
     .from('messages')
