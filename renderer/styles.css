@@ -1797,6 +1797,29 @@ button.ctrl.muted.icon-only::after {
 .msg-action:hover { background: rgba(255, 255, 255, 0.1); color: var(--text); }
 .msg-action.danger:hover { color: var(--bad); }
 
+/* Day separator dropped between messages whenever the local-day flips
+   (or before the first message). Pseudo-element rules give us the
+   thin hairlines on either side of the label without an extra wrapper. */
+.date-divider {
+  display: flex; align-items: center;
+  margin: 14px 4px 6px;
+  gap: 10px;
+}
+.date-divider::before,
+.date-divider::after {
+  content: ''; flex: 1; height: 1px;
+  background: var(--line);
+}
+.date-divider-label {
+  font-size: 11px; font-weight: 600;
+  color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: 0.6px;
+  padding: 2px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--bg);
+}
+
 .reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .reaction {
   background: rgba(255, 255, 255, 0.06);

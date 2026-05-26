@@ -1197,6 +1197,12 @@ class ChatView {
     // initial render of a large channel.
     const mentionNames = this._knownNames();
     for (const m of visible) {
+      // Drop a date banner before the first visible message and at
+      // every local-day boundary so the user can tell at a glance
+      // which day a message belongs to.
+      if (!prev || !this._isSameLocalDay(prev.ts, m.ts)) {
+        container.appendChild(this._buildDateDivider(m.ts));
+      }
       const node = this._renderMessage(m, all, prev, mentionNames);
       this.nodeById.set(m.id, node);
       container.appendChild(node);
@@ -1212,6 +1218,41 @@ class ChatView {
       container.appendChild(this._buildEmptyState());
     }
     container.scrollTop = container.scrollHeight;
+  }
+
+  // Local-day equality. toLocaleDateString respects the user's timezone
+  // and locale separators, so two messages 5 minutes apart that span
+  // local midnight correctly land in different "days".
+  _isSameLocalDay(tsA, tsB) {
+    return new Date(tsA).toLocaleDateString() === new Date(tsB).toLocaleDateString();
+  }
+
+  // "Today" / "Yesterday" / "Tuesday, May 26" — collapses recent days
+  // into friendly labels so the banner doesn't read like a log.
+  _formatDateDivider(ts) {
+    const d = new Date(ts);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    if (this._isSameLocalDay(d.getTime(), today.getTime())) return 'Today';
+    if (this._isSameLocalDay(d.getTime(), yesterday.getTime())) return 'Yesterday';
+    // Year omitted for the current calendar year; included otherwise so
+    // scrolling back into last year's archive isn't ambiguous.
+    const sameYear = d.getFullYear() === today.getFullYear();
+    return d.toLocaleDateString([], {
+      weekday: 'long', month: 'long', day: 'numeric',
+      ...(sameYear ? {} : { year: 'numeric' }),
+    });
+  }
+
+  _buildDateDivider(ts) {
+    const wrap = document.createElement('div');
+    wrap.className = 'date-divider';
+    const label = document.createElement('span');
+    label.className = 'date-divider-label';
+    label.textContent = this._formatDateDivider(ts);
+    wrap.appendChild(label);
+    return wrap;
   }
 
   _buildEmptyState() {
