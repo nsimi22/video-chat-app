@@ -1,15 +1,19 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState, type AppStateStatus } from 'react-native';
 import { supabase } from '@/lib/supabase';
-import { getProfile, type Message } from '@/lib/api';
+import { fetchTeamMessagesSince, getProfile, type Message } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { useMutedChannels } from '@/context/MutedChannelsContext';
 
 // Per-channel unread counter, fed by a single team-wide postgres_changes
-// subscription on public.messages. In-memory only — matches the desktop
-// renderer's model (renderer/app.js, `state.unread`). Backgrounding the
-// app or signing out drops the counts; persistence + cross-device sync
-// is a separate, bigger feature (would need a new channel_read_state
-// table + an RPC, kept out of scope here).
+// subscription on public.messages plus an AppState-driven catch-up
+// query on resume (Supabase postgres_changes is at-most-once and the
+// realtime WebSocket is torn down whenever the OS suspends the app,
+// so any inserts that arrived during background would otherwise be
+// silently dropped). In-memory only — matches the desktop renderer's
+// model (renderer/app.js, `state.unread`). Signing out or a cold app
+// kill resets the counts; persistence + cross-device sync would need
+// a new channel_read_state table + an RPC and stays out of scope here.
 //
 // "Loud" vs "regular":
 //   - Loud: DMs (channel id starts with `dm:` / `gdm:`), any message
@@ -74,6 +78,29 @@ export function UnreadProvider({ children }: { children: React.ReactNode }) {
   // Active-channel id tracked via ref so the realtime handler reads
   // the current value without re-subscribing on every focus change.
   const activeChannelRef = useRef<string | null>(null);
+  // High-water mark used by the AppState catch-up: the newest message
+  // ts we've observed via realtime since the provider mounted. On
+  // resume we query "everything since this", apply bump logic, and
+  // advance the watermark. Initialised to "now" on mount so the very
+  // first resume after launch doesn't flood with old history.
+  const latestObservedTsRef = useRef<string>(new Date().toISOString());
+  // Single in-flight guard for the catch-up — AppState 'active' fires
+  // multiple times in quick succession on iOS (foreground notification
+  // tap, then biometric unlock), and we don't want two parallel
+  // queries racing to set the watermark.
+  const catchUpInFlight = useRef(false);
+  // Bounded ring buffer of recently-applied message ids, used to
+  // dedupe the boundary race between the realtime subscription and
+  // the AppState catch-up. Scenario: catchUp captures since=T2 and
+  // its query is in flight; meanwhile the WebSocket reconnects and
+  // delivers T3, which bumps + advances the watermark to T3; then
+  // catchUp's query returns T3 too, and applyMessage(T3) bumps a
+  // second time (m.ts > current is false but the bump path doesn't
+  // gate on that). Tracking the last APPLIED_IDS_LIMIT ids lets us
+  // short-circuit the second call without leaking memory.
+  const appliedIdsRef = useRef<Set<string>>(new Set());
+  const appliedIdsQueueRef = useRef<string[]>([]);
+  const APPLIED_IDS_LIMIT = 500;
 
   // Fetch our own profile once per signed-in user so we can match
   // mentions. Loud-mention detection silently degrades to dms-only
@@ -135,6 +162,61 @@ export function UnreadProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  // Decide whether a single message should bump unread, and apply it
+  // if so. Shared by the realtime INSERT handler and the AppState
+  // catch-up loop so the rules can't drift between the two paths.
+  // Always advances the high-water mark so the next catch-up only
+  // re-queries truly newer messages.
+  const applyMessage = useCallback((m: Message) => {
+    // Dedupe by message id. Catches the boundary race where realtime
+    // and catch-up overlap on the same row (catch-up's `gt(ts, since)`
+    // can include a message realtime just delivered if the WebSocket
+    // reconnect raced ahead of the query).
+    if (appliedIdsRef.current.has(m.id)) return;
+    appliedIdsRef.current.add(m.id);
+    appliedIdsQueueRef.current.push(m.id);
+    if (appliedIdsQueueRef.current.length > APPLIED_IDS_LIMIT) {
+      const evicted = appliedIdsQueueRef.current.shift();
+      if (evicted) appliedIdsRef.current.delete(evicted);
+    }
+    if (m.ts && m.ts > latestObservedTsRef.current) {
+      latestObservedTsRef.current = m.ts;
+    }
+    // Thread replies live under a parent message; the channel list
+    // never surfaces them, so they shouldn't trigger a banner here.
+    if (m.parent_id) return;
+    // Self-sends — the user just hit Send; bumping their own unread
+    // would flash a 1 next to a channel they're staring at.
+    if (m.author_id === userId) return;
+    // Currently-viewed channel: reading-as-it-arrives, no bump.
+    if (m.channel_id === activeChannelRef.current) return;
+    // Muted channel (#164): user explicitly silenced this room. Skip
+    // the bump entirely — no count, no dot, no contribution to the
+    // tab's loud badge. Mute is a stronger signal than DM/mention;
+    // even an @-mention in a muted channel is suppressed (Slack
+    // semantics). Reading through the ref keeps applyMessage's
+    // identity stable across mute toggles, so the subscription
+    // effect doesn't churn.
+    if (isMutedRef.current(m.channel_id)) return;
+    const mentions = m.mentions || [];
+    const lowerName = myNameRef.current?.toLowerCase() ?? null;
+    const mentionsMe = !!lowerName && mentions.some((n) => n.toLowerCase() === lowerName);
+    const broadcast = mentions.includes('@here') || mentions.includes('@channel');
+    const loud = isDmChannelId(m.channel_id) || mentionsMe || broadcast;
+    setUnread((prev) => {
+      const next = new Map(prev);
+      const cur = next.get(m.channel_id);
+      next.set(m.channel_id, {
+        count: (cur?.count ?? 0) + 1,
+        // Stay loud once any loud message has landed in this channel
+        // — a single mention shouldn't be hidden behind a wall of
+        // subsequent plain-channel chatter.
+        loud: !!cur?.loud || loud,
+      });
+      return next;
+    });
+  }, [userId]);
+
   // Single team-wide subscription that fans out into per-channel
   // counters. Mirrors how the desktop's MessageBus listens once at
   // the team level and lets the renderer decide which channel each
@@ -147,49 +229,50 @@ export function UnreadProvider({ children }: { children: React.ReactNode }) {
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages', filter: `team_id=eq.${teamId}` },
-        (payload) => {
-          const m = payload.new as Message;
-          // Thread replies live under a parent message; the channel
-          // list never surfaces them, so they shouldn't trigger a
-          // banner here either.
-          if (m.parent_id) return;
-          // Self-sends — the user just hit Send; bumping their own
-          // unread would flash a 1 next to a channel they're staring at.
-          if (m.author_id === userId) return;
-          // Currently-viewed channel: reading-as-it-arrives, no bump.
-          if (m.channel_id === activeChannelRef.current) return;
-          // Muted channel: user explicitly silenced this room. Skip
-          // the bump entirely — no count, no dot, no contribution to
-          // the tab's loud badge. Mute is a stronger signal than
-          // DM/mention; even an @-mention in a muted channel is
-          // suppressed (matches Slack semantics). Reading through the
-          // ref keeps this handler's identity stable across mute
-          // toggles so the subscription effect doesn't churn.
-          if (isMutedRef.current(m.channel_id)) return;
-          const mentions = m.mentions || [];
-          const lowerName = myNameRef.current?.toLowerCase() ?? null;
-          const mentionsMe = !!lowerName && mentions.some((n) => n.toLowerCase() === lowerName);
-          const broadcast = mentions.includes('@here') || mentions.includes('@channel');
-          const loud = isDmChannelId(m.channel_id) || mentionsMe || broadcast;
-          setUnread((prev) => {
-            const next = new Map(prev);
-            const cur = next.get(m.channel_id);
-            next.set(m.channel_id, {
-              count: (cur?.count ?? 0) + 1,
-              // Stay loud once any loud message has landed in this
-              // channel — a single mention shouldn't be hidden behind
-              // a wall of subsequent plain-channel chatter.
-              loud: !!cur?.loud || loud,
-            });
-            return next;
-          });
-        },
+        (payload) => applyMessage(payload.new as Message),
       )
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [activeTeam?.id, userId]);
+  }, [activeTeam?.id, userId, applyMessage]);
+
+  // Background catch-up. Supabase postgres_changes is at-most-once,
+  // and the realtime WebSocket is torn down whenever the OS suspends
+  // the app — so any INSERTs that arrived while we were in the
+  // background were silently dropped. On returning to 'active', query
+  // anything newer than the high-water mark and re-apply bump logic
+  // through the same applyMessage path. Mirrors useChannelMessages's
+  // catch-up pattern, but team-wide (one query covers every channel)
+  // since the unread provider isn't scoped to a single room.
+  useEffect(() => {
+    if (!activeTeam?.id || !userId) return;
+    const teamId = activeTeam.id;
+    const runCatchUp = async () => {
+      if (catchUpInFlight.current) return;
+      catchUpInFlight.current = true;
+      try {
+        const since = latestObservedTsRef.current;
+        const rows = await fetchTeamMessagesSince(teamId, since);
+        // Realtime may have raced ahead while the query was in flight;
+        // applyMessage's high-water mark check de-dupes by ts so a
+        // message already observed via realtime is a no-op here.
+        for (const m of rows) applyMessage(m);
+      } catch (err) {
+        console.warn('[unread] catch-up failed', err);
+      } finally {
+        catchUpInFlight.current = false;
+      }
+    };
+    const onChange = (state: AppStateStatus) => {
+      // Only fire on transitions back to active; AppState 'change'
+      // also fires on background/inactive transitions which we don't
+      // care about.
+      if (state === 'active') runCatchUp();
+    };
+    const sub = AppState.addEventListener('change', onChange);
+    return () => sub.remove();
+  }, [activeTeam?.id, userId, applyMessage]);
 
   const unreadFor = useCallback((channelId: string) => unread.get(channelId) ?? null, [unread]);
 
