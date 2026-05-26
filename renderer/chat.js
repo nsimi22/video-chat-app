@@ -269,6 +269,12 @@ class ChatView {
     this._pendingDraft = null;
 
     this.typingClock = setInterval(() => this._refreshTyping(), 800);
+    // One-shot timer that fires just after the next local midnight to
+    // re-render the date dividers — without it a user sitting in a
+    // channel across midnight would see yesterday's messages still
+    // labelled "Today". Reschedules itself on every fire.
+    this._midnightTimer = null;
+    this._scheduleMidnightRefresh();
     this._wireDom();
     this._wireMesh();
     this._initEmojiPicker();
@@ -543,6 +549,8 @@ class ChatView {
   destroy() {
     if (this.typingClock) clearInterval(this.typingClock);
     this.typingClock = null;
+    if (this._midnightTimer) clearTimeout(this._midnightTimer);
+    this._midnightTimer = null;
     if (this._gifSearchTimer) clearTimeout(this._gifSearchTimer);
     this._gifSearchTimer = null;
     if (this._slashBlurTimer) clearTimeout(this._slashBlurTimer);
@@ -1259,6 +1267,24 @@ class ChatView {
     label.textContent = this._formatDateDivider(ts);
     wrap.appendChild(label);
     return wrap;
+  }
+
+  // Re-render the current channel just after the next local midnight
+  // so the "Today" / "Yesterday" dividers refresh to reflect the new
+  // day. The 1-second buffer past midnight makes sure new Date()
+  // inside _formatDateDivider lands cleanly on the new day even
+  // accounting for setTimeout drift on a busy machine.
+  _scheduleMidnightRefresh() {
+    const now = new Date();
+    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 1);
+    const ms = Math.max(1000, nextMidnight.getTime() - now.getTime());
+    this._midnightTimer = setTimeout(() => {
+      this._midnightTimer = null;
+      // Only re-render when there's actually a channel mounted — on
+      // sign-out the timer has already been cleared by destroy().
+      if (this.currentChannel) this._render();
+      this._scheduleMidnightRefresh();
+    }, ms);
   }
 
   _buildEmptyState() {
