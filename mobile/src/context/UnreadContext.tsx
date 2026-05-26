@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { supabase } from '@/lib/supabase';
 import { getProfile, type Message } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+import { useMutedChannels } from '@/context/MutedChannelsContext';
 
 // Per-channel unread counter, fed by a single team-wide postgres_changes
 // subscription on public.messages. In-memory only — matches the desktop
@@ -52,6 +53,11 @@ function isDmChannelId(channelId: string): boolean {
 
 export function UnreadProvider({ children }: { children: React.ReactNode }) {
   const { activeTeam, userId } = useAuth();
+  // Muted channels suppress bumps entirely (no count, no badge, no
+  // contribution to totalLoud). isMuted is callback-stable (useCallback
+  // with []) so reading it inside the realtime handler doesn't force a
+  // resubscribe every time the user toggles a mute.
+  const { isMuted } = useMutedChannels();
   const [unread, setUnread] = useState<Map<string, UnreadEntry>>(new Map());
   // Display name used for @mention matching. mentions is stored as
   // resolved names (see renderer/api.js extractMentions), so we
@@ -126,6 +132,12 @@ export function UnreadProvider({ children }: { children: React.ReactNode }) {
           if (m.author_id === userId) return;
           // Currently-viewed channel: reading-as-it-arrives, no bump.
           if (m.channel_id === activeChannelRef.current) return;
+          // Muted channel: user explicitly silenced this room. Skip
+          // the bump entirely — no count, no dot, no contribution to
+          // the tab's loud badge. Mute is a stronger signal than
+          // DM/mention; even an @-mention in a muted channel is
+          // suppressed (matches Slack semantics).
+          if (isMuted(m.channel_id)) return;
           const mentions = m.mentions || [];
           const lowerName = myNameRef.current?.toLowerCase() ?? null;
           const mentionsMe = !!lowerName && mentions.some((n) => n.toLowerCase() === lowerName);

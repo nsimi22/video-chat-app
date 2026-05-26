@@ -3,9 +3,10 @@ import { Alert, RefreshControl, Text, TouchableOpacity, View, ActivityIndicator,
 import ReanimatedSwipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { router, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Lock, Plus, Trash2, Users } from 'lucide-react-native';
+import { BellOff, Lock, Plus, Trash2, Users } from 'lucide-react-native';
 import { deleteChannel, leaveDmChannel, listChannels, listTeamProfiles, type Channel, type Profile } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+import { useMutedChannels } from '@/context/MutedChannelsContext';
 import { supabase } from '@/lib/supabase';
 import { Avatar, Logo } from '@/components/ui';
 import { NewChannelSheet } from '@/components/NewChannelSheet';
@@ -49,12 +50,32 @@ function canDelete(c: Channel, userId: string): boolean {
 
 export default function ChannelsScreen() {
   const { activeTeam, userId } = useAuth();
+  const { isMuted, toggle: toggleMute } = useMutedChannels();
   const [channels, setChannels] = useState<Channel[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [newChannelOpen, setNewChannelOpen] = useState(false);
   const [newDmOpen, setNewDmOpen] = useState(false);
+
+  // Long-press on a row pops a small action sheet. Using Alert.alert
+  // (Apple's UIAlertController on iOS, AlertDialog on Android) instead
+  // of a custom bottom sheet keeps the surface lightweight and
+  // platform-native; there's only one real action right now (mute) so
+  // a dedicated sheet would be overkill.
+  const onLongPressRow = useCallback((channel: Channel, label: string, muted: boolean) => {
+    Alert.alert(
+      label,
+      muted ? 'Notifications are silenced for this channel.' : undefined,
+      [
+        {
+          text: muted ? 'Unmute' : 'Mute notifications',
+          onPress: () => toggleMute(channel.id),
+        },
+        { text: 'Cancel', style: 'cancel' },
+      ],
+    );
+  }, [toggleMute]);
 
   const load = useCallback(async ({ pull = false }: { pull?: boolean } = {}) => {
     if (!activeTeam) return;
@@ -240,6 +261,7 @@ export default function ChannelsScreen() {
         renderItem={({ item }) => {
           const label = channelLabel(item, profiles, userId);
           const deletable = !!userId && canDelete(item, userId);
+          const muted = isMuted(item.id);
           return (
             <ChannelRow
               item={item}
@@ -247,8 +269,10 @@ export default function ChannelsScreen() {
               profiles={profiles}
               meId={userId}
               deletable={deletable}
+              muted={muted}
               onOpen={() => openChannel(item.id, label)}
               onRequestDelete={(close) => confirmDelete(item, label, close)}
+              onLongPress={() => onLongPressRow(item, label, muted)}
             />
           );
         }}
@@ -294,16 +318,20 @@ function ChannelRow({
   profiles,
   meId,
   deletable,
+  muted,
   onOpen,
   onRequestDelete,
+  onLongPress,
 }: {
   item: Channel;
   label: string;
   profiles: Profile[];
   meId: string | null;
   deletable: boolean;
+  muted: boolean;
   onOpen: () => void;
   onRequestDelete: (close: () => void) => void;
+  onLongPress: () => void;
 }) {
   const swipeRef = useRef<SwipeableMethods>(null);
   const dm = item.type === 'dm';
@@ -317,6 +345,8 @@ function ChannelRow({
     // before the gesture fully exposes it.
     <TouchableOpacity
       onPress={onOpen}
+      onLongPress={onLongPress}
+      delayLongPress={350}
       activeOpacity={0.7}
       style={{
         flexDirection: 'row',
@@ -341,9 +371,30 @@ function ChannelRow({
           )}
         </View>
       )}
-      <Text style={{ color: colors.text, fontSize: 16, marginLeft: space(3), flex: 1 }} numberOfLines={1}>
+      {/* Muted channels dim the label to match Slack's "I muted this on
+          purpose" affordance — combined with the bell-off icon it gives
+          two converging visual cues without competing with the row's
+          tappability. */}
+      <Text
+        style={{
+          color: muted ? colors.textDim : colors.text,
+          fontSize: 16,
+          marginLeft: space(3),
+          flex: 1,
+        }}
+        numberOfLines={1}
+      >
         {label}
       </Text>
+      {muted && (
+        <BellOff
+          size={14}
+          color={colors.textDim}
+          strokeWidth={2}
+          style={{ marginRight: space(2) }}
+          accessibilityLabel="Muted"
+        />
+      )}
       <UnreadBadge channelId={item.id} />
     </TouchableOpacity>
   );
