@@ -696,8 +696,9 @@ class ChatView {
 
   // Build the native-tooltip string shown on hover of a reaction pill.
   // "you" sorts first when present; everyone else is by lookup order.
-  // Long lists collapse to "…and N others" so the tooltip stays
-  // readable even on a 50-person 👍.
+  // Caps at REACTION_TOOLTIP_MAX_NAMES so a popular announcement with
+  // 50 thumbs-up doesn't produce a tooltip the browser truncates
+  // mid-name.
   _reactionTooltip(emoji, peers) {
     const myId = this.mesh.peerId;
     const names = [];
@@ -712,6 +713,16 @@ class ChatView {
       else unknown++;
     }
     if (unknown > 0) names.push(unknown === 1 ? 'someone' : `${unknown} others`);
+    // Trim overlong lists. Keep the first MAX_NAMES entries (which
+    // includes 'you' at the front when present) and collapse the rest
+    // into a single "and N more" slot.
+    const MAX_NAMES = 4;
+    let overflow = 0;
+    if (names.length > MAX_NAMES) {
+      overflow = names.length - MAX_NAMES;
+      names.length = MAX_NAMES;
+      names.push(`${overflow} more`);
+    }
     let who;
     if (names.length === 0) who = 'no one';
     else if (names.length === 1) who = names[0];
@@ -1505,6 +1516,12 @@ class ChatView {
     const reactions = document.createElement('div');
     reactions.className = 'reactions';
     for (const [emoji, peers] of Object.entries(m.reactions || {})) {
+      // Defensive: the toggle_message_reaction RPC deletes the emoji
+      // key when the last reactor un-reacts, so an empty array here
+      // shouldn't happen — but if a malformed payload ever did slip
+      // through, a "0" pill with "no one reacted" tooltip would be
+      // worse than just skipping the row.
+      if (!Array.isArray(peers) || peers.length === 0) continue;
       const pill = document.createElement('span');
       pill.className = 'reaction' + (peers.includes(this.mesh.peerId) ? ' mine' : '');
       pill.textContent = `${emoji} ${peers.length}`;
