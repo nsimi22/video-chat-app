@@ -1220,11 +1220,17 @@ class ChatView {
     container.scrollTop = container.scrollHeight;
   }
 
-  // Local-day equality. toLocaleDateString respects the user's timezone
-  // and locale separators, so two messages 5 minutes apart that span
-  // local midnight correctly land in different "days".
+  // Local-day equality. Date getters already operate in the user's
+  // local timezone, so a per-component compare gives the right answer
+  // for two messages that span local midnight — without paying the
+  // locale-formatting cost of toLocaleDateString on the render hot
+  // path (called once per visible message + once per incoming message).
   _isSameLocalDay(tsA, tsB) {
-    return new Date(tsA).toLocaleDateString() === new Date(tsB).toLocaleDateString();
+    const a = new Date(tsA);
+    const b = new Date(tsB);
+    return a.getFullYear() === b.getFullYear()
+      && a.getMonth() === b.getMonth()
+      && a.getDate() === b.getDate();
   }
 
   // "Today" / "Yesterday" / "Tuesday, May 26" — collapses recent days
@@ -1289,6 +1295,15 @@ class ChatView {
 
   _appendIncremental(m) {
     if (this._isInCurrentView(m)) {
+      // Drop a date banner when an incoming message lands on a different
+      // local day than the last one we rendered (or when this is the
+      // first message in an empty view). Without this branch the banner
+      // only appeared on full re-renders, so a user sitting in a channel
+      // across midnight would see today's messages with no `Today`
+      // marker until they switched channels and back.
+      if (!this._lastRendered || !this._isSameLocalDay(this._lastRendered.ts, m.ts)) {
+        this.els.messages.appendChild(this._buildDateDivider(m.ts));
+      }
       // Single message — one _knownNames call is fine, default fallthrough.
       const node = this._renderMessage(m, this._messages(), this._lastRendered);
       this.nodeById.set(m.id, node);
