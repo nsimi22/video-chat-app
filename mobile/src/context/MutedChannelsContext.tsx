@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { loadMutedChannels, saveMutedChannels } from '@/lib/mutedChannels';
 
 // Per-device muted-channels store, persisted to SecureStore so the
@@ -9,46 +9,52 @@ import { loadMutedChannels, saveMutedChannels } from '@/lib/mutedChannels';
 // table and is out of scope here.
 
 type State = {
+  // Reactive accessor — depends on `muted` state, so consumers that
+  // render based on mute state (the row UI, the audit effect in
+  // UnreadProvider that clears existing unreads when a channel is
+  // muted) re-render when toggle() fires.
+  //
+  // For non-rendering reads (the realtime INSERT handler in
+  // UnreadProvider) consumers snapshot this into a ref to avoid
+  // re-subscribing the WebSocket on every toggle.
   isMuted: (channelId: string) => boolean;
   toggle: (channelId: string) => void;
-  // Render-trigger value used by the unread provider so it can read
-  // through to isMuted at INSERT time without subscribing the entire
-  // realtime handler effect to context changes.
+  // Raw set exposed so dependent effects can subscribe to changes via
+  // useEffect([mutedSet, …]) — needed by the auto-clear effect in
+  // UnreadProvider.
   mutedSet: Set<string>;
 };
 
 const Ctx = createContext<State | undefined>(undefined);
 
 export function MutedChannelsProvider({ children }: { children: React.ReactNode }) {
+  // Lazy initializer keeps the empty-Set allocation off every
+  // subsequent render after the first.
   const [muted, setMuted] = useState<Set<string>>(() => new Set());
-  // Ref mirror so callers (UnreadProvider's INSERT handler, mostly)
-  // can read the current set without their useEffect deps tearing
-  // down + re-subscribing every time a user toggles a mute.
-  const mutedRef = useRef<Set<string>>(muted);
 
   // Initial load — async; surface as a no-op until it resolves so
-  // callers don't have to gate on a loading flag. Worst case: a
-  // muted channel briefly registers an unread bump on app launch
-  // before the load completes, then clears itself once active. The
-  // user-visible window is ≤100ms in practice.
+  // callers don't have to gate on a loading flag. UnreadProvider's
+  // auto-clear effect catches any unread that briefly accumulated for
+  // a muted channel between mount and load.
   useEffect(() => {
     let cancelled = false;
     loadMutedChannels().then((s) => {
       if (cancelled) return;
-      mutedRef.current = s;
       setMuted(s);
     });
     return () => { cancelled = true; };
   }, []);
 
-  const isMuted = useCallback((channelId: string) => mutedRef.current.has(channelId), []);
+  // Reactive — re-renders on every toggle. Consumers that need a
+  // stable handle for non-rendering reads (subscription handlers,
+  // long-lived effects) should mirror this into a ref themselves.
+  const isMuted = useCallback((channelId: string) => muted.has(channelId), [muted]);
 
   const toggle = useCallback((channelId: string) => {
     setMuted((prev) => {
       const next = new Set(prev);
       if (next.has(channelId)) next.delete(channelId);
       else next.add(channelId);
-      mutedRef.current = next;
       // Fire-and-forget persistence — the in-memory state is the
       // source of truth this session and reload picks the persisted
       // value back up. A failed write logs in the helper and the

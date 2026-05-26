@@ -54,10 +54,15 @@ function isDmChannelId(channelId: string): boolean {
 export function UnreadProvider({ children }: { children: React.ReactNode }) {
   const { activeTeam, userId } = useAuth();
   // Muted channels suppress bumps entirely (no count, no badge, no
-  // contribution to totalLoud). isMuted is callback-stable (useCallback
-  // with []) so reading it inside the realtime handler doesn't force a
-  // resubscribe every time the user toggles a mute.
-  const { isMuted } = useMutedChannels();
+  // contribution to totalLoud). isMuted from useMutedChannels is
+  // reactive (re-renders on toggle), so we mirror it into a ref read
+  // by the realtime INSERT handler — that way the Supabase
+  // subscription isn't torn down + re-established (with the
+  // in-flight-bump gap that implies) on every mute toggle. The
+  // reactive `mutedSet` drives the auto-clear effect below.
+  const { isMuted, mutedSet } = useMutedChannels();
+  const isMutedRef = useRef(isMuted);
+  isMutedRef.current = isMuted;
   const [unread, setUnread] = useState<Map<string, UnreadEntry>>(new Map());
   // Display name used for @mention matching. mentions is stored as
   // resolved names (see renderer/api.js extractMentions), so we
@@ -89,6 +94,27 @@ export function UnreadProvider({ children }: { children: React.ReactNode }) {
     setUnread(new Map());
     activeChannelRef.current = null;
   }, [activeTeam?.id, userId]);
+
+  // When a channel becomes muted, wipe any unread it already had so
+  // the badge clears immediately (rather than freezing at whatever
+  // count was there when the user tapped Mute). This also covers the
+  // startup race: if the realtime subscription bumps a channel
+  // between mount and the muted-list finishing its async load, the
+  // dependency on `mutedSet` makes the audit fire when the load
+  // completes and the muted entry is dropped retroactively.
+  useEffect(() => {
+    if (mutedSet.size === 0) return;
+    setUnread((prev) => {
+      let next: Map<string, UnreadEntry> | null = null;
+      for (const channelId of prev.keys()) {
+        if (mutedSet.has(channelId)) {
+          if (!next) next = new Map(prev);
+          next.delete(channelId);
+        }
+      }
+      return next ?? prev;
+    });
+  }, [mutedSet]);
 
   const setActiveChannel = useCallback(
     (arg: string | null | ((prev: string | null) => string | null)) => {
@@ -136,8 +162,10 @@ export function UnreadProvider({ children }: { children: React.ReactNode }) {
           // the bump entirely — no count, no dot, no contribution to
           // the tab's loud badge. Mute is a stronger signal than
           // DM/mention; even an @-mention in a muted channel is
-          // suppressed (matches Slack semantics).
-          if (isMuted(m.channel_id)) return;
+          // suppressed (matches Slack semantics). Reading through the
+          // ref keeps this handler's identity stable across mute
+          // toggles so the subscription effect doesn't churn.
+          if (isMutedRef.current(m.channel_id)) return;
           const mentions = m.mentions || [];
           const lowerName = myNameRef.current?.toLowerCase() ?? null;
           const mentionsMe = !!lowerName && mentions.some((n) => n.toLowerCase() === lowerName);
