@@ -80,8 +80,17 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   // construction time; if the user switches teams while the perms +
   // token-fetch promise is in flight, that closure still sees the old
   // team and would otherwise resurrect a ghost call for it.
+  //
+  // Update via useEffect (post-commit) rather than during render — a
+  // concurrent-mode abort or retry that happened to fire between a
+  // render-phase ref write and the matching state commit would leave
+  // the ref ahead of the state React actually rendered, breaking the
+  // "ref reflects what's committed" invariant the abort-check
+  // depends on.
   const activeTeamRef = useRef(activeTeam);
-  activeTeamRef.current = activeTeam;
+  useEffect(() => {
+    activeTeamRef.current = activeTeam;
+  }, [activeTeam]);
 
   const startCall = useCallback(
     async (channelId: string, name?: string) => {
