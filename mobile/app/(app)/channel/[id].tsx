@@ -11,7 +11,7 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { Stack, router, useLocalSearchParams } from 'expo-router';
+import { Stack, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useHeaderHeight } from '@react-navigation/elements';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
@@ -39,6 +39,7 @@ import {
   type Profile,
 } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+import { useUnread } from '@/context/UnreadContext';
 import { supabase } from '@/lib/supabase';
 import { teamTopic } from '@/lib/topics';
 import { Avatar, Markdown } from '@/components/ui';
@@ -82,6 +83,22 @@ export default function ChannelScreen() {
   useEffect(() => {
     if (userId) getGiphyKey(userId).then(setGiphyKey).catch(() => {});
   }, [userId]);
+
+  // Tell the unread tracker which channel we're sitting in. Marks
+  // this channel as read on focus and suppresses further bumps while
+  // we're here; blur restores the global "not in any channel" state
+  // so messages from any room bump unread normally again. Using
+  // useFocusEffect (not useEffect) so popping back from a push-stacked
+  // child screen re-marks this channel as active instead of leaving
+  // active=null after the child set it.
+  const { setActiveChannel } = useUnread();
+  useFocusEffect(
+    useCallback(() => {
+      if (!channelId) return;
+      setActiveChannel(String(channelId));
+      return () => setActiveChannel(null);
+    }, [channelId, setActiveChannel]),
+  );
 
   // Typing indicator over the team:<id> broadcast topic (same as desktop).
   // The topic is RLS-gated, so the channel must be marked `private`.

@@ -4,6 +4,7 @@ import { Stack, router, useSegments } from 'expo-router';
 import { LiveKitRoom } from '@livekit/react-native';
 import { useAuth } from '@/context/AuthContext';
 import { CallProvider, useCall } from '@/context/CallContext';
+import { UnreadProvider } from '@/context/UnreadContext';
 import { FloatingCall } from '@/components/FloatingCall';
 import { registerForPush } from '@/lib/push';
 import { colors } from '@/theme';
@@ -34,9 +35,14 @@ export default function AppLayout() {
   // CallRoomShell then conditionally wraps the navigator in
   // <LiveKitRoom> whenever a call is active, so the room (and its
   // peer connection) survives navigating between channels.
+  // UnreadProvider sits inside CallProvider because it also needs to
+  // outlive route changes — its single team-wide realtime subscription
+  // would otherwise tear down + re-establish every time the user
+  // navigates between the channels list and a channel.
   return (
     <CallProvider>
-      <CallRoomShell>
+      <UnreadProvider>
+        <CallRoomShell>
         <View style={{ flex: 1, backgroundColor: colors.bg }}>
           <Stack
             screenOptions={{
@@ -70,6 +76,7 @@ export default function AppLayout() {
           <FloatingCallOverlay />
         </View>
       </CallRoomShell>
+      </UnreadProvider>
     </CallProvider>
   );
 }
