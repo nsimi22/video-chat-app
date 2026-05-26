@@ -89,6 +89,18 @@ export function UnreadProvider({ children }: { children: React.ReactNode }) {
   // tap, then biometric unlock), and we don't want two parallel
   // queries racing to set the watermark.
   const catchUpInFlight = useRef(false);
+  // Bounded ring buffer of recently-applied message ids, used to
+  // dedupe the boundary race between the realtime subscription and
+  // the AppState catch-up. Scenario: catchUp captures since=T2 and
+  // its query is in flight; meanwhile the WebSocket reconnects and
+  // delivers T3, which bumps + advances the watermark to T3; then
+  // catchUp's query returns T3 too, and applyMessage(T3) bumps a
+  // second time (m.ts > current is false but the bump path doesn't
+  // gate on that). Tracking the last APPLIED_IDS_LIMIT ids lets us
+  // short-circuit the second call without leaking memory.
+  const appliedIdsRef = useRef<Set<string>>(new Set());
+  const appliedIdsQueueRef = useRef<string[]>([]);
+  const APPLIED_IDS_LIMIT = 500;
 
   // Fetch our own profile once per signed-in user so we can match
   // mentions. Loud-mention detection silently degrades to dms-only
@@ -156,6 +168,17 @@ export function UnreadProvider({ children }: { children: React.ReactNode }) {
   // Always advances the high-water mark so the next catch-up only
   // re-queries truly newer messages.
   const applyMessage = useCallback((m: Message) => {
+    // Dedupe by message id. Catches the boundary race where realtime
+    // and catch-up overlap on the same row (catch-up's `gt(ts, since)`
+    // can include a message realtime just delivered if the WebSocket
+    // reconnect raced ahead of the query).
+    if (appliedIdsRef.current.has(m.id)) return;
+    appliedIdsRef.current.add(m.id);
+    appliedIdsQueueRef.current.push(m.id);
+    if (appliedIdsQueueRef.current.length > APPLIED_IDS_LIMIT) {
+      const evicted = appliedIdsQueueRef.current.shift();
+      if (evicted) appliedIdsRef.current.delete(evicted);
+    }
     if (m.ts && m.ts > latestObservedTsRef.current) {
       latestObservedTsRef.current = m.ts;
     }
