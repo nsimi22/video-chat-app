@@ -233,9 +233,9 @@ const state = {
   activeAnnotation: null,
   spotlightKey: null,
   // Active speaker = the peerId whose audio level is highest right now,
-  // sampled by an interval poll. null when no one is audibly speaking.
+  // pushed by the call client's 'active-speaker' event. null when no
+  // one is audibly speaking.
   speakingPeer: null,
-  speakerPollTimer: null,
   // Outstanding setTimeout ids for floating reactions, keyed by tile so
   // back-to-back reactions on the same tile can clear the prior timer
   // and not leak stale DOM.
@@ -1033,17 +1033,21 @@ async function startPopoutCall(channelId) {
   mesh.addEventListener('reaction', (e) => onRemoteReaction(e.detail));
   mesh.addEventListener('mute-state', (e) => onRemoteMuteState(e.detail));
   mesh.addEventListener('camera-stream-changed', (e) => onLocalCameraStreamChanged(e.detail));
+  mesh.addEventListener('active-speaker', (e) => setSpeakingPeer(e.detail.peerId));
+  mesh.addEventListener('connection-failed', (e) => onCallConnectionFailed(e.detail));
   try {
     await huddle.joinCall(channelId);
     await mesh.connect(channelId);
   } catch (err) {
     showCallError('Could not join the call: ' + (err?.message || err));
+    // joinCall may have succeeded before connect threw; drop the
+    // presence row so the lurker pill doesn't stay incremented.
+    try { await huddle.leaveCall(); } catch {}
     mesh.disconnect();
     return;
   }
   state.mesh = mesh;
   state.inCallChannelId = channelId;
-  startSpeakerPolling();
   // The mic/cam/share controls were disabled in bootCallPopout; flip
   // them on now that mesh.toggle{Mic,Cam}/addScreen have something to act on.
   els.btnMic.disabled = false;
@@ -1052,7 +1056,6 @@ async function startPopoutCall(channelId) {
   if (els.btnShare) els.btnShare.disabled = false;
   if (els.btnHand) els.btnHand.disabled = false;
   if (els.btnReact) els.btnReact.disabled = false;
-  mesh.bootstrapExistingPeers();
   // Pre-apply the persisted blur preference before setCamera so the
   // very first frame peers receive is already blurred — toggling
   // after the fact briefly publishes a sharp frame.
@@ -1510,9 +1513,9 @@ async function startCall(channelId) {
   els.btnMic.classList.remove('muted');
   els.btnCam.classList.remove('muted');
   // Wire the call client before joinCall — joinCall's await resolves
-  // AFTER the realtime channel's initial presence sync, so peer-joined
-  // events for existing participants would otherwise fire into the
-  // void (no listener yet) and we'd miss them.
+  // AFTER the realtime channel's initial presence sync, so huddle-
+  // forwarded events (mute-state, raise-hand, reaction) emitted during
+  // that initial sync would otherwise fire into the void.
   const mesh = new window.LivekitCallClient(state.huddle);
   mesh.addEventListener('peer-joined', (e) => onCallPeerJoined(e.detail));
   mesh.addEventListener('peer-left', (e) => onCallPeerLeft(e.detail));
@@ -1525,6 +1528,8 @@ async function startCall(channelId) {
   mesh.addEventListener('reaction', (e) => onRemoteReaction(e.detail));
   mesh.addEventListener('mute-state', (e) => onRemoteMuteState(e.detail));
   mesh.addEventListener('camera-stream-changed', (e) => onLocalCameraStreamChanged(e.detail));
+  mesh.addEventListener('active-speaker', (e) => setSpeakingPeer(e.detail.peerId));
+  mesh.addEventListener('connection-failed', (e) => onCallConnectionFailed(e.detail));
   try {
     await state.huddle.joinCall(channelId);
     // LiveKit needs an explicit room connect on top of the team-side
@@ -1538,6 +1543,9 @@ async function startCall(channelId) {
     // button greyed out and nothing else (the regression that
     // "Start call doesn't start a call" reported on v0.2.5).
     showCallError('Could not start the call: ' + (err?.message || err));
+    // joinCall may have succeeded before connect threw; drop the
+    // presence row so the lurker pill doesn't stay incremented.
+    try { await state.huddle.leaveCall(); } catch {}
     mesh.disconnect();
     state.callStarting = false;
     els.btnStartCall.disabled = false;
@@ -1546,12 +1554,6 @@ async function startCall(channelId) {
   }
   state.mesh = mesh;
   state.inCallChannelId = channelId;
-  startSpeakerPolling();
-  // Belt + suspenders: also bootstrap from the snapshot HuddleClient
-  // already has, in case the presence-sync handler fired before our
-  // listener attached during the joinCall handshake. _ensurePeer is
-  // memoised so the duplicate path is a no-op when peer-joined races us.
-  mesh.bootstrapExistingPeers();
   // Pre-apply the persisted blur preference before setCamera so the
   // very first frame peers receive is already blurred — toggling
   // after the fact briefly publishes a sharp frame.
@@ -1993,6 +1995,16 @@ function onCallPeerJoined(peer) {
 
 function onCallPeerLeft(peerId) {
   removePersonFromCall(peerId);
+}
+
+// LiveKit Room emits 'Disconnected' on a fatal SFU drop (auth expired,
+// server kicked us, network never recovered). The call client surfaces
+// it as 'connection-failed' so we can tear down camera/mic + tile grid
+// instead of leaving the user staring at a frozen room.
+function onCallConnectionFailed(detail) {
+  if (!state.mesh) return;
+  showCallError('Call disconnected: ' + (detail?.reason || 'lost connection to the call server') + '.');
+  leaveCall();
 }
 
 function removePersonFromCall(peerId) {
@@ -2701,68 +2713,9 @@ function tileForPeer(peerId) {
   return state.tilesByKey.get(`peer:${peerId}`);
 }
 
-const SPEAKER_POLL_MS = 750;
-// audioLevel is reported in [0, 1]. Empirically anything below ~0.05 is
-// room noise / breath; staying above the threshold is what we treat as
-// "talking" rather than picking the nominal max regardless.
-const SPEAKER_LEVEL_THRESHOLD = 0.05;
-
-// Walk every peer connection's inbound audio receiver, plus the local
-// audio sender's media-source, and surface the loudest peer. Cheap
-// (one stats fetch per pc per tick) and entirely local — no signaling.
-function startSpeakerPolling() {
-  stopSpeakerPolling();
-  state.speakerPollTimer = setInterval(pollActiveSpeaker, SPEAKER_POLL_MS);
-}
-
-function stopSpeakerPolling() {
-  if (state.speakerPollTimer) clearInterval(state.speakerPollTimer);
-  state.speakerPollTimer = null;
-  setSpeakingPeer(null);
-}
-
-async function pollActiveSpeaker() {
-  if (!state.mesh) return;
-  // Re-entrancy guard: a slow getStats() round (large mesh, busy machine)
-  // can take longer than the poll interval. Two overlapping passes would
-  // race to call setSpeakingPeer with stale snapshots and produce flicker.
-  if (state._speakerPollInFlight) return;
-  state._speakerPollInFlight = true;
-  try { await collectSpeakerSamples(); }
-  finally { state._speakerPollInFlight = false; }
-}
-
-async function collectSpeakerSamples() {
-  const samples = []; // [peerId, level]
-  // Local mic level via any peer connection's outbound audio media-source.
-  const someConn = state.mesh.peers.values().next().value;
-  if (someConn) {
-    try {
-      const stats = await someConn.pc.getStats();
-      stats.forEach((r) => {
-        if (r.type === 'media-source' && r.kind === 'audio' && typeof r.audioLevel === 'number') {
-          samples.push([state.huddle.peerId, r.audioLevel]);
-        }
-      });
-    } catch (err) { console.warn('[speaker-poll] local stats failed', err); }
-  }
-  // Remote peers via each pc's inbound audio.
-  for (const [peerId, conn] of state.mesh.peers) {
-    try {
-      const stats = await conn.pc.getStats();
-      stats.forEach((r) => {
-        if (r.type === 'inbound-rtp' && r.kind === 'audio' && typeof r.audioLevel === 'number') {
-          samples.push([peerId, r.audioLevel]);
-        }
-      });
-    } catch (err) { console.warn('[speaker-poll] peer stats failed', err); }
-  }
-  if (samples.length === 0) { setSpeakingPeer(null); return; }
-  samples.sort((a, b) => b[1] - a[1]);
-  const [peerId, level] = samples[0];
-  setSpeakingPeer(level >= SPEAKER_LEVEL_THRESHOLD ? peerId : null);
-}
-
+// Driven by the call client's 'active-speaker' event (LiveKit's
+// ActiveSpeakersChanged, mapped to the loudest participant's identity
+// or null when nobody is above LK's audio-level threshold).
 function setSpeakingPeer(peerId) {
   if (state.speakingPeer === peerId) return;
   if (state.speakingPeer) {
@@ -3475,7 +3428,7 @@ function resetCallEphemera() {
   state.pendingStreams.clear();
   closeAnnotate();
   clearSpotlight();
-  stopSpeakerPolling();
+  setSpeakingPeer(null);
   state.raisedHands.clear();
   if (els.btnHand) els.btnHand.classList.remove('active');
   clearAllReactions();
