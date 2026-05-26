@@ -91,12 +91,20 @@ export default function ChannelScreen() {
   // useFocusEffect (not useEffect) so popping back from a push-stacked
   // child screen re-marks this channel as active instead of leaving
   // active=null after the child set it.
+  //
+  // The blur cleanup uses the functional update form so it only
+  // clears when *this* channel is still the active one. React
+  // Navigation 7 can fire a newly-focused screen's effect before the
+  // blurring screen's cleanup; a naive setActiveChannel(null) on
+  // blur would then wipe out the newer screen's registration and
+  // bumps for the channel the user is now reading would resume.
   const { setActiveChannel } = useUnread();
   useFocusEffect(
     useCallback(() => {
       if (!channelId) return;
-      setActiveChannel(String(channelId));
-      return () => setActiveChannel(null);
+      const cid = String(channelId);
+      setActiveChannel(cid);
+      return () => setActiveChannel((curr) => (curr === cid ? null : curr));
     }, [channelId, setActiveChannel]),
   );
 

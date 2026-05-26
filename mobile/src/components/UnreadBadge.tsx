@@ -47,7 +47,13 @@ export function UnreadBadge({ channelId }: { channelId: string }) {
         justifyContent: 'center',
       }}
     >
-      <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>{display}</Text>
+      {/* allowFontScaling={false} so an aggressive system text-size
+          setting can't overflow the fixed-height pill. The count
+          itself is in accessibilityLabel above, so screen readers
+          still announce it. */}
+      <Text allowFontScaling={false} style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>
+        {display}
+      </Text>
     </View>
   );
 }

@@ -29,7 +29,14 @@ type State = {
   // null. Setting an active channel clears its existing unread (the
   // act of opening it = reading it) and suppresses further bumps
   // while the user is still in the channel.
-  setActiveChannel: (channelId: string | null) => void;
+  //
+  // Accepts a functional update form so blur cleanups can clear
+  // *only* if they're still the active channel — React Navigation 7
+  // (which expo-router rides on) can fire a newly-focused screen's
+  // effect before the blurring screen's cleanup, and a naive
+  // `setActiveChannel(null)` on blur would then wipe out the newer
+  // registration.
+  setActiveChannel: (arg: string | null | ((prev: string | null) => string | null)) => void;
   // Sum of LOUD unread counts across all channels. Drives the
   // Channels tab's badge (the icon-tray indicator on the bottom tab
   // bar), separate from per-row badges so a busy non-loud channel
@@ -48,8 +55,11 @@ export function UnreadProvider({ children }: { children: React.ReactNode }) {
   const [unread, setUnread] = useState<Map<string, UnreadEntry>>(new Map());
   // Display name used for @mention matching. mentions is stored as
   // resolved names (see renderer/api.js extractMentions), so we
-  // compare against this string lowercased.
-  const [myName, setMyName] = useState<string | null>(null);
+  // compare against this string lowercased. Kept in a ref so the
+  // realtime subscription doesn't tear down + re-establish (and
+  // potentially miss bumps in the gap) when the profile fetch
+  // resolves a moment after mount.
+  const myNameRef = useRef<string | null>(null);
   // Active-channel id tracked via ref so the realtime handler reads
   // the current value without re-subscribing on every focus change.
   const activeChannelRef = useRef<string | null>(null);
@@ -59,10 +69,10 @@ export function UnreadProvider({ children }: { children: React.ReactNode }) {
   // while this is in flight — acceptable since mention matching
   // can't possibly be right before we know our own name anyway.
   useEffect(() => {
-    if (!userId) { setMyName(null); return; }
+    if (!userId) { myNameRef.current = null; return; }
     let cancelled = false;
     getProfile(userId)
-      .then((p) => { if (!cancelled) setMyName(p?.name ?? null); })
+      .then((p) => { if (!cancelled) myNameRef.current = p?.name ?? null; })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [userId]);
@@ -74,20 +84,24 @@ export function UnreadProvider({ children }: { children: React.ReactNode }) {
     activeChannelRef.current = null;
   }, [activeTeam?.id, userId]);
 
-  const setActiveChannel = useCallback((channelId: string | null) => {
-    activeChannelRef.current = channelId;
-    if (channelId) {
-      // Reading clears. Skip the state update when the entry was
-      // already absent so we don't trigger a no-op re-render of
-      // every UnreadBadge consumer.
-      setUnread((prev) => {
-        if (!prev.has(channelId)) return prev;
-        const next = new Map(prev);
-        next.delete(channelId);
-        return next;
-      });
-    }
-  }, []);
+  const setActiveChannel = useCallback(
+    (arg: string | null | ((prev: string | null) => string | null)) => {
+      const nextChannel = typeof arg === 'function' ? arg(activeChannelRef.current) : arg;
+      activeChannelRef.current = nextChannel;
+      if (nextChannel) {
+        // Reading clears. Skip the state update when the entry was
+        // already absent so we don't trigger a no-op re-render of
+        // every UnreadBadge consumer.
+        setUnread((prev) => {
+          if (!prev.has(nextChannel)) return prev;
+          const next = new Map(prev);
+          next.delete(nextChannel);
+          return next;
+        });
+      }
+    },
+    [],
+  );
 
   // Single team-wide subscription that fans out into per-channel
   // counters. Mirrors how the desktop's MessageBus listens once at
@@ -113,7 +127,7 @@ export function UnreadProvider({ children }: { children: React.ReactNode }) {
           // Currently-viewed channel: reading-as-it-arrives, no bump.
           if (m.channel_id === activeChannelRef.current) return;
           const mentions = m.mentions || [];
-          const lowerName = myName?.toLowerCase() ?? null;
+          const lowerName = myNameRef.current?.toLowerCase() ?? null;
           const mentionsMe = !!lowerName && mentions.some((n) => n.toLowerCase() === lowerName);
           const broadcast = mentions.includes('@here') || mentions.includes('@channel');
           const loud = isDmChannelId(m.channel_id) || mentionsMe || broadcast;
@@ -135,7 +149,7 @@ export function UnreadProvider({ children }: { children: React.ReactNode }) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [activeTeam?.id, userId, myName]);
+  }, [activeTeam?.id, userId]);
 
   const unreadFor = useCallback((channelId: string) => unread.get(channelId) ?? null, [unread]);
 
