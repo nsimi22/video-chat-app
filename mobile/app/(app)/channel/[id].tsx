@@ -47,6 +47,7 @@ import { teamTopic } from '@/lib/topics';
 import { Avatar, Markdown } from '@/components/ui';
 import { MessageUnfurls } from '@/components/Unfurl';
 import { DateBanner, isSameLocalDay } from '@/components/DateBanner';
+import { ReactorSheet } from '@/components/ReactorSheet';
 import { colors, radius, space } from '@/theme';
 
 export default function ChannelScreen() {
@@ -59,6 +60,11 @@ export default function ChannelScreen() {
   const [sending, setSending] = useState(false);
   const [typingNames, setTypingNames] = useState<string[]>([]);
   const [sheetMessage, setSheetMessage] = useState<Message | null>(null);
+  // Long-press on a reaction pill opens this sheet so the user can see
+  // who reacted with that emoji. Tap still toggles, only long-press
+  // routes here. Single piece of state covers any (message, emoji)
+  // pair since we never need to surface two sheets at once.
+  const [reactorSheet, setReactorSheet] = useState<{ emoji: string; userIds: string[] } | null>(null);
   const [aiThinking, setAiThinking] = useState(false);
   const [gifPickerOpen, setGifPickerOpen] = useState(false);
   const [giphyKey, setGiphyKey] = useState<string | null>(null);
@@ -456,7 +462,17 @@ export default function ChannelScreen() {
                   {item.reactions && Object.keys(item.reactions).length > 0 && (
                     <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: space(1.5) }}>
                       {Object.entries(item.reactions).map(([emoji, users]) => (
-                        <TouchableOpacity key={emoji} onPress={() => toggleReaction(item.id, emoji, userId!).catch(() => {})} style={{ flexDirection: 'row', backgroundColor: (users as string[]).includes(userId ?? '') ? colors.accent : colors.surfaceAlt, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3, marginRight: 6 }}>
+                        <TouchableOpacity
+                          key={emoji}
+                          onPress={() => toggleReaction(item.id, emoji, userId!).catch(() => {})}
+                          // Long-press routes to ReactorSheet — the user
+                          // can see who reacted with this emoji without
+                          // losing the tap-to-toggle gesture they
+                          // expect from every other chat app.
+                          onLongPress={() => setReactorSheet({ emoji, userIds: users as string[] })}
+                          delayLongPress={350}
+                          style={{ flexDirection: 'row', backgroundColor: (users as string[]).includes(userId ?? '') ? colors.accent : colors.surfaceAlt, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3, marginRight: 6 }}
+                        >
                           <Text style={{ color: colors.text, fontSize: 12 }}>{emoji} {(users as string[]).length}</Text>
                         </TouchableOpacity>
                       ))}
@@ -550,6 +566,14 @@ export default function ChannelScreen() {
         onDelete={() => {
           if (sheetMessage) deleteMessage(sheetMessage.id).catch(() => {});
         }}
+      />
+      <ReactorSheet
+        open={reactorSheet !== null}
+        emoji={reactorSheet?.emoji ?? null}
+        userIds={reactorSheet?.userIds ?? []}
+        profiles={roster}
+        meId={userId ?? null}
+        onClose={() => setReactorSheet(null)}
       />
     </KeyboardAvoidingView>
   );
