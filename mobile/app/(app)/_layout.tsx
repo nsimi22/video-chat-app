@@ -5,6 +5,7 @@ import { LiveKitRoom } from '@livekit/react-native';
 import { useAuth } from '@/context/AuthContext';
 import { CallProvider, useCall } from '@/context/CallContext';
 import { UnreadProvider } from '@/context/UnreadContext';
+import { MutedChannelsProvider } from '@/context/MutedChannelsContext';
 import { FloatingCall } from '@/components/FloatingCall';
 import { registerForPush } from '@/lib/push';
 import { colors } from '@/theme';
@@ -41,8 +42,9 @@ export default function AppLayout() {
   // navigates between the channels list and a channel.
   return (
     <CallProvider>
-      <UnreadProvider>
-        <CallRoomShell>
+      <MutedChannelsProvider>
+        <UnreadProvider>
+          <CallRoomShell>
         <View style={{ flex: 1, backgroundColor: colors.bg }}>
           <Stack
             screenOptions={{
@@ -76,7 +78,8 @@ export default function AppLayout() {
           <FloatingCallOverlay />
         </View>
       </CallRoomShell>
-      </UnreadProvider>
+        </UnreadProvider>
+      </MutedChannelsProvider>
     </CallProvider>
   );
 }
