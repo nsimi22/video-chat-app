@@ -3670,7 +3670,7 @@ function attachDrawingLayer(tile, streamId, isOwner) {
     // Wire identity + name lookup so remote cursors can display the
     // peer's name in a Slack-style pill. nameForUser falls back to
     // peerInfo (live roster) and ultimately 'Guest' for unknown ids.
-    localUserId: state.huddle.peerId,
+    localUserId: state.huddle?.peerId || null,
     nameForUser: (uid) => {
       if (uid === state.huddle?.peerId) return 'You';
       const p = state.huddle?.peerInfo?.get(uid);

@@ -1557,9 +1557,11 @@ button.ctrl.muted.icon-only::after {
   position: absolute;
   pointer-events: none;
   z-index: 25; /* above .draw-canvas, below .tile-actions (30) */
-  /* Anchor sits at the pen tip — small offset so the visible cursor
-     lines up with the reported (x, y) point. */
-  transform: translate(-2px, -2px);
+  /* Anchor sits at the pen tip. The SVG's tip path starts at viewBox
+     coords (3, 21) in a 24x24 box, so we offset the element up-left
+     by approximately that amount to land the tip on the reported
+     (x, y) coordinate from the stroke event. */
+  transform: translate(-3px, -19px);
   display: flex; flex-direction: column;
   align-items: flex-start; gap: 2px;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));

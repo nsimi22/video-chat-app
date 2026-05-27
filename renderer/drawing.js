@@ -236,7 +236,13 @@ class DrawingLayer {
   // needed — `from` arrives in the broadcast envelope (see api.js sendDraw).
 
   _updateRemoteCursor(uid, stroke) {
-    if (stroke.action === 'end' || stroke.action === 'clear') {
+    if (stroke.action === 'clear') {
+      // A clear wipes the canvas for everyone — drop every remote cursor
+      // too so stale pen icons don't linger over an empty drawing surface.
+      for (const id of [...this.remoteCursors.keys()]) this._hideRemoteCursor(id);
+      return;
+    }
+    if (stroke.action === 'end') {
       this._hideRemoteCursor(uid);
       return;
     }
@@ -257,14 +263,16 @@ class DrawingLayer {
       cursor.appendChild(pen);
       const label = document.createElement('div');
       label.className = 'remote-cursor-name';
+      // Name + color are stable for the lifetime of one stroke (cursor is
+      // recreated on the next `begin`). Set them only on creation so the
+      // pointermove hot path is a pure position update — no querySelector,
+      // no textContent or style writes per move.
+      label.textContent = this.nameForUser(uid);
       cursor.appendChild(label);
+      if (stroke.color) cursor.style.color = stroke.color;
       (this._cursorHost || this.tile).appendChild(cursor);
       this.remoteCursors.set(uid, cursor);
     }
-    cursor.querySelector('.remote-cursor-name').textContent = this.nameForUser(uid);
-    // Stroke color drives the pen + name-pill accent via currentColor /
-    // border-color so each user is visually distinct without per-user CSS.
-    if (stroke.color) cursor.style.color = stroke.color;
     // Position via percentages so the cursor tracks the canvas's normalized
     // 0..1 stroke space — works through any parent transform (zoom/pan).
     cursor.style.left = `${stroke.x * 100}%`;
