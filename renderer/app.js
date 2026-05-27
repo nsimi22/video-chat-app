@@ -2685,13 +2685,13 @@ function makeTile({ key, label, kind, userId }) {
       zoomOut.className = 'tile-action-zoom-out';
       zoomOut.setAttribute('aria-label', 'Zoom out');
       zoomOut.innerHTML = `<span aria-hidden="true">−</span><span class="sr-only">Zoom out</span>`;
-      zoomOut.onclick = () => setZoom(key, 1 / ZOOM_STEP);
+      zoomOut.onclick = () => setZoom(key, -1);
       actions.appendChild(zoomOut);
       const zoomIn = document.createElement('button');
       zoomIn.className = 'tile-action-zoom-in';
       zoomIn.setAttribute('aria-label', 'Zoom in');
       zoomIn.innerHTML = `<span aria-hidden="true">+</span><span class="sr-only">Zoom in</span>`;
-      zoomIn.onclick = () => setZoom(key, ZOOM_STEP);
+      zoomIn.onclick = () => setZoom(key, 1);
       actions.appendChild(zoomIn);
       const zoomFit = document.createElement('button');
       zoomFit.className = 'tile-action-zoom-fit';
@@ -2762,15 +2762,28 @@ function clearSpotlight() {
 // drawing layer stay aligned across zoom levels because they're stored
 // in normalized 0..1 coords (see drawing.js) and the canvas's bounding
 // rect already reflects the post-transform size.
-const ZOOM_MIN = 1;
-const ZOOM_MAX = 4;
-const ZOOM_STEP = 1.25;
+// Discrete zoom levels indexed by step direction. Multiplicative steps
+// with clamping (e.g. scale * 1.25 capped at 4) make the zoom-out step
+// asymmetric at the cap — 3.81 → 4 (clamped) → 3.2 instead of back to
+// 3.81. A static array eliminates both the asymmetry and floating-point
+// drift from repeated multiply/divide on the same scalar.
+const ZOOM_LEVELS = [1, 1.25, 1.5625, 1.953125, 2.44140625, 3.0517578125, 3.814697265625, 4];
 
-function setZoom(key, factor) {
+// direction: -1 to zoom out one step, +1 to zoom in one step. Snaps the
+// current scale to the nearest level before stepping, so a pan-adjusted
+// or out-of-array scale doesn't surprise the next press.
+function setZoom(key, direction) {
   const tile = state.tilesByKey.get(key);
   if (!tile) return;
   const current = state.zoomByKey.get(key) || { scale: 1, x: 0, y: 0 };
-  const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, current.scale * factor));
+  let idx = 0;
+  for (let i = 1; i < ZOOM_LEVELS.length; i++) {
+    if (Math.abs(ZOOM_LEVELS[i] - current.scale) < Math.abs(ZOOM_LEVELS[idx] - current.scale)) {
+      idx = i;
+    }
+  }
+  idx = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, idx + direction));
+  const next = ZOOM_LEVELS[idx];
   // Zooming back to 1x recenters; staying zoomed keeps existing pan
   // (clamped to the new scale's bounds so a previously-extreme pan at
   // 4x doesn't strand the user in the void when they zoom back to 2x).
