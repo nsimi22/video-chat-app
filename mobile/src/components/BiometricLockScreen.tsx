@@ -10,7 +10,7 @@ import { colors, space } from '@/theme';
 const MAX_ATTEMPTS = 3;
 
 export function BiometricLockScreen() {
-  const { unlock, signOut } = useAuth();
+  const { unlock, signOut, userId } = useAuth();
   const [cap, setCap] = useState<BiometricCapability | null>(null);
   const [attempts, setAttempts] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -48,7 +48,7 @@ export function BiometricLockScreen() {
     // Clear the opt-in so the user isn't immediately re-locked on the next
     // launch after they re-authenticate with password. They can re-enable in
     // Settings once they're back in.
-    await setEnabled(false).catch(() => {});
+    if (userId) await setEnabled(userId, false).catch(() => {});
     await signOut();
     router.replace('/(auth)/email');
   };
