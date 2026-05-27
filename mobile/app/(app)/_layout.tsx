@@ -9,18 +9,24 @@ import { UnreadProvider } from '@/context/UnreadContext';
 import { MutedChannelsProvider } from '@/context/MutedChannelsContext';
 import { FavoritesProvider } from '@/context/FavoritesContext';
 import { PresenceProvider } from '@/context/PresenceContext';
+import { BiometricLockScreen } from '@/components/BiometricLockScreen';
 import { FloatingCall } from '@/components/FloatingCall';
 import { registerForPush } from '@/lib/push';
 import { colors } from '@/theme';
 
 export default function AppLayout() {
-  const { loading, session, activeTeam, userId } = useAuth();
+  const { loading, session, activeTeam, userId, locked } = useAuth();
 
   useEffect(() => {
     if (loading) return;
     if (!session) router.replace('/(auth)/email');
     else if (!activeTeam) router.replace('/(auth)/team');
   }, [loading, session, activeTeam]);
+
+  // Gate the entire (app) tree on biometric unlock when the user has opted
+  // in. Rendered before any of the providers so push registration and call
+  // setup don't run for a locked session.
+  if (session && locked) return <BiometricLockScreen />;
 
   useEffect(() => {
     if (!userId) return;

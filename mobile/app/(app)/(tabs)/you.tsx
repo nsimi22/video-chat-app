@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, ScrollView, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
-import { GitBranch, KeyRound, LogOut, Smile, Sparkles, Ticket, Users } from 'lucide-react-native';
+import { GitBranch, KeyRound, Lock, LogOut, Smile, Sparkles, Ticket, Users } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
@@ -16,6 +16,8 @@ import {
   invalidateIntegrations,
 } from '@/lib/integrations';
 import { jiraIsConfigured } from '@/lib/jira';
+import { capability, prompt, label, type BiometricCapability } from '@/lib/biometric';
+import { isEnabled as biometricPrefEnabled, setEnabled as setBiometricPref } from '@/lib/biometricPref';
 import { Avatar, Button, Field } from '@/components/ui';
 import { colors, radius, space, tabBarClearance, type PresenceStatus } from '@/theme';
 
@@ -82,6 +84,9 @@ export default function YouScreen() {
   const [newPassword, setNewPassword] = useState('');
   const [savingPassword, setSavingPassword] = useState(false);
   const [integrations, setIntegrations] = useState<IntegrationRow[]>([]);
+  const [bioCap, setBioCap] = useState<BiometricCapability | null>(null);
+  const [bioEnabled, setBioEnabled] = useState(false);
+  const [bioBusy, setBioBusy] = useState(false);
 
   const loadProfile = useCallback(() => {
     if (!userId) return;
@@ -105,6 +110,11 @@ export default function YouScreen() {
   useEffect(() => {
     loadProfile();
   }, [loadProfile]);
+
+  useEffect(() => {
+    capability().then(setBioCap);
+    biometricPrefEnabled().then(setBioEnabled);
+  }, []);
 
   // Re-read integration state on focus so a key added on desktop shows up
   // after the cache TTL without an app restart.
@@ -177,6 +187,30 @@ export default function YouScreen() {
     }
     setNewPassword('');
     Alert.alert('Password updated', 'You can now sign in with this password on any device.');
+  };
+
+  const toggleBiometric = async (next: boolean) => {
+    if (bioBusy) return;
+    // Turning on: require a successful biometric prompt right now. This
+    // proves enrollment works and prevents the user from locking themselves
+    // out by enabling without actually being able to authenticate.
+    if (next) {
+      if (!bioCap?.available) return;
+      setBioBusy(true);
+      const ok = await prompt(`Confirm ${label(bioCap.kind)} to enable lock`);
+      if (!ok) {
+        setBioBusy(false);
+        return;
+      }
+      await setBiometricPref(true);
+      setBioEnabled(true);
+      setBioBusy(false);
+      return;
+    }
+    setBioBusy(true);
+    await setBiometricPref(false);
+    setBioEnabled(false);
+    setBioBusy(false);
   };
 
   if (loading) {
@@ -321,6 +355,36 @@ export default function YouScreen() {
           textContentType="newPassword"
         />
         <Button title="Update password" onPress={savePassword} loading={savingPassword} disabled={newPassword.length < 6} />
+
+        {/* App lock — opt-in biometric gate (Face ID / Touch ID / Android biometrics). */}
+        <GroupLabel>App lock</GroupLabel>
+        <Group>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space(3), padding: space(3.5) }}>
+            <View style={{ width: 30, height: 30, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.raised }}>
+              <Lock size={17} color={bioEnabled ? colors.accentTx : colors.textMid} />
+            </View>
+            <View style={{ flex: 1, minWidth: 0, paddingRight: space(2) }}>
+              <Text style={{ fontSize: 15, fontWeight: '500', color: colors.text }}>
+                Unlock with {bioCap ? label(bioCap.kind) : 'biometrics'}
+              </Text>
+              <Text style={{ fontSize: 12, color: colors.textDim, marginTop: 1 }}>
+                {bioCap == null
+                  ? 'Checking device support…'
+                  : !bioCap.hasHardware
+                  ? 'This device does not support biometric unlock.'
+                  : !bioCap.isEnrolled
+                  ? `Enroll ${label(bioCap.kind)} in your device settings to use this.`
+                  : 'Required each time the app is launched.'}
+              </Text>
+            </View>
+            <Switch
+              value={bioEnabled}
+              onValueChange={toggleBiometric}
+              disabled={!bioCap?.available || bioBusy}
+              trackColor={{ true: colors.accent, false: colors.border }}
+            />
+          </View>
+        </Group>
 
         {/* Team + session */}
         <GroupLabel>Workspace</GroupLabel>
