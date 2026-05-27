@@ -5,26 +5,80 @@
 //
 // Coordinates are normalized 0..1 in the video's intrinsic space so that
 // strokes line up regardless of each viewer's tile size.
+//
+// Per-user live cursors are rendered as DOM elements overlaid on the same
+// host as the canvas. They appear whenever a remote peer is mid-stroke and
+// disappear on the stroke's `end` event. Each cursor is colored to match
+// the stroke and tagged with the peer's name (Slack-huddle-style).
+
+// Auto-assigned color palette keyed by deterministic hash of user identity.
+// Picked for contrast over screen content (no near-white, no dim).
+const DRAW_USER_PALETTE = [
+  '#FF3B30', // red
+  '#34C759', // green
+  '#007AFF', // blue
+  '#FF9500', // orange
+  '#AF52DE', // purple
+  '#FF2D55', // pink
+  '#00C7BE', // teal
+];
+
+function colorForUser(uid) {
+  if (!uid) return DRAW_USER_PALETTE[0];
+  let hash = 0;
+  for (let i = 0; i < uid.length; i++) {
+    hash = ((hash << 5) - hash + uid.charCodeAt(i)) | 0;
+  }
+  return DRAW_USER_PALETTE[Math.abs(hash) % DRAW_USER_PALETTE.length];
+}
+
+// Inline pen-cursor SVG used for remote cursors. `currentColor` lets the
+// CSS color (set per-cursor to match the stroke color) drive the fill.
+const REMOTE_CURSOR_SVG = `
+<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+  <path d="M3 21l4-1 13-13a2.5 2.5 0 0 0-3.5-3.5L3.5 16.5 3 21z"/>
+</svg>`;
+
 class DrawingLayer {
-  constructor({ streamId, send, isOwner }) {
+  constructor({ streamId, send, isOwner, localUserId, nameForUser }) {
     this.streamId = streamId;
     this.send = send; // (stroke) => void  — broadcast a stroke event.
     this.isOwner = isOwner; // owner of the shared screen; non-owners can also draw.
+    this.localUserId = localUserId || null;
+    // Callback used to render remote cursors with a friendly name. Falls
+    // back to the bare user id when not provided (keeps the layer usable
+    // outside the main call context, e.g. in tests).
+    this.nameForUser = typeof nameForUser === 'function' ? nameForUser : (uid) => uid;
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'draw-canvas';
     this.ctx = this.canvas.getContext('2d');
     this.tool = 'pen';
-    this.color = '#ff3b30';
+    // Initial color is auto-assigned from the per-user palette so multiple
+    // collaborators draw in distinguishable colors by default. The toolbar
+    // color picker can override at any time via setColor().
+    this.color = colorForUser(this.localUserId);
     this.size = 4;
     this.drawing = false;
     this.last = null;
     this.history = []; // strokes (for re-rasterizing on resize)
     this._cssSize = { w: 0, h: 0 }; // cached canvas CSS dimensions; updated on resize.
+    // Remote cursors keyed by user id. Live as DOM nodes alongside the canvas
+    // (in the same host element) so they layer over the share at the right
+    // position and follow any parent transform (e.g. zoom on a spotlighted
+    // screen tile).
+    this.remoteCursors = new Map();
+    this._cursorHost = null; // resolved in attach()
     this._bind();
   }
 
   attach(tile) {
-    tile.appendChild(this.canvas);
+    // Append the canvas to .tile-content when present so a CSS transform on
+    // that wrapper (used for zoom/pan on spotlighted screens) scales the
+    // canvas in lockstep with the video. Falls back to the tile root for
+    // non-screen consumers (e.g. whiteboards) that don't wrap their video.
+    const host = tile.querySelector('.tile-content') || tile;
+    host.appendChild(this.canvas);
+    this._cursorHost = host;
     this.tile = tile;
     new ResizeObserver(() => this._sizeToTile()).observe(tile);
     this._sizeToTile();
@@ -82,13 +136,25 @@ class DrawingLayer {
     this.canvas.addEventListener('pointerleave', end);
   }
 
+  // Local stroke emission: optimistically rasterize, then broadcast. Does
+  // NOT show a remote cursor — the local user already has a native pointer
+  // cursor (CSS crosshair) over the canvas.
   _emit(stroke) {
-    this.applyRemote(stroke);
+    this._ingest(stroke);
     if (this.send) this.send(stroke);
   }
 
-  // Apply a stroke received from any peer (or echoed from ourselves).
-  applyRemote(stroke) {
+  // Apply a stroke arriving from a peer. Rasterizes the stroke onto the
+  // canvas and updates that peer's floating cursor position/visibility.
+  applyRemote(stroke, from) {
+    this._ingest(stroke);
+    if (from && from !== this.localUserId) {
+      this._updateRemoteCursor(from, stroke);
+    }
+  }
+
+  // Pure rasterization + history append, shared between _emit and applyRemote.
+  _ingest(stroke) {
     this.history.push(stroke);
     this._drawStroke(stroke);
   }
@@ -97,6 +163,9 @@ class DrawingLayer {
     this.history = [];
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     if (broadcast && this.send) this.send({ action: 'clear' });
+    // Clear all remote cursors too — a clear typically means "wipe and
+    // start over", and stale cursors over a blank canvas look broken.
+    for (const uid of [...this.remoteCursors.keys()]) this._hideRemoteCursor(uid);
   }
 
   _redraw() {
@@ -158,6 +227,58 @@ class DrawingLayer {
     this.ctx.closePath();
     this.ctx.fill();
   }
+
+  // --- Remote cursors -----------------------------------------------------
+  //
+  // A remote peer's cursor follows their pen position while they're drawing
+  // (begin → moves → end). On `end` we hide it; the next `begin` brings it
+  // back. We piggyback on existing stroke events so no new wire protocol is
+  // needed — `from` arrives in the broadcast envelope (see api.js sendDraw).
+
+  _updateRemoteCursor(uid, stroke) {
+    if (stroke.action === 'end' || stroke.action === 'clear') {
+      this._hideRemoteCursor(uid);
+      return;
+    }
+    if (stroke.action === 'begin' || stroke.action === 'move') {
+      this._showRemoteCursor(uid, stroke);
+    }
+  }
+
+  _showRemoteCursor(uid, stroke) {
+    let cursor = this.remoteCursors.get(uid);
+    if (!cursor) {
+      cursor = document.createElement('div');
+      cursor.className = 'remote-cursor';
+      cursor.dataset.userId = uid;
+      const pen = document.createElement('div');
+      pen.className = 'remote-cursor-pen';
+      pen.innerHTML = REMOTE_CURSOR_SVG;
+      cursor.appendChild(pen);
+      const label = document.createElement('div');
+      label.className = 'remote-cursor-name';
+      cursor.appendChild(label);
+      (this._cursorHost || this.tile).appendChild(cursor);
+      this.remoteCursors.set(uid, cursor);
+    }
+    cursor.querySelector('.remote-cursor-name').textContent = this.nameForUser(uid);
+    // Stroke color drives the pen + name-pill accent via currentColor /
+    // border-color so each user is visually distinct without per-user CSS.
+    if (stroke.color) cursor.style.color = stroke.color;
+    // Position via percentages so the cursor tracks the canvas's normalized
+    // 0..1 stroke space — works through any parent transform (zoom/pan).
+    cursor.style.left = `${stroke.x * 100}%`;
+    cursor.style.top = `${stroke.y * 100}%`;
+  }
+
+  _hideRemoteCursor(uid) {
+    const cursor = this.remoteCursors.get(uid);
+    if (cursor) {
+      cursor.remove();
+      this.remoteCursors.delete(uid);
+    }
+  }
 }
 
 window.DrawingLayer = DrawingLayer;
+window.colorForUser = colorForUser;
