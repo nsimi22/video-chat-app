@@ -1022,6 +1022,9 @@ async function startPopoutCall(channelId) {
   const huddle = state.huddle;
   if (!huddle || state.mesh) return;
   const mesh = new window.LivekitCallClient(huddle);
+  // Same bootstrap-before-state.mesh race as startCall; see the comment
+  // there for the full reasoning.
+  state.mesh = mesh;
   mesh.addEventListener('peer-joined', (e) => onCallPeerJoined(e.detail));
   mesh.addEventListener('peer-left', (e) => onCallPeerLeft(e.detail));
   mesh.addEventListener('track', (e) => onTrack(e.detail));
@@ -1039,6 +1042,7 @@ async function startPopoutCall(channelId) {
     await huddle.joinCall(channelId);
     await mesh.connect(channelId);
   } catch (err) {
+    state.mesh = null;
     showCallError('Could not join the call: ' + (err?.message || err));
     // joinCall may have succeeded before connect threw; drop the
     // presence row so the lurker pill doesn't stay incremented.
@@ -1046,7 +1050,6 @@ async function startPopoutCall(channelId) {
     mesh.disconnect();
     return;
   }
-  state.mesh = mesh;
   state.inCallChannelId = channelId;
   // The mic/cam/share controls were disabled in bootCallPopout; flip
   // them on now that mesh.toggle{Mic,Cam}/addScreen have something to act on.
@@ -1517,6 +1520,12 @@ async function startCall(channelId) {
   // forwarded events (mute-state, raise-hand, reaction) emitted during
   // that initial sync would otherwise fire into the void.
   const mesh = new window.LivekitCallClient(state.huddle);
+  // Assign synchronously, before mesh.connect() — the bootstrap loop
+  // inside connect can dispatch 'track' for already-subscribed remote
+  // peers BEFORE connect() resolves. onTrack reads state.mesh on its
+  // first line, so a null mesh there throws and skips tile creation —
+  // the "late joiner can only see themselves" race.
+  state.mesh = mesh;
   mesh.addEventListener('peer-joined', (e) => onCallPeerJoined(e.detail));
   mesh.addEventListener('peer-left', (e) => onCallPeerLeft(e.detail));
   mesh.addEventListener('track', (e) => onTrack(e.detail));
@@ -1537,6 +1546,7 @@ async function startCall(channelId) {
     // accurate; mesh.connect wires the actual media transport).
     await mesh.connect(channelId);
   } catch (err) {
+    state.mesh = null;
     console.warn('joinCall failed', err);
     // Surface the failure to the user (see showCallError) instead
     // of swallowing into console.warn — otherwise they see the
@@ -1552,7 +1562,6 @@ async function startCall(channelId) {
     els.btnJoinCall.disabled = false;
     return;
   }
-  state.mesh = mesh;
   state.inCallChannelId = channelId;
   // Pre-apply the persisted blur preference before setCamera so the
   // very first frame peers receive is already blurred — toggling
