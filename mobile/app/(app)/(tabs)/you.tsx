@@ -113,8 +113,8 @@ export default function YouScreen() {
 
   useEffect(() => {
     capability().then(setBioCap);
-    biometricPrefEnabled().then(setBioEnabled);
-  }, []);
+    if (userId) biometricPrefEnabled(userId).then(setBioEnabled);
+  }, [userId]);
 
   // Re-read integration state on focus so a key added on desktop shows up
   // after the cache TTL without an app restart.
@@ -190,27 +190,30 @@ export default function YouScreen() {
   };
 
   const toggleBiometric = async (next: boolean) => {
-    if (bioBusy) return;
-    // Turning on: require a successful biometric prompt right now. This
-    // proves enrollment works and prevents the user from locking themselves
-    // out by enabling without actually being able to authenticate.
-    if (next) {
-      if (!bioCap?.available) return;
-      setBioBusy(true);
-      const ok = await prompt(`Confirm ${label(bioCap.kind)} to enable lock`);
-      if (!ok) {
-        setBioBusy(false);
-        return;
-      }
-      await setBiometricPref(true);
-      setBioEnabled(true);
-      setBioBusy(false);
-      return;
-    }
+    if (bioBusy || !userId) return;
+    if (next && !bioCap?.available) return;
     setBioBusy(true);
-    await setBiometricPref(false);
-    setBioEnabled(false);
-    setBioBusy(false);
+    // Wrapped in try/finally so a SecureStore write failure or an OS-level
+    // prompt error can't leave the switch permanently disabled.
+    try {
+      if (next) {
+        // Turning on: require a successful biometric prompt right now to
+        // prove enrollment works — otherwise the user could lock themselves
+        // out by enabling without actually being able to authenticate.
+        const ok = await prompt(`Confirm ${label(bioCap!.kind)} to enable lock`);
+        if (!ok) return;
+        await setBiometricPref(userId, true);
+        setBioEnabled(true);
+      } else {
+        await setBiometricPref(userId, false);
+        setBioEnabled(false);
+      }
+    } catch (err) {
+      console.warn('[biometric] toggle failed', err);
+      Alert.alert('Could not update App Lock', 'Please try again.');
+    } finally {
+      setBioBusy(false);
+    }
   };
 
   if (loading) {

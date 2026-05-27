@@ -44,7 +44,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           coldStart.current = false;
           return;
         }
-        if (coldStart.current && (await biometricPrefEnabled().catch(() => false))) {
+        const uid = data.session.user.id;
+        if (coldStart.current && (await biometricPrefEnabled(uid).catch(() => false))) {
           setLocked(true);
         }
         coldStart.current = false;
