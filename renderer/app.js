@@ -1043,6 +1043,7 @@ async function startPopoutCall(channelId) {
     await mesh.connect(channelId);
   } catch (err) {
     state.mesh = null;
+    resetCallEphemera();
     showCallError('Could not join the call: ' + (err?.message || err));
     // joinCall may have succeeded before connect threw; drop the
     // presence row so the lurker pill doesn't stay incremented.
@@ -1547,6 +1548,7 @@ async function startCall(channelId) {
     await mesh.connect(channelId);
   } catch (err) {
     state.mesh = null;
+    resetCallEphemera();
     console.warn('joinCall failed', err);
     // Surface the failure to the user (see showCallError) instead
     // of swallowing into console.warn — otherwise they see the
