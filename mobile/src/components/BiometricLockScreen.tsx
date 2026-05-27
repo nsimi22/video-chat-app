@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, AppState } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { router } from 'expo-router';
 import { useAuth } from '@/context/AuthContext';
 import { Button, Logo } from '@/components/ui';
@@ -22,22 +22,16 @@ export function BiometricLockScreen() {
     capability().then(setCap);
   }, []);
 
-  // Auto-prompt as soon as we know what hardware is available. Also re-prompt
-  // when the OS dialog gets dismissed by a background→foreground (the system
-  // dialog can pause the JS callback in rare cases).
+  // Auto-prompt as soon as we know what hardware is available. The
+  // `promptedOnce` ref makes this one-shot — if the user dismisses the
+  // system dialog they re-trigger via the "Unlock" button rather than
+  // a re-arm path (which previously closed over stale state).
   useEffect(() => {
     if (!cap) return;
     if (promptedOnce.current) return;
     if (!cap.available) return;
-    if (attempts >= MAX_ATTEMPTS) return;
     promptedOnce.current = true;
     void tryAuth();
-
-    const sub = AppState.addEventListener('change', (s) => {
-      if (s === 'active' && !busy && attempts < MAX_ATTEMPTS) void tryAuth();
-    });
-    return () => sub.remove();
-    // tryAuth is stable enough; intentionally not in deps to avoid a re-arm loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cap]);
 
