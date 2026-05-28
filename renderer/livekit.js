@@ -367,7 +367,6 @@
       // on identity collision) and strips publish grants. The popout
       // also short-circuits camera/mic enable below.
       const purpose = opts.purpose || null;
-      this._purpose = purpose;
       const { data, error } = await this.huddle.supabase.functions.invoke('livekit-token', {
         body: { team_id: team.id, channel_id: channelId, ...(purpose ? { purpose } : {}) },
       });

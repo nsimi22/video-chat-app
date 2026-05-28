@@ -964,6 +964,13 @@ button.ctrl.muted.icon-only::after {
 /* Hide Pop out inside popout windows — it would either no-op (no
    active call channel id) or recurse. The main-window tile keeps it. */
 body.popout .tile-action-popout { display: none; }
+/* Annotate in a screen popout would toggle the main-window's draw
+   toolbar (which is hidden by body.popout) — clicking it appears to
+   do nothing. The call popout reparents the toolbar into its own
+   stage; we don't do that for the screen popout, so hide the button
+   instead. Users can annotate from the source tile in the main
+   window. */
+body.popout-screen .tile-action-annotate { display: none; }
 /* Annotate is now icon-only (label hidden via .sr-only) — give the pen
    a hair more presence and let the active state carry the affordance
    so the user can tell at a glance whether they're drawing. */
