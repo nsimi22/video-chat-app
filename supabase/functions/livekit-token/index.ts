@@ -36,7 +36,7 @@ Deno.serve(async (req) => {
   const authHeader = req.headers.get('Authorization') ?? '';
   if (!authHeader.startsWith('Bearer ')) return json({ error: 'missing bearer token' }, 401);
 
-  let body: { team_id?: string; channel_id?: string };
+  let body: { team_id?: string; channel_id?: string; purpose?: string };
   try {
     body = await req.json();
   } catch {
@@ -44,7 +44,14 @@ Deno.serve(async (req) => {
   }
   const teamId = body.team_id?.trim();
   const channelId = body.channel_id?.trim();
+  const purpose = body.purpose?.trim();
   if (!teamId || !channelId) return json({ error: 'team_id and channel_id are required' }, 400);
+  // `purpose=screen-popout` mints a subscribe-only token under a suffixed
+  // identity so a popout window can join the same room as the main client
+  // without colliding on identity (LK kicks the previous connection when
+  // a duplicate identity reconnects). Authorization still hangs off the
+  // caller's JWT below, so the suffix changes only LK-side grants.
+  const isScreenPopout = purpose === 'screen-popout';
 
   // Verify the session and run the membership check as the caller (so RLS and
   // the SECURITY DEFINER helper see auth.uid()).
@@ -69,19 +76,22 @@ Deno.serve(async (req) => {
   // Look up the display name so LiveKit participants show a friendly label.
   const { data: profile } = await supabase.from('profiles').select('name').eq('user_id', user.id).maybeSingle();
 
+  // crypto.randomUUID() is available in the Edge Runtime (Deno) globally.
+  // Suffix lives in the LK identity only — the Supabase JWT still maps to
+  // user.id, so RLS and the can_see_channel check above stay correct.
+  const identity = isScreenPopout ? `${user.id}::popout::${crypto.randomUUID()}` : user.id;
+  const baseName = profile?.name ?? user.email ?? 'Guest';
   const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
-    identity: user.id,
-    name: profile?.name ?? user.email ?? 'Guest',
+    identity,
+    name: isScreenPopout ? `${baseName} (popout)` : baseName,
     ttl: '2h',
   });
   at.addGrant({
     room,
     roomJoin: true,
-    canPublish: true, // camera + mic
-    canPublishData: true,
+    canPublish: !isScreenPopout, // popout is subscribe-only
+    canPublishData: !isScreenPopout,
     canSubscribe: true,
-    // Receive-only MVP: clients don't publish screen share. Tighten further if needed:
-    // canPublishSources: [TrackSource.CAMERA, TrackSource.MICROPHONE],
   });
 
   return json({ token: await at.toJwt(), url: LIVEKIT_URL, room });

@@ -358,11 +358,18 @@
     // team members so the lurker UI updates). Call it before connecting
     // the LiveKit room so presence is accurate even if the LK connect
     // takes a moment.
-    async connect(channelId) {
+    async connect(channelId, opts = {}) {
       const team = this.huddle.team;
       if (!team?.id || !channelId) throw new Error('connect: team + channelId required');
+      // `purpose: 'screen-popout'` flags this connection as a subscribe-
+      // only popout client. The edge function mints a token under a
+      // suffixed identity (so the main window's connection isn't kicked
+      // on identity collision) and strips publish grants. The popout
+      // also short-circuits camera/mic enable below.
+      const purpose = opts.purpose || null;
+      this._purpose = purpose;
       const { data, error } = await this.huddle.supabase.functions.invoke('livekit-token', {
-        body: { team_id: team.id, channel_id: channelId },
+        body: { team_id: team.id, channel_id: channelId, ...(purpose ? { purpose } : {}) },
       });
       if (error) throw new Error(`livekit-token failed: ${error.message || error}`);
       if (!data?.token || !data?.url) throw new Error('livekit-token returned no token');
@@ -386,9 +393,11 @@
         }
       }
 
-      await room.localParticipant.setMicrophoneEnabled(true);
-      await room.localParticipant.setCameraEnabled(true);
-      this._refreshLocalCameraStream();
+      if (purpose !== 'screen-popout') {
+        await room.localParticipant.setMicrophoneEnabled(true);
+        await room.localParticipant.setCameraEnabled(true);
+        this._refreshLocalCameraStream();
+      }
     }
 
     _wireRoomEvents(room) {
@@ -429,7 +438,19 @@
       });
     }
 
+    // Popout (subscribe-only) clients suffix their LK identity with
+    // `::popout::<uuid>` (see supabase/functions/livekit-token/index.ts).
+    // They join the same room as a parallel subscriber so a screen-share
+    // tile can pop out into its own BrowserWindow without colliding on
+    // identity. From the rest of the call's POV they're not real
+    // participants — filter them out of peer-joined / peer-left so the
+    // roster, tiles, and presence pings ignore them entirely.
+    _isPopoutIdentity(identity) {
+      return typeof identity === 'string' && identity.includes('::popout::');
+    }
+
     _onParticipantConnected(p) {
+      if (this._isPopoutIdentity(p.identity)) return;
       this.dispatchEvent(new CustomEvent('peer-joined', {
         detail: { id: p.identity, name: p.name || p.identity, color: null },
       }));
@@ -444,6 +465,7 @@
     }
 
     _onParticipantDisconnected(p) {
+      if (this._isPopoutIdentity(p.identity)) return;
       // Tear down any screen-share tiles for this participant before the
       // peer-left handler removes their main tile. LK *should* fire
       // TrackUnsubscribed for each publication before
