@@ -119,6 +119,37 @@
     </div>
 
     <div id="app" class="app hidden">
+      <!-- v2 UI: 68px primary nav rail. Rendered only when
+           [data-ui="v2"] is set on <html>. Hidden by CSS otherwise,
+           so the legacy single-sidebar layout is untouched.
+           Icons are populated by ui-v2-shell.js from HuddleIcons,
+           and clicks bridge to existing legacy buttons (calendar,
+           settings, whiteboard) until the full view-router lands in
+           a later Phase 2 sub-step. -->
+      <nav class="huddle-rail-v2" aria-label="Primary navigation">
+        <div class="huddle-rail-brand" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 200 200">
+            <circle cx="100" cy="124" r="15" fill="var(--accent)"/>
+            <g fill="none" stroke="var(--tx-hi)" stroke-width="16" stroke-linecap="round">
+              <path d="M 52 124 A 48 48 0 0 1 148 124"/>
+              <path d="M 30 124 A 70 70 0 0 1 92 54"/>
+              <path d="M 108 54 A 70 70 0 0 1 170 124"/>
+            </g>
+          </svg>
+        </div>
+        <div class="huddle-rail-items">
+          <button class="huddle-rail-item is-active" data-view="chat" aria-label="Chat" title="Chat"></button>
+          <button class="huddle-rail-item" data-view="calls" aria-label="Calls" title="Calls"></button>
+          <button class="huddle-rail-item" data-view="whiteboard" aria-label="Whiteboard" title="Whiteboard"></button>
+          <button class="huddle-rail-item" data-view="calendar" aria-label="Calendar" title="Calendar"></button>
+          <button class="huddle-rail-item" data-view="ai" aria-label="Huddle AI" title="Huddle AI"></button>
+        </div>
+        <div class="huddle-rail-footer">
+          <button class="huddle-rail-item" data-action="settings" aria-label="Settings" title="Settings"></button>
+          <div id="huddle-rail-me" class="huddle-rail-me" aria-hidden="true"></div>
+        </div>
+      </nav>
+
       <!-- Sidebar -->
       <aside class="sidebar">
         <div class="workspace">
@@ -741,5 +772,8 @@
     <script src="chat.js"></script>
     <script src="calendar.js"></script>
     <script src="app.js"></script>
+    <!-- v2 UI shell wiring: nav rail icon population + click bridges.
+         No-op when [data-ui="v2"] is not set (rail isn't rendered). -->
+    <script src="ui-v2-shell.js"></script>
   </body>
 </html>

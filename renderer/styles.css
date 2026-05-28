@@ -2603,3 +2603,124 @@ body.popout-call .popout-stage > .draw-toolbar {
   100% { box-shadow: 0 0 0 0   transparent; }
 }
 
+/* ============================================================
+   v2 shell scaffold — NavRail + slim sidebar.
+   Hidden by default; only renders under [data-ui="v2"]. The
+   legacy single-sidebar layout coexists in v2 for now; full
+   ContextualPanel restyle (workspace switcher, Mentions inbox,
+   new section headers) and view-router rewrite land in a later
+   Phase 2 sub-step.
+   ============================================================ */
+.huddle-rail-v2 { display: none; }
+
+[data-ui="v2"] .huddle-rail-v2 {
+  width: var(--rail-w, 68px);
+  flex-shrink: 0;
+  background: var(--bg-0);
+  border-right: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0 12px;
+  gap: 6px;
+}
+[data-ui="v2"] .huddle-rail-brand {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+[data-ui="v2"] .huddle-rail-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  flex: 1 1 auto;
+}
+[data-ui="v2"] .huddle-rail-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+[data-ui="v2"] .huddle-rail-item {
+  position: relative;
+  width: 46px;
+  height: 46px;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--tx-lo);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  min-height: 0; /* override legacy global button min-height */
+  cursor: pointer;
+  box-shadow: none;
+  transition: background 0.14s, color 0.14s;
+}
+[data-ui="v2"] .huddle-rail-item svg {
+  width: 22px;
+  height: 22px;
+  stroke-width: 2;
+}
+[data-ui="v2"] .huddle-rail-item:hover {
+  background: var(--bg-2);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .huddle-rail-item.is-active {
+  color: var(--accent-tx);
+  background: var(--accent-dim);
+}
+[data-ui="v2"] .huddle-rail-item.is-active svg {
+  stroke-width: 2.2;
+}
+[data-ui="v2"] .huddle-rail-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: -11px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 22px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+[data-ui="v2"] .huddle-rail-item.has-live::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--live);
+  border: 2px solid var(--bg-0);
+  animation: huddle-pulse 1.6s infinite;
+}
+[data-ui="v2"] .huddle-rail-me {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent));
+  color: var(--bg-0);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+/* Existing sidebar reads as the design's "contextual panel" under
+   v2 — slimmer, warm-charcoal, soft hairline. Headers / rows /
+   sections keep their legacy styling for this sub-step. */
+[data-ui="v2"] .sidebar {
+  width: var(--panel-w, 256px);
+  background: var(--bg-1);
+  border-right: 1px solid var(--line-soft);
+}
+
+
