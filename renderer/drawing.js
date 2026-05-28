@@ -24,7 +24,12 @@ class DrawingLayer {
   }
 
   attach(tile) {
-    tile.appendChild(this.canvas);
+    // Append the canvas to .tile-content when present so a CSS transform
+    // on that wrapper (used for zoom/pan on spotlighted screens) scales
+    // the canvas in lockstep with the video. Falls back to the tile root
+    // for non-screen consumers that don't wrap their video.
+    const host = tile.querySelector('.tile-content') || tile;
+    host.appendChild(this.canvas);
     this.tile = tile;
     new ResizeObserver(() => this._sizeToTile()).observe(tile);
     this._sizeToTile();

@@ -232,6 +232,11 @@ const state = {
   channelMeta: new Map(),
   activeAnnotation: null,
   spotlightKey: null,
+  // Per-tile zoom + pan state for spotlighted screen-share tiles. Map
+  // key = tile key (e.g. `screen:<sid>`), value = { scale, x, y }. Pan
+  // x/y are CSS px offsets pre-scale, applied via transform on the
+  // tile's .tile-content wrapper.
+  zoomByKey: new Map(),
   // Active speaker = the peerId whose audio level is highest right now,
   // pushed by the call client's 'active-speaker' event. null when no
   // one is audibly speaking.
@@ -2649,7 +2654,17 @@ function makeTile({ key, label, kind, userId }) {
   video.autoplay = true;
   video.playsInline = true;
   if (kind === 'self') video.muted = true;
-  tile.appendChild(video);
+  // Screen tiles wrap the video (and later the draw canvas) in a
+  // transform-able container so zoom/pan can scale them together
+  // while the label and tile-actions stay at constant size.
+  if (kind === 'screen') {
+    const content = document.createElement('div');
+    content.className = 'tile-content';
+    content.appendChild(video);
+    tile.appendChild(content);
+  } else {
+    tile.appendChild(video);
+  }
   const lbl = document.createElement('div');
   lbl.className = 'tile-label';
   lbl.textContent = label;
@@ -2664,6 +2679,26 @@ function makeTile({ key, label, kind, userId }) {
       annotate.innerHTML = `${window.HuddleIcons.edit}<span>Annotate</span>`;
       annotate.onclick = () => toggleAnnotate(tile.dataset.streamId);
       actions.appendChild(annotate);
+      // Zoom controls: only meaningful (and visible — see CSS) while the
+      // tile is spotlighted, since a scaled tile would overflow the grid.
+      const zoomOut = document.createElement('button');
+      zoomOut.className = 'tile-action-zoom-out';
+      zoomOut.setAttribute('aria-label', 'Zoom out');
+      zoomOut.innerHTML = `<span aria-hidden="true">−</span><span class="sr-only">Zoom out</span>`;
+      zoomOut.onclick = () => setZoom(key, -1);
+      actions.appendChild(zoomOut);
+      const zoomIn = document.createElement('button');
+      zoomIn.className = 'tile-action-zoom-in';
+      zoomIn.setAttribute('aria-label', 'Zoom in');
+      zoomIn.innerHTML = `<span aria-hidden="true">+</span><span class="sr-only">Zoom in</span>`;
+      zoomIn.onclick = () => setZoom(key, 1);
+      actions.appendChild(zoomIn);
+      const zoomFit = document.createElement('button');
+      zoomFit.className = 'tile-action-zoom-fit';
+      zoomFit.setAttribute('aria-label', 'Fit to tile');
+      zoomFit.innerHTML = `<span aria-hidden="true">⤢</span><span class="sr-only">Fit to tile</span>`;
+      zoomFit.onclick = () => resetZoom(key);
+      actions.appendChild(zoomFit);
     }
     const spotlight = document.createElement('button');
     spotlight.className = 'tile-action-spotlight';
@@ -2672,6 +2707,7 @@ function makeTile({ key, label, kind, userId }) {
     actions.appendChild(spotlight);
     tile.appendChild(actions);
   }
+  if (kind === 'screen') attachPanHandlers(tile, key);
   els.tiles.appendChild(tile);
   state.tilesByKey.set(key, tile);
   // Reveal the tile grid as soon as anything lives in it. This covers
@@ -2685,6 +2721,7 @@ function removeTile(key) {
   const tile = state.tilesByKey.get(key);
   if (tile) tile.remove();
   state.tilesByKey.delete(key);
+  state.zoomByKey.delete(key);
   if (state.spotlightKey === key) clearSpotlight();
   syncTilesVisibility();
 }
@@ -2707,10 +2744,138 @@ function toggleSpotlight(key) {
 
 function clearSpotlight() {
   if (!state.spotlightKey) return;
-  const tile = state.tilesByKey.get(state.spotlightKey);
+  const key = state.spotlightKey;
+  const tile = state.tilesByKey.get(key);
   if (tile) tile.classList.remove('spotlighted');
   els.tiles.classList.remove('has-spotlight');
   state.spotlightKey = null;
+  // Reset any zoom/pan applied while spotlighted so the tile returns
+  // to the grid at 1x. Without this, the next time the user spotlights
+  // it the previous zoom would reappear in a tile that no longer has
+  // the room to overflow cleanly.
+  resetZoom(key);
+}
+
+// Per-tile zoom + pan for spotlighted screen-share tiles. Local UI
+// state only — each viewer controls their own zoom, matching the
+// spotlight model (see comment on toggleSpotlight). Strokes from the
+// drawing layer stay aligned across zoom levels because they're stored
+// in normalized 0..1 coords (see drawing.js) and the canvas's bounding
+// rect already reflects the post-transform size.
+// Discrete zoom levels indexed by step direction. Multiplicative steps
+// with clamping (e.g. scale * 1.25 capped at 4) make the zoom-out step
+// asymmetric at the cap — 3.81 → 4 (clamped) → 3.2 instead of back to
+// 3.81. A static array eliminates both the asymmetry and floating-point
+// drift from repeated multiply/divide on the same scalar.
+const ZOOM_LEVELS = [1, 1.25, 1.5625, 1.953125, 2.44140625, 3.0517578125, 3.814697265625, 4];
+
+// direction: -1 to zoom out one step, +1 to zoom in one step. Snaps the
+// current scale to the nearest level before stepping, so a pan-adjusted
+// or out-of-array scale doesn't surprise the next press.
+function setZoom(key, direction) {
+  const tile = state.tilesByKey.get(key);
+  if (!tile) return;
+  const current = state.zoomByKey.get(key) || { scale: 1, x: 0, y: 0 };
+  let idx = 0;
+  for (let i = 1; i < ZOOM_LEVELS.length; i++) {
+    if (Math.abs(ZOOM_LEVELS[i] - current.scale) < Math.abs(ZOOM_LEVELS[idx] - current.scale)) {
+      idx = i;
+    }
+  }
+  idx = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, idx + direction));
+  const next = ZOOM_LEVELS[idx];
+  // Zooming back to 1x recenters; staying zoomed keeps existing pan
+  // (clamped to the new scale's bounds so a previously-extreme pan at
+  // 4x doesn't strand the user in the void when they zoom back to 2x).
+  const proposed = next <= 1 ? { x: 0, y: 0 } : { x: current.x, y: current.y };
+  const pan = _clampPan(tile, { scale: next, ...proposed });
+  state.zoomByKey.set(key, { scale: next, ...pan });
+  _applyZoom(tile, key);
+}
+
+// Clamp pan so the scaled content's edges can't move past the tile's
+// edges — without this, panning at high zoom would let the user push
+// the video off-screen into a black void. transform-origin is 0,0, so
+// at scale s the content overflows by (s-1)*w horizontally and (s-1)*h
+// vertically; valid translate.x range is [-(s-1)*w, 0], likewise for y.
+// Uses offsetWidth/Height which report pre-transform layout size.
+function _clampPan(tile, z) {
+  if (z.scale <= 1) return { x: 0, y: 0 };
+  const w = tile.offsetWidth;
+  const h = tile.offsetHeight;
+  const minX = -(z.scale - 1) * w;
+  const minY = -(z.scale - 1) * h;
+  return {
+    x: Math.max(minX, Math.min(0, z.x)),
+    y: Math.max(minY, Math.min(0, z.y)),
+  };
+}
+
+function resetZoom(key) {
+  const tile = state.tilesByKey.get(key);
+  if (!tile) return;
+  state.zoomByKey.delete(key);
+  _applyZoom(tile, key);
+}
+
+function _applyZoom(tile, key) {
+  const content = tile.querySelector('.tile-content');
+  if (!content) return;
+  const z = state.zoomByKey.get(key);
+  if (!z || z.scale <= 1) {
+    content.style.transform = '';
+    tile.classList.remove('zoomed');
+    return;
+  }
+  content.style.transform = `translate(${z.x}px, ${z.y}px) scale(${z.scale})`;
+  tile.classList.add('zoomed');
+}
+
+// Drag-to-pan on a zoomed screen-share tile. Handlers live on the
+// .tile-content (which also carries the transform) so the math works
+// in screen space without any compensation. The draw canvas inside
+// has pointer-events:none unless annotation mode is active, so pan
+// gestures pass cleanly through to this element. Pan is a no-op
+// while scale === 1 or annotation is open.
+function attachPanHandlers(tile, key) {
+  const content = tile.querySelector('.tile-content');
+  if (!content) return;
+  let dragging = null; // { startX, startY, baseX, baseY }
+  content.addEventListener('pointerdown', (e) => {
+    if (state.activeAnnotation === tile.dataset.streamId) return;
+    const z = state.zoomByKey.get(key);
+    if (!z || z.scale <= 1) return;
+    // Action buttons live outside .tile-content so they don't reach
+    // here, but guard defensively in case future overlays land inside.
+    if (e.target.closest('.tile-actions')) return;
+    dragging = { startX: e.clientX, startY: e.clientY, baseX: z.x, baseY: z.y };
+    try { content.setPointerCapture(e.pointerId); } catch {}
+    tile.classList.add('panning');
+    e.preventDefault();
+  });
+  content.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const z = state.zoomByKey.get(key);
+    if (!z) { dragging = null; return; }
+    const proposed = {
+      scale: z.scale,
+      x: dragging.baseX + (e.clientX - dragging.startX),
+      y: dragging.baseY + (e.clientY - dragging.startY),
+    };
+    const pan = _clampPan(tile, proposed);
+    state.zoomByKey.set(key, { scale: proposed.scale, ...pan });
+    _applyZoom(tile, key);
+  });
+  const endPan = (e) => {
+    if (!dragging) return;
+    dragging = null;
+    tile.classList.remove('panning');
+    if (e && e.pointerId !== undefined) {
+      try { content.releasePointerCapture(e.pointerId); } catch {}
+    }
+  };
+  content.addEventListener('pointerup', endPan);
+  content.addEventListener('pointercancel', endPan);
 }
 
 // ---------------------------------------------------------------------------
@@ -3435,6 +3600,7 @@ function resetCallEphemera() {
   for (const tile of state.tilesByKey.values()) tile.remove();
   state.tilesByKey.clear();
   state.drawLayers.clear();
+  state.zoomByKey.clear();
   for (const p of state.pendingStreams.values()) clearTimeout(p.timer);
   state.pendingStreams.clear();
   closeAnnotate();
@@ -3636,6 +3802,14 @@ function renderRemoteScreen(stream, screen) {
   tile.dataset.streamId = shareId;
   tile.querySelector('video').srcObject = stream;
   attachDrawingLayer(tile, shareId, /*owner*/ false);
+  // Auto-spotlight a new remote screen share so viewers' attention
+  // lands on what's being shown. Skip when something is already
+  // spotlighted (a second simultaneous share shouldn't hijack the
+  // user's current focus — they can switch manually). Local share
+  // tiles (addLocalScreenTile) deliberately stay in the grid; the
+  // sharer doesn't need their own attention redirected to their
+  // own screen.
+  if (!state.spotlightKey) toggleSpotlight(key);
 }
 
 function onScreenAnnounce(detail) {

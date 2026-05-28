@@ -960,6 +960,46 @@ button.ctrl.muted.icon-only::after {
 .tile-action-spotlight svg { width: 14px; height: 14px; }
 .tile.spotlighted .tile-action-spotlight { background: rgba(255, 255, 255, 0.18); }
 
+/* Screen-tile inner wrapper holding the <video> and the drawing canvas.
+   A CSS transform on this element (set by _applyZoom in app.js) scales
+   and translates video + canvas together while the label and
+   tile-actions stay at constant size on the outer .tile. */
+.tile .tile-content {
+  position: absolute; inset: 0;
+  transform-origin: 0 0;
+  transition: transform 150ms ease;
+}
+.tile.zoomed .tile-content { cursor: grab; }
+.tile.panning .tile-content { cursor: grabbing; transition: none; }
+
+/* Zoom controls: hidden until the tile is spotlighted (a scaled tile
+   would overflow the grid otherwise — auto-spotlight on remote share
+   gets us there by default). Sized compactly relative to the labelled
+   buttons next to them. */
+.tile-action-zoom-out,
+.tile-action-zoom-in,
+.tile-action-zoom-fit {
+  display: none;
+  align-items: center; justify-content: center;
+  min-width: 28px;
+  font-size: 14px; font-weight: 600;
+  line-height: 1;
+}
+.tile.spotlighted .tile-action-zoom-out,
+.tile.spotlighted .tile-action-zoom-in,
+.tile.spotlighted .tile-action-zoom-fit {
+  display: inline-flex;
+}
+.tile.spotlighted:not(.zoomed) .tile-action-zoom-fit { opacity: 0.45; }
+
+/* Accessible-name-only span for buttons whose visible label is just a
+   symbol. Standard "visually hidden" pattern. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
 /* Spotlight layout: pin one tile to a wide left column, stack the rest in
    a side rail on the right. The spotlighted tile spans every implicit row
    so it fills the available height regardless of how many rail tiles
