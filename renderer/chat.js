@@ -611,7 +611,20 @@ class ChatView {
       });
       root.appendChild(row);
     }
+    root.appendChild(this._buildSuggestHint());
     root.classList.remove('hidden');
+  }
+
+  // Footer row reminding users of the keyboard affordances. aria-hidden
+  // so screen readers — which already announce the listbox items via
+  // role="option" — don't read it as another choice.
+  _buildSuggestHint() {
+    const hint = document.createElement('div');
+    hint.className = 'slash-suggest-hint';
+    hint.setAttribute('role', 'presentation');
+    hint.setAttribute('aria-hidden', 'true');
+    hint.innerHTML = '<kbd>↑↓</kbd> navigate <span class="sep">·</span> <kbd>Tab</kbd>/<kbd>Enter</kbd> insert <span class="sep">·</span> <kbd>Esc</kbd> dismiss';
+    return hint;
   }
 
   _hideSlashSuggest() {
@@ -824,6 +837,7 @@ class ChatView {
       row.addEventListener('mousedown', (e) => { e.preventDefault(); this._fillMentionSuggest(i); });
       root.appendChild(row);
     }
+    root.appendChild(this._buildSuggestHint());
     root.classList.remove('hidden');
   }
 
