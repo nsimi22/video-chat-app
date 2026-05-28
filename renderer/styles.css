@@ -2613,6 +2613,16 @@ body.popout-call .popout-stage > .draw-toolbar {
    ============================================================ */
 .huddle-rail-v2 { display: none; }
 
+/* Re-declare the grid column tracks under v2 so the third child of
+   .app (the .stage main area) doesn't get auto-flowed into a new
+   row below the rail + sidebar. Legacy stays 2-column. */
+[data-ui="v2"] .app {
+  grid-template-columns: var(--rail-w, 68px) var(--panel-w, 256px) 1fr;
+}
+[data-ui="v2"] .app[data-sidebar-collapsed="true"] {
+  grid-template-columns: var(--rail-w, 68px) 0 1fr;
+}
+
 [data-ui="v2"] .huddle-rail-v2 {
   width: var(--rail-w, 68px);
   flex-shrink: 0;
@@ -2903,5 +2913,182 @@ body.popout-call .popout-stage > .draw-toolbar {
   border-color: var(--accent);
 }
 [data-ui="v2"] #auth-otp { display: none; }
+
+/* ============================================================
+   v2 contextual panel — channel / DM / quick-link row chrome.
+   Overrides the legacy sidebar styling to match the design's
+   warm-charcoal panel under [data-ui="v2"]. Legacy chrome stays
+   intact when the flag is off; same DOM structure / IDs so
+   app.js's renderChannels + unread + active-row code is unchanged.
+   ============================================================ */
+
+/* Section headers: uppercase, wider letterspace, faint color. */
+[data-ui="v2"] .section-header {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--tx-faint);
+  padding: 14px 10px 4px;
+  font-family: var(--font);
+}
+[data-ui="v2"] .section-header-row button.ghost {
+  color: var(--tx-faint);
+  border-radius: var(--r-sm);
+}
+[data-ui="v2"] .section-header-row button.ghost:hover {
+  background: var(--bg-2);
+  color: var(--tx-hi);
+}
+
+/* Channel + DM + people lists. */
+[data-ui="v2"] .channel-list,
+[data-ui="v2"] .people-list {
+  padding: 2px 10px;
+}
+[data-ui="v2"] .channel-list li,
+[data-ui="v2"] .people-list li {
+  padding: 0 10px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--tx-mid);
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  margin-bottom: 1px;
+  gap: 9px;
+  background: transparent;
+  box-shadow: none;
+}
+[data-ui="v2"] .channel-list li:hover,
+[data-ui="v2"] .people-list li:hover {
+  background: var(--bg-2);
+  color: var(--tx-hi);
+  box-shadow: none;
+}
+[data-ui="v2"] .channel-list li.active,
+[data-ui="v2"] .channel-list li.active:hover {
+  background: var(--accent-dim);
+  color: var(--tx-hi);
+  box-shadow: none;
+}
+[data-ui="v2"] .channel-list li.muted { color: var(--tx-faint); }
+[data-ui="v2"] .channel-list li .ch-icon {
+  color: var(--tx-faint);
+  margin-right: 0;
+}
+[data-ui="v2"] .channel-list li .ch-icon svg {
+  width: 16px;
+  height: 16px;
+}
+[data-ui="v2"] .channel-list li.active .ch-icon {
+  color: var(--accent-tx);
+}
+[data-ui="v2"] .channel-list li .ch-name {
+  font-size: 13.5px;
+  font-weight: 500;
+  font-family: var(--font);
+}
+[data-ui="v2"] .channel-list li.active .ch-name {
+  font-weight: 600;
+  color: var(--tx-hi);
+}
+
+/* Unread badge: mono tabular, accent pill on active rows, danger
+   red on loud (legacy default uses var(--bad)), muted gray when
+   the row is muted. */
+[data-ui="v2"] .channel-list li .ch-badge {
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 6px;
+  min-width: 19px;
+  height: 19px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  letter-spacing: 0;
+  background: var(--danger);
+  color: #fff;
+  box-shadow: none;
+}
+[data-ui="v2"] .channel-list li .ch-badge.muted {
+  background: var(--bg-3);
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .channel-list li.active .ch-badge {
+  background: var(--accent);
+  color: var(--bg-0);
+}
+
+/* People-list status dots inherit the design's status colors via the
+   existing .dot rules, which already key off var(--good) etc. The
+   list-row chrome above is enough; no per-item tweaks needed. */
+
+/* Workspace + me-row chrome under v2: drop the warm-gradient header
+   for a flat layered look; bump font weight on the name. */
+[data-ui="v2"] .workspace {
+  background: transparent;
+  border-bottom: 1px solid var(--line-soft);
+  padding: 14px 14px 12px;
+}
+[data-ui="v2"] .workspace-name {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 16px;
+  letter-spacing: -0.02em;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .me-row .me {
+  color: var(--tx-lo);
+  font-family: var(--font);
+}
+[data-ui="v2"] .me-row .ghost { color: var(--tx-lo); }
+[data-ui="v2"] .me-row .ghost:hover {
+  background: var(--bg-2);
+  color: var(--tx-hi);
+}
+
+/* Sidebar quick-link rows (Saved, Calendar). Match channel-row
+   chrome so the panel reads as one unified list. */
+[data-ui="v2"] .sidebar-quick-link {
+  height: 32px;
+  padding: 0 10px;
+  gap: 9px;
+  border-radius: 8px;
+  color: var(--tx-mid);
+  font-size: 13.5px;
+  background: transparent;
+  margin: 0 10px;
+  border: 0;
+  font-family: var(--font);
+}
+[data-ui="v2"] .sidebar-quick-link:hover {
+  background: var(--bg-2);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .sidebar-quick-link span:first-of-type {
+  font-weight: 500;
+}
+[data-ui="v2"] .sidebar-quick-link svg {
+  color: var(--tx-faint);
+  width: 16px;
+  height: 16px;
+}
+[data-ui="v2"] .sidebar-quick-link .count {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--tx-lo);
+  color: var(--bg-0);
+  padding: 0 6px;
+  min-width: 19px;
+  height: 19px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 
 
