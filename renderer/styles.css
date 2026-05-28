@@ -241,7 +241,11 @@ input:focus, textarea:focus {
    inherit the row's text color and stay sharp at any zoom. The SVG
    shapes are identical to HuddleIcons.bellOff / HuddleIcons.bell so
    the sidebar matches the channel-header button. */
-.channel-list li.muted { opacity: 0.6; }
+/* Muted channels: color (not opacity) so contrast stays above WCAG AA
+   on dark surfaces. The bell-off glyph on the same row carries the
+   redundant non-color cue. Active/hover row colors still win via
+   higher specificity, so this only affects idle rows. */
+.channel-list li.muted { color: var(--text-dim); }
 .channel-list li.muted .ch-name::after,
 .channel-list li.notify-all .ch-name::after {
   content: '';
@@ -2038,6 +2042,28 @@ body.has-fullscreen-tile { overflow: hidden; }
   font-size: 12px;
 }
 .slash-suggest-item.selected .mention-subtitle { color: rgba(255,255,255,.75); }
+/* Keyboard-affordance footer in slash + mention popups. aria-hidden in
+   markup so screen readers skip it. Tiny inline-kbd styling on each
+   keycap-shaped <span>. */
+.slash-suggest-hint {
+  display: flex; align-items: center; justify-content: center;
+  gap: 4px; flex-wrap: wrap;
+  padding: 6px 8px;
+  margin-top: 2px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--text-dim);
+  user-select: none;
+}
+.slash-suggest-hint kbd {
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  background: rgba(255,255,255,.08);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  color: var(--text);
+}
+.slash-suggest-hint .sep { opacity: 0.5; }
 .composer textarea {
   flex: 1; resize: none;
   min-height: 38px; max-height: 160px;

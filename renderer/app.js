@@ -327,6 +327,46 @@ window.addEventListener('blur', () => { windowFocused = false; });
 
 const STREAM_DECISION_MS = 1500;
 
+// Modal focus restoration. Watches every .modal-backdrop for the
+// .hidden class flipping off (open) -> on (close); stashes the
+// previously-focused element on open and refocuses it on close.
+// Stack-based so nested modals (rare but possible) unwind cleanly.
+// Observes once at boot — modals are static in index.html so no need
+// to re-observe added nodes. Skipped entirely inside popout windows
+// (those have no modals and bail before this runs).
+const _modalFocusStack = new WeakMap(); // modalEl -> previously-focused element
+function setupModalFocusRestore() {
+  const modals = document.querySelectorAll('.modal-backdrop');
+  if (!modals.length) return;
+  const observer = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      if (m.attributeName !== 'class') return;
+      const el = m.target;
+      const wasHidden = (m.oldValue || '').split(/\s+/).includes('hidden');
+      const isHidden = el.classList.contains('hidden');
+      if (wasHidden && !isHidden) {
+        // Modal just opened — remember what had focus right before.
+        // document.activeElement is the trigger button in the typical
+        // path (user clicked something to open the modal); if it's
+        // <body> the user used a shortcut, in which case there's
+        // nothing useful to restore to and we skip the stash.
+        const prev = document.activeElement;
+        if (prev && prev !== document.body) _modalFocusStack.set(el, prev);
+      } else if (!wasHidden && isHidden) {
+        // Modal just closed — restore.
+        const target = _modalFocusStack.get(el);
+        _modalFocusStack.delete(el);
+        if (target && document.body.contains(target) && typeof target.focus === 'function') {
+          try { target.focus(); } catch {}
+        }
+      }
+    }
+  });
+  for (const modal of modals) {
+    observer.observe(modal, { attributes: true, attributeOldValue: true, attributeFilter: ['class'] });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Boot — auth state machine: email -> OTP -> profile -> team picker -> joined
 // ---------------------------------------------------------------------------
@@ -347,6 +387,13 @@ const STREAM_DECISION_MS = 1500;
     });
     return;
   }
+
+  // Restore focus to whatever was focused before a modal/picker opened
+  // when it closes. Covers every .modal-backdrop centrally so each
+  // open/close callsite doesn't have to remember. Without this, opening
+  // the source picker, settings, search, etc. and closing it strands
+  // focus on <body> and users have to click back into the composer.
+  setupModalFocusRestore();
 
   // Main-window-only: listen for popout-closed events so the call
   // header re-renders when a popped-out call ends (popout window
@@ -4006,7 +4053,13 @@ function addLocalScreenTile(stream, label) {
   // screens publish under the main client's peerId; remote screens stamp
   // userId in renderRemoteScreen via the makeTile call. Either way the
   // dataset attribute is the single source of truth at click time.
-  if (state.huddle?.peerId) tile.dataset.userId = state.huddle.peerId;
+  // `dataset.fromId` is what removePersonFromCall walks when a peer
+  // disconnects mid-share — without it, screen tiles can ghost when LK's
+  // per-track unsubscribe loses the race to ParticipantDisconnected.
+  if (state.huddle?.peerId) {
+    tile.dataset.userId = state.huddle.peerId;
+    tile.dataset.fromId = state.huddle.peerId;
+  }
   tile.querySelector('video').srcObject = stream;
   attachDrawingLayer(tile, shareId, /*owner*/ true);
   const stopBtn = document.createElement('button');
@@ -4065,7 +4118,11 @@ function renderRemoteScreen(stream, screen) {
   // Same as addLocalScreenTile: the popout button reads the publisher
   // identity off the dataset. makeTile only uses `userId` for the
   // profile-card trigger, so stamp the attribute explicitly here.
-  if (screen.from) tile.dataset.userId = screen.from;
+  // dataset.fromId is what removePersonFromCall walks for cleanup.
+  if (screen.from) {
+    tile.dataset.userId = screen.from;
+    tile.dataset.fromId = screen.from;
+  }
   tile.querySelector('video').srcObject = stream;
   attachDrawingLayer(tile, shareId, /*owner*/ false);
   // Auto-spotlight a new remote screen share so viewers' attention
