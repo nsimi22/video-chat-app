@@ -3,9 +3,27 @@
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: mediastream: https:; connect-src 'self' wss: https:;" />
+          content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' blob: mediastream: https:; connect-src 'self' wss: https:;" />
     <title>Huddle</title>
+    <!-- v2 UI: opt-in fonts. Loaded under all builds; only applied when
+         [data-ui="v2"] is set on <html> (via ?ui=v2 query param or, in
+         Phase 6, the default). Legacy UI continues to use the system
+         font stack. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="styles.css" />
+    <!-- v2 toggle: ?ui=v2 enables [data-ui="v2"] for visual sanity-checks
+         until the default flips in Phase 6. Off by default. -->
+    <script>
+      (function () {
+        try {
+          if (new URLSearchParams(location.search).get('ui') === 'v2') {
+            document.documentElement.setAttribute('data-ui', 'v2');
+          }
+        } catch (_) { /* file:// or no search — leave default */ }
+      })();
+    </script>
   </head>
   <body>
     <!-- Login / sign-up flow (email -> OTP -> profile -> team picker) -->

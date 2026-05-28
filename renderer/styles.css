@@ -1578,14 +1578,17 @@ body.has-fullscreen-tile { overflow: hidden; }
 }
 
 .tile.muted::before {
-  content: "🔇";
+  /* SVG micOff icon inside a frosted pill. Replaces the prior 🔇
+     emoji (no emoji as UI icon, per the Huddle design system). */
+  content: "";
   position: absolute; top: 10px; left: 10px;
-  background: rgba(0, 0, 0, 0.55);
+  width: 24px; height: 24px;
+  background:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M9 5a3 3 0 0 1 6 0v4M15 11.5a3 3 0 0 1-4.6 1.4'/><path d='M5.5 11a6.5 6.5 0 0 0 10.8 4.9'/><line x1='12' y1='17.5' x2='12' y2='21'/><line x1='8.5' y1='21' x2='15.5' y2='21'/><line x1='2' y1='2' x2='22' y2='22'/></svg>") center / 14px no-repeat,
+    rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  padding: 4px 8px;
   border-radius: var(--r-sm);
-  font-size: 12px;
   z-index: 20;
 }
 
@@ -2472,3 +2475,131 @@ body.popout-call .popout-stage > .draw-toolbar {
   color: var(--text);
   box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.06);
 }
+
+/* ============================================================
+   v2 UI: warm-charcoal layered dark theme
+   ------------------------------------------------------------
+   Tokens, fonts, and entrance animations from the Claude Design
+   bundle (huddle-logo, 2026-05-28). Scoped under [data-ui="v2"]
+   so legacy chrome is untouched until the default flips in
+   Phase 6 of docs/plans/ui-overhaul-v2_2026-05-28.md.
+
+   Densities and accent hue are var-overridable at runtime
+   (Phase 5: Settings → Appearance writes these on :root).
+
+   Animation keyframes are transform-only at the entrance state —
+   prevents content from being frozen invisible in throttled
+   render contexts (issue logged in chats/chat2.md of the bundle).
+   ============================================================ */
+[data-ui="v2"] {
+  /* warm-charcoal layered dark palette (hue ~70, very low chroma) */
+  --bg-0: oklch(0.165 0.004 70);
+  --bg-1: oklch(0.205 0.005 70);
+  --bg-2: oklch(0.235 0.006 70);
+  --bg-3: oklch(0.275 0.007 70);
+  --bg-hover: oklch(0.265 0.006 70 / 0.6);
+  --line: oklch(0.32 0.006 70);
+  --line-soft: oklch(0.28 0.006 70 / 0.6);
+
+  --tx-hi: oklch(0.955 0.004 70);
+  --tx-mid: oklch(0.74 0.007 70);
+  --tx-lo: oklch(0.57 0.007 70);
+  --tx-faint: oklch(0.46 0.006 70);
+
+  /* indigo accent (default; overridable via --accent-h) */
+  --accent-h: 250;
+  --accent: oklch(0.70 0.145 var(--accent-h));
+  --accent-hi: oklch(0.76 0.14 var(--accent-h));
+  --accent-dim: oklch(0.70 0.145 var(--accent-h) / 0.16);
+  --accent-tx: oklch(0.82 0.11 var(--accent-h));
+
+  /* cool teal counterpoint for live / call states */
+  --live: oklch(0.74 0.10 195);
+  --live-dim: oklch(0.74 0.10 195 / 0.16);
+  --online: oklch(0.78 0.15 150);
+  --away: oklch(0.80 0.13 80);
+  --busy: oklch(0.66 0.18 25);
+  --danger: oklch(0.62 0.20 25);
+
+  /* density (overridable; defaults = comfortable) */
+  --row-py: 13px;
+  --msg-gap: 18px;
+  --ui: 14.5px;
+
+  --r-sm: 7px;
+  --r-md: 11px;
+  --r-lg: 16px;
+  --r-xl: 22px;
+
+  --rail-w: 68px;
+  --panel-w: 256px;
+
+  --font: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --sh-pop: 0 18px 48px -16px rgba(0, 0, 0, 0.6),
+            0 4px 12px -4px rgba(0, 0, 0, 0.4);
+  --sh-card: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+[data-ui="v2"][data-density="compact"] {
+  --row-py: 7px;
+  --msg-gap: 12px;
+  --ui: 13.5px;
+}
+
+/* Apply font + body backdrop only when v2 is on, so legacy UI stays
+   on the system font stack until Phase 6. */
+[data-ui="v2"] body {
+  background: #08080a;
+  font-family: var(--font);
+  color: var(--tx-hi);
+  font-feature-settings: normal;
+  letter-spacing: -0.005em;
+}
+[data-ui="v2"] .mono {
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+}
+[data-ui="v2"] ::selection {
+  background: var(--accent-dim);
+}
+
+/* Scrollbars — soft, neutral, warm-charcoal track. */
+[data-ui="v2"] *::-webkit-scrollbar { width: 10px; height: 10px; }
+[data-ui="v2"] *::-webkit-scrollbar-thumb {
+  background: oklch(0.4 0.006 70 / 0.5);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+[data-ui="v2"] *::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.5 0.006 70 / 0.6);
+  background-clip: padding-box;
+}
+[data-ui="v2"] *::-webkit-scrollbar-track { background: transparent; }
+
+/* Keyframes — entrance animations animate transform only, so a
+   frozen-at-t=0 state in throttled contexts (preview iframes,
+   backgrounded windows) still renders the content. */
+@keyframes huddle-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes huddle-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+@keyframes huddle-fade-up {
+  from { transform: translateY(9px); }
+  to   { transform: none; }
+}
+@keyframes huddle-pop {
+  from { transform: scale(0.975); }
+  to   { transform: scale(1); }
+}
+@keyframes huddle-live-ring {
+  0%   { box-shadow: 0 0 0 0   var(--live-dim); }
+  70%  { box-shadow: 0 0 0 8px transparent; }
+  100% { box-shadow: 0 0 0 0   transparent; }
+}
+
