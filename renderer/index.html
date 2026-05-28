@@ -22,6 +22,33 @@
   <body>
     <!-- Login / sign-up flow (email -> OTP -> profile -> team picker) -->
     <div id="login" class="modal-backdrop login-backdrop">
+      <!-- v2 sign-in brand panel: renders only when [data-ui="v2"] is
+           set. The huddle-signin-brand-v2 element sits to the LEFT of
+           the form column (.login-modal). In legacy mode it's hidden
+           via CSS and the modal stays centered as before. Feature-pill
+           SVGs are painted by ui-v2-shell.js from HuddleIcons. -->
+      <div class="huddle-signin-brand-v2" aria-hidden="true">
+        <div class="huddle-signin-brand-top">
+          <svg width="34" height="34" viewBox="0 0 200 200">
+            <circle cx="100" cy="124" r="15" fill="var(--accent)"/>
+            <g fill="none" stroke="var(--tx-hi)" stroke-width="16" stroke-linecap="round">
+              <path d="M 52 124 A 48 48 0 0 1 148 124"/>
+              <path d="M 30 124 A 70 70 0 0 1 92 54"/>
+              <path d="M 108 54 A 70 70 0 0 1 170 124"/>
+            </g>
+          </svg>
+          <span class="huddle-signin-brand-word">Huddle</span>
+        </div>
+        <div class="huddle-signin-brand-mid">
+          <h1 class="huddle-signin-brand-h1">Chat, call, and draw — without leaving the conversation.</h1>
+          <p class="huddle-signin-brand-p">Every channel becomes a call with one click. Share screens, annotate live, and let AI catch you up.</p>
+        </div>
+        <div class="huddle-signin-brand-pills">
+          <span class="huddle-signin-pill" data-icon="video">WebRTC calls</span>
+          <span class="huddle-signin-pill" data-icon="board">Live whiteboard</span>
+          <span class="huddle-signin-pill" data-icon="sparkles">AI built in</span>
+        </div>
+      </div>
       <div class="modal login-modal">
         <div class="login-hero">
           <!-- Canonical huddle mark: brand-blue dot + three concentric
@@ -81,6 +108,22 @@
           <p class="hint">Check your email — the message has a verification code near the top.
             Type it below. (Don't click the magic link; it can't redirect into the desktop app.)</p>
           <label>Code</label>
+          <!-- v2 8-digit split OTP row. Rendered only when [data-ui="v2"].
+               Each digit input mirrors its value into the legacy
+               #auth-otp input (hidden under v2) and the existing
+               #auth-verify click pathway fires when all 8 are entered.
+               Wiring is in ui-v2-shell.js. Length matches the project's
+               Supabase OTP config (legacy #auth-otp accepts up to 10). -->
+          <div class="huddle-otp-digits-v2" aria-label="8-digit verification code">
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" autocomplete="one-time-code" aria-label="Digit 1" />
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" aria-label="Digit 2" />
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" aria-label="Digit 3" />
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" aria-label="Digit 4" />
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" aria-label="Digit 5" />
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" aria-label="Digit 6" />
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" aria-label="Digit 7" />
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" aria-label="Digit 8" />
+          </div>
           <input id="auth-otp" type="text" inputmode="numeric" autocomplete="one-time-code"
                  placeholder="••••••" maxlength="10" />
           <div class="btn-row">

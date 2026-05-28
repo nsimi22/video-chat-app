@@ -72,16 +72,105 @@
 
   function init() {
     const rail = document.querySelector('.huddle-rail-v2');
-    if (!rail) return;
-    paintIcons(rail);
-    wireClicks(rail);
-    paintMeBadge();
+    if (rail) {
+      paintIcons(rail);
+      wireClicks(rail);
+      paintMeBadge();
 
-    // Keep the rail initial in sync if app.js re-renders #me later.
-    const me = document.getElementById('me');
-    if (me && 'MutationObserver' in window) {
-      const obs = new MutationObserver(paintMeBadge);
-      obs.observe(me, { childList: true, characterData: true, subtree: true });
+      // Keep the rail initial in sync if app.js re-renders #me later.
+      const me = document.getElementById('me');
+      if (me && 'MutationObserver' in window) {
+        const obs = new MutationObserver(paintMeBadge);
+        obs.observe(me, { childList: true, characterData: true, subtree: true });
+      }
+    }
+
+    // v2 sign-in (brand pills + split OTP). Safe to call regardless
+    // of whether the v2 sign-in DOM is currently visible.
+    paintSigninBrandPills();
+    wireSplitOtp();
+  }
+
+  function paintSigninBrandPills() {
+    document.querySelectorAll('.huddle-signin-pill[data-icon]').forEach((pill) => {
+      if (pill.querySelector('svg')) return; // already painted
+      const iconName = pill.dataset.icon;
+      const svg = iconName && window.HuddleIcons && window.HuddleIcons[iconName];
+      if (svg) pill.insertAdjacentHTML('afterbegin', svg);
+    });
+  }
+
+  // Split OTP — mirror to the legacy #auth-otp input on each
+  // keystroke and auto-click #auth-verify when the full code is in.
+  // Length is taken from the live DOM so the count can be tuned in
+  // index.html without touching this file. The existing app.js
+  // verifyOtp flow handles the rest unchanged.
+  function wireSplitOtp() {
+    const wrap = document.querySelector('.huddle-otp-digits-v2');
+    if (!wrap) return;
+    const inputs = Array.from(wrap.querySelectorAll('.huddle-otp-digit-v2'));
+    const legacy = document.getElementById('auth-otp');
+    const verifyBtn = document.getElementById('auth-verify');
+    if (!legacy || !inputs.length) return;
+    const N = inputs.length;
+
+    function syncLegacy() {
+      const concat = inputs.map((i) => i.value).join('');
+      legacy.value = concat;
+      legacy.dispatchEvent(new Event('input', { bubbles: true }));
+      inputs.forEach((i) => i.classList.toggle('is-filled', !!i.value));
+      if (concat.length === N && verifyBtn) {
+        // Small delay so the last digit's render is visible before submit.
+        setTimeout(() => verifyBtn.click(), 120);
+      }
+    }
+
+    inputs.forEach((inp, i) => {
+      inp.addEventListener('input', (e) => {
+        const v = (e.target.value || '').replace(/\D/g, '').slice(-1);
+        e.target.value = v;
+        if (v && i < N - 1) inputs[i + 1].focus();
+        syncLegacy();
+      });
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Backspace' && !inp.value && i > 0) {
+          inputs[i - 1].focus();
+        } else if (e.key === 'ArrowLeft' && i > 0) {
+          inputs[i - 1].focus();
+        } else if (e.key === 'ArrowRight' && i < N - 1) {
+          inputs[i + 1].focus();
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          if (verifyBtn) verifyBtn.click();
+        }
+      });
+      inp.addEventListener('paste', (e) => {
+        e.preventDefault();
+        const text = ((e.clipboardData && e.clipboardData.getData('text')) || '')
+          .replace(/\D/g, '')
+          .slice(0, N);
+        inputs.forEach((target, j) => {
+          target.value = text[j] || '';
+        });
+        syncLegacy();
+        if (text.length < N) inputs[Math.min(text.length, N - 1)].focus();
+      });
+    });
+
+    // Reset digits when the OTP step becomes visible again.
+    const otpStep = document.getElementById('auth-otp-step');
+    if (otpStep && 'MutationObserver' in window) {
+      const obs = new MutationObserver(() => {
+        if (!otpStep.classList.contains('hidden')) {
+          inputs.forEach((inp) => {
+            inp.value = '';
+            inp.classList.remove('is-filled');
+          });
+          legacy.value = '';
+          setTimeout(() => inputs[0] && inputs[0].focus(), 30);
+        }
+      });
+      obs.observe(otpStep, { attributes: true, attributeFilter: ['class'] });
     }
   }
 
