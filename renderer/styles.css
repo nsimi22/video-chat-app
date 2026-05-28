@@ -954,13 +954,26 @@ button.ctrl.muted.icon-only::after {
 .tile-actions button:hover { background: rgba(0, 0, 0, 0.75); }
 .tile-action-annotate,
 .tile-action-spotlight,
-.tile-action-fullscreen {
+.tile-action-fullscreen,
+.tile-action-popout {
   display: inline-flex; align-items: center; gap: 6px;
 }
 .tile-action-annotate svg,
 .tile-action-spotlight svg,
-.tile-action-fullscreen svg { width: 14px; height: 14px; }
+.tile-action-fullscreen svg,
+.tile-action-popout svg { width: 14px; height: 14px; }
 .tile.fullscreen-mode .tile-action-fullscreen { background: rgba(255, 255, 255, 0.18); }
+.tile-action-popout.active { background: rgba(255, 255, 255, 0.18); }
+/* Hide Pop out inside popout windows — it would either no-op (no
+   active call channel id) or recurse. The main-window tile keeps it. */
+body.popout .tile-action-popout { display: none; }
+/* Annotate in a screen popout would toggle the main-window's draw
+   toolbar (which is hidden by body.popout) — clicking it appears to
+   do nothing. The call popout reparents the toolbar into its own
+   stage; we don't do that for the screen popout, so hide the button
+   instead. Users can annotate from the source tile in the main
+   window. */
+body.popout-screen .tile-action-annotate { display: none; }
 /* Annotate is now icon-only (label hidden via .sr-only) — give the pen
    a hair more presence and let the active state carry the affordance
    so the user can tell at a glance whether they're drawing. */
@@ -2346,6 +2359,41 @@ body.popout .popout-stage { display: block; }
 body.popout-call .popout-stage > .draw-toolbar {
   position: fixed; left: 50%; bottom: 76px; transform: translateX(-50%);
   margin: 0; z-index: 30;
+}
+
+/* Popout screen-share window: one tile fills the viewport. The
+   spotlight grid CSS from .tiles.has-spotlight would normally pin the
+   tile to a left column with a 260px rail — but in a popout window the
+   tile IS the entire surface, so override to a single full-bleed cell. */
+.popout-screen {
+  width: 100vw; height: 100vh;
+  display: flex; align-items: stretch; justify-content: stretch;
+  padding: 12px;
+  background: #0b0d10;
+}
+.popout-screen .popout-tiles {
+  flex: 1; min-height: 0; min-width: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+  gap: 0;
+  max-height: none;
+}
+.popout-screen .popout-tiles.has-spotlight {
+  /* Cancel the rail layout — the rail would be empty in a popout. */
+  grid-template-columns: 1fr;
+  max-height: none;
+  grid-auto-rows: 1fr;
+}
+.popout-screen .popout-tiles.has-spotlight .tile,
+.popout-screen .popout-tiles.has-spotlight .tile.spotlighted {
+  grid-column: 1; grid-row: 1;
+  min-height: 0; max-height: none;
+}
+.popout-screen-placeholder {
+  margin: auto;
+  color: var(--text-dim, #aab);
+  font: 13px system-ui;
 }
 /* Attachment chip: paperclip SVG + filename. Keep them inline-aligned. */
 .attachment-chip { display: inline-flex; align-items: center; gap: 6px; }

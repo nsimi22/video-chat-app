@@ -297,6 +297,11 @@ const state = {
   // rejoin in the main window and become a duplicate participant.
   // Cleared when the corresponding popout-closed event arrives.
   poppedOutCalls: new Set(),
+  // Share ids whose screen-share tile is currently popped out into its
+  // own BrowserWindow (subscribe-only LK identity). Used to render the
+  // source tile's Pop out button as "active" while the popout exists,
+  // and cleared on the popout-closed event so the affordance returns.
+  poppedOutScreens: new Set(),
   // Live captions / post-call summary. cc.manager wraps Web Speech;
   // cc.lines is the rolling buffer of every final segment we've
   // captured locally OR received from another peer for the current
@@ -351,9 +356,22 @@ const STREAM_DECISION_MS = 1500;
   window.huddle.onPopoutEvent?.((msg) => {
     if (msg?.event !== 'popout-closed') return;
     const target = String(msg.target || '');
-    if (!target.startsWith('call:')) return;
-    const channelId = target.slice('call:'.length);
-    if (state.poppedOutCalls.delete(channelId)) renderCallHeader();
+    if (target.startsWith('call:')) {
+      const channelId = target.slice('call:'.length);
+      if (state.poppedOutCalls.delete(channelId)) renderCallHeader();
+      return;
+    }
+    if (target.startsWith('screen:')) {
+      // Format: screen:<participantId>:<shareId>. participantId is a
+      // UUID (no colons), shareId is an LK trackSid (no colons) — so
+      // split on the last colon is safe and shareId reads cleanly.
+      const lastColon = target.lastIndexOf(':');
+      const shareId = lastColon > 'screen:'.length ? target.slice(lastColon + 1) : '';
+      if (shareId && state.poppedOutScreens.delete(shareId)) {
+        const tile = state.tilesByKey.get(`screen:${shareId}`);
+        if (tile) syncPopoutButtonState(tile, shareId);
+      }
+    }
   });
 
   // huddle:// protocol URLs. The OS hands us deep links when the
@@ -748,6 +766,11 @@ async function bootPopout(cfg) {
     await bootCallPopout(cfg);
     return;
   }
+  if (cfg.kind === 'screen') {
+    document.body.classList.add('popout-screen');
+    await bootScreenPopout(cfg);
+    return;
+  }
   document.body.innerHTML =
     `<div style="padding:32px;color:#fff;font:14px system-ui">`
     + `Unknown popout target: ${cfg.target}`
@@ -1086,6 +1109,170 @@ async function startPopoutCall(channelId) {
   } catch (err) {
     showCallError('Could not access camera/microphone: ' + (err?.message || err));
   }
+}
+
+// Boot the popout window into screen-share mode. Subscribes to the
+// same LiveKit room under a `::popout::` suffix identity (mint via the
+// livekit-token edge function with purpose=screen-popout) and attaches
+// only the targeted publisher's ScreenShare track. The main window
+// keeps its copy of the tile; this is purely an additional viewer.
+// Closes the window when the source track ends or the publisher leaves.
+async function bootScreenPopout(cfg) {
+  // cfg.id is `<participantId>:<shareId>` (parsePopoutQuery strips the
+  // leading `screen:` kind). Both are UUID-shaped / LK-trackSid-shaped
+  // so neither carries a colon — split on the first/only one.
+  const colon = (cfg.id || '').indexOf(':');
+  const targetParticipantId = colon > 0 ? cfg.id.slice(0, colon) : '';
+  const targetShareId = colon > 0 ? cfg.id.slice(colon + 1) : '';
+  if (!cfg.teamId || !cfg.channelId || !targetParticipantId || !targetShareId) {
+    document.body.innerHTML =
+      '<div style="padding:32px;color:#fff;font:14px system-ui">'
+      + 'Popout missing context (team/channel/participant/share). Close + reopen from the main window.'
+      + '</div>';
+    return;
+  }
+  const huddle = await window.huddleApi.startHuddle({ id: cfg.teamId, name: cfg.teamId });
+  state.huddle = huddle;
+  state.myName = huddle.name;
+  document.title = cfg.title || 'Screen — Huddle';
+
+  // Single tile filling the entire popout window. The grid container
+  // exists so makeTile / spotlight helpers continue to work if the
+  // user calls them, but only one tile lives here.
+  const stage = document.getElementById('popout-stage') || document.body;
+  stage.replaceChildren();
+  const wrap = document.createElement('div');
+  wrap.className = 'popout-screen';
+  const tiles = document.createElement('section');
+  tiles.id = 'popout-screen-tiles';
+  tiles.className = 'tiles popout-tiles';
+  wrap.appendChild(tiles);
+  stage.appendChild(wrap);
+  els.tiles = tiles;
+
+  // Status placeholder while waiting for the track. Replaced with the
+  // real <video> tile once trackSubscribed fires.
+  const placeholder = document.createElement('div');
+  placeholder.className = 'popout-screen-placeholder';
+  placeholder.textContent = 'Connecting to shared screen…';
+  tiles.appendChild(placeholder);
+
+  const mesh = new window.LivekitCallClient(huddle);
+  state.mesh = mesh;
+  let attached = false;
+
+  // Attach the target track to a real screen-tile and wire zoom/pan +
+  // drawing layer so the popout reuses every interaction the main
+  // window's tile has. Drawing strokes flow in via the LK transport's
+  // _ensureScreenChannel subscription on subscribe.
+  const attachTrackToTile = (stream, fromName) => {
+    if (attached) return;
+    attached = true;
+    placeholder.remove();
+    const key = `screen:${targetShareId}`;
+    const tile = makeTile({ key, label: fromName || cfg.title || 'Shared screen', kind: 'screen', userId: targetParticipantId });
+    tile.dataset.streamId = targetShareId;
+    tile.dataset.userId = targetParticipantId;
+    tile.querySelector('video').srcObject = stream;
+    attachDrawingLayer(tile, targetShareId, /*owner*/ false);
+    // The popout starts in spotlight mode (it IS the focus) so the
+    // zoom controls are immediately visible and behave the same as on
+    // the main window's spotlighted tile.
+    toggleSpotlight(key);
+  };
+
+  mesh.addEventListener('track', (e) => {
+    const { stream, fromId } = e.detail;
+    if (fromId !== targetParticipantId) return;
+    if (shareIdFor(stream) !== targetShareId) return;
+    const meta = mesh.remoteScreenLabels.get(targetShareId);
+    attachTrackToTile(stream, meta ? `${meta.label} — ${meta.fromName}` : cfg.title);
+  });
+  mesh.addEventListener('remote-stream-ended', (e) => {
+    if (e.detail?.streamId !== targetShareId) return;
+    // Source share ended — the tile is dead. Close the popout window.
+    setTimeout(() => window.close(), 250);
+  });
+  mesh.addEventListener('peer-left', (e) => {
+    if (e.detail !== targetParticipantId) return;
+    setTimeout(() => window.close(), 250);
+  });
+  mesh.addEventListener('draw', (e) => onRemoteDraw(e.detail));
+  mesh.addEventListener('connection-failed', (e) => {
+    console.warn('screen popout connection failed', e.detail);
+    placeholder.textContent = 'Disconnected from the call. Close this window and re-open from the main window.';
+  });
+
+  try {
+    await mesh.connect(cfg.channelId, { purpose: 'screen-popout' });
+  } catch (err) {
+    console.warn('screen popout connect failed', err);
+    placeholder.textContent = 'Could not connect: ' + (err?.message || err);
+    return;
+  }
+
+  // The track may already have been published before we connected; LK
+  // re-fires trackSubscribed for those during connect(), so the 'track'
+  // listener above catches it. But if the share ended between the user
+  // clicking Pop out and this popout's connect resolving, there'll be
+  // no track. Surface a friendlier message after a short grace period.
+  setTimeout(() => {
+    if (!attached) {
+      placeholder.textContent = 'The shared screen is no longer available.';
+    }
+  }, 3000);
+}
+
+// Pop a single screen-share tile out into its own BrowserWindow so the
+// viewer can drag it to another monitor / make it larger. Unlike the
+// call popout (which MOVES the call), screen popout is *additive*: the
+// main window keeps the tile and the popout joins LK as a parallel
+// subscribe-only identity (see purpose=screen-popout in livekit.js +
+// supabase/functions/livekit-token).
+function popOutScreen(key) {
+  const tile = state.tilesByKey.get(key);
+  if (!tile) return;
+  const shareId = tile.dataset.streamId;
+  const participantId = tile.dataset.userId;
+  if (!shareId || !participantId) {
+    showToast('Cannot pop out this screen — missing publisher metadata.', { kind: 'error' });
+    return;
+  }
+  if (!state.huddle?.team?.id || !state.inCallChannelId) {
+    showToast('Pop out is only available during an active call.', { kind: 'error' });
+    return;
+  }
+  const labelEl = tile.querySelector('.tile-label');
+  const title = labelEl?.textContent?.trim() || 'Shared screen';
+  // The popout infra reuses by target — clicking Pop out a second time
+  // on the same tile just focuses the existing window. Mark the share
+  // locally so the source tile's button can render a visual hint.
+  state.poppedOutScreens.add(shareId);
+  syncPopoutButtonState(tile, shareId);
+  window.huddle.openPopout({
+    target: `screen:${participantId}:${shareId}`,
+    teamId: state.huddle.team.id,
+    channelId: state.inCallChannelId,
+    title: `${title} — Huddle`,
+  }).catch((err) => {
+    console.warn('screen popout failed', err);
+    state.poppedOutScreens.delete(shareId);
+    syncPopoutButtonState(tile, shareId);
+    showToast('Could not open popout: ' + (err?.message || err), { kind: 'error' });
+  });
+}
+
+// Render the source tile's Pop out button in the "active" state while
+// a popout window for this share is open, so the user has a visual
+// affordance that the popout exists. Called on open + on popout-closed.
+function syncPopoutButtonState(tile, shareId) {
+  const btn = tile?.querySelector?.('.tile-action-popout');
+  if (!btn) return;
+  const open = state.poppedOutScreens.has(shareId);
+  btn.classList.toggle('active', open);
+  btn.title = open
+    ? 'Popout window open — click to focus'
+    : 'Open this screen in a separate window';
 }
 
 // ---------------------------------------------------------------------------
@@ -2725,6 +2912,13 @@ function makeTile({ key, label, kind, userId }) {
       fullscreen.setAttribute('aria-label', 'Fullscreen');
       fullscreen.onclick = () => toggleFullscreen(key);
       actions.appendChild(fullscreen);
+      const popout = document.createElement('button');
+      popout.className = 'tile-action-popout';
+      popout.innerHTML = `${window.HuddleIcons.popout}<span>Pop out</span>`;
+      popout.title = 'Open this screen in a separate window';
+      popout.setAttribute('aria-label', 'Pop out screen');
+      popout.onclick = () => popOutScreen(key);
+      actions.appendChild(popout);
     }
     tile.appendChild(actions);
   }
@@ -3806,8 +4000,13 @@ function shareIdFor(stream) {
 function addLocalScreenTile(stream, label) {
   const shareId = shareIdFor(stream);
   const key = `screen:${shareId}`;
-  const tile = makeTile({ key, label: `${label} — you`, kind: 'screen' });
+  const tile = makeTile({ key, label: `${label} — you`, kind: 'screen', userId: state.huddle?.peerId });
   tile.dataset.streamId = shareId;
+  // The popout button reads the publisher identity off the tile. Local
+  // screens publish under the main client's peerId; remote screens stamp
+  // userId in renderRemoteScreen via the makeTile call. Either way the
+  // dataset attribute is the single source of truth at click time.
+  if (state.huddle?.peerId) tile.dataset.userId = state.huddle.peerId;
   tile.querySelector('video').srcObject = stream;
   attachDrawingLayer(tile, shareId, /*owner*/ true);
   const stopBtn = document.createElement('button');
@@ -3863,6 +4062,10 @@ function renderRemoteScreen(stream, screen) {
   }
   const tile = makeTile({ key, label: `${screen.label} — ${screen.fromName}`, kind: 'screen', userId: screen.from });
   tile.dataset.streamId = shareId;
+  // Same as addLocalScreenTile: the popout button reads the publisher
+  // identity off the dataset. makeTile only uses `userId` for the
+  // profile-card trigger, so stamp the attribute explicitly here.
+  if (screen.from) tile.dataset.userId = screen.from;
   tile.querySelector('video').srcObject = stream;
   attachDrawingLayer(tile, shareId, /*owner*/ false);
   // Auto-spotlight a new remote screen share so viewers' attention
