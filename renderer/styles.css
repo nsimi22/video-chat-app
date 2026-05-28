@@ -953,11 +953,14 @@ button.ctrl.muted.icon-only::after {
 }
 .tile-actions button:hover { background: rgba(0, 0, 0, 0.75); }
 .tile-action-annotate,
-.tile-action-spotlight {
+.tile-action-spotlight,
+.tile-action-fullscreen {
   display: inline-flex; align-items: center; gap: 6px;
 }
 .tile-action-annotate svg,
-.tile-action-spotlight svg { width: 14px; height: 14px; }
+.tile-action-spotlight svg,
+.tile-action-fullscreen svg { width: 14px; height: 14px; }
+.tile.fullscreen-mode .tile-action-fullscreen { background: rgba(255, 255, 255, 0.18); }
 /* Annotate is now icon-only (label hidden via .sr-only) — give the pen
    a hair more presence and let the active state carry the affordance
    so the user can tell at a glance whether they're drawing. */
@@ -996,10 +999,14 @@ button.ctrl.muted.icon-only::after {
 }
 .tile.spotlighted .tile-action-zoom-out,
 .tile.spotlighted .tile-action-zoom-in,
-.tile.spotlighted .tile-action-zoom-fit {
+.tile.spotlighted .tile-action-zoom-fit,
+.tile.fullscreen-mode .tile-action-zoom-out,
+.tile.fullscreen-mode .tile-action-zoom-in,
+.tile.fullscreen-mode .tile-action-zoom-fit {
   display: inline-flex;
 }
-.tile.spotlighted:not(.zoomed) .tile-action-zoom-fit { opacity: 0.45; }
+.tile.spotlighted:not(.zoomed) .tile-action-zoom-fit,
+.tile.fullscreen-mode:not(.zoomed) .tile-action-zoom-fit { opacity: 0.45; }
 
 /* Accessible-name-only span for buttons whose visible label is just an
    icon or symbol. Standard "visually hidden" pattern. */
@@ -1043,6 +1050,29 @@ button.ctrl.muted.icon-only::after {
   min-height: 360px;
   max-height: 70vh;
 }
+
+/* Fullscreen-in-window for screen-share tiles. Lifts one tile out of
+   the grid and pins it over the entire viewport so the shared screen
+   reads as large as possible without spawning a new OS window. Esc and
+   the toggled button both clear it (see toggleFullscreen / Esc handler
+   in app.js). The companion `body.has-fullscreen-tile` is set for any
+   future global tweaks (e.g. suppressing scroll on long pages) — kept
+   side-effect-free by default. */
+.tile.fullscreen-mode {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  border-radius: 0;
+  /* Override the grid-cell sizing so the tile actually fills the
+     viewport regardless of which container it was sitting in. */
+  width: 100vw;
+  height: 100vh;
+  max-height: none;
+  min-height: 0;
+  background: #000;
+}
+.tile.fullscreen-mode video { object-fit: contain; }
+body.has-fullscreen-tile { overflow: hidden; }
 /* Active speaker: soft accent ring driven by JS audio-level polling.
    Transitions ease in/out so quick volume bursts don't strobe. */
 .tile.speaking {
