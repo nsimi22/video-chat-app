@@ -232,6 +232,10 @@ const state = {
   channelMeta: new Map(),
   activeAnnotation: null,
   spotlightKey: null,
+  // Tile key (e.g. `screen:<sid>`) currently rendered in fullscreen-over-
+  // the-window mode. At most one tile fullscreened at a time; null when
+  // none. Local UI state only — each viewer toggles their own.
+  fullscreenKey: null,
   // Per-tile zoom + pan state for spotlighted screen-share tiles. Map
   // key = tile key (e.g. `screen:<sid>`), value = { scale, x, y }. Pan
   // x/y are CSS px offsets pre-scale, applied via transform on the
@@ -388,6 +392,12 @@ const STREAM_DECISION_MS = 1500;
     }
     if (e.key === 'Escape' && !els.shortcutsModal.classList.contains('hidden')) {
       els.shortcutsModal.classList.add('hidden');
+    }
+    // Esc exits fullscreened screen-share. Checked after the shortcuts
+    // modal so a stacked-open Esc closes the modal first (matches the
+    // implicit z-order users expect).
+    if (e.key === 'Escape' && state.fullscreenKey) {
+      clearFullscreen();
     }
   });
   els.shortcutsClose.onclick = () => els.shortcutsModal.classList.add('hidden');
@@ -2707,6 +2717,15 @@ function makeTile({ key, label, kind, userId }) {
     spotlight.innerHTML = `${window.HuddleIcons.spotlight}<span>Spotlight</span>`;
     spotlight.onclick = () => toggleSpotlight(key);
     actions.appendChild(spotlight);
+    if (kind === 'screen') {
+      const fullscreen = document.createElement('button');
+      fullscreen.className = 'tile-action-fullscreen';
+      fullscreen.innerHTML = `${window.HuddleIcons.fullscreen}<span>Fullscreen</span>`;
+      fullscreen.title = 'Fullscreen (Esc to exit)';
+      fullscreen.setAttribute('aria-label', 'Fullscreen');
+      fullscreen.onclick = () => toggleFullscreen(key);
+      actions.appendChild(fullscreen);
+    }
     tile.appendChild(actions);
   }
   if (kind === 'screen') attachPanHandlers(tile, key);
@@ -2725,6 +2744,7 @@ function removeTile(key) {
   state.tilesByKey.delete(key);
   state.zoomByKey.delete(key);
   if (state.spotlightKey === key) clearSpotlight();
+  if (state.fullscreenKey === key) clearFullscreen();
   syncTilesVisibility();
 }
 
@@ -2755,6 +2775,47 @@ function clearSpotlight() {
   // to the grid at 1x. Without this, the next time the user spotlights
   // it the previous zoom would reappear in a tile that no longer has
   // the room to overflow cleanly.
+  resetZoom(key);
+}
+
+// Fullscreen: cover the entire window with one screen-share tile.
+// Reuses the spotlight tile's zoom/pan affordances; CSS pins the tile
+// to position:fixed inset:0 so it sits on top of the app chrome.
+// Toggle: same key re-clicked exits; different key swaps to the new tile.
+function toggleFullscreen(key) {
+  if (state.fullscreenKey === key) { clearFullscreen(); return; }
+  if (state.fullscreenKey) {
+    const prev = state.tilesByKey.get(state.fullscreenKey);
+    if (prev) {
+      prev.classList.remove('fullscreen-mode');
+      // Reset zoom on the outgoing tile for the same reason clearSpotlight
+      // does — otherwise the lingering 0,0-origin transform leaves the
+      // content jammed in the corner once it's back in the grid.
+      resetZoom(state.fullscreenKey);
+    }
+  }
+  const tile = state.tilesByKey.get(key);
+  if (!tile) return;
+  tile.classList.add('fullscreen-mode');
+  document.body.classList.add('has-fullscreen-tile');
+  state.fullscreenKey = key;
+  // Swap the button glyph to the "exit" variant so the affordance reads
+  // correctly while active.
+  const btn = tile.querySelector('.tile-action-fullscreen');
+  if (btn) btn.innerHTML = `${window.HuddleIcons.fullscreenExit}<span>Exit</span>`;
+}
+
+function clearFullscreen() {
+  if (!state.fullscreenKey) return;
+  const key = state.fullscreenKey;
+  const tile = state.tilesByKey.get(key);
+  if (tile) {
+    tile.classList.remove('fullscreen-mode');
+    const btn = tile.querySelector('.tile-action-fullscreen');
+    if (btn) btn.innerHTML = `${window.HuddleIcons.fullscreen}<span>Fullscreen</span>`;
+  }
+  document.body.classList.remove('has-fullscreen-tile');
+  state.fullscreenKey = null;
   resetZoom(key);
 }
 
