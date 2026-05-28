@@ -14,16 +14,10 @@
     <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="styles.css" />
     <!-- v2 toggle: ?ui=v2 enables [data-ui="v2"] for visual sanity-checks
-         until the default flips in Phase 6. Off by default. -->
-    <script>
-      (function () {
-        try {
-          if (new URLSearchParams(location.search).get('ui') === 'v2') {
-            document.documentElement.setAttribute('data-ui', 'v2');
-          }
-        } catch (_) { /* file:// or no search — leave default */ }
-      })();
-    </script>
+         until the default flips in Phase 6. Off by default. Lives in a
+         standalone file so the CSP 'script-src' can stay strict (no
+         'unsafe-inline'). -->
+    <script src="ui-v2-toggle.js"></script>
   </head>
   <body>
     <!-- Login / sign-up flow (email -> OTP -> profile -> team picker) -->
