@@ -2676,7 +2676,9 @@ function makeTile({ key, label, kind, userId }) {
     if (kind === 'screen') {
       const annotate = document.createElement('button');
       annotate.className = 'tile-action-annotate';
-      annotate.innerHTML = `${window.HuddleIcons.edit}<span>Annotate</span>`;
+      annotate.innerHTML = `${window.HuddleIcons.edit}<span class="sr-only">Annotate</span>`;
+      annotate.setAttribute('aria-label', 'Annotate');
+      annotate.title = 'Annotate';
       annotate.onclick = () => toggleAnnotate(tile.dataset.streamId);
       actions.appendChild(annotate);
       // Zoom controls: only meaningful (and visible — see CSS) while the
@@ -3839,14 +3841,23 @@ function attachDrawingLayer(tile, streamId, isOwner) {
     streamId,
     isOwner,
     send: (stroke) => state.huddle.sendDraw(streamId, stroke),
+    // Wire identity + name lookup so remote cursors can display the
+    // peer's name in a Slack-style pill. nameForUser falls back to
+    // peerInfo (live roster) and ultimately 'Guest' for unknown ids.
+    localUserId: state.huddle?.peerId || null,
+    nameForUser: (uid) => {
+      if (uid === state.huddle?.peerId) return 'You';
+      const p = state.huddle?.peerInfo?.get(uid);
+      return p?.name || 'Guest';
+    },
   });
   layer.attach(tile);
   state.drawLayers.set(streamId, layer);
 }
 
-function onRemoteDraw({ streamId, stroke }) {
+function onRemoteDraw({ from, streamId, stroke }) {
   const layer = state.drawLayers.get(streamId);
-  if (layer) layer.applyRemote(stroke);
+  if (layer) layer.applyRemote(stroke, from);
 }
 
 function toggleAnnotate(streamId) {
@@ -3862,6 +3873,11 @@ function toggleAnnotate(streamId) {
     || state.tilesByKey.get(`whiteboard:${streamId}`);
   els.drawToolbar.classList.remove('hidden');
   els.drawTargetName.textContent = tile?.querySelector('.tile-label')?.textContent || 'screen';
+  // Reflect the layer's current color in the toolbar picker so the
+  // auto-assigned per-user color (DrawingLayer constructor) is visible
+  // up front, and any setColor() the user made in a previous session
+  // persists into this one.
+  if (els.drawColor && layer.color) els.drawColor.value = layer.color;
   // The 📝 Note button only applies to whiteboards (notes are
   // persisted per-whiteboard); screen-share annotations don't have
   // a place to store them. Toggle visibility per-surface.
