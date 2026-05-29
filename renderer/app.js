@@ -4286,7 +4286,17 @@ function wireReactPopover(btn, popover) {
 
 function addLocalCameraTile(stream, name) {
   const tile = makeTile({ key: 'self-cam', label: `${name} (you)`, kind: 'self', userId: state.huddle.peerId });
-  tile.querySelector('video').srcObject = stream;
+  const video = tile.querySelector('video');
+  video.srcObject = stream;
+  // Match the autoplay-drop fix in commitStreamAsCamera — popout
+  // windows open via IPC without a user gesture in the popout's
+  // own context, so Chrome's autoplay policy can silently drop the
+  // implicit play() for the self-cam tile, leaving it black even
+  // though the stream is wired. Non-fatal on rejection.
+  video.play().catch(() => {});
+  stream.addEventListener('addtrack', () => {
+    video.play().catch(() => {});
+  });
 }
 
 // ---------------------------------------------------------------------------

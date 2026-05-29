@@ -2456,6 +2456,17 @@ body.popout #login,
 body.popout #app,
 body.popout #toasts { display: none !important; }
 body.popout .popout-stage { display: block; }
+/* The custom 36px titlebar (PR #184) renders from index.html and
+   would paint INSIDE popout windows too — but popouts open with
+   the native OS frame already, so we'd end up with two titlebars
+   and the body's `padding-top: 36px` + `box-sizing: border-box`
+   would push the .popout-stage content (specifically the bottom
+   call dock) off-screen. Hide the custom titlebar + revert the
+   body padding inside popouts. */
+body.popout #huddle-titlebar { display: none; }
+body.popout {
+  padding-top: 0 !important;
+}
 .popout-stage { display: none; width: 100vw; height: 100vh; }
 .popout-whiteboard {
   width: 100%; height: 100%;
