@@ -6504,6 +6504,17 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
    regardless of which trigger fired first. */
 [data-ui="v2"] .tiles.has-spotlight {
   grid-template-columns: minmax(0, 1fr) 184px;
+  /* 115px row slots in the filmstrip column so each non-spotlighted
+     tile lives in its own row. Without explicit row-slot height,
+     row 1 inherits the spotlighted tile's 360px min-height and the
+     first filmstrip tile sits at the top with a 245px gap below —
+     subsequent tiles end up "stacked in the top corner" visually. */
+  grid-template-rows: repeat(auto-fill, 115px);
+  grid-auto-rows: 115px;
+}
+/* Spotlighted tile spans all filmstrip rows so col 1 is one tall cell. */
+[data-ui="v2"] .tiles.has-spotlight .tile.spotlighted {
+  grid-row: 1 / -1;
 }
 /* Same 16:10 lock for the spotlight rail's filmstrip tiles
    (excluding the spotlighted tile itself, which fills the stage). */
@@ -6745,6 +6756,28 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 [data-ui="v2"] body[data-platform="win32"] .app {
   height: calc(100vh - 36px);
   grid-template-rows: calc(100vh - 36px);
+}
+/* Platform-conditional titlebar height. Used by every full-bleed
+   overlay that anchors `top: 0` (AI panel, calendar grid view,
+   in-call return dock) so they don't render BEHIND the 36px
+   titlebar on Mac/Win. Linux falls back to 0 (no custom bar). */
+[data-ui="v2"] body[data-platform="darwin"],
+[data-ui="v2"] body[data-platform="win32"] {
+  --titlebar-h: 36px;
+}
+[data-ui="v2"] .huddle-ai-view,
+[data-ui="v2"] .huddle-cal-view,
+[data-ui="v2"] .huddle-call-return-dock {
+  top: var(--titlebar-h, 0px);
+}
+/* When the return dock is visible AND on top of an overlay, the
+   overlay's top shift already accounts for the dock (+52px) — add
+   the titlebar height on top so the overlay's header isn't hidden. */
+[data-ui="v2"] body[data-platform="darwin"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-ai-view,
+[data-ui="v2"] body[data-platform="darwin"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-cal-view,
+[data-ui="v2"] body[data-platform="win32"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-ai-view,
+[data-ui="v2"] body[data-platform="win32"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-cal-view {
+  top: calc(var(--titlebar-h, 0px) + 52px);
 }
 /* Login backdrop is fixed: inset(0); it'll cover the titlebar
    unless we explicitly nudge it. Push its top edge down too. */
