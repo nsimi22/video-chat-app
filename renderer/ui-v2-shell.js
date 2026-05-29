@@ -21,12 +21,15 @@
   };
 
   // data-view / data-action → existing legacy element to click.
-  // chat / calls / ai are intentionally no-ops at this step —
-  // they only update the visual active state for now.
+  // chat / calls are visual-only at this step; "ai" opens the
+  // dedicated Huddle AI panel via window.HuddleAIPanel.
   const LEGACY_BRIDGE = {
     calendar: 'open-calendar',
     settings: 'open-settings',
     whiteboard: 'whiteboard-btn',
+  };
+  const CUSTOM_BRIDGE = {
+    ai: () => window.HuddleAIPanel?.open?.(),
   };
 
   function paintIcons(rail) {
@@ -57,6 +60,8 @@
         const el = document.getElementById(legacyId);
         if (el) el.click();
       }
+      const custom = CUSTOM_BRIDGE[key];
+      if (custom) custom();
     });
   }
 

@@ -4970,4 +4970,324 @@ body.popout-call .popout-stage > .draw-toolbar {
   padding: 8px 10px;
 }
 
+/* ============================================================
+   v2 Phase 5.4 — Huddle AI panel.
+   Full-stage overlay opened by the nav-rail's "Huddle AI" item.
+   z-100 to sit above chat surface but below modals (z-200).
+   ============================================================ */
+.huddle-ai-view {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  /* Slide in from the right edge, leaving the nav rail (68px) +
+     contextual panel (256px) visible if they're open. Full-bleed
+     above 900px window width. */
+  left: calc(var(--rail-w, 68px) + var(--panel-w, 256px));
+  z-index: 100;
+  background: var(--bg-0);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font);
+  animation: huddle-fade-up 0.22s ease forwards;
+}
+.huddle-ai-view.hidden {
+  display: none;
+}
+@media (max-width: 900px) {
+  .huddle-ai-view { left: 0; }
+}
+
+/* Header */
+.huddle-ai-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--line-soft);
+  flex-shrink: 0;
+}
+.huddle-ai-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 30%;
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent));
+  color: var(--bg-0);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.huddle-ai-avatar svg { width: 17px; height: 17px; }
+.huddle-ai-title-block { display: flex; flex-direction: column; }
+.huddle-ai-title {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 15.5px;
+  color: var(--tx-hi);
+  letter-spacing: -0.01em;
+}
+.huddle-ai-subtitle {
+  font-size: 11.5px;
+  color: var(--tx-lo);
+  margin-top: 2px;
+}
+.huddle-ai-spacer { flex: 1; }
+.huddle-ai-model {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--tx-faint);
+  border: 1px solid var(--line);
+  padding: 3px 9px;
+  border-radius: 6px;
+}
+.huddle-ai-close {
+  width: 34px;
+  height: 34px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--tx-lo);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-ai-close:hover { background: var(--bg-3); color: var(--tx-hi); }
+.huddle-ai-close svg { width: 17px; height: 17px; }
+
+/* Transcript */
+.huddle-ai-transcript {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 22px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+}
+.huddle-ai-empty {
+  margin: auto 0;
+  text-align: center;
+  padding: 36px 0;
+  color: var(--tx-mid);
+}
+.huddle-ai-empty-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 18px;
+  margin: 0 auto 12px;
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent));
+  color: var(--bg-0);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.huddle-ai-empty-icon svg { width: 28px; height: 28px; }
+.huddle-ai-empty-title {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--tx-hi);
+  letter-spacing: -0.02em;
+}
+.huddle-ai-empty-hint {
+  color: var(--tx-lo);
+  font-size: 13.5px;
+  max-width: 380px;
+  margin: 6px auto 0;
+  line-height: 1.5;
+}
+
+/* Each turn */
+.huddle-ai-turn {
+  display: flex;
+  gap: 12px;
+  animation: huddle-fade-up 0.25s ease forwards;
+}
+.huddle-ai-turn-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 30%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+}
+.huddle-ai-turn-avatar-bot {
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent));
+  color: var(--bg-0);
+}
+.huddle-ai-turn-avatar-bot svg { width: 16px; height: 16px; }
+.huddle-ai-turn-avatar-me {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+.huddle-ai-turn-main { flex: 1; min-width: 0; }
+.huddle-ai-turn-name {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 13.5px;
+  color: var(--tx-hi);
+  margin-bottom: 4px;
+}
+.huddle-ai-turn-body {
+  font-family: var(--font);
+  font-size: 14.5px;
+  line-height: 1.62;
+  color: var(--tx-mid);
+  word-wrap: break-word;
+}
+.huddle-ai-turn-body strong {
+  font-weight: 700;
+  color: var(--tx-hi);
+}
+.huddle-ai-turn-body code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  background: var(--bg-3);
+  color: var(--accent-tx);
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+.huddle-ai-error {
+  background: color-mix(in oklch, var(--danger) 14%, transparent);
+  border: 1px solid var(--danger);
+  color: var(--tx-hi);
+  border-radius: 9px;
+  padding: 9px 12px;
+  font-size: 13.5px;
+}
+.huddle-ai-pending {
+  display: inline-flex;
+  gap: 5px;
+  padding: 8px 0;
+}
+.huddle-ai-pending span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tx-faint);
+  animation: huddle-pulse 1s infinite;
+}
+.huddle-ai-pending span:nth-child(2) { animation-delay: 0.2s; }
+.huddle-ai-pending span:nth-child(3) { animation-delay: 0.4s; }
+
+.huddle-ai-turn-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.huddle-ai-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  min-height: 0;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--tx-hi);
+  border: 1px solid var(--line);
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 12.5px;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-ai-action:hover { background: var(--bg-3); }
+.huddle-ai-action svg { width: 15px; height: 15px; color: var(--tx-mid); }
+.huddle-ai-action-post svg { color: var(--accent-tx); }
+
+/* Suggestion chips */
+.huddle-ai-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 24px 12px;
+}
+.huddle-ai-chip {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  color: var(--tx-mid);
+  border-radius: 18px;
+  padding: 6px 12px;
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: none;
+  min-height: 0;
+}
+.huddle-ai-chip:hover {
+  background: var(--bg-2);
+  color: var(--tx-hi);
+}
+
+/* Composer at bottom */
+.huddle-ai-composer-wrap {
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 24px 22px;
+}
+.huddle-ai-composer {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 12px 14px;
+  transition: border-color 0.12s;
+}
+.huddle-ai-composer:focus-within { border-color: var(--accent); }
+.huddle-ai-composer-icon {
+  color: var(--accent-tx);
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.huddle-ai-composer-icon svg { width: 18px; height: 18px; }
+.huddle-ai-composer-input {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-size: 14.5px;
+}
+.huddle-ai-composer-input::placeholder { color: var(--tx-lo); }
+.huddle-ai-send {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  min-height: 0;
+  padding: 0 13px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #1a1106;
+  border: 0;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 13px;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-ai-send:hover { background: var(--accent-hi); }
+.huddle-ai-send:disabled { opacity: 0.55; cursor: not-allowed; }
+.huddle-ai-send svg { width: 14px; height: 14px; }
+
 

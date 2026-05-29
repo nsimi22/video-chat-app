@@ -5165,3 +5165,20 @@ async function openSourcePicker() {
   }
   els.sourcePicker.classList.remove('hidden');
 }
+
+// v2 UI accessor surface — the Huddle AI panel reads the AiClient and
+// active channel from here. Kept narrow on purpose so legacy code
+// paths don't accidentally couple to the panel.
+window.huddleApp = {
+  getAi: () => state.ai,
+  getMe: () => state.me,
+  getActiveChannelId: () => state.chat?.currentChannel,
+  postIntoComposer: (text) => {
+    const ta = document.getElementById('composer-input');
+    if (!ta) return;
+    ta.value = text;
+    ta.focus();
+    try { ta.setSelectionRange(text.length, text.length); } catch (_) {}
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  },
+};
