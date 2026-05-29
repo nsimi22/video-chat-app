@@ -1525,18 +1525,22 @@ class ChatView {
     head.className = 'msg-head';
     const author = document.createElement('span');
     author.className = 'msg-author';
-    author.textContent = m.aiGenerated ? `AI · ${m.aiModel || 'unknown model'}` : m.authorName;
+    author.textContent = m.aiGenerated ? 'Huddle AI' : m.authorName;
     if (!m.aiGenerated) this.hooks.attachProfileTrigger?.(author, m.authorId);
     const time = document.createElement('span');
     time.className = 'msg-time';
     time.textContent = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    head.append(author, time);
+    head.append(author);
+    // AI messages get an "ASSISTANT" mono badge between the name and
+    // the time, per design. The model name moves out of the head and
+    // into a card footer below the body — see msg-ai-footer below.
     if (m.aiGenerated) {
-      const via = document.createElement('span');
-      via.className = 'msg-edited';
-      via.textContent = `via ${m.authorName}`;
-      head.append(via);
+      const badge = document.createElement('span');
+      badge.className = 'msg-ai-badge mono';
+      badge.textContent = 'ASSISTANT';
+      head.append(badge);
     }
+    head.append(time);
     if (m.editedTs) {
       const edited = document.createElement('span');
       edited.className = 'msg-edited';
@@ -1714,6 +1718,28 @@ class ChatView {
     if (attachmentsEl) children.push(attachmentsEl);
     if (jiraEls.length) children.push(...jiraEls);
     if (ghEls.length) children.push(...ghEls);
+    // AI message footer: "via @<asker> · <model>" sits below the
+    // body inside the card. The asker handle is the human user who
+    // ran /ai — m.authorName already holds that for AI replies (the
+    // user is the message author even though the content is from
+    // the assistant). Skips entirely for non-AI messages.
+    if (m.aiGenerated) {
+      const footer = document.createElement('div');
+      footer.className = 'msg-ai-footer';
+      const via = document.createElement('span');
+      via.className = 'msg-ai-footer-via';
+      via.textContent = `via @${m.authorName || 'someone'}`;
+      footer.appendChild(via);
+      const sep = document.createElement('span');
+      sep.className = 'msg-ai-footer-sep';
+      sep.textContent = '·';
+      footer.appendChild(sep);
+      const model = document.createElement('span');
+      model.className = 'msg-ai-footer-model mono';
+      model.textContent = m.aiModel || 'unknown model';
+      footer.appendChild(model);
+      children.push(footer);
+    }
     children.push(reactions, actions);
     if (!m.parentId && this.threadParentId === null) {
       const replies = (all || []).filter((x) => x.parentId === m.id);

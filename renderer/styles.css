@@ -296,6 +296,72 @@ input:focus, textarea:focus {
   width: 14px;
   height: 14px;
 }
+/* Group DM sidebar rows: 2 overlapping 20px avatars where the Users
+   SVG used to sit. Painted by renderDmAvatarStack(channel) in
+   app.js. Each avatar is a colored circle with the user's initial. */
+.channel-list li .ch-dm-stack {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+.channel-list li .ch-dm-avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+  user-select: none;
+  box-shadow: 0 0 0 2px var(--bg-1, #1a1d21);
+}
+.channel-list li .ch-dm-avatar + .ch-dm-avatar {
+  margin-left: -8px;
+}
+
+/* Chat-header member-avatar stack (v2 only). Painted by
+   renderHeaderMembers() in app.js on each channel switch. Up to
+   MAX_HEADER_AVATARS overlapping 26px circles, then a +N chip.
+   Hidden under legacy UI via the [data-ui="v2"] gate below. */
+.huddle-header-members { display: none; }
+[data-ui="v2"] .huddle-header-members {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 8px 0 4px;
+  flex-shrink: 0;
+}
+[data-ui="v2"] .huddle-header-members:empty { display: none; }
+[data-ui="v2"] .huddle-header-avatar,
+[data-ui="v2"] .huddle-header-avatar-more {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  user-select: none;
+  box-shadow: 0 0 0 2px var(--bg-0);
+}
+[data-ui="v2"] .huddle-header-avatar + .huddle-header-avatar,
+[data-ui="v2"] .huddle-header-avatar + .huddle-header-avatar-more {
+  margin-left: -9px;
+}
+[data-ui="v2"] .huddle-header-avatar-more {
+  background: var(--bg-2);
+  color: var(--tx-mid);
+}
+/* Under v2, the avatar ring should hug the panel surface color
+   (panels use --bg-1 in v2) so the overlap reads cleanly. The
+   base rule above already targets --bg-1 with a fallback. */
 
 /* Chat-header Lock glyph for private channels. Mirrors the sidebar
    Lock icon so the "this is private" context isn't lost when you're
@@ -3513,6 +3579,47 @@ body.popout-call .popout-stage > .draw-toolbar {
 [data-ui="v2"] .msg .avatar-ai {
   background: linear-gradient(135deg, var(--accent-hi), var(--accent));
   color: var(--bg-0);
+}
+
+/* "ASSISTANT" mono badge in the AI message header, sits between the
+   "Huddle AI" author name and the timestamp. Mono per design so it
+   reads as a system label rather than a user-attributed string. */
+[data-ui="v2"] .msg-ai-badge {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 8px 0 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--accent-dim);
+  color: var(--accent-tx);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+}
+
+/* AI card footer: "via @<asker> · <model>". Sits below the answer
+   body inside the .msg-ai card. Uses --tx-faint so it reads as
+   metadata, not body content. */
+[data-ui="v2"] .msg-ai-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--tx-faint);
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+[data-ui="v2"] .msg-ai-footer-sep { opacity: 0.7; }
+[data-ui="v2"] .msg-ai-footer-model {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-feature-settings: "tnum";
+  color: var(--tx-lo);
 }
 
 /* Pinned + flash variants */
