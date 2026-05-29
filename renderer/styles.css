@@ -3091,4 +3091,179 @@ body.popout-call .popout-stage > .draw-toolbar {
   justify-content: center;
 }
 
+/* ============================================================
+   v2 chat header + stage background.
+   Brings the chat area's top bar to the design's warm-charcoal
+   chrome: flat bg-0 with a hairline border, channel name in
+   Hanken Grotesk 700/16.5, topic in tx-lo, icon buttons square
+   with bg-3 hover, primary Start call in accent. Stage + message
+   list backgrounds drop to bg-0 so the chat area no longer reads
+   as a different shade than the rail / contextual panel. Legacy
+   stays untouched when the flag is off; composer textarea picks
+   up v2 surface + font but the bottom toolbar restyle is a later
+   sub-step.
+   ============================================================ */
+[data-ui="v2"] .stage {
+  background: var(--bg-0);
+}
+[data-ui="v2"] .messages {
+  color: var(--tx-mid);
+  font-family: var(--font);
+}
+[data-ui="v2"] .composer {
+  background: var(--bg-0);
+  border-top: 1px solid var(--line-soft);
+}
+[data-ui="v2"] .composer textarea {
+  background: var(--bg-1);
+  color: var(--tx-hi);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  font-family: var(--font);
+}
+
+/* Chat header bar. */
+[data-ui="v2"] .stage-header {
+  height: 60px;
+  padding: 0 22px;
+  background: var(--bg-0);
+  border-bottom: 1px solid var(--line-soft);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-ui="v2"] .stage-title {
+  gap: 10px;
+}
+[data-ui="v2"] .stage-title .channel-name {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 16.5px;
+  letter-spacing: -0.01em;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .channel-name-prefix {
+  color: var(--tx-faint);
+  margin-right: 4px;
+}
+[data-ui="v2"] .channel-name-prefix svg {
+  width: 17px;
+  height: 17px;
+}
+[data-ui="v2"] .channel-topic {
+  font-family: var(--font);
+  color: var(--tx-lo);
+  font-size: 13px;
+  border-left: 0;
+  padding-left: 0;
+  margin-left: 4px;
+  max-width: 340px;
+}
+
+/* Header actions: icon buttons, primary Start call, danger Leave,
+   pinned-messages chip. The in-call cluster (mic / cam / blur /
+   share / hand / react / jira / cc / popout) shares this same
+   .ctrl + .icon-only chrome so they pick up the v2 styling too —
+   .ctrl.muted preserves its red affordance below. */
+[data-ui="v2"] .header-actions {
+  gap: 3px;
+}
+[data-ui="v2"] .header-actions .icon-only,
+[data-ui="v2"] .stage-title #sidebar-toggle.icon-only {
+  width: 34px;
+  height: 34px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 9px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--tx-lo);
+}
+[data-ui="v2"] .header-actions .icon-only:hover,
+[data-ui="v2"] .stage-title #sidebar-toggle.icon-only:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .header-actions .icon-only svg,
+[data-ui="v2"] .stage-title #sidebar-toggle.icon-only svg {
+  width: 19px;
+  height: 19px;
+}
+[data-ui="v2"] .header-actions .ctrl {
+  height: 36px;
+  min-height: 0;
+  padding: 0 14px;
+  border-radius: 9px;
+  font-family: var(--font);
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  box-shadow: none;
+  border: 0;
+}
+[data-ui="v2"] .header-actions .ctrl.primary {
+  background: var(--accent);
+  color: #1a1106;
+  font-weight: 700;
+}
+[data-ui="v2"] .header-actions .ctrl.primary:hover {
+  background: var(--accent-hi);
+}
+[data-ui="v2"] .header-actions .ctrl.primary svg {
+  width: 16px;
+  height: 16px;
+}
+[data-ui="v2"] .header-actions .ctrl.danger {
+  background: oklch(0.55 0.18 25);
+  color: #fff;
+  font-weight: 700;
+}
+[data-ui="v2"] .header-actions .ctrl.danger:hover {
+  background: var(--danger);
+}
+
+/* In-call mic/cam muted toggle keeps its red affordance under v2. */
+[data-ui="v2"] button.ctrl.muted {
+  background: var(--danger);
+  color: #fff;
+}
+[data-ui="v2"] button.ctrl.muted:not([disabled]):hover {
+  background: oklch(0.55 0.20 25);
+}
+
+/* Pinned-messages chip in the header. */
+[data-ui="v2"] .header-actions .pinned-chip {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 9px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tx-mid);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+[data-ui="v2"] .header-actions .pinned-chip:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .header-actions .pinned-chip .count {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--bg-3);
+  color: var(--tx-mid);
+  padding: 0 6px;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 
