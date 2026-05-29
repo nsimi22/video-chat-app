@@ -31,10 +31,16 @@
   };
   const CUSTOM_BRIDGE = {
     ai: () => window.HuddleAIPanel?.open?.(),
-    calendar: () => (
-      window.HuddleCalendarGrid?.open?.()
-      ?? document.getElementById('open-calendar')?.click()
-    ),
+    // Calendar: prefer the v2 grid; only fall back to the legacy
+    // drawer if the grid module hasn't loaded. ?? would always run
+    // the fallback because open() returns undefined.
+    calendar: () => {
+      if (window.HuddleCalendarGrid?.open) {
+        window.HuddleCalendarGrid.open();
+      } else {
+        document.getElementById('open-calendar')?.click();
+      }
+    },
   };
 
   function paintIcons(rail) {
@@ -59,6 +65,12 @@
         rail.querySelectorAll('.huddle-rail-item').forEach((b) => b.classList.remove('is-active'));
         btn.classList.add('is-active');
       }
+
+      // Single-overlay rule: close any other v2 overlay before
+      // routing this click. Avoids AI panel + Calendar grid
+      // stacking on top of each other.
+      if (key !== 'ai') window.HuddleAIPanel?.close?.();
+      if (key !== 'calendar') window.HuddleCalendarGrid?.close?.();
 
       const legacyId = LEGACY_BRIDGE[key];
       if (legacyId) {
@@ -128,6 +140,30 @@
     // bottom and toggle a body class when in-call so CSS can hide
     // chat + reposition the captions panel.
     setupCallDock();
+
+    // Persistent top dock that surfaces when you nav away from a
+    // running call (open AI panel or Calendar grid). Click to
+    // return / leave; mirrors mute/cam via existing button bridges.
+    setupOverlayCallReturn();
+
+    // Under v2, the legacy calendar drawer (#calendar-drawer) is
+    // superseded by the week-grid view. Intercept #open-calendar
+    // clicks in the capture phase so the legacy openDrawer()
+    // handler never fires; route to the grid instead.
+    redirectLegacyCalendar();
+  }
+
+  function redirectLegacyCalendar() {
+    const btn = document.getElementById('open-calendar');
+    if (!btn || btn.dataset.v2Intercepted) return;
+    btn.dataset.v2Intercepted = '1';
+    btn.addEventListener('click', (e) => {
+      if (document.documentElement.getAttribute('data-ui') !== 'v2') return;
+      if (!window.HuddleCalendarGrid?.open) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      window.HuddleCalendarGrid.open();
+    }, true); // capture, before any legacy bubbling handler
   }
 
   // -------- v2 in-call layout (Phase 6) ----------------------------
@@ -165,16 +201,138 @@
     }
     stage.appendChild(dock);
 
-    // Sync body.huddle-in-call from #btn-leave's visibility.
+    // Sync body.huddle-in-call from #btn-leave's visibility, AND
+    // body.huddle-on-call-channel from #tiles visibility. Splitting
+    // the two so CSS can scope the full call layout (hide chat,
+    // show bottom dock) only when the user is actually ON the call
+    // channel; if they navigate to a different channel mid-call,
+    // chat stays visible and the top return-dock surfaces.
+    const tilesEl = document.getElementById('tiles');
     const syncBodyClass = () => {
       const inCall = !leaveBtn.classList.contains('hidden');
       document.body.classList.toggle('huddle-in-call', inCall);
     };
+    const syncOnChannel = () => {
+      const onChannel = tilesEl && !tilesEl.classList.contains('hidden');
+      document.body.classList.toggle('huddle-on-call-channel', !!onChannel);
+    };
     syncBodyClass();
+    syncOnChannel();
     new MutationObserver(syncBodyClass).observe(leaveBtn, {
       attributes: true,
       attributeFilter: ['class'],
     });
+    if (tilesEl) {
+      new MutationObserver(syncOnChannel).observe(tilesEl, {
+        attributes: true,
+        attributeFilter: ['class'],
+      });
+    }
+  }
+
+  // Persistent top dock: appears when an overlay view (AI panel or
+  // Calendar grid) is open during an active call. Lets the user
+  // hop back to the call or hang up without exiting the overlay.
+  // Design source: huddle/app.jsx:CallDock.
+  function setupOverlayCallReturn() {
+    if (document.querySelector('.huddle-call-return-dock')) return;
+    const icon = (name) => (window.HuddleIcons && window.HuddleIcons[name]) || '';
+    const dock = document.createElement('div');
+    dock.className = 'huddle-call-return-dock hidden';
+    dock.innerHTML = `
+      <span class="huddle-call-return-live">
+        <span class="huddle-call-return-dot"></span>
+        <span>Call in <span class="huddle-call-return-channel">#channel</span></span>
+      </span>
+      <div class="huddle-call-return-spacer"></div>
+      <button class="huddle-call-return-mute" type="button" aria-label="Mute" title="Mute">${icon('mic')}</button>
+      <button class="huddle-call-return-cam" type="button" aria-label="Camera" title="Camera">${icon('video')}</button>
+      <button class="huddle-call-return-back" type="button">${icon('phone')}<span>Return to call</span></button>
+      <button class="huddle-call-return-leave" type="button">${icon('phoneOff')}<span>Leave</span></button>
+    `;
+    document.body.appendChild(dock);
+
+    const channelLabel = dock.querySelector('.huddle-call-return-channel');
+    const muteBtnRef = document.getElementById('btn-mic');
+    const camBtnRef = document.getElementById('btn-cam');
+    const returnMute = dock.querySelector('.huddle-call-return-mute');
+    const returnCam = dock.querySelector('.huddle-call-return-cam');
+
+    // Mirror legacy mic/cam state onto the return-dock buttons so
+    // the icon (and red "muted" affordance) reflects what's really
+    // happening. The click bridges through to #btn-mic / #btn-cam.
+    const mirrorMute = () => {
+      const muted = !!muteBtnRef?.classList.contains('muted');
+      returnMute.classList.toggle('is-muted', muted);
+      returnMute.innerHTML = icon(muted ? 'micOff' : 'mic');
+    };
+    const mirrorCam = () => {
+      const off = !!camBtnRef?.classList.contains('muted');
+      returnCam.classList.toggle('is-off', off);
+      returnCam.innerHTML = icon(off ? 'videoOff' : 'video');
+    };
+    mirrorMute(); mirrorCam();
+    if (muteBtnRef) new MutationObserver(mirrorMute).observe(muteBtnRef, { attributes: true, attributeFilter: ['class'] });
+    if (camBtnRef) new MutationObserver(mirrorCam).observe(camBtnRef, { attributes: true, attributeFilter: ['class'] });
+
+    const update = () => {
+      const inCall = document.body.classList.contains('huddle-in-call');
+      if (!inCall) {
+        dock.classList.add('hidden');
+        return;
+      }
+      // On the call channel + no overlay → user is looking AT the
+      // call. Hide the return dock.
+      const onCallChannel = document.body.classList.contains('huddle-on-call-channel');
+      const ai = document.querySelector('.huddle-ai-view');
+      const cal = document.querySelector('.huddle-cal-view');
+      const aiOpen = ai && !ai.classList.contains('hidden');
+      const calOpen = cal && !cal.classList.contains('hidden');
+      const overlayOpen = aiOpen || calOpen;
+      const show = !onCallChannel || overlayOpen;
+      dock.classList.toggle('hidden', !show);
+      if (show) {
+        // The channel-name in chat header is whatever channel the
+        // user is currently viewing — that's the right label here
+        // (Call in <something else>), but reads weird if same as
+        // call. Acceptable trade-off without exposing the inCall
+        // channelId.
+        const name = document.getElementById('channel-name')?.textContent?.trim() || '';
+        channelLabel.textContent = name ? (name.startsWith('#') ? name : `#${name}`) : 'call';
+      }
+    };
+
+    // Observe body class (in-call + on-call-channel) and re-check
+    // on a low-rate tick while in-call so we catch overlay open/
+    // close transitions without each module having to ping us.
+    let tick = null;
+    new MutationObserver(() => {
+      update();
+      if (document.body.classList.contains('huddle-in-call') && !tick) {
+        tick = setInterval(update, 400);
+      } else if (!document.body.classList.contains('huddle-in-call') && tick) {
+        clearInterval(tick); tick = null;
+      }
+    }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+
+    dock.querySelector('.huddle-call-return-mute').addEventListener('click', () => {
+      document.getElementById('btn-mic')?.click();
+    });
+    dock.querySelector('.huddle-call-return-cam').addEventListener('click', () => {
+      document.getElementById('btn-cam')?.click();
+    });
+    dock.querySelector('.huddle-call-return-back').addEventListener('click', () => {
+      window.HuddleAIPanel?.close?.();
+      window.HuddleCalendarGrid?.close?.();
+      update();
+    });
+    dock.querySelector('.huddle-call-return-leave').addEventListener('click', () => {
+      document.getElementById('btn-leave')?.click();
+      window.HuddleAIPanel?.close?.();
+      window.HuddleCalendarGrid?.close?.();
+    });
+
+    update();
   }
 
   function paintSigninBrandPills() {

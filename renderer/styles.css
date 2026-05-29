@@ -5697,10 +5697,10 @@ body.popout-call .popout-stage > .draw-toolbar {
    ============================================================ */
 
 /* Dock — fixed full-width at bottom of .stage. Hidden when not
-   in a call (no body.huddle-in-call) so the moved buttons don't
+   in a call (no body.huddle-in-call.huddle-on-call-channel) so the moved buttons don't
    stick out as orphans. */
 .huddle-call-dock { display: none; }
-[data-ui="v2"] body.huddle-in-call .huddle-call-dock {
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock {
   position: absolute;
   left: 0;
   right: 0;
@@ -5718,31 +5718,31 @@ body.popout-call .popout-stage > .draw-toolbar {
    Override the small chat-header sizing for these in the dock
    context — bigger 48px squares per the design's CallControl
    widget; .danger ("Leave") becomes a wide rounded pill. */
-[data-ui="v2"] body.huddle-in-call .huddle-call-dock .ctrl.icon-only {
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock .ctrl.icon-only {
   width: 48px;
   height: 48px;
   border-radius: 14px;
   background: var(--bg-2);
   border: 1px solid var(--line);
 }
-[data-ui="v2"] body.huddle-in-call .huddle-call-dock .ctrl.icon-only:hover {
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock .ctrl.icon-only:hover {
   background: var(--bg-3);
 }
-[data-ui="v2"] body.huddle-in-call .huddle-call-dock .ctrl.icon-only svg {
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock .ctrl.icon-only svg {
   width: 22px;
   height: 22px;
 }
-[data-ui="v2"] body.huddle-in-call .huddle-call-dock .ctrl.muted {
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock .ctrl.muted {
   background: var(--danger);
   color: #fff;
   border-color: transparent;
 }
-[data-ui="v2"] body.huddle-in-call .huddle-call-dock #btn-cc.active {
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock #btn-cc.active {
   background: var(--accent);
   color: var(--bg-0);
   border-color: transparent;
 }
-[data-ui="v2"] body.huddle-in-call .huddle-call-dock #btn-leave.ctrl {
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock #btn-leave.ctrl {
   width: auto;
   height: 48px;
   padding: 0 22px;
@@ -5755,7 +5755,7 @@ body.popout-call .popout-stage > .draw-toolbar {
   border: 0;
   gap: 8px;
 }
-[data-ui="v2"] body.huddle-in-call .huddle-call-dock #btn-leave.ctrl:hover {
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock #btn-leave.ctrl:hover {
   background: var(--danger);
 }
 [data-ui="v2"] .huddle-call-dock-divider {
@@ -5770,18 +5770,18 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 /* While in call: hide the chat content (messages + composer) and
    chat-only header buttons; expand the tile grid to fill the
    stage area between header and dock. */
-[data-ui="v2"] body.huddle-in-call .messages,
-[data-ui="v2"] body.huddle-in-call .composer,
-[data-ui="v2"] body.huddle-in-call .typing,
-[data-ui="v2"] body.huddle-in-call #attachment-chips,
-[data-ui="v2"] body.huddle-in-call #channel-notify-btn,
-[data-ui="v2"] body.huddle-in-call #search-btn,
-[data-ui="v2"] body.huddle-in-call #pinned-btn,
-[data-ui="v2"] body.huddle-in-call #copy-call-link,
-[data-ui="v2"] body.huddle-in-call .channel-topic {
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .messages,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .composer,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .typing,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #attachment-chips,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #channel-notify-btn,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #search-btn,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #pinned-btn,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #copy-call-link,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .channel-topic {
   display: none !important;
 }
-[data-ui="v2"] body.huddle-in-call .tiles {
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .tiles {
   flex: 1 1 auto;
   max-height: none;
   padding-bottom: 96px; /* leave room for the dock */
@@ -5791,7 +5791,7 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
    position: absolute so it can dock to the right edge, but the
    :has() rule below pushes the tile grid leftward by the captions
    width so the two don't overlap. */
-[data-ui="v2"] body.huddle-in-call #captions {
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #captions {
   position: absolute;
   top: 76px;
   right: 16px;
@@ -5805,16 +5805,142 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 /* When captions panel is visible (not .hidden), reserve right
    space on the tile grid so tiles don't sit underneath the
    panel. :has() is supported in Chromium-based Electron. */
-[data-ui="v2"] body.huddle-in-call .stage:has(#captions:not(.hidden)) .tiles {
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)) .tiles {
   padding-right: 312px; /* 296 panel + 16 right edge gap */
 }
+
+/* ============================================================
+   Persistent call-return dock — surfaces above v2 overlay views
+   (AI panel z-100, Calendar grid z-100) when the user has
+   navigated away from an active call. z-150 so it sits above
+   overlays but below modals (z-200).
+   Design source: huddle/app.jsx:CallDock.
+   ============================================================ */
+.huddle-call-return-dock { display: none; }
+[data-ui="v2"] .huddle-call-return-dock {
+  position: fixed;
+  top: 0;
+  /* Inset from the left so we don't cover the nav rail + sidebar,
+     matching the v2 overlay views (AI panel, calendar grid). */
+  left: calc(var(--rail-w, 68px) + var(--panel-w, 256px));
+  right: 0;
+  z-index: 150;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  background: var(--live-dim);
+  border-bottom: 1px solid var(--live);
+  font-family: var(--font);
+  animation: huddle-fade-up 0.2s ease forwards;
+}
+@media (max-width: 900px) {
+  [data-ui="v2"] .huddle-call-return-dock { left: 0; }
+}
+
+/* While the call-return dock is visible (in-call + overlay open),
+   shove the AI panel + Calendar grid down by the dock height so
+   the overlay's own header isn't hidden underneath. Dock is
+   ~52px tall (10 top + 30 button + 10 bottom + 1 border). */
+[data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .huddle-ai-view,
+[data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .huddle-cal-view {
+  top: 52px;
+}
+/* When the dock surfaces over a non-call channel (no overlay),
+   push the chat surface down so the dock doesn't sit on top of
+   the chat header. */
+[data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .stage {
+  padding-top: 52px;
+}
+
+/* Mirror muted state on the return-dock buttons so the user can
+   see at a glance whether mic/cam are off. */
+.huddle-call-return-mute.is-muted,
+.huddle-call-return-cam.is-off {
+  background: var(--danger);
+  color: #fff;
+}
+.huddle-call-return-mute.is-muted:hover,
+.huddle-call-return-cam.is-off:hover {
+  background: oklch(0.55 0.20 25);
+}
+[data-ui="v2"] .huddle-call-return-dock:not(.hidden) { display: flex; }
+.huddle-call-return-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--live);
+}
+.huddle-call-return-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--live);
+  animation: huddle-pulse 1.6s infinite;
+}
+.huddle-call-return-channel {
+  color: var(--live);
+  font-weight: 700;
+}
+.huddle-call-return-spacer { flex: 1; }
+.huddle-call-return-mute,
+.huddle-call-return-cam {
+  width: 30px;
+  height: 30px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 8px;
+  background: rgba(8, 8, 10, 0.4);
+  border: 0;
+  color: var(--tx-hi);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-call-return-mute:hover,
+.huddle-call-return-cam:hover {
+  background: rgba(8, 8, 10, 0.6);
+}
+.huddle-call-return-mute svg,
+.huddle-call-return-cam svg { width: 16px; height: 16px; }
+.huddle-call-return-back,
+.huddle-call-return-leave {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  min-height: 0;
+  padding: 0 11px;
+  border-radius: 8px;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12.5px;
+  border: 0;
+  cursor: pointer;
+  box-shadow: none;
+}
+.huddle-call-return-back {
+  background: var(--live);
+  color: #04201f;
+}
+.huddle-call-return-back:hover { filter: brightness(1.08); }
+.huddle-call-return-leave {
+  background: oklch(0.55 0.18 25);
+  color: #fff;
+}
+.huddle-call-return-leave:hover { background: var(--danger); }
+.huddle-call-return-back svg,
+.huddle-call-return-leave svg { width: 14px; height: 14px; }
 
 /* "Open whiteboard" + "Create ticket" buttons sit in the header
    during a call (per design). Bump them to a solid chrome so they
    read as actions rather than icon-only nav. The Whiteboard button
    is #whiteboard-btn (legacy icon-only); add a label via pseudo. */
-[data-ui="v2"] body.huddle-in-call #whiteboard-btn::after,
-[data-ui="v2"] body.huddle-in-call #btn-jira::after {
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #whiteboard-btn::after,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #btn-jira::after {
   font-family: var(--font);
   font-weight: 600;
   font-size: 13px;
@@ -5822,17 +5948,17 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   margin-left: 6px;
   white-space: nowrap;
 }
-[data-ui="v2"] body.huddle-in-call #whiteboard-btn::after { content: "Whiteboard"; }
-[data-ui="v2"] body.huddle-in-call #btn-jira::after { content: "Ticket"; }
-[data-ui="v2"] body.huddle-in-call #whiteboard-btn,
-[data-ui="v2"] body.huddle-in-call #btn-jira {
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #whiteboard-btn::after { content: "Whiteboard"; }
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #btn-jira::after { content: "Ticket"; }
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #whiteboard-btn,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #btn-jira {
   width: auto;
   padding: 0 12px 0 11px;
   background: var(--bg-2);
   border: 1px solid var(--line);
 }
-[data-ui="v2"] body.huddle-in-call #whiteboard-btn:hover,
-[data-ui="v2"] body.huddle-in-call #btn-jira:hover {
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #whiteboard-btn:hover,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #btn-jira:hover {
   background: var(--bg-3);
 }
 

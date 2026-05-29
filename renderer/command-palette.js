@@ -47,13 +47,21 @@
       { group: 'Go to', icon: 'board',     label: 'Open whiteboard',
         do: () => document.getElementById('whiteboard-btn')?.click() },
       { group: 'Go to', icon: 'calendar',  label: 'Open calendar',
-        do: () => document.getElementById('open-calendar')?.click() },
+        do: () => {
+          if (window.HuddleCalendarGrid?.open) window.HuddleCalendarGrid.open();
+          else document.getElementById('open-calendar')?.click();
+        } },
       { group: 'Go to', icon: 'bookmark',  label: 'Open Saved',
         do: () => document.getElementById('open-saved')?.click() },
       { group: 'Go to', icon: 'settings',  label: 'Open Settings',
         do: () => document.getElementById('open-settings')?.click() },
       { group: 'Go to', icon: 'sparkles',  label: 'Ask Huddle AI',
-        do: () => window.HuddleAIPanel?.open?.() || insertComposer('/ai ') },
+        do: () => {
+          // open() returns undefined which is falsy, so `||` would
+          // ALSO fire the composer prefill. Branch explicitly.
+          if (window.HuddleAIPanel?.open) window.HuddleAIPanel.open();
+          else insertComposer('/ai ');
+        } },
       { group: 'Actions', icon: 'summarize', label: 'Summarize current channel', hint: '/summarize',
         do: () => insertComposer('/summarize ') },
       { group: 'Actions', icon: 'ticket',    label: 'Create a Jira ticket', hint: '/jira create',
