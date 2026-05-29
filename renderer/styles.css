@@ -4080,4 +4080,230 @@ body.popout-call .popout-stage > .draw-toolbar {
   accent-color: var(--accent);
 }
 
+/* ============================================================
+   v2 Phase 4.1 — call view: tiles, captions, drawing toolbar.
+   Same DOM hooks (.tile, .tile.speaking, .tile-label, .tile-hand,
+   .tile-actions, .captions, .caption-line, .draw-toolbar,
+   .draw-toolbar .tool). app.js / livekit.js wiring unchanged.
+   ============================================================ */
+
+/* Tiles grid + each tile. */
+[data-ui="v2"] .tiles {
+  padding: 16px;
+  gap: 12px;
+}
+[data-ui="v2"] .tile {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-card);
+}
+[data-ui="v2"] .tile.whiteboard {
+  background: #fdfcf8; /* design keeps the warm off-white whiteboard surface */
+}
+
+/* Active-speaker ring switches from accent (indigo) to live (teal)
+   per the design — speaking is a "live state", distinct from any
+   accent-coded UI affordance. */
+[data-ui="v2"] .tile.speaking {
+  outline: 2px solid var(--live);
+  outline-offset: -2px;
+  box-shadow: 0 0 0 4px var(--live-dim);
+}
+
+/* Bottom-left mute/name pill. */
+[data-ui="v2"] .tile-label {
+  background: rgba(8, 8, 10, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 8px;
+  letter-spacing: 0;
+}
+
+/* Top-right tile action chips (annotate / spotlight / fullscreen /
+   pop out). Keep them dark + frosted so they read on any video. */
+[data-ui="v2"] .tile-actions button {
+  background: rgba(8, 8, 10, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--tx-hi);
+  border-radius: 8px;
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 12px;
+}
+[data-ui="v2"] .tile-actions button:hover {
+  background: rgba(8, 8, 10, 0.78);
+}
+[data-ui="v2"] .tile.annotating .tile-action-annotate {
+  background: var(--accent);
+  color: var(--bg-0);
+}
+[data-ui="v2"] .tile.fullscreen-mode .tile-action-fullscreen,
+[data-ui="v2"] .tile.spotlighted .tile-action-spotlight,
+[data-ui="v2"] .tile-action-popout.active {
+  background: var(--accent-dim);
+  color: var(--accent-tx);
+}
+
+/* Raised-hand badge — design uses the away (yellow-amber) token
+   for a "wait" signal rather than the legacy bright yellow. The
+   actual icon is rendered as SVG by app.js since Phase 1. */
+[data-ui="v2"] .tile-hand {
+  background: var(--away);
+  color: #1a1300;
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: var(--sh-card);
+}
+[data-ui="v2"] .tile-hand svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+/* Drawing toolbar — bottom-center floating pill on the call stage.
+   Same fixed-position behavior as legacy; retokens surface + tools. */
+[data-ui="v2"] .draw-toolbar {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-pop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-radius: 13px;
+  padding: 5px;
+  gap: 3px;
+}
+[data-ui="v2"] .draw-toolbar .draw-target {
+  font-family: var(--font);
+  color: var(--tx-lo);
+  font-size: 12px;
+  padding: 0 9px 0 4px;
+}
+/* Drawing-toolbar tool buttons carry an SVG + <span> text label
+   (Select, Pen, Line, Arrow, Rect, Ellipse, Diamond, Eraser). Keep
+   the legacy icon+label layout — fixed-width 34px squares clipped
+   the label and looked unfinished. Natural-width chips with bg-3
+   hover and accent fill on active match the rest of the v2 chrome. */
+[data-ui="v2"] .draw-toolbar .tool {
+  height: 30px;
+  min-height: 0;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--tx-mid);
+  box-shadow: none;
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+[data-ui="v2"] .draw-toolbar .tool svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+[data-ui="v2"] .draw-toolbar .tool:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .draw-toolbar .tool.active {
+  background: var(--accent);
+  color: var(--bg-0);
+  box-shadow: none;
+}
+[data-ui="v2"] .draw-toolbar input[type="color"] {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+}
+[data-ui="v2"] .draw-toolbar input[type="range"] {
+  accent-color: var(--accent);
+}
+/* Buttons in the draw-toolbar that aren't .tool (Clear, Done, zoom
+   in/out/reset, Add note) — same chrome as legacy ctrl ghost. */
+[data-ui="v2"] .draw-toolbar button:not(.tool):not(input) {
+  height: 28px;
+  min-height: 0;
+  padding: 0 10px;
+  border-radius: 7px;
+  background: var(--bg-2);
+  color: var(--tx-mid);
+  border: 1px solid var(--line-soft);
+  box-shadow: none;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+}
+[data-ui="v2"] .draw-toolbar button:not(.tool):not(input):hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+  border-color: var(--line);
+}
+
+/* Live captions panel. */
+[data-ui="v2"] .captions {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-card);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-ui="v2"] .captions-header {
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--tx-faint);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 9px 13px;
+}
+[data-ui="v2"] .captions-list {
+  font-family: var(--font);
+  font-size: 13px;
+  padding: 10px 13px;
+}
+[data-ui="v2"] .caption-line {
+  gap: 10px;
+}
+[data-ui="v2"] .caption-from {
+  color: var(--tx-mid);
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12.5px;
+}
+[data-ui="v2"] .caption-text {
+  color: var(--tx-mid);
+  font-family: var(--font);
+}
+[data-ui="v2"] .caption-self .caption-from {
+  color: var(--accent-tx);
+}
+[data-ui="v2"] .caption-interim .caption-text {
+  color: var(--tx-lo);
+}
+
+/* CC toggle active state — match the design's "captions on" affordance.
+   The CC button is .ctrl.icon-only so it picks up Phase 3.1 chrome;
+   the .active variant just needs the accent tint. */
+[data-ui="v2"] #btn-cc.active {
+  background: var(--accent-dim);
+  color: var(--accent-tx);
+}
+
 
