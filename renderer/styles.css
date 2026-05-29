@@ -5603,10 +5603,12 @@ body.popout-call .popout-stage > .draw-toolbar {
 .v2-only,
 .v2-call-only { display: none; }
 [data-ui="v2"] .v2-only { display: flex; }
-/* In-call pills appear only while the in-call cluster is mounted
-   (i.e. #btn-leave is not .hidden). :has() is supported in
-   Chromium-based Electron. */
-[data-ui="v2"] .header-actions:has(#btn-leave:not(.hidden)) .v2-call-only {
+/* v2-call-only chips appear whenever body.huddle-in-call is set.
+   (The :has(#btn-leave) approach we tried first stopped working
+   once setupCallDock() moved #btn-leave into a sibling dock —
+   the selector then has nothing to match against inside
+   .header-actions.) */
+[data-ui="v2"] body.huddle-in-call .v2-call-only {
   display: inline-flex;
 }
 
@@ -5633,6 +5635,20 @@ body.popout-call .popout-stage > .draw-toolbar {
   background: var(--live);
   animation: huddle-pulse 1.6s infinite;
 }
+
+/* People count + elapsed timer — design's mono span between the
+   LIVE pill and the LiveKit pill ("4 people · 12:04"). */
+[data-ui="v2"] .huddle-call-meta {
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 11.5px;
+  color: var(--tx-lo);
+  user-select: none;
+  flex-shrink: 0;
+}
+[data-ui="v2"] .huddle-call-meta-sep { opacity: 0.5; }
 
 /* LiveKit pill */
 [data-ui="v2"] .huddle-call-livekit-pill {

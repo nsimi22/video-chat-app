@@ -151,6 +151,78 @@
     // clicks in the capture phase so the legacy openDrawer()
     // handler never fires; route to the grid instead.
     redirectLegacyCalendar();
+
+    // Wire the call header's "N people · MM:SS" meta — peer count
+    // from #tiles[data-kind] DOM and a per-second timer started
+    // when body.huddle-in-call is set.
+    setupCallMeta();
+  }
+
+  // Track call start time + render "N people · MM:SS" while body
+  // has .huddle-in-call. Pure DOM-driven, no app.js state coupling.
+  function setupCallMeta() {
+    const countEl = document.querySelector('.huddle-call-meta-count');
+    const timerEl = document.querySelector('.huddle-call-meta-timer');
+    if (!countEl || !timerEl) return;
+    const tilesEl = document.getElementById('tiles');
+    let startedAt = null;
+    let tick = null;
+
+    const fmtElapsed = (ms) => {
+      const total = Math.floor(ms / 1000);
+      const m = Math.floor(total / 60);
+      const s = total % 60;
+      const mm = String(m).padStart(2, '0');
+      const ss = String(s).padStart(2, '0');
+      return `${mm}:${ss}`;
+    };
+
+    const peerCount = () => {
+      if (!tilesEl) return 0;
+      // Count camera tiles (own self + remote cams); exclude
+      // screen-share + whiteboard tiles. Some peers may not have
+      // a camera tile (mic-only); for them we'd need state from
+      // the mesh — accepted limitation.
+      const seen = new Set();
+      tilesEl.querySelectorAll('.tile').forEach((t) => {
+        const kind = t.dataset.kind;
+        if (kind === 'cam' || kind === 'self') {
+          const uid = t.dataset.userId || t.dataset.key;
+          if (uid) seen.add(uid);
+        }
+      });
+      return seen.size;
+    };
+
+    const render = () => {
+      const n = peerCount();
+      countEl.textContent = `${n} ${n === 1 ? 'person' : 'people'}`;
+      if (startedAt) timerEl.textContent = fmtElapsed(Date.now() - startedAt);
+      else timerEl.textContent = '00:00';
+    };
+
+    const onBodyClass = () => {
+      const inCall = document.body.classList.contains('huddle-in-call');
+      if (inCall && !startedAt) {
+        startedAt = Date.now();
+        render();
+        if (!tick) tick = setInterval(render, 1000);
+      } else if (!inCall && startedAt) {
+        startedAt = null;
+        if (tick) { clearInterval(tick); tick = null; }
+        render();
+      }
+    };
+    onBodyClass();
+    new MutationObserver(onBodyClass).observe(document.body, {
+      attributes: true, attributeFilter: ['class']
+    });
+    // Watch tile additions/removals so peer count tracks joins/leaves.
+    if (tilesEl) {
+      new MutationObserver(render).observe(tilesEl, {
+        childList: true, subtree: false,
+      });
+    }
   }
 
   function redirectLegacyCalendar() {
