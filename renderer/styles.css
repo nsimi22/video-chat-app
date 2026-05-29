@@ -1840,6 +1840,14 @@ body.has-fullscreen-tile { overflow: hidden; }
   margin: 0;
   z-index: 50;
 }
+/* Under v2, while on the call channel of an active call, the bottom
+   ~80px is occupied by .huddle-call-dock (Mute/Camera/Share/…/Leave).
+   At `bottom: 24px` the drawing toolbar would sit ON TOP of the dock
+   and cover its center controls. Lift the toolbar above the dock
+   so both surfaces stay reachable during screen-share annotation. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .draw-toolbar:not(.hidden) {
+  bottom: 110px;
+}
 
 /* Live captions panel. Sits between the tile grid and the messages
    list so it can soak up vertical space without competing with the
