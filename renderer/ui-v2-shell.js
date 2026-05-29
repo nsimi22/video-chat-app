@@ -82,6 +82,46 @@
     });
   }
 
+  // Custom titlebar (UI v2 design 1.1). Paints the workspace label
+  // ("Huddle — <workspace>") from .workspace-name (the sidebar
+  // header that app.js writes the team name to on welcome and
+  // team-switch), and wires the ⌘K search pill to the command
+  // palette. The label re-paints only when the .workspace-name
+  // element's text actually mutates — observing the whole document
+  // body subtree (the previous approach) fired on every keystroke /
+  // typing indicator / reaction render, which is a real perf
+  // foot-gun under active chat.
+  function wireCustomTitlebar() {
+    const labelEl = document.getElementById('huddle-titlebar-label');
+    const searchBtn = document.getElementById('huddle-titlebar-search');
+    if (searchBtn && !searchBtn.dataset.wired) {
+      searchBtn.dataset.wired = '1';
+      searchBtn.addEventListener('click', () => {
+        window.HuddleCommandPalette?.open?.();
+      });
+    }
+    if (!labelEl) return;
+    const teamEl = document.querySelector('.workspace-name');
+    const paintLabel = () => {
+      const team = teamEl?.textContent?.trim();
+      // The initial text is literally "Huddle" — drop the "— Huddle"
+      // suffix in that case so the label reads as just "Huddle"
+      // before sign-in (otherwise: "Huddle — Huddle").
+      labelEl.textContent = (team && team !== 'Huddle') ? `Huddle — ${team}` : 'Huddle';
+    };
+    paintLabel();
+    if (teamEl && 'MutationObserver' in window) {
+      // Scope the observer to .workspace-name only. characterData on
+      // a small element is cheap; without `subtree` we don't watch
+      // anything else.
+      new MutationObserver(paintLabel).observe(teamEl, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+    }
+  }
+
   function paintMeBadge() {
     const railMe = document.getElementById('huddle-rail-me');
     const me = document.getElementById('me');
@@ -93,6 +133,20 @@
   }
 
   function init() {
+    // Stamp the OS platform on <body> so CSS can scope the custom
+    // titlebar to Mac+Win (Linux falls back to the OS frame). Driven
+    // by the preload's `window.huddle.platform` (= process.platform).
+    // Safe in legacy mode too — the v2 titlebar CSS gates on
+    // [data-ui="v2"] before the platform attribute kicks in.
+    const platform = window.huddle?.platform || '';
+    if (platform) document.body.dataset.platform = platform;
+
+    // Custom titlebar: paint the workspace label + wire the search
+    // pill to open the command palette. The search pill only fires
+    // on Mac+Win (the bar is display:none on Linux), so wiring it
+    // unconditionally is harmless on Linux — no clicks reach it.
+    wireCustomTitlebar();
+
     const rail = document.querySelector('.huddle-rail-v2');
     if (rail) {
       paintIcons(rail);

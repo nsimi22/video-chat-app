@@ -31,6 +31,16 @@ ipcRenderer.on('protocol-url', (_e, url) => {
 });
 
 contextBridge.exposeInMainWorld('huddle', {
+  // Synchronously-known platform string (matches Node's
+  // `process.platform`: 'darwin', 'win32', 'linux', ...). Used by the
+  // renderer to scope CSS for the custom titlebar (Mac+Win get one,
+  // Linux falls back to the OS frame). Exposed as a value, not a
+  // function, so initial-paint code can read it without an await.
+  platform: process.platform,
+  // Toggle window-level fullscreen (UI v2 design 2.3). Distinct
+  // from per-tile fullscreen which only inflates one screen-share
+  // tile over the existing window.
+  toggleFullscreen: () => ipcRenderer.invoke('toggle-window-fullscreen'),
   getScreenSources: () => ipcRenderer.invoke('get-screen-sources'),
   getSupabaseConfig: () => ipcRenderer.invoke('get-supabase-config'),
   fetchProxy: (req) => ipcRenderer.invoke('fetch-proxy', req),

@@ -91,6 +91,7 @@ const els = {
   btnLeave: $('#btn-leave'),
   btnPopoutCall: $('#btn-popout-call'),
   btnLayout: $('#btn-layout'),
+  btnFullscreen: $('#btn-fullscreen'),
   btnHand: $('#btn-hand'),
   btnReact: $('#btn-react'),
   reactPopover: $('#react-popover'),
@@ -2266,6 +2267,7 @@ function renderCallHeader() {
   const ccSupported = !!window.HuddleTranscript?.TranscriptManager?.isSupported();
   els.btnCc?.classList.toggle('hidden', !inCallHere || !ccSupported);
   els.btnPopoutCall.classList.toggle('hidden', !inCallHere);
+  els.btnFullscreen?.classList.toggle('hidden', !inCallHere);
   // Layout switcher visibility is driven by refreshLayoutSwitcherUi
   // (contextual on screen-share presence); skip the blanket in-call
   // toggle here — refresh recomputes the right state.
@@ -4611,6 +4613,17 @@ function wireControls() {
   els.btnLeave.onclick = leaveCall;
   els.btnPopoutCall.onclick = popOutCurrentCall;
   if (els.btnLayout) els.btnLayout.onclick = toggleForceGridLayout;
+  if (els.btnFullscreen) {
+    els.btnFullscreen.onclick = async () => {
+      try {
+        const next = await window.huddle?.toggleFullscreen?.();
+        els.btnFullscreen.classList.toggle('active', !!next);
+        els.btnFullscreen.setAttribute('aria-pressed', next ? 'true' : 'false');
+      } catch (err) {
+        console.warn('toggleFullscreen failed', err);
+      }
+    };
+  }
   if (els.btnHand) els.btnHand.onclick = toggleSelfHand;
   if (els.pinnedBtn) els.pinnedBtn.onclick = () => state.chat?.openPinnedDrawer();
   if (els.pinnedClose) els.pinnedClose.onclick = closePinnedDrawer;

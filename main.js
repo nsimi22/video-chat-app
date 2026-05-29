@@ -97,6 +97,35 @@ function deliverProtocolUrl(url) {
   pendingProtocolUrls.push(url);
 }
 
+// Custom titlebar (UI v2 design item 1.1). Mac uses `hiddenInset` so
+// traffic-lights still render natively in their normal spot while the
+// renderer paints its own bar to the right. Windows uses titleBarOverlay
+// so the renderer-painted bar's left side shows window control overlays
+// in our --bg-0 chrome. Linux keeps the default OS frame this iteration
+// — cross-platform custom titlebars on Linux are notoriously fragile
+// (window manager variance) and the design ships Mac+Win first.
+function customTitlebarOptions() {
+  if (process.platform === 'darwin') {
+    return {
+      titleBarStyle: 'hiddenInset',
+      trafficLightPosition: { x: 12, y: 11 },
+    };
+  }
+  if (process.platform === 'win32') {
+    return {
+      titleBarStyle: 'hidden',
+      titleBarOverlay: {
+        // Match the design's `--bg-0` warm-charcoal so the overlay
+        // blends with our custom titlebar background.
+        color: '#2a2723',
+        symbolColor: '#f0ece6',
+        height: 36,
+      },
+    };
+  }
+  return {};
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -105,6 +134,7 @@ function createWindow() {
     minHeight: 640,
     backgroundColor: '#1a1d21',
     title: 'Huddle',
+    ...customTitlebarOptions(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -270,6 +300,23 @@ ipcMain.handle('get-screen-sources', async () => {
 });
 
 ipcMain.handle('get-supabase-config', () => ({ url: SUPABASE_URL, anonKey: SUPABASE_KEY }));
+
+// Window-level fullscreen toggle (UI v2 design item 2.3). The
+// renderer's call header surfaces an "expand" button that calls this
+// — distinct from the per-tile fullscreen which only inflates one
+// screen-share tile over the existing window. Returns the new state
+// so the renderer can update its button affordance immediately.
+ipcMain.handle('toggle-window-fullscreen', (event) => {
+  const wc = event.sender;
+  // Find which BrowserWindow owns this webContents — either the main
+  // window or a popout. Falls back to mainWindow for safety, though
+  // every renderer is associated with some window.
+  const target = BrowserWindow.fromWebContents(wc) || mainWindow;
+  if (!target || target.isDestroyed()) return false;
+  const next = !target.isFullScreen();
+  target.setFullScreen(next);
+  return next;
+});
 
 // Generic fetch proxy. Some third-party APIs (notably Atlassian Cloud)
 // don't permit browser-origin requests via CORS; routing through main lets
