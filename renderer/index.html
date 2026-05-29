@@ -220,6 +220,11 @@
           <span>Saved</span>
           <span id="saved-count" class="count">0</span>
         </button>
+        <button id="open-mentions" class="sidebar-quick-link" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></svg>
+          <span>Mentions &amp; reactions</span>
+          <span id="mentions-count" class="count hidden">0</span>
+        </button>
         <button id="open-calendar" class="sidebar-quick-link" type="button">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
           <span>Calendar</span>
@@ -812,6 +817,22 @@
       </div>
       <div id="saved-labels" class="saved-labels"></div>
       <div id="saved-list" class="saved-list"></div>
+    </div>
+
+    <!-- Mentions inbox drawer (UI v2 4.1): list of every @me mention
+         + @here/@channel broadcast in channels you belong to. Click
+         a row to focus the channel + scroll to the message. Opening
+         the drawer marks all mentions read; the badge on the sidebar
+         row tracks unread count from `mentions_last_read_at` on
+         the user's profile row. -->
+    <div id="mentions-drawer" class="saved-drawer hidden" aria-hidden="true">
+      <div class="saved-drawer-head">
+        <span>Mentions &amp; reactions</span>
+        <button id="mentions-close" class="icon-only ghost" title="Close" aria-label="Close mentions inbox">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div id="mentions-list" class="saved-list"></div>
     </div>
 
     <!-- Calendar drawer: upcoming Huddle scheduled-calls + events from

@@ -14,8 +14,8 @@
 //   - prev / next / today nav; "New event" opens existing schedule modal
 (function () {
   const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const HOUR_START = 8;
-  const HOUR_END = 18;       // 6pm
+  const HOUR_START = 7;      // 7am — covers early stand-ups
+  const HOUR_END = 22;       // 10pm — covers late international calls
   const HOUR_HEIGHT = 56;
   const GUTTER = 60;
   let root = null;
