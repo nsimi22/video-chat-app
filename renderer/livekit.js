@@ -448,10 +448,30 @@
       return typeof identity === 'string' && identity.includes('::popout::');
     }
 
+    // LiveKit participant.metadata is a free-form string. Mobile
+    // clients are expected to publish `{"platform":"mobile"}` on
+    // connect (`room.localParticipant.setMetadata(...)`). Tolerate
+    // missing / non-JSON metadata — most desktop participants won't
+    // set anything and the desktop tile renders the same as today.
+    _parsePlatform(metadata) {
+      if (!metadata || typeof metadata !== 'string') return null;
+      try {
+        const parsed = JSON.parse(metadata);
+        return typeof parsed?.platform === 'string' ? parsed.platform : null;
+      } catch {
+        return null;
+      }
+    }
+
     _onParticipantConnected(p) {
       if (this._isPopoutIdentity(p.identity)) return;
       this.dispatchEvent(new CustomEvent('peer-joined', {
-        detail: { id: p.identity, name: p.name || p.identity, color: null },
+        detail: {
+          id: p.identity,
+          name: p.name || p.identity,
+          color: null,
+          platform: this._parsePlatform(p.metadata),
+        },
       }));
       // The new joiner doesn't see our current mic/cam state — LK carries
       // an isMuted flag on each publication, but the renderer reads from

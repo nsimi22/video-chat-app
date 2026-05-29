@@ -2709,6 +2709,20 @@ body.popout-call .popout-stage > .draw-toolbar {
   border: 2px solid var(--bg-0);
   animation: huddle-pulse 1.6s infinite;
 }
+/* Calls rail item is the only nav destination that doesn't have a
+   built-out view yet — when idle, surface it as muted + non-clickable
+   rather than letting it light up the active indicator. Click is
+   intercepted in JS (ui-v2-shell.js:setupCallsRailItem) so we can
+   keep hover-affordances tame without disabling the element entirely
+   (which would also drop the tooltip). */
+[data-ui="v2"] .huddle-rail-item.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+[data-ui="v2"] .huddle-rail-item.is-disabled:hover {
+  background: transparent;
+  color: var(--tx-lo);
+}
 [data-ui="v2"] .huddle-rail-me {
   width: 34px;
   height: 34px;
@@ -4113,6 +4127,72 @@ body.popout-call .popout-stage > .draw-toolbar {
   outline: 2px solid var(--live);
   outline-offset: -2px;
   box-shadow: 0 0 0 4px var(--live-dim);
+}
+
+/* 3-bar speaker indicator: top-right of speaking cam tiles. Always
+   in the DOM (huddle-app.js makeTile); hidden until .tile.speaking
+   lights up. Staggered animation delays keep the bars feeling lively
+   without strobing. */
+.tile-speaker-bars {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: none;
+  align-items: flex-end;
+  gap: 3px;
+  height: 18px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: rgba(8, 8, 10, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 24;
+  pointer-events: none;
+}
+.tile-speaker-bars span {
+  display: block;
+  width: 3px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--live, #4ec9d0);
+  transform-origin: bottom;
+  animation: huddle-speaker-bar 0.9s ease-in-out infinite;
+}
+.tile-speaker-bars span:nth-child(2) { animation-delay: 0.15s; }
+.tile-speaker-bars span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes huddle-speaker-bar {
+  0%, 100% { transform: scaleY(0.35); }
+  50%      { transform: scaleY(1.7); }
+}
+[data-ui="v2"] .tile.speaking .tile-speaker-bars { display: inline-flex; }
+
+/* "Mobile" pip on tiles where the peer joined from the mobile app.
+   Bottom-right corner so it doesn't collide with the mute/name pill
+   at bottom-left or the speaker bars at top-right. Triggered by
+   data-platform="mobile" stamped in commitStreamAsCamera. The phone
+   icon is rendered as a left-padded inline-SVG background-image so
+   the whole chip stays a single pseudo-element. */
+[data-ui="v2"] .tile[data-platform="mobile"]::after {
+  content: "Mobile";
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px 4px 24px;
+  border-radius: 8px;
+  background:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='7' y='2' width='10' height='20' rx='2'/><line x1='12' y1='18' x2='12.01' y2='18'/></svg>") 7px center / 11px 14px no-repeat,
+    rgba(8, 8, 10, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  z-index: 24;
+  pointer-events: none;
 }
 
 /* Bottom-left mute/name pill. */

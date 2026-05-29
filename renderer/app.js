@@ -252,6 +252,10 @@ const state = {
   // Local hand-raised state (mirrored from huddle.raisedHands when remote
   // peers toggle, written here when the local user toggles).
   raisedHands: new Set(),
+  // Per-peer platform marker (mobile / desktop / null), sourced from
+  // LiveKit participant.metadata. Drives the bottom-right "Mobile"
+  // pip on remote video tiles. Cleared on peer-left / leaveCall.
+  peerPlatforms: new Map(),
   // Teardown for the React popover's document-level listeners. Cleared on
   // teardownTeam so re-joining a team doesn't accumulate handlers.
   reactPopoverCleanup: null,
@@ -2248,9 +2252,11 @@ function onCallPeerJoined(peer) {
   // Per-call peer joined; the call client already opened the LiveKit
   // subscription — we just need to render an empty tile they can stream
   // into. Track callbacks fill in the actual stream once it arrives.
-  // (For now, the track event creates the tile imperatively; this is
-  // a no-op hook left for future "show participant before their first
-  // frame" UX.)
+  // Stash any platform marker (mobile/desktop) so the cam tile can
+  // surface a "Mobile" pip when commitStreamAsCamera builds it.
+  if (peer?.id && peer.platform) {
+    state.peerPlatforms.set(peer.id, peer.platform);
+  }
 }
 
 function onCallPeerLeft(peerId) {
@@ -2270,6 +2276,7 @@ function onCallConnectionFailed(detail) {
 function removePersonFromCall(peerId) {
   removeTile(`peer:${peerId}`);
   state.raisedHands.delete(peerId);
+  state.peerPlatforms.delete(peerId);
   if (state.speakingPeer === peerId) setSpeakingPeer(null);
   // Drop any screen tiles owned by this peer too.
   for (const [key, tile] of state.tilesByKey.entries()) {
@@ -2914,6 +2921,19 @@ function makeTile({ key, label, kind, userId }) {
   lbl.textContent = label;
   if (userId) attachProfileTrigger(lbl, userId);
   tile.appendChild(lbl);
+  // Speaking-state 3-bar indicator on camera tiles (self + remote
+  // cam). Always-rendered DOM, hidden by default via CSS; only
+  // visible while .tile.speaking. Screen / whiteboard tiles don't
+  // carry audio levels, so skip.
+  if (kind === 'self' || kind === 'remote' || kind === 'cam') {
+    const bars = document.createElement('span');
+    bars.className = 'tile-speaker-bars';
+    bars.setAttribute('aria-hidden', 'true');
+    bars.appendChild(document.createElement('span'));
+    bars.appendChild(document.createElement('span'));
+    bars.appendChild(document.createElement('span'));
+    tile.appendChild(bars);
+  }
   if (kind === 'screen' || kind === 'whiteboard') {
     const actions = document.createElement('div');
     actions.className = 'tile-actions';
@@ -3911,6 +3931,7 @@ function resetCallEphemera() {
   clearSpotlight();
   setSpeakingPeer(null);
   state.raisedHands.clear();
+  state.peerPlatforms.clear();
   if (els.btnHand) els.btnHand.classList.remove('active');
   clearAllReactions();
   syncTilesVisibility();
@@ -4093,6 +4114,10 @@ function commitStreamAsCamera(streamId) {
   const peer = state.huddle.peerInfo.get(pending.fromId);
   const tile = makeTile({ key, label: peer ? peer.name : 'guest', kind: 'remote', userId: pending.fromId });
   tile.querySelector('video').srcObject = pending.stream;
+  // Apply platform marker (Mobile pip) if this peer is on the mobile
+  // app. Sourced from LiveKit participant.metadata via peer-joined.
+  const platform = state.peerPlatforms.get(pending.fromId);
+  if (platform) tile.dataset.platform = platform;
   // Catch up on hand-raised state in case the broadcast arrived before the tile.
   if (state.raisedHands.has(pending.fromId)) setHandRaised(pending.fromId, true);
   // Catch up on mute / cam state too — same race: the mute-state

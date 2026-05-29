@@ -164,6 +164,46 @@
     // from #tiles[data-kind] DOM and a per-second timer started
     // when body.huddle-in-call is set.
     setupCallMeta();
+
+    // Calls rail item: pulsing live dot when in-call, disabled when
+    // idle, and a return-to-call click handler when active.
+    setupCallsRailItem();
+  }
+
+  // Mirror body.huddle-in-call onto the Calls rail item:
+  //   in-call  → .has-live (pulsing dot) + enabled + return-to-call
+  //   idle     → no dot + disabled (no destination yet — Calls view
+  //              isn't built; surfacing a click would be a dead end).
+  // The return click closes any open v2 overlay so the underlying
+  // call tile grid becomes visible — same effect as the existing
+  // return-dock back button (.huddle-call-return-back).
+  function setupCallsRailItem() {
+    const railItem = document.querySelector('.huddle-rail-item[data-view="calls"]');
+    if (!railItem) return;
+    const apply = () => {
+      const inCall = document.body.classList.contains('huddle-in-call');
+      railItem.classList.toggle('has-live', inCall);
+      railItem.classList.toggle('is-disabled', !inCall);
+      if (inCall) railItem.removeAttribute('aria-disabled');
+      else railItem.setAttribute('aria-disabled', 'true');
+    };
+    apply();
+    new MutationObserver(apply).observe(document.body, {
+      attributes: true, attributeFilter: ['class']
+    });
+    // Override the visual-only stub click handler in wireClicks() —
+    // when in-call, close overlays so the tile grid is on top. When
+    // idle, swallow the click + .is-active flip the stub applied.
+    railItem.addEventListener('click', (e) => {
+      const inCall = document.body.classList.contains('huddle-in-call');
+      if (!inCall) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        return;
+      }
+      window.HuddleAIPanel?.close?.();
+      window.HuddleCalendarGrid?.close?.();
+    }, true); // capture, before wireClicks' bubble-phase handler
   }
 
   // Track call start time + render "N people · MM:SS" while body
