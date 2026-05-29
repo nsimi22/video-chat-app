@@ -225,4 +225,9 @@
       else open();
     }
   });
+
+  // Expose for programmatic triggers (e.g. the custom titlebar's
+  // ⌘K search pill in ui-v2-shell.js). Public API mirrors
+  // HuddleCalendarGrid / HuddleAIPanel.
+  window.HuddleCommandPalette = { open, close };
 })();

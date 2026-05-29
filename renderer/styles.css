@@ -6499,4 +6499,134 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   margin-bottom: 6px;
 }
 
+/* ============================================================
+   Custom titlebar (UI v2 design 1.1). Hidden by default; the
+   <body data-platform="..."> attribute set by ui-v2-shell.js
+   opens it on Mac (darwin) and Windows (win32). Linux stays on
+   the default OS frame — this iteration ships Mac+Win first.
+   Native traffic-lights or window-control overlays paint over
+   the left side of the bar (main.js positions them); the
+   renderer leaves a 78px traffic spacer to keep our label clear.
+   ============================================================ */
+.huddle-titlebar { display: none; }
+[data-ui="v2"] body[data-platform="darwin"] .huddle-titlebar,
+[data-ui="v2"] body[data-platform="win32"] .huddle-titlebar {
+  display: flex;
+  align-items: center;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 36px;
+  background: var(--bg-0);
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--font);
+  z-index: 1000;
+  /* Whole bar is a drag region. Children opt out below. */
+  -webkit-app-region: drag;
+}
+/* Push the page content down so it doesn't slide under the bar.
+   `box-sizing: border-box` so the padding eats INTO the 100vh body
+   instead of adding to it. The .app grid uses an explicit
+   `height: 100vh` (see line 170-ish) which ignores its parent's
+   box, so we ALSO have to subtract 36px from its height (and the
+   grid-template-rows) — otherwise the bottom clips off-screen. */
+[data-ui="v2"] body[data-platform="darwin"],
+[data-ui="v2"] body[data-platform="win32"] {
+  padding-top: 36px;
+  box-sizing: border-box;
+}
+[data-ui="v2"] body[data-platform="darwin"] .app,
+[data-ui="v2"] body[data-platform="win32"] .app {
+  height: calc(100vh - 36px);
+  grid-template-rows: calc(100vh - 36px);
+}
+/* Login backdrop is fixed: inset(0); it'll cover the titlebar
+   unless we explicitly nudge it. Push its top edge down too. */
+[data-ui="v2"] body[data-platform="darwin"] .login-backdrop,
+[data-ui="v2"] body[data-platform="win32"] .login-backdrop {
+  top: 36px;
+}
+/* Spacer for the traffic-lights / overlay region. Mac uses ~78px
+   (3 buttons at 12px + 8px gap + outer padding); Win10/11
+   titleBarOverlay reserves ~138px on the right by default, but
+   we run hidden+overlay on Windows so the overlay sits at the
+   right edge — leave the left spacer Mac-sized. */
+[data-ui="v2"] body[data-platform="darwin"] .huddle-titlebar-traffic {
+  width: 78px;
+  flex-shrink: 0;
+}
+[data-ui="v2"] body[data-platform="win32"] .huddle-titlebar-traffic {
+  width: 12px;
+  flex-shrink: 0;
+}
+[data-ui="v2"] .huddle-titlebar-label {
+  flex: 1;
+  text-align: center;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--tx-lo);
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Windows reserves the right edge for native min/max/close
+   overlay buttons. Leave space so they don't sit on top of the
+   search pill. */
+[data-ui="v2"] body[data-platform="win32"] .huddle-titlebar {
+  padding-right: 138px;
+}
+[data-ui="v2"] .huddle-titlebar-search {
+  -webkit-app-region: no-drag;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  min-height: 0;
+  padding: 0 8px 0 9px;
+  margin-right: 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  color: var(--tx-lo);
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+[data-ui="v2"] .huddle-titlebar-search:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .huddle-titlebar-search svg {
+  flex-shrink: 0;
+}
+[data-ui="v2"] .huddle-titlebar-search-kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  height: 17px;
+  border-radius: 4px;
+  background: var(--bg-1);
+  border: 1px solid var(--line-soft);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--tx-faint);
+  letter-spacing: 0;
+}
+
+/* Window-fullscreen toggle (2.3) active state — same accent treatment
+   as the other toggle-state buttons in the call header. */
+#btn-fullscreen.active {
+  background: var(--accent);
+  color: white;
+}
+[data-ui="v2"] #btn-fullscreen.active {
+  background: var(--accent-dim);
+  color: var(--accent-tx);
+}
+
 
