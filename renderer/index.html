@@ -1,5 +1,8 @@
 <!doctype html>
-<html lang="en">
+<!-- v2 UI is now the default. To temporarily fall back to the
+     legacy chrome, remove data-ui="v2" via DevTools or load with
+     ?ui=legacy (the toggle script honors it). -->
+<html lang="en" data-ui="v2">
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy"
@@ -22,6 +25,33 @@
   <body>
     <!-- Login / sign-up flow (email -> OTP -> profile -> team picker) -->
     <div id="login" class="modal-backdrop login-backdrop">
+      <!-- v2 sign-in brand panel: renders only when [data-ui="v2"] is
+           set. The huddle-signin-brand-v2 element sits to the LEFT of
+           the form column (.login-modal). In legacy mode it's hidden
+           via CSS and the modal stays centered as before. Feature-pill
+           SVGs are painted by ui-v2-shell.js from HuddleIcons. -->
+      <div class="huddle-signin-brand-v2" aria-hidden="true">
+        <div class="huddle-signin-brand-top">
+          <svg width="34" height="34" viewBox="0 0 200 200">
+            <circle cx="100" cy="124" r="15" fill="var(--accent)"/>
+            <g fill="none" stroke="var(--tx-hi)" stroke-width="16" stroke-linecap="round">
+              <path d="M 52 124 A 48 48 0 0 1 148 124"/>
+              <path d="M 30 124 A 70 70 0 0 1 92 54"/>
+              <path d="M 108 54 A 70 70 0 0 1 170 124"/>
+            </g>
+          </svg>
+          <span class="huddle-signin-brand-word">Huddle</span>
+        </div>
+        <div class="huddle-signin-brand-mid">
+          <h1 class="huddle-signin-brand-h1">Chat, call, and draw — without leaving the conversation.</h1>
+          <p class="huddle-signin-brand-p">Every channel becomes a call with one click. Share screens, annotate live, and let AI catch you up.</p>
+        </div>
+        <div class="huddle-signin-brand-pills">
+          <span class="huddle-signin-pill" data-icon="video">WebRTC calls</span>
+          <span class="huddle-signin-pill" data-icon="board">Live whiteboard</span>
+          <span class="huddle-signin-pill" data-icon="sparkles">AI built in</span>
+        </div>
+      </div>
       <div class="modal login-modal">
         <div class="login-hero">
           <!-- Canonical huddle mark: brand-blue dot + three concentric
@@ -81,6 +111,22 @@
           <p class="hint">Check your email — the message has a verification code near the top.
             Type it below. (Don't click the magic link; it can't redirect into the desktop app.)</p>
           <label>Code</label>
+          <!-- v2 8-digit split OTP row. Rendered only when [data-ui="v2"].
+               Each digit input mirrors its value into the legacy
+               #auth-otp input (hidden under v2) and the existing
+               #auth-verify click pathway fires when all 8 are entered.
+               Wiring is in ui-v2-shell.js. Length matches the project's
+               Supabase OTP config (legacy #auth-otp accepts up to 10). -->
+          <div class="huddle-otp-digits-v2" aria-label="8-digit verification code">
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" autocomplete="one-time-code" aria-label="Digit 1" />
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" aria-label="Digit 2" />
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" aria-label="Digit 3" />
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" aria-label="Digit 4" />
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" aria-label="Digit 5" />
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" aria-label="Digit 6" />
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" aria-label="Digit 7" />
+            <input class="huddle-otp-digit-v2" maxlength="1" inputmode="numeric" aria-label="Digit 8" />
+          </div>
           <input id="auth-otp" type="text" inputmode="numeric" autocomplete="one-time-code"
                  placeholder="••••••" maxlength="10" />
           <div class="btn-row">
@@ -119,6 +165,37 @@
     </div>
 
     <div id="app" class="app hidden">
+      <!-- v2 UI: 68px primary nav rail. Rendered only when
+           [data-ui="v2"] is set on <html>. Hidden by CSS otherwise,
+           so the legacy single-sidebar layout is untouched.
+           Icons are populated by ui-v2-shell.js from HuddleIcons,
+           and clicks bridge to existing legacy buttons (calendar,
+           settings, whiteboard) until the full view-router lands in
+           a later Phase 2 sub-step. -->
+      <nav class="huddle-rail-v2" aria-label="Primary navigation">
+        <div class="huddle-rail-brand" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 200 200">
+            <circle cx="100" cy="124" r="15" fill="var(--accent)"/>
+            <g fill="none" stroke="var(--tx-hi)" stroke-width="16" stroke-linecap="round">
+              <path d="M 52 124 A 48 48 0 0 1 148 124"/>
+              <path d="M 30 124 A 70 70 0 0 1 92 54"/>
+              <path d="M 108 54 A 70 70 0 0 1 170 124"/>
+            </g>
+          </svg>
+        </div>
+        <div class="huddle-rail-items">
+          <button class="huddle-rail-item is-active" data-view="chat" aria-label="Chat" title="Chat"></button>
+          <button class="huddle-rail-item" data-view="calls" aria-label="Calls" title="Calls"></button>
+          <button class="huddle-rail-item" data-view="whiteboard" aria-label="Whiteboard" title="Whiteboard"></button>
+          <button class="huddle-rail-item" data-view="calendar" aria-label="Calendar" title="Calendar"></button>
+          <button class="huddle-rail-item" data-view="ai" aria-label="Huddle AI" title="Huddle AI"></button>
+        </div>
+        <div class="huddle-rail-footer">
+          <button class="huddle-rail-item" data-action="settings" aria-label="Settings" title="Settings"></button>
+          <div id="huddle-rail-me" class="huddle-rail-me" aria-hidden="true"></div>
+        </div>
+      </nav>
+
       <!-- Sidebar -->
       <aside class="sidebar">
         <div class="workspace">
@@ -184,6 +261,27 @@
             <span id="channel-topic" class="channel-topic"></span>
           </div>
           <div class="header-actions">
+            <!-- v2 in-call header pills. Rendered always; CSS hides
+                 them when [data-ui="v2"] is off OR when no call is
+                 active in this channel (the .header-actions :has(
+                 #btn-leave:not(.hidden)) rule). LiveKit chip tags
+                 the call as cross-platform; LIVE pill carries the
+                 pulse + "LIVE" label per design. -->
+            <span class="huddle-call-live-pill v2-call-only" aria-hidden="true">
+              <span class="huddle-call-live-pill-dot"></span>
+              <span>LIVE</span>
+            </span>
+            <!-- v2 call meta: "N people · MM:SS". Populated by
+                 ui-v2-shell.js while body.huddle-in-call is set. -->
+            <span class="huddle-call-meta v2-call-only mono" aria-hidden="true">
+              <span class="huddle-call-meta-count">0 people</span>
+              <span class="huddle-call-meta-sep">·</span>
+              <span class="huddle-call-meta-timer">00:00</span>
+            </span>
+            <span class="huddle-call-livekit-pill v2-call-only" title="Calls run on LiveKit — works across desktop &amp; mobile" aria-hidden="true">
+              <span class="huddle-call-livekit-pill-dot"></span>
+              <span>LiveKit</span>
+            </span>
             <button id="channel-notify-btn" class="icon-only ghost hidden" title="Notification settings for this channel" aria-label="Notification settings">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
             </button>
@@ -264,6 +362,18 @@
             </button>
           </div>
           <div id="captions-list" class="captions-list"></div>
+          <!-- v2 captions footer: full-width ghost button that fills
+               the chat composer with /summarize so the user can
+               trigger the existing slash-command flow. Hidden under
+               legacy (no [data-ui="v2"]). -->
+          <div class="captions-footer v2-only">
+            <button id="captions-summarize-btn" class="captions-summarize" type="button">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="11" x2="20" y2="11"/><line x1="4" y1="16" x2="14" y2="16"/><circle cx="18.5" cy="17" r="3.2"/>
+              </svg>
+              <span>/summarize</span>
+            </button>
+          </div>
         </section>
 
         <!-- Drawing toolbar appears when a screen tile is focused for annotation. -->
@@ -741,5 +851,18 @@
     <script src="chat.js"></script>
     <script src="calendar.js"></script>
     <script src="app.js"></script>
+    <!-- v2 UI shell wiring: nav rail icon population + click bridges.
+         No-op when [data-ui="v2"] is not set (rail isn't rendered). -->
+    <script src="ui-v2-shell.js"></script>
+    <!-- v2 Cmd-K command palette. Only fires when [data-ui="v2"]
+         is set; lazy-creates its DOM on first open. -->
+    <script src="command-palette.js"></script>
+    <!-- v2 Huddle AI panel — dedicated conversation surface for the
+         nav-rail "Huddle AI" item. Lazy-builds DOM on first open. -->
+    <script src="ai-panel.js"></script>
+    <!-- v2 Calendar week-grid view — dedicated nav-rail destination
+         that pulls events from HuddleCalendar.listEvents() and lays
+         them out per huddle/calendar.jsx in the design bundle. -->
+    <script src="calendar-grid.js"></script>
   </body>
 </html>

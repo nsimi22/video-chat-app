@@ -5165,3 +5165,56 @@ async function openSourcePicker() {
   }
   els.sourcePicker.classList.remove('hidden');
 }
+
+// v2 UI accessor surface — the Huddle AI panel reads the AiClient and
+// active channel from here. Kept narrow on purpose so legacy code
+// paths don't accidentally couple to the panel.
+window.huddleApp = {
+  getAi: () => state.ai,
+  getMe: () => state.me,
+  getCalendar: () => state.calendar,
+  getActiveChannelId: () => state.chat?.currentChannel,
+  postIntoComposer: (text) => {
+    const ta = document.getElementById('composer-input');
+    if (!ta) return;
+    ta.value = text;
+    ta.focus();
+    try { ta.setSelectionRange(text.length, text.length); } catch (_) {}
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  },
+  // Summarize the live call transcript NOW (during the call) and
+  // post the recap into the current channel. Mirrors the post-call
+  // path in finalizeCallTranscript but doesn't tear the captions
+  // buffer down.
+  summarizeCallNow: async () => {
+    const lines = (state.cc?.lines || []).slice();
+    const channelId = state.cc?.forChannelId || state.chat?.currentChannel;
+    if (!channelId || lines.length === 0) {
+      alert('Nothing to summarize yet — captions need a few lines first.');
+      return;
+    }
+    const ai = state.ai;
+    if (!ai || !ai.isConfigured?.()) {
+      alert('AI provider not configured. Open Settings to add an API key.');
+      return;
+    }
+    lines.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    const transcript = lines.map((l) => `${l.fromName || 'someone'}: ${l.text}`).join('\n');
+    const system = "You are summarising a live call transcript captured via the browser's speech-to-text. Produce a concise recap (under 200 words) in markdown: 2-3 bullets of the main points discussed, then a 'Decisions' section if any were made, then 'Action items' (with owners if you can infer them). The transcript is rough — fix obvious recognition errors silently and don't quote raw lines.";
+    let result;
+    try {
+      result = await ai.chat({ system, messages: [{ role: 'user', content: transcript }] });
+    } catch (err) {
+      alert('Summarize failed: ' + (err.message || err));
+      return;
+    }
+    const body = `**Call recap (so far)**\n\n${result.text || '(no recap produced)'}`;
+    try {
+      await state.huddle?.sendAiMessage({
+        channelId, parentId: null, text: body, model: result.model,
+      });
+    } catch (err) {
+      console.warn('failed to post call recap', err);
+    }
+  },
+};

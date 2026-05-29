@@ -1,14 +1,17 @@
-// v2 UI toggle: enables [data-ui="v2"] on <html> when the renderer
-// is launched with ?ui=v2 in its URL. Runs as the first <script> in
-// <head> so the attribute is set before any stylesheets are applied,
-// avoiding a flash of legacy UI.
+// v2 UI toggle: v2 is the default since v0.24.0; this script lets
+// callers force legacy chrome via ?ui=legacy for triage or regression
+// triage. ?ui=v2 stays accepted as a no-op for parity. Runs as the
+// first <script> in <head> so any attribute change happens before
+// stylesheets evaluate.
 //
-// Lives in a standalone file so we don't need to relax the CSP
-// 'script-src' to allow inline scripts. Off by default; the default
-// flips to v2 in Phase 6 of docs/plans/ui-overhaul-v2_2026-05-28.md.
+// Standalone file so we don't need to relax the CSP 'script-src'
+// to allow inline scripts.
 (function () {
   try {
-    if (new URLSearchParams(location.search).get('ui') === 'v2') {
+    const flag = new URLSearchParams(location.search).get('ui');
+    if (flag === 'legacy' || flag === 'v1') {
+      document.documentElement.removeAttribute('data-ui');
+    } else if (flag === 'v2') {
       document.documentElement.setAttribute('data-ui', 'v2');
     }
   } catch (_) {

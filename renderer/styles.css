@@ -2603,3 +2603,3407 @@ body.popout-call .popout-stage > .draw-toolbar {
   100% { box-shadow: 0 0 0 0   transparent; }
 }
 
+/* ============================================================
+   v2 shell scaffold — NavRail + slim sidebar.
+   Hidden by default; only renders under [data-ui="v2"]. The
+   legacy single-sidebar layout coexists in v2 for now; full
+   ContextualPanel restyle (workspace switcher, Mentions inbox,
+   new section headers) and view-router rewrite land in a later
+   Phase 2 sub-step.
+   ============================================================ */
+.huddle-rail-v2 { display: none; }
+
+/* Re-declare the grid column tracks under v2 so the third child of
+   .app (the .stage main area) doesn't get auto-flowed into a new
+   row below the rail + sidebar. Legacy stays 2-column. */
+[data-ui="v2"] .app {
+  grid-template-columns: var(--rail-w, 68px) var(--panel-w, 256px) 1fr;
+}
+[data-ui="v2"] .app[data-sidebar-collapsed="true"] {
+  grid-template-columns: var(--rail-w, 68px) 0 1fr;
+}
+
+[data-ui="v2"] .huddle-rail-v2 {
+  width: var(--rail-w, 68px);
+  flex-shrink: 0;
+  background: var(--bg-0);
+  border-right: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0 12px;
+  gap: 6px;
+}
+[data-ui="v2"] .huddle-rail-brand {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+[data-ui="v2"] .huddle-rail-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  flex: 1 1 auto;
+}
+[data-ui="v2"] .huddle-rail-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+[data-ui="v2"] .huddle-rail-item {
+  position: relative;
+  width: 46px;
+  height: 46px;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--tx-lo);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  min-height: 0; /* override legacy global button min-height */
+  cursor: pointer;
+  box-shadow: none;
+  transition: background 0.14s, color 0.14s;
+}
+[data-ui="v2"] .huddle-rail-item svg {
+  width: 22px;
+  height: 22px;
+  stroke-width: 2;
+}
+[data-ui="v2"] .huddle-rail-item:hover {
+  background: var(--bg-2);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .huddle-rail-item.is-active {
+  color: var(--accent-tx);
+  background: var(--accent-dim);
+}
+[data-ui="v2"] .huddle-rail-item.is-active svg {
+  stroke-width: 2.2;
+}
+[data-ui="v2"] .huddle-rail-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: -11px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 22px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+[data-ui="v2"] .huddle-rail-item.has-live::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--live);
+  border: 2px solid var(--bg-0);
+  animation: huddle-pulse 1.6s infinite;
+}
+[data-ui="v2"] .huddle-rail-me {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent));
+  color: var(--bg-0);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+/* Existing sidebar reads as the design's "contextual panel" under
+   v2 — slimmer, warm-charcoal, soft hairline. Headers / rows /
+   sections keep their legacy styling for this sub-step. */
+[data-ui="v2"] .sidebar {
+  width: var(--panel-w, 256px);
+  background: var(--bg-1);
+  border-right: 1px solid var(--line-soft);
+}
+
+/* ============================================================
+   v2 sign-in: 2-column brand panel + form column + 6-digit OTP.
+   Hidden under [data-ui="v2"]; legacy single-modal sign-in is
+   untouched. Form IDs (#auth-email, #auth-otp, #auth-verify,
+   #auth-send-otp, etc.) keep their wiring in app.js — the v2
+   brand panel + 6-digit row are purely additive.
+   ============================================================ */
+.huddle-signin-brand-v2 { display: none; }
+.huddle-otp-digits-v2 { display: none; }
+
+[data-ui="v2"] .login-backdrop {
+  padding: 0;
+  background: var(--bg-0);
+  align-items: stretch;
+  justify-content: stretch;
+}
+[data-ui="v2"] .login-modal {
+  /* Drop modal card chrome — becomes the right-side form column.
+     540px (up from the design's 460) so the 8-digit OTP row fits
+     comfortably with normal padding instead of bleeding into the
+     brand panel. */
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  width: 540px;
+  max-width: 540px;
+  flex: 0 0 540px;
+  padding: 56px 40px;
+  margin: 0;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  font-family: var(--font);
+}
+[data-ui="v2"] .login-hero { display: none; }
+
+[data-ui="v2"] .huddle-signin-brand-v2 {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 48px 56px;
+  background:
+    radial-gradient(120% 90% at 0% 0%, var(--accent-dim), transparent 55%),
+    var(--bg-1);
+  border-right: 1px solid var(--line-soft);
+  font-family: var(--font);
+}
+[data-ui="v2"] .huddle-signin-brand-top {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+[data-ui="v2"] .huddle-signin-brand-word {
+  font-weight: 800;
+  font-size: 22px;
+  letter-spacing: -0.03em;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .huddle-signin-brand-h1 {
+  font-size: 40px;
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 1.08;
+  margin: 0 0 16px;
+  max-width: 440px;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .huddle-signin-brand-p {
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--tx-mid);
+  max-width: 420px;
+  margin: 0;
+}
+[data-ui="v2"] .huddle-signin-brand-pills {
+  display: flex;
+  gap: 22px;
+  color: var(--tx-lo);
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+[data-ui="v2"] .huddle-signin-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+[data-ui="v2"] .huddle-signin-pill svg {
+  width: 16px;
+  height: 16px;
+  color: var(--accent-tx);
+}
+
+/* Form column typography + controls under v2. */
+[data-ui="v2"] .login-modal h2 {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .login-modal h3 {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .login-modal label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--tx-mid);
+  margin-top: 12px;
+  letter-spacing: 0;
+}
+[data-ui="v2"] .login-modal .hint {
+  color: var(--tx-lo);
+  font-size: 14px;
+  line-height: 1.55;
+}
+[data-ui="v2"] .login-modal input[type="text"],
+[data-ui="v2"] .login-modal input[type="email"],
+[data-ui="v2"] .login-modal input[type="password"] {
+  background: var(--bg-1);
+  color: var(--tx-hi);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 13px 15px;
+  font-size: 15px;
+  font-family: var(--font);
+}
+[data-ui="v2"] .login-modal input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+[data-ui="v2"] .login-modal .primary,
+[data-ui="v2"] .login-modal button.primary {
+  background: var(--accent);
+  color: #1a1106;
+  font-weight: 700;
+  border: 0;
+  border-radius: var(--r-md);
+  font-family: var(--font);
+}
+[data-ui="v2"] .login-modal .primary:hover {
+  background: var(--accent-hi);
+}
+[data-ui="v2"] .login-modal .btn-block {
+  height: 46px;
+  font-size: 15px;
+}
+
+/* Split OTP row — sized to fit 8 boxes inside the 460px form column
+   (8 × 48 + 7 × 8 = 440px, leaves ~10px breathing room). Box height +
+   font remain proportional to the design's 6-box spec. */
+[data-ui="v2"] .huddle-otp-digits-v2 {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 6px;
+}
+[data-ui="v2"] .huddle-otp-digit-v2 {
+  width: 48px;
+  height: 60px;
+  text-align: center;
+  font-size: 22px;
+  font-weight: 700;
+  font-family: var(--mono);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--tx-hi);
+  outline: none;
+  padding: 0;
+}
+[data-ui="v2"] .huddle-otp-digit-v2:focus,
+[data-ui="v2"] .huddle-otp-digit-v2.is-filled {
+  border-color: var(--accent);
+}
+[data-ui="v2"] #auth-otp { display: none; }
+
+/* ============================================================
+   v2 contextual panel — channel / DM / quick-link row chrome.
+   Overrides the legacy sidebar styling to match the design's
+   warm-charcoal panel under [data-ui="v2"]. Legacy chrome stays
+   intact when the flag is off; same DOM structure / IDs so
+   app.js's renderChannels + unread + active-row code is unchanged.
+   ============================================================ */
+
+/* Section headers: uppercase, wider letterspace, faint color. */
+[data-ui="v2"] .section-header {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--tx-faint);
+  padding: 14px 10px 4px;
+  font-family: var(--font);
+}
+[data-ui="v2"] .section-header-row button.ghost {
+  color: var(--tx-faint);
+  border-radius: var(--r-sm);
+}
+[data-ui="v2"] .section-header-row button.ghost:hover {
+  background: var(--bg-2);
+  color: var(--tx-hi);
+}
+
+/* Channel + DM + people lists. */
+[data-ui="v2"] .channel-list,
+[data-ui="v2"] .people-list {
+  padding: 2px 10px;
+}
+[data-ui="v2"] .channel-list li,
+[data-ui="v2"] .people-list li {
+  padding: 0 10px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--tx-mid);
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  margin-bottom: 1px;
+  gap: 9px;
+  background: transparent;
+  box-shadow: none;
+}
+[data-ui="v2"] .channel-list li:hover,
+[data-ui="v2"] .people-list li:hover {
+  background: var(--bg-2);
+  color: var(--tx-hi);
+  box-shadow: none;
+}
+[data-ui="v2"] .channel-list li.active,
+[data-ui="v2"] .channel-list li.active:hover {
+  background: var(--accent-dim);
+  color: var(--tx-hi);
+  box-shadow: none;
+}
+[data-ui="v2"] .channel-list li.muted { color: var(--tx-faint); }
+[data-ui="v2"] .channel-list li .ch-icon {
+  color: var(--tx-faint);
+  margin-right: 0;
+}
+[data-ui="v2"] .channel-list li .ch-icon svg {
+  width: 16px;
+  height: 16px;
+}
+[data-ui="v2"] .channel-list li.active .ch-icon {
+  color: var(--accent-tx);
+}
+[data-ui="v2"] .channel-list li .ch-name {
+  font-size: 13.5px;
+  font-weight: 500;
+  font-family: var(--font);
+}
+[data-ui="v2"] .channel-list li.active .ch-name {
+  font-weight: 600;
+  color: var(--tx-hi);
+}
+
+/* Unread badge: mono tabular, accent pill on active rows, danger
+   red on loud (legacy default uses var(--bad)), muted gray when
+   the row is muted. */
+[data-ui="v2"] .channel-list li .ch-badge {
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 6px;
+  min-width: 19px;
+  height: 19px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  letter-spacing: 0;
+  background: var(--danger);
+  color: #fff;
+  box-shadow: none;
+}
+[data-ui="v2"] .channel-list li .ch-badge.muted {
+  background: var(--bg-3);
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .channel-list li.active .ch-badge {
+  background: var(--accent);
+  color: var(--bg-0);
+}
+
+/* People-list status dots inherit the design's status colors via the
+   existing .dot rules, which already key off var(--good) etc. The
+   list-row chrome above is enough; no per-item tweaks needed. */
+
+/* Workspace + me-row chrome under v2: drop the warm-gradient header
+   for a flat layered look; bump font weight on the name. */
+[data-ui="v2"] .workspace {
+  background: transparent;
+  border-bottom: 1px solid var(--line-soft);
+  padding: 14px 14px 12px;
+}
+[data-ui="v2"] .workspace-name {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 16px;
+  letter-spacing: -0.02em;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .me-row .me {
+  color: var(--tx-lo);
+  font-family: var(--font);
+}
+[data-ui="v2"] .me-row .ghost { color: var(--tx-lo); }
+[data-ui="v2"] .me-row .ghost:hover {
+  background: var(--bg-2);
+  color: var(--tx-hi);
+}
+
+/* Sidebar quick-link rows (Saved, Calendar). Match channel-row
+   chrome so the panel reads as one unified list. */
+[data-ui="v2"] .sidebar-quick-link {
+  height: 32px;
+  padding: 0 10px;
+  gap: 9px;
+  border-radius: 8px;
+  color: var(--tx-mid);
+  font-size: 13.5px;
+  background: transparent;
+  margin: 0 10px;
+  border: 0;
+  font-family: var(--font);
+}
+[data-ui="v2"] .sidebar-quick-link:hover {
+  background: var(--bg-2);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .sidebar-quick-link span:first-of-type {
+  font-weight: 500;
+}
+[data-ui="v2"] .sidebar-quick-link svg {
+  color: var(--tx-faint);
+  width: 16px;
+  height: 16px;
+}
+[data-ui="v2"] .sidebar-quick-link .count {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--tx-lo);
+  color: var(--bg-0);
+  padding: 0 6px;
+  min-width: 19px;
+  height: 19px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ============================================================
+   v2 chat header + stage background.
+   Brings the chat area's top bar to the design's warm-charcoal
+   chrome: flat bg-0 with a hairline border, channel name in
+   Hanken Grotesk 700/16.5, topic in tx-lo, icon buttons square
+   with bg-3 hover, primary Start call in accent. Stage + message
+   list backgrounds drop to bg-0 so the chat area no longer reads
+   as a different shade than the rail / contextual panel. Legacy
+   stays untouched when the flag is off; composer textarea picks
+   up v2 surface + font but the bottom toolbar restyle is a later
+   sub-step.
+   ============================================================ */
+[data-ui="v2"] .stage {
+  background: var(--bg-0);
+}
+[data-ui="v2"] .messages {
+  color: var(--tx-mid);
+  font-family: var(--font);
+}
+[data-ui="v2"] .composer {
+  background: var(--bg-0);
+  border-top: 1px solid var(--line-soft);
+}
+[data-ui="v2"] .composer textarea {
+  background: var(--bg-1);
+  color: var(--tx-hi);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  font-family: var(--font);
+}
+
+/* Chat header bar. */
+[data-ui="v2"] .stage-header {
+  height: 60px;
+  padding: 0 22px;
+  background: var(--bg-0);
+  border-bottom: 1px solid var(--line-soft);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-ui="v2"] .stage-title {
+  gap: 10px;
+}
+[data-ui="v2"] .stage-title .channel-name {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 16.5px;
+  letter-spacing: -0.01em;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .channel-name-prefix {
+  color: var(--tx-faint);
+  margin-right: 4px;
+}
+[data-ui="v2"] .channel-name-prefix svg {
+  width: 17px;
+  height: 17px;
+}
+[data-ui="v2"] .channel-topic {
+  font-family: var(--font);
+  color: var(--tx-lo);
+  font-size: 13px;
+  border-left: 0;
+  padding-left: 0;
+  margin-left: 4px;
+  max-width: 340px;
+}
+
+/* Header actions: icon buttons, primary Start call, danger Leave,
+   pinned-messages chip. The in-call cluster (mic / cam / blur /
+   share / hand / react / jira / cc / popout) shares this same
+   .ctrl + .icon-only chrome so they pick up the v2 styling too —
+   .ctrl.muted preserves its red affordance below. */
+[data-ui="v2"] .header-actions {
+  gap: 3px;
+}
+[data-ui="v2"] .header-actions .icon-only,
+[data-ui="v2"] .stage-title #sidebar-toggle.icon-only {
+  width: 38px;
+  height: 38px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 10px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--tx-lo);
+}
+[data-ui="v2"] .header-actions .icon-only:hover,
+[data-ui="v2"] .stage-title #sidebar-toggle.icon-only:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+/* SVGs inside header icon-buttons carry inline width="16" height="16"
+   attrs; these CSS rules win over the attrs and bring icons up to a
+   size that reads at-a-glance in the 10-button in-call cluster. */
+[data-ui="v2"] .header-actions .icon-only svg,
+[data-ui="v2"] .stage-title #sidebar-toggle.icon-only svg {
+  width: 22px;
+  height: 22px;
+}
+[data-ui="v2"] .header-actions .ctrl {
+  height: 36px;
+  min-height: 0;
+  padding: 0 14px;
+  border-radius: 9px;
+  font-family: var(--font);
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  box-shadow: none;
+  border: 0;
+}
+/* Explicit override for buttons that carry BOTH .ctrl and .icon-only
+   (the in-call cluster: mic, cam, blur, share, hand, react, jira,
+   cc, popout). Without this the .ctrl rule above wins on height +
+   padding, squashing the SVG. */
+[data-ui="v2"] .header-actions .ctrl.icon-only {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 10px;
+  gap: 0;
+}
+[data-ui="v2"] .header-actions .ctrl.primary {
+  background: var(--accent);
+  color: #1a1106;
+  font-weight: 700;
+}
+[data-ui="v2"] .header-actions .ctrl.primary:hover {
+  background: var(--accent-hi);
+}
+[data-ui="v2"] .header-actions .ctrl.primary svg {
+  width: 16px;
+  height: 16px;
+}
+[data-ui="v2"] .header-actions .ctrl.danger {
+  background: oklch(0.55 0.18 25);
+  color: #fff;
+  font-weight: 700;
+}
+[data-ui="v2"] .header-actions .ctrl.danger:hover {
+  background: var(--danger);
+}
+
+/* In-call mic/cam muted toggle keeps its red affordance under v2. */
+[data-ui="v2"] button.ctrl.muted {
+  background: var(--danger);
+  color: #fff;
+}
+[data-ui="v2"] button.ctrl.muted:not([disabled]):hover {
+  background: oklch(0.55 0.20 25);
+}
+
+/* Pinned-messages chip in the header. */
+[data-ui="v2"] .header-actions .pinned-chip {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 9px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tx-mid);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+[data-ui="v2"] .header-actions .pinned-chip:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .header-actions .pinned-chip .count {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--bg-3);
+  color: var(--tx-mid);
+  padding: 0 6px;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ============================================================
+   v2 chat body — message rows, day dividers, reactions, hover
+   actions, AI message card, thread continuation, mentions.
+   Same DOM hooks (.msg, .msg-head, .msg-author, .msg-time,
+   .msg-body, .msg-actions, .msg-action, .reaction, .date-divider)
+   so chat.js rendering is unchanged. Legacy chrome stays put
+   when the v2 flag is off.
+   ============================================================ */
+
+/* Day divider — design's mono uppercase pill on a bg-2 ground
+   flanked by thin --line-soft hairlines. */
+[data-ui="v2"] .date-divider {
+  margin: 12px 4px 6px;
+  gap: 14px;
+}
+[data-ui="v2"] .date-divider::before,
+[data-ui="v2"] .date-divider::after {
+  background: var(--line-soft);
+}
+[data-ui="v2"] .date-divider-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--tx-lo);
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  padding: 3px 11px;
+  border-radius: 20px;
+}
+
+/* Message rows. The 38px avatar with 34% radius (rounded square)
+   is the design's signature — distinct from the legacy circle. */
+[data-ui="v2"] .msg {
+  grid-template-columns: 38px 1fr;
+  gap: 12px;
+  padding: var(--row-py, 13px) 24px 4px;
+  border-radius: 0;
+}
+[data-ui="v2"] .msg:hover {
+  background: var(--bg-hover);
+}
+[data-ui="v2"] .msg .avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 34%;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  box-shadow: none;
+  font-family: var(--font);
+}
+[data-ui="v2"] .msg-followup .avatar {
+  border-radius: 34%;
+}
+[data-ui="v2"] .msg-head {
+  gap: 9px;
+  margin-bottom: 2px;
+}
+[data-ui="v2"] .msg-author {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 14.5px;
+  letter-spacing: -0.01em;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .msg-time {
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 11.5px;
+  color: var(--tx-faint);
+}
+[data-ui="v2"] .msg-followup .msg-time-hover {
+  font-family: var(--mono);
+  color: var(--tx-faint);
+}
+[data-ui="v2"] .msg-body {
+  font-family: var(--font);
+  font-size: var(--ui, 14.5px);
+  line-height: 1.58;
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .msg-body a {
+  color: var(--accent-tx);
+}
+[data-ui="v2"] .msg-body code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  background: var(--bg-3);
+  color: var(--accent-tx);
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+[data-ui="v2"] .msg-body pre {
+  background: var(--bg-1);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  font-family: var(--mono);
+}
+[data-ui="v2"] .msg-body pre code {
+  background: transparent;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .msg-body blockquote {
+  border-left: 2px solid var(--line);
+  background: var(--bg-1);
+  border-radius: 0 8px 8px 0;
+  padding: 8px 13px;
+  margin: 4px 0;
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .msg-mentions-me {
+  background: linear-gradient(90deg, var(--accent-dim), transparent 60%);
+  border-left: 3px solid var(--accent);
+}
+[data-ui="v2"] .msg-edited {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--tx-faint);
+}
+
+/* Hover action toolbar — pop above the row with sh-pop, accent-tx
+   icons on hover. Sits a touch higher than legacy (top: -14) so it
+   reads as floating. */
+[data-ui="v2"] .msg-actions {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--sh-pop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  top: -14px;
+  right: 24px;
+  padding: 3px;
+  gap: 2px;
+}
+[data-ui="v2"] .msg-action {
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 7px;
+  color: var(--tx-lo);
+}
+[data-ui="v2"] .msg-action:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .msg-action svg {
+  width: 16px;
+  height: 16px;
+}
+[data-ui="v2"] .msg-action.active {
+  color: var(--accent-tx);
+  background: var(--accent-dim);
+}
+[data-ui="v2"] .msg-action.danger:hover {
+  color: #fff;
+  background: var(--danger);
+}
+
+/* Reaction chips */
+[data-ui="v2"] .reactions {
+  gap: 6px;
+  margin-top: 8px;
+}
+[data-ui="v2"] .reaction {
+  height: 26px;
+  padding: 0 9px 0 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 13px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  color: var(--tx-mid);
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+[data-ui="v2"] .reaction:hover {
+  background: var(--bg-3);
+  border-color: var(--line);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .reaction.mine {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent-tx);
+}
+
+/* Thread continuation chip (the link under a message that opens
+   its replies). Promotes the legacy text-only treatment to a pill
+   that reads more like the design's "N replies" indicator. */
+[data-ui="v2"] .thread-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 4px 11px;
+  border-radius: 20px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--accent-tx);
+}
+[data-ui="v2"] .thread-link:hover {
+  background: var(--bg-3);
+  text-decoration: none;
+}
+
+/* AI message card — accent border + accent-dim gradient wash. The
+   .msg.msg-ai class is set by chat.js when chat.aiGenerated. The
+   .avatar-ai gradient picks up the accent so the bot avatar reads
+   as branded across themes. */
+[data-ui="v2"] .msg.msg-ai {
+  background: linear-gradient(180deg, var(--accent-dim), transparent 60%), var(--bg-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-md);
+  margin: 8px 14px;
+  padding: 13px 16px;
+}
+[data-ui="v2"] .msg.msg-ai:hover {
+  background: linear-gradient(180deg, var(--accent-dim), transparent 60%), var(--bg-2);
+}
+[data-ui="v2"] .msg .avatar-ai {
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent));
+  color: var(--bg-0);
+}
+
+/* Pinned + flash variants */
+[data-ui="v2"] .msg.msg-pinned {
+  background: linear-gradient(90deg, oklch(0.80 0.13 80 / 0.10), transparent 50%);
+  border-left: 3px solid var(--away);
+}
+[data-ui="v2"] .msg.msg-flash {
+  background: var(--accent-dim);
+  transition: background 0.4s;
+}
+
+/* ============================================================
+   v2 composer + slash/mention autocomplete + emoji picker.
+   Same single-row flex layout as legacy so we don't reshuffle
+   the DOM; just retokens surfaces, button chrome, and the
+   slash-command popup to match the design's chrome. The 2-row
+   textarea+toolbar arrangement from the design needs a wrapper
+   div and is deferred to a later sub-step.
+   ============================================================ */
+[data-ui="v2"] .composer {
+  border-top: 1px solid var(--line-soft);
+  background: var(--bg-0);
+  padding: 12px 24px 22px;
+  gap: 8px;
+  align-items: center;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-ui="v2"] .composer textarea {
+  background: var(--bg-1);
+  color: var(--tx-hi);
+  border: 1px solid var(--line);
+  border-color: var(--line);
+  border-radius: var(--r-md);
+  font-family: var(--font);
+  font-size: var(--ui, 14.5px);
+  line-height: 1.5;
+  /* min-height = 2 * 10 (padding) + line-height (~22px @ 14.5) + 2px
+     buffer so a single line fits without forcing the y-scrollbar. */
+  padding: 10px 14px;
+  min-height: 46px;
+  overflow-y: auto;
+  transition: border-color 0.12s;
+}
+[data-ui="v2"] .composer textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+[data-ui="v2"] .composer .icon-only {
+  width: 36px;
+  height: 36px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 9px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--tx-lo);
+}
+[data-ui="v2"] .composer .icon-only:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .composer .icon-only svg {
+  width: 19px;
+  height: 19px;
+}
+[data-ui="v2"] .composer #gif-btn {
+  height: 28px;
+  padding: 0 9px;
+  border-radius: 7px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--tx-lo);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  box-shadow: none;
+  min-height: 0;
+}
+[data-ui="v2"] .composer #gif-btn:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+  border-color: var(--line-soft);
+}
+[data-ui="v2"] .composer #send-btn,
+[data-ui="v2"] .composer #send-btn.primary {
+  background: var(--accent);
+  color: #1a1106;
+  font-weight: 700;
+  border: 0;
+  border-radius: 9px;
+  height: 36px;
+  min-height: 0;
+  padding: 0 16px;
+  font-family: var(--font);
+  font-size: 13.5px;
+  letter-spacing: -0.01em;
+  box-shadow: none;
+}
+[data-ui="v2"] .composer #send-btn:hover,
+[data-ui="v2"] .composer #send-btn.primary:hover {
+  background: var(--accent-hi);
+}
+
+/* Typing indicator beneath the message list. */
+[data-ui="v2"] .typing {
+  font-family: var(--font);
+  color: var(--tx-lo);
+  font-size: 12px;
+}
+
+/* Slash command + @-mention autocomplete popups. */
+[data-ui="v2"] .slash-suggest {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-pop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  padding: 6px;
+  font-family: var(--font);
+}
+[data-ui="v2"] .slash-suggest-item {
+  padding: 9px 11px;
+  border-radius: 8px;
+  gap: 11px;
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .slash-suggest-item:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .slash-suggest-item.selected,
+[data-ui="v2"] .slash-suggest-item.selected:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .slash-suggest-item code {
+  font-family: var(--mono);
+  background: var(--bg-2);
+  color: var(--accent-tx);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  letter-spacing: 0;
+}
+[data-ui="v2"] .slash-suggest-item.selected code {
+  background: var(--bg-1);
+  color: var(--accent-tx);
+}
+[data-ui="v2"] .slash-suggest-item .desc {
+  color: var(--tx-lo);
+  font-size: 12.5px;
+}
+[data-ui="v2"] .slash-suggest-item.selected .desc {
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .slash-suggest-item .mention-name {
+  color: var(--tx-hi);
+  font-weight: 500;
+}
+[data-ui="v2"] .slash-suggest-item.selected .mention-name {
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .slash-suggest-item .mention-subtitle {
+  color: var(--tx-lo);
+  font-size: 11.5px;
+}
+[data-ui="v2"] .slash-suggest-item.selected .mention-subtitle {
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .slash-suggest-hint {
+  border-top: 1px solid var(--line-soft);
+  color: var(--tx-faint);
+  font-family: var(--font);
+  font-size: 11px;
+}
+[data-ui="v2"] .slash-suggest-hint kbd {
+  font-family: var(--mono);
+  background: var(--bg-3);
+  color: var(--tx-mid);
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 10.5px;
+}
+[data-ui="v2"] .slash-suggest-hint .sep {
+  color: var(--tx-faint);
+}
+
+/* Emoji picker — drop frosted blur, use bg-1 surface. */
+[data-ui="v2"] .emoji-picker {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-pop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-ui="v2"] .emoji-picker button:hover {
+  background: var(--bg-3);
+}
+[data-ui="v2"] .emoji-picker .group-header {
+  color: var(--tx-faint);
+  font-family: var(--font);
+  letter-spacing: 0.04em;
+}
+
+/* ============================================================
+   v2 unfurl cards — Jira + GitHub.
+   Same DOM hooks (.jira-unfurl, .jira-key, .jira-summary,
+   .jira-status[.todo|.inprogress|.done], .gh-unfurl, .gh-key,
+   .gh-summary, .gh-status[.open|.closed|.merged], .unfurl-reload).
+   Cards take the design's bg-2 surface with a hairline border;
+   Jira keeps a colored stripe on the left (live teal for active),
+   GitHub goes flat. Status pills retoken to live/online/accent
+   tints from the v2 palette.
+   ============================================================ */
+[data-ui="v2"] .jira-unfurl,
+[data-ui="v2"] .gh-unfurl {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 11px 14px;
+  margin-top: 8px;
+  max-width: 480px;
+  font-family: var(--font);
+  gap: 6px;
+}
+[data-ui="v2"] .jira-unfurl {
+  border-left: 3px solid var(--live);
+}
+[data-ui="v2"] .gh-unfurl {
+  border-left-width: 1px;
+}
+
+[data-ui="v2"] .jira-unfurl .jira-row,
+[data-ui="v2"] .gh-unfurl .gh-row {
+  font-size: 12px;
+  color: var(--tx-lo);
+  gap: 8px;
+}
+[data-ui="v2"] .jira-unfurl .jira-key {
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--live);
+  letter-spacing: 0;
+}
+[data-ui="v2"] .gh-unfurl .gh-key {
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tx-lo);
+  letter-spacing: 0;
+}
+[data-ui="v2"] .jira-unfurl .jira-summary,
+[data-ui="v2"] .gh-unfurl .gh-summary {
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .jira-unfurl a,
+[data-ui="v2"] .gh-unfurl a {
+  color: var(--accent-tx);
+}
+
+/* Status pills under the unfurl card. Each variant gets a tinted
+   bg that reads at a glance against the dark surface. */
+[data-ui="v2"] .jira-unfurl .jira-status,
+[data-ui="v2"] .gh-unfurl .gh-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: 20px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  background: var(--bg-3);
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .jira-unfurl .jira-status.todo {
+  background: var(--bg-3);
+  color: var(--tx-lo);
+}
+[data-ui="v2"] .jira-unfurl .jira-status.inprogress {
+  background: color-mix(in oklch, var(--live) 16%, transparent);
+  color: var(--live);
+}
+[data-ui="v2"] .jira-unfurl .jira-status.done {
+  background: color-mix(in oklch, var(--online) 16%, transparent);
+  color: var(--online);
+}
+[data-ui="v2"] .gh-unfurl .gh-status.open {
+  background: color-mix(in oklch, var(--online) 16%, transparent);
+  color: var(--online);
+}
+[data-ui="v2"] .gh-unfurl .gh-status.closed {
+  background: color-mix(in oklch, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+[data-ui="v2"] .gh-unfurl .gh-status.merged {
+  background: var(--accent-dim);
+  color: var(--accent-tx);
+}
+
+[data-ui="v2"] .jira-unfurl .jira-loading,
+[data-ui="v2"] .gh-unfurl .gh-loading {
+  color: var(--tx-faint);
+  font-family: var(--font);
+  font-size: 12px;
+  font-style: normal;
+}
+[data-ui="v2"] .jira-unfurl.error {
+  border-left-color: var(--danger);
+}
+[data-ui="v2"] .gh-unfurl.error {
+  border-color: var(--danger);
+}
+[data-ui="v2"] .unfurl-reload {
+  color: var(--tx-faint);
+  border-radius: 6px;
+}
+[data-ui="v2"] .unfurl-reload:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+
+/* ============================================================
+   v2 modals — generic .modal chrome (NOT login).
+   `:not(.login-modal)` scopes these rules away from the
+   2-column sign-in we already restyle in Phase 2.2. Picks up
+   create-channel, settings, search, and any other future modal.
+   ============================================================ */
+[data-ui="v2"] .modal-backdrop {
+  background: rgba(6, 6, 8, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  /* Sit above the v2 overlay views (AI panel, calendar grid at
+     z-100) so the schedule modal launched from the grid header
+     isn't covered by the surface that opened it. */
+  z-index: 200;
+}
+[data-ui="v2"] .modal:not(.login-modal) {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-pop);
+  font-family: var(--font);
+  padding: 22px 26px;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .modal:not(.login-modal) h2 {
+  font-family: var(--font);
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .modal:not(.login-modal) h3 {
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--tx-faint);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+[data-ui="v2"] .modal:not(.login-modal) label {
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--tx-mid);
+  margin: 12px 0 6px;
+}
+[data-ui="v2"] .modal:not(.login-modal) input[type="text"],
+[data-ui="v2"] .modal:not(.login-modal) input[type="email"],
+[data-ui="v2"] .modal:not(.login-modal) input[type="password"],
+[data-ui="v2"] .modal:not(.login-modal) input[type="search"],
+[data-ui="v2"] .modal:not(.login-modal) textarea,
+[data-ui="v2"] .modal:not(.login-modal) select {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-size: 14px;
+  padding: 10px 12px;
+}
+[data-ui="v2"] .modal:not(.login-modal) input:focus,
+[data-ui="v2"] .modal:not(.login-modal) textarea:focus,
+[data-ui="v2"] .modal:not(.login-modal) select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+[data-ui="v2"] .modal:not(.login-modal) code {
+  font-family: var(--mono);
+  background: var(--bg-3);
+  color: var(--accent-tx);
+  font-size: 0.86em;
+  padding: 1px 6px;
+  border-radius: 5px;
+}
+[data-ui="v2"] .modal:not(.login-modal) .primary,
+[data-ui="v2"] .modal:not(.login-modal) button.primary {
+  background: var(--accent);
+  color: #1a1106;
+  font-family: var(--font);
+  font-weight: 700;
+  border: 0;
+  border-radius: 9px;
+  box-shadow: none;
+  height: 38px;
+  min-height: 0;
+}
+[data-ui="v2"] .modal:not(.login-modal) .primary:hover,
+[data-ui="v2"] .modal:not(.login-modal) button.primary:hover {
+  background: var(--accent-hi);
+}
+[data-ui="v2"] .modal:not(.login-modal) .subtle {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+  border: 0;
+  border-radius: 9px;
+  height: 38px;
+  min-height: 0;
+  font-family: var(--font);
+  font-weight: 600;
+  box-shadow: none;
+}
+[data-ui="v2"] .modal:not(.login-modal) .subtle:hover {
+  background: var(--bg-2);
+}
+
+/* ============================================================
+   v2 pinned-messages drawer.
+   Anchored to the chat stage's right edge. Same DOM, just
+   retokens the surface and rows.
+   ============================================================ */
+[data-ui="v2"] .pinned-drawer {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-pop);
+  border-radius: var(--r-md);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-ui="v2"] .pinned-drawer-head {
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--tx-hi);
+  padding: 12px 14px;
+}
+[data-ui="v2"] .pinned-list {
+  padding: 8px;
+}
+[data-ui="v2"] .pinned-item {
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  padding: 10px 12px;
+  font-family: var(--font);
+  color: var(--tx-mid);
+  margin-bottom: 4px;
+}
+[data-ui="v2"] .pinned-item:hover {
+  background: var(--bg-2);
+  border: 0;
+}
+[data-ui="v2"] .pinned-item-head {
+  color: var(--tx-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-feature-settings: "tnum" 1;
+}
+[data-ui="v2"] .pinned-item-body {
+  color: var(--tx-mid);
+  font-size: 13.5px;
+  font-family: var(--font);
+}
+[data-ui="v2"] .pinned-empty {
+  color: var(--tx-faint);
+  font-family: var(--font);
+  font-size: 13px;
+}
+
+/* ============================================================
+   v2 search results — appears inside the search modal.
+   ============================================================ */
+[data-ui="v2"] .search-results {
+  border-color: var(--line-soft);
+  font-family: var(--font);
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .search-results .hit {
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+[data-ui="v2"] .search-results .hit:hover {
+  background: var(--bg-2);
+}
+[data-ui="v2"] .search-results .hit-meta {
+  color: var(--tx-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+[data-ui="v2"] .search-results .hit-text {
+  color: var(--tx-mid);
+  font-family: var(--font);
+}
+[data-ui="v2"] .search-results .empty {
+  color: var(--tx-faint);
+  font-family: var(--font);
+}
+/* Collapse the results container when there's nothing inside — the
+   hollow border+padding strip looked like an unfinished input slot
+   when the search modal opened with no query. */
+[data-ui="v2"] .search-results:empty {
+  display: none;
+}
+
+/* Search modal's "Close" button doesn't carry .primary / .subtle,
+   so it falls through the .modal:not(.login-modal) primary/subtle
+   rules. Style it explicitly as a ghost. */
+[data-ui="v2"] #search-cancel {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+  border: 0;
+  border-radius: 9px;
+  height: 36px;
+  min-height: 0;
+  padding: 0 14px;
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 13.5px;
+  box-shadow: none;
+}
+[data-ui="v2"] #search-cancel:hover {
+  background: var(--bg-2);
+}
+/* "Limit to current channel" row — drop the legacy 12px dim type
+   for v2 tone. */
+[data-ui="v2"] .search-scope {
+  color: var(--tx-mid);
+  font-family: var(--font);
+  font-size: 13px;
+}
+[data-ui="v2"] .search-scope label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  margin: 0;
+}
+[data-ui="v2"] .search-scope input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+}
+
+/* ============================================================
+   v2 Phase 4.1 — call view: tiles, captions, drawing toolbar.
+   Same DOM hooks (.tile, .tile.speaking, .tile-label, .tile-hand,
+   .tile-actions, .captions, .caption-line, .draw-toolbar,
+   .draw-toolbar .tool). app.js / livekit.js wiring unchanged.
+   ============================================================ */
+
+/* Tiles grid + each tile. */
+[data-ui="v2"] .tiles {
+  padding: 16px;
+  gap: 12px;
+}
+[data-ui="v2"] .tile {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-card);
+}
+[data-ui="v2"] .tile.whiteboard {
+  background: #fdfcf8; /* design keeps the warm off-white whiteboard surface */
+}
+
+/* Active-speaker ring switches from accent (indigo) to live (teal)
+   per the design — speaking is a "live state", distinct from any
+   accent-coded UI affordance. */
+[data-ui="v2"] .tile.speaking {
+  outline: 2px solid var(--live);
+  outline-offset: -2px;
+  box-shadow: 0 0 0 4px var(--live-dim);
+}
+
+/* Bottom-left mute/name pill. */
+[data-ui="v2"] .tile-label {
+  background: rgba(8, 8, 10, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 8px;
+  letter-spacing: 0;
+}
+
+/* Top-right tile action chips (annotate / spotlight / fullscreen /
+   pop out). Keep them dark + frosted so they read on any video. */
+[data-ui="v2"] .tile-actions button {
+  background: rgba(8, 8, 10, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--tx-hi);
+  border-radius: 8px;
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 12px;
+}
+[data-ui="v2"] .tile-actions button:hover {
+  background: rgba(8, 8, 10, 0.78);
+}
+[data-ui="v2"] .tile.annotating .tile-action-annotate {
+  background: var(--accent);
+  color: var(--bg-0);
+}
+[data-ui="v2"] .tile.fullscreen-mode .tile-action-fullscreen,
+[data-ui="v2"] .tile.spotlighted .tile-action-spotlight,
+[data-ui="v2"] .tile-action-popout.active {
+  background: var(--accent-dim);
+  color: var(--accent-tx);
+}
+
+/* Raised-hand badge — design uses the away (yellow-amber) token
+   for a "wait" signal rather than the legacy bright yellow. The
+   actual icon is rendered as SVG by app.js since Phase 1. */
+[data-ui="v2"] .tile-hand {
+  background: var(--away);
+  color: #1a1300;
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: var(--sh-card);
+}
+[data-ui="v2"] .tile-hand svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+/* Drawing toolbar — bottom-center floating pill on the call stage.
+   Same fixed-position behavior as legacy; retokens surface + tools. */
+[data-ui="v2"] .draw-toolbar {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-pop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-radius: 13px;
+  padding: 5px;
+  gap: 3px;
+}
+[data-ui="v2"] .draw-toolbar .draw-target {
+  font-family: var(--font);
+  color: var(--tx-lo);
+  font-size: 12px;
+  padding: 0 9px 0 4px;
+}
+/* Drawing-toolbar tool buttons carry an SVG + <span> text label
+   (Select, Pen, Line, Arrow, Rect, Ellipse, Diamond, Eraser). Keep
+   the legacy icon+label layout — fixed-width 34px squares clipped
+   the label and looked unfinished. Natural-width chips with bg-3
+   hover and accent fill on active match the rest of the v2 chrome. */
+[data-ui="v2"] .draw-toolbar .tool {
+  height: 30px;
+  min-height: 0;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--tx-mid);
+  box-shadow: none;
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+[data-ui="v2"] .draw-toolbar .tool svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+[data-ui="v2"] .draw-toolbar .tool:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .draw-toolbar .tool.active {
+  background: var(--accent);
+  color: var(--bg-0);
+  box-shadow: none;
+}
+[data-ui="v2"] .draw-toolbar input[type="color"] {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+}
+[data-ui="v2"] .draw-toolbar input[type="range"] {
+  accent-color: var(--accent);
+}
+/* Buttons in the draw-toolbar that aren't .tool (Clear, Done, zoom
+   in/out/reset, Add note) — same chrome as legacy ctrl ghost. */
+[data-ui="v2"] .draw-toolbar button:not(.tool):not(input) {
+  height: 28px;
+  min-height: 0;
+  padding: 0 10px;
+  border-radius: 7px;
+  background: var(--bg-2);
+  color: var(--tx-mid);
+  border: 1px solid var(--line-soft);
+  box-shadow: none;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+}
+[data-ui="v2"] .draw-toolbar button:not(.tool):not(input):hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+  border-color: var(--line);
+}
+
+/* Live captions panel. */
+[data-ui="v2"] .captions {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-card);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-ui="v2"] .captions-header {
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--tx-faint);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 9px 13px;
+}
+[data-ui="v2"] .captions-list {
+  font-family: var(--font);
+  font-size: 13px;
+  padding: 10px 13px;
+}
+[data-ui="v2"] .caption-line {
+  gap: 10px;
+}
+[data-ui="v2"] .caption-from {
+  color: var(--tx-mid);
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12.5px;
+}
+[data-ui="v2"] .caption-text {
+  color: var(--tx-mid);
+  font-family: var(--font);
+}
+[data-ui="v2"] .caption-self .caption-from {
+  color: var(--accent-tx);
+}
+[data-ui="v2"] .caption-interim .caption-text {
+  color: var(--tx-lo);
+}
+
+/* CC toggle active state — match the design's "captions on" affordance.
+   The CC button is .ctrl.icon-only so it picks up Phase 3.1 chrome;
+   the .active variant just needs the accent tint. */
+[data-ui="v2"] #btn-cc.active {
+  background: var(--accent-dim);
+  color: var(--accent-tx);
+}
+
+/* ============================================================
+   v2 Phase 4.2 — polish: profile card, react popover, banners,
+   attachment chips, channel empty state, load-more, team picker,
+   typing AI indicator, drag-over drop target.
+   ============================================================ */
+
+/* Profile card popover (avatar hover/click). */
+[data-ui="v2"] .profile-card {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-pop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  font-family: var(--font);
+  color: var(--tx-mid);
+  padding: 18px;
+}
+[data-ui="v2"] .profile-card-loading {
+  color: var(--tx-lo);
+  font-family: var(--font);
+}
+[data-ui="v2"] .profile-card-error {
+  color: var(--danger);
+  font-family: var(--font);
+}
+[data-ui="v2"] .profile-card-avatar {
+  border-radius: 30%;
+  background: var(--bg-3);
+  box-shadow: none;
+  font-family: var(--font);
+}
+[data-ui="v2"] .profile-card-avatar.fallback {
+  font-weight: 700;
+  color: #fff;
+}
+[data-ui="v2"] .profile-card-name {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--tx-hi);
+  letter-spacing: -0.02em;
+}
+[data-ui="v2"] .profile-card-email {
+  color: var(--tx-lo);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+[data-ui="v2"] .profile-card-bio {
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  color: var(--tx-mid);
+  font-family: var(--font);
+  font-size: 13px;
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+}
+[data-ui="v2"] .profile-card-btn {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+  border: 0;
+  border-radius: 8px;
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 13px;
+  height: 34px;
+  min-height: 0;
+  padding: 0 12px;
+  box-shadow: none;
+}
+[data-ui="v2"] .profile-card-btn:hover {
+  background: var(--bg-2);
+}
+
+/* Reactions quick-picker popover (call-control bar). */
+[data-ui="v2"] .react-popover {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-pop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-radius: 13px;
+  padding: 5px;
+  gap: 2px;
+}
+[data-ui="v2"] .react-popover .react-emoji {
+  border-radius: 8px;
+  padding: 6px 9px;
+}
+[data-ui="v2"] .react-popover .react-emoji:hover {
+  background: var(--bg-3);
+}
+
+/* Reconnect banner (top of stage when websocket drops). */
+[data-ui="v2"] .reconnect-banner {
+  background: var(--away);
+  color: #1a1300;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12.5px;
+  letter-spacing: 0;
+  padding: 9px 16px;
+}
+
+/* Attachment chips — both the message-rendered chip and the pending
+   uploads bar above the composer. */
+[data-ui="v2"] .attachment-chip {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--tx-mid);
+  border-radius: 20px;
+  padding: 5px 12px;
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+[data-ui="v2"] .attachment-chip:hover {
+  background: var(--bg-3);
+  border-color: var(--line);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .attachment-chips {
+  background: var(--bg-0);
+  border-top: 1px solid var(--line-soft);
+}
+[data-ui="v2"] .attachment-chips .chip {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  font-family: var(--font);
+  font-size: 12.5px;
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .attachment-chips .chip.uploading .chip-status { background: var(--away); }
+[data-ui="v2"] .attachment-chips .chip.done .chip-status { background: var(--online); }
+[data-ui="v2"] .attachment-chips .chip.failed .chip-status { background: var(--danger); }
+[data-ui="v2"] .attachment-chips .chip button {
+  color: var(--tx-lo);
+}
+[data-ui="v2"] .attachment-chips .chip button:hover {
+  color: var(--tx-hi);
+}
+
+/* Channel empty state (new channel / first visit). */
+[data-ui="v2"] .channel-empty {
+  color: var(--tx-mid);
+  font-family: var(--font);
+}
+[data-ui="v2"] .channel-empty-icon {
+  color: var(--accent-tx);
+  opacity: 1;
+}
+[data-ui="v2"] .channel-empty-title {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--tx-hi);
+  letter-spacing: -0.02em;
+}
+[data-ui="v2"] .channel-empty-hint {
+  color: var(--tx-lo);
+  font-family: var(--font);
+  font-size: 13.5px;
+}
+
+/* Drag-over upload affordance — accent-dim instead of accent-2 blue. */
+[data-ui="v2"] .stage.drag-over::after {
+  background: var(--accent-dim);
+  border: 2px dashed var(--accent);
+  color: var(--accent-tx);
+  font-family: var(--font);
+}
+
+/* "Load more" button at top of message list. */
+[data-ui="v2"] .load-more {
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  color: var(--tx-mid);
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: none;
+}
+[data-ui="v2"] .load-more:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+  border-color: var(--line);
+}
+
+/* Team picker rows in the sign-in flow. */
+[data-ui="v2"] .team-pick {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--tx-hi);
+  font-family: var(--font);
+  box-shadow: none;
+}
+[data-ui="v2"] .team-pick:hover {
+  background: var(--bg-3);
+  border-color: var(--line);
+}
+
+/* Typing-AI indicator (small spinner row). */
+[data-ui="v2"] .typing-ai {
+  color: var(--accent-tx);
+  font-family: var(--font);
+}
+
+/* ============================================================
+   v2 Phase 5.1 — Cmd-K command palette.
+   The overlay lives in <body> (appended at runtime by
+   command-palette.js). All hooks scoped under .huddle-cp-*.
+   Hidden by default; opens via ⌘K when [data-ui="v2"] is set.
+   ============================================================ */
+.huddle-command-palette {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(6, 6, 8, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  display: flex;
+  justify-content: center;
+  padding-top: 12vh;
+  font-family: var(--font, system-ui);
+}
+.huddle-command-palette.hidden {
+  display: none;
+}
+.huddle-cp-modal {
+  width: 600px;
+  max-width: 92vw;
+  max-height: 70vh;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-pop);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: huddle-pop 0.14s ease forwards;
+}
+.huddle-cp-search {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.huddle-cp-search-icon {
+  display: inline-flex;
+  color: var(--tx-lo);
+  flex-shrink: 0;
+}
+.huddle-cp-search-icon svg {
+  width: 19px;
+  height: 19px;
+}
+.huddle-cp-input {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-size: 16px;
+  padding: 0;
+  letter-spacing: -0.01em;
+}
+.huddle-cp-input::placeholder { color: var(--tx-lo); }
+.huddle-cp-esc {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--tx-faint);
+  border: 1px solid var(--line);
+  padding: 2px 7px;
+  border-radius: 6px;
+  user-select: none;
+}
+.huddle-cp-body {
+  overflow-y: auto;
+  padding: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.huddle-cp-empty {
+  padding: 26px;
+  text-align: center;
+  color: var(--tx-lo);
+  font-size: 13.5px;
+}
+.huddle-cp-group {
+  padding: 9px 12px 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tx-faint);
+}
+.huddle-cp-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 9px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  min-height: 0;
+  box-shadow: none;
+}
+.huddle-cp-item.selected,
+.huddle-cp-item:hover {
+  background: var(--bg-3);
+}
+.huddle-cp-item-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--tx-mid);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.huddle-cp-item-icon svg {
+  width: 16px;
+  height: 16px;
+}
+.huddle-cp-item-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.huddle-cp-item-hint {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--accent-tx);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+/* ============================================================
+   v2 Phase 5.2 — Calendar + Saved drawer + schedule modal.
+   Same DOM hooks (.saved-drawer chrome shared by both; calendar
+   adds .cal-* row classes; schedule modal uses .schedule-modal).
+   ============================================================ */
+
+/* Shared right-side drawer chrome (saved + calendar). */
+[data-ui="v2"] .saved-drawer {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-pop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-ui="v2"] .saved-drawer-head {
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--tx-hi);
+  padding: 12px 14px;
+}
+[data-ui="v2"] .saved-labels {
+  border-bottom: 1px solid var(--line-soft);
+  gap: 7px;
+  padding: 10px 12px;
+}
+[data-ui="v2"] .saved-label-chip {
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  color: var(--tx-lo);
+  border-radius: 20px;
+  padding: 4px 11px;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+}
+[data-ui="v2"] .saved-label-chip:hover {
+  background: var(--bg-3);
+  border-color: var(--line);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .saved-label-chip.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent-tx);
+}
+[data-ui="v2"] .saved-list {
+  padding: 8px;
+}
+[data-ui="v2"] .saved-item {
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  padding: 11px 13px;
+  margin-bottom: 6px;
+  font-family: var(--font);
+}
+[data-ui="v2"] .saved-item:hover {
+  background: var(--bg-3);
+  border-color: var(--line);
+}
+[data-ui="v2"] .saved-item-head {
+  color: var(--tx-faint);
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 11px;
+}
+[data-ui="v2"] .saved-item-body {
+  color: var(--tx-mid);
+  font-family: var(--font);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+[data-ui="v2"] .saved-item-label {
+  background: color-mix(in oklch, var(--away) 18%, transparent);
+  color: var(--away);
+  border-radius: 20px;
+  padding: 2px 9px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* Calendar list rows. */
+[data-ui="v2"] .cal-list {
+  padding: 10px 12px 18px;
+}
+[data-ui="v2"] .cal-empty {
+  color: var(--tx-lo);
+  font-family: var(--font);
+  font-size: 13px;
+}
+[data-ui="v2"] .cal-day-header {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--tx-faint);
+  border-bottom: 1px solid var(--line-soft);
+  text-transform: uppercase;
+  padding: 14px 0 6px;
+}
+[data-ui="v2"] .cal-row {
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-family: var(--font);
+  gap: 12px;
+}
+[data-ui="v2"] .cal-row:hover {
+  background: var(--bg-2);
+}
+[data-ui="v2"] .cal-row-time {
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 12px;
+  color: var(--tx-lo);
+}
+[data-ui="v2"] .cal-row-title {
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .cal-row-meta {
+  font-family: var(--font);
+  color: var(--tx-lo);
+  font-size: 11.5px;
+}
+[data-ui="v2"] .cal-row-join {
+  background: var(--accent);
+  color: #1a1106;
+  border: 0;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+  height: 26px;
+  border-radius: 7px;
+  padding: 0 11px;
+  box-shadow: none;
+  min-height: 0;
+}
+[data-ui="v2"] .cal-row-join:hover {
+  background: var(--accent-hi);
+  filter: none;
+}
+[data-ui="v2"] .cal-row-del {
+  color: var(--tx-faint);
+}
+[data-ui="v2"] .cal-row-del:hover {
+  color: var(--danger);
+}
+[data-ui="v2"] .cal-row-ics {
+  border-left: 2px solid var(--line);
+  padding-left: 10px;
+}
+
+/* Schedule-event modal (the new-event form). */
+[data-ui="v2"] .schedule-modal h2 {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 18px;
+  color: var(--tx-hi);
+  letter-spacing: -0.02em;
+}
+[data-ui="v2"] .schedule-modal label {
+  font-family: var(--font);
+  color: var(--tx-mid);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+[data-ui="v2"] .schedule-modal input,
+[data-ui="v2"] .schedule-modal select,
+[data-ui="v2"] .schedule-modal textarea {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-size: 14px;
+  padding: 9px 12px;
+}
+[data-ui="v2"] .schedule-modal input:focus,
+[data-ui="v2"] .schedule-modal select:focus,
+[data-ui="v2"] .schedule-modal textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* Settings → Calendar subscriptions sub-list. */
+[data-ui="v2"] .set-cal-row {
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  font-family: var(--font);
+}
+[data-ui="v2"] .set-cal-row-name {
+  color: var(--tx-hi);
+  font-weight: 600;
+}
+[data-ui="v2"] .set-cal-row-url {
+  color: var(--tx-lo);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+[data-ui="v2"] .set-cal-row-del {
+  color: var(--tx-faint);
+}
+[data-ui="v2"] .set-cal-row-del:hover {
+  color: var(--danger);
+}
+
+/* ============================================================
+   v2 Phase 5.3 — GIF picker + shortcuts modal + whiteboard notes.
+   Same DOM hooks, CSS-only.
+   ============================================================ */
+
+/* GIF picker — sits above the composer like the emoji picker. */
+[data-ui="v2"] .gif-picker {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-pop);
+  border-radius: var(--r-md);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  padding: 12px;
+  gap: 10px;
+  font-family: var(--font);
+}
+[data-ui="v2"] .gif-search-row input {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-size: 13.5px;
+  padding: 8px 12px;
+}
+[data-ui="v2"] .gif-search-row input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+[data-ui="v2"] .gif-grid img:hover {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+[data-ui="v2"] .gif-grid .empty {
+  color: var(--tx-lo);
+  font-family: var(--font);
+}
+[data-ui="v2"] .gif-attribution {
+  color: var(--tx-faint);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+
+/* Shortcuts cheat sheet modal — opened via ⌘/ (Ctrl-/). */
+[data-ui="v2"] .shortcut-table {
+  font-family: var(--font);
+  font-size: 13.5px;
+}
+[data-ui="v2"] .shortcut-table td {
+  border-bottom: 1px solid var(--line-soft);
+  padding: 9px 0;
+}
+[data-ui="v2"] .shortcut-table td:first-child {
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .shortcut-table td:last-child {
+  color: var(--tx-lo);
+}
+[data-ui="v2"] .shortcut-table kbd {
+  background: var(--bg-3);
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  color: var(--tx-hi);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  box-shadow: none;
+  letter-spacing: 0;
+}
+
+/* Whiteboard sticky notes — keep the saturated yellow as the
+   note's visual signature (it's user content), but match the
+   surrounding chrome to v2 (slightly softer handle, lighter
+   shadow, drop pixel-perfect alignment). */
+[data-ui="v2"] .wb-note {
+  background: #fbe27a;
+  border-radius: 8px;
+  box-shadow: var(--sh-pop);
+  color: #1a1a1c;
+}
+[data-ui="v2"] .wb-note-handle {
+  background: rgba(0, 0, 0, 0.06);
+  height: 20px;
+}
+[data-ui="v2"] .wb-note-close {
+  border-radius: 5px;
+}
+[data-ui="v2"] .wb-note-text {
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 8px 10px;
+}
+
+/* ============================================================
+   v2 Phase 5.4 — Huddle AI panel.
+   Full-stage overlay opened by the nav-rail's "Huddle AI" item.
+   z-100 to sit above chat surface but below modals (z-200).
+   ============================================================ */
+.huddle-ai-view {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  /* Slide in from the right edge, leaving the nav rail (68px) +
+     contextual panel (256px) visible if they're open. Full-bleed
+     above 900px window width. */
+  left: calc(var(--rail-w, 68px) + var(--panel-w, 256px));
+  z-index: 100;
+  background: var(--bg-0);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font);
+  animation: huddle-fade-up 0.22s ease forwards;
+}
+.huddle-ai-view.hidden {
+  display: none;
+}
+@media (max-width: 900px) {
+  .huddle-ai-view { left: 0; }
+}
+
+/* Header */
+.huddle-ai-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--line-soft);
+  flex-shrink: 0;
+}
+.huddle-ai-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 30%;
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent));
+  color: var(--bg-0);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.huddle-ai-avatar svg { width: 17px; height: 17px; }
+.huddle-ai-title-block { display: flex; flex-direction: column; }
+.huddle-ai-title {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 15.5px;
+  color: var(--tx-hi);
+  letter-spacing: -0.01em;
+}
+.huddle-ai-subtitle {
+  font-size: 11.5px;
+  color: var(--tx-lo);
+  margin-top: 2px;
+}
+.huddle-ai-spacer { flex: 1; }
+.huddle-ai-model {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--tx-faint);
+  border: 1px solid var(--line);
+  padding: 3px 9px;
+  border-radius: 6px;
+}
+.huddle-ai-close {
+  width: 34px;
+  height: 34px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--tx-lo);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-ai-close:hover { background: var(--bg-3); color: var(--tx-hi); }
+.huddle-ai-close svg { width: 17px; height: 17px; }
+
+/* Transcript */
+.huddle-ai-transcript {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 22px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+}
+.huddle-ai-empty {
+  margin: auto 0;
+  text-align: center;
+  padding: 36px 0;
+  color: var(--tx-mid);
+}
+.huddle-ai-empty-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 18px;
+  margin: 0 auto 12px;
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent));
+  color: var(--bg-0);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.huddle-ai-empty-icon svg { width: 28px; height: 28px; }
+.huddle-ai-empty-title {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--tx-hi);
+  letter-spacing: -0.02em;
+}
+.huddle-ai-empty-hint {
+  color: var(--tx-lo);
+  font-size: 13.5px;
+  max-width: 380px;
+  margin: 6px auto 0;
+  line-height: 1.5;
+}
+
+/* Each turn */
+.huddle-ai-turn {
+  display: flex;
+  gap: 12px;
+  animation: huddle-fade-up 0.25s ease forwards;
+}
+.huddle-ai-turn-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 30%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+}
+.huddle-ai-turn-avatar-bot {
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent));
+  color: var(--bg-0);
+}
+.huddle-ai-turn-avatar-bot svg { width: 16px; height: 16px; }
+.huddle-ai-turn-avatar-me {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+.huddle-ai-turn-main { flex: 1; min-width: 0; }
+.huddle-ai-turn-name {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 13.5px;
+  color: var(--tx-hi);
+  margin-bottom: 4px;
+}
+.huddle-ai-turn-body {
+  font-family: var(--font);
+  font-size: 14.5px;
+  line-height: 1.62;
+  color: var(--tx-mid);
+  word-wrap: break-word;
+}
+.huddle-ai-turn-body strong {
+  font-weight: 700;
+  color: var(--tx-hi);
+}
+.huddle-ai-turn-body code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  background: var(--bg-3);
+  color: var(--accent-tx);
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+.huddle-ai-error {
+  background: color-mix(in oklch, var(--danger) 14%, transparent);
+  border: 1px solid var(--danger);
+  color: var(--tx-hi);
+  border-radius: 9px;
+  padding: 9px 12px;
+  font-size: 13.5px;
+}
+.huddle-ai-pending {
+  display: inline-flex;
+  gap: 5px;
+  padding: 8px 0;
+}
+.huddle-ai-pending span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tx-faint);
+  animation: huddle-pulse 1s infinite;
+}
+.huddle-ai-pending span:nth-child(2) { animation-delay: 0.2s; }
+.huddle-ai-pending span:nth-child(3) { animation-delay: 0.4s; }
+
+.huddle-ai-turn-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.huddle-ai-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  min-height: 0;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--tx-hi);
+  border: 1px solid var(--line);
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 12.5px;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-ai-action:hover { background: var(--bg-3); }
+.huddle-ai-action svg { width: 15px; height: 15px; color: var(--tx-mid); }
+.huddle-ai-action-post svg { color: var(--accent-tx); }
+
+/* Suggestion chips */
+.huddle-ai-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 24px 12px;
+}
+.huddle-ai-chip {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  color: var(--tx-mid);
+  border-radius: 18px;
+  padding: 6px 12px;
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: none;
+  min-height: 0;
+}
+.huddle-ai-chip:hover {
+  background: var(--bg-2);
+  color: var(--tx-hi);
+}
+
+/* Composer at bottom */
+.huddle-ai-composer-wrap {
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 24px 22px;
+}
+.huddle-ai-composer {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 12px 14px;
+  transition: border-color 0.12s;
+}
+.huddle-ai-composer:focus-within { border-color: var(--accent); }
+.huddle-ai-composer-icon {
+  color: var(--accent-tx);
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.huddle-ai-composer-icon svg { width: 18px; height: 18px; }
+.huddle-ai-composer-input {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-size: 14.5px;
+}
+.huddle-ai-composer-input::placeholder { color: var(--tx-lo); }
+.huddle-ai-send {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  min-height: 0;
+  padding: 0 13px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #1a1106;
+  border: 0;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 13px;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-ai-send:hover { background: var(--accent-hi); }
+.huddle-ai-send:disabled { opacity: 0.55; cursor: not-allowed; }
+.huddle-ai-send svg { width: 14px; height: 14px; }
+
+/* ============================================================
+   v2 Phase 5.5 — Calendar week-grid view.
+   Full-stage overlay opened by the nav-rail's "Calendar" item.
+   Same z-100 layer as the AI panel; legacy drawer still
+   reachable from the sidebar quick-link.
+   ============================================================ */
+.huddle-cal-view {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: calc(var(--rail-w, 68px) + var(--panel-w, 256px));
+  z-index: 100;
+  background: var(--bg-0);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font);
+  animation: huddle-fade-up 0.22s ease forwards;
+}
+.huddle-cal-view.hidden { display: none; }
+@media (max-width: 900px) {
+  .huddle-cal-view { left: 0; }
+}
+
+/* Header bar. */
+.huddle-cal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--line-soft);
+  flex-shrink: 0;
+}
+.huddle-cal-header-icon {
+  color: var(--accent-tx);
+  display: inline-flex;
+}
+.huddle-cal-header-icon svg { width: 19px; height: 19px; }
+.huddle-cal-month {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+  color: var(--tx-hi);
+}
+.huddle-cal-nav {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: 4px;
+}
+.huddle-cal-nav-btn {
+  width: 30px;
+  height: 30px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--tx-lo);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-cal-nav-btn:hover { background: var(--bg-3); color: var(--tx-hi); }
+.huddle-cal-nav-btn svg { width: 17px; height: 17px; }
+.huddle-cal-today {
+  height: 32px;
+  min-height: 0;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 12.5px;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-cal-today:hover { background: var(--bg-3); }
+.huddle-cal-spacer { flex: 1; }
+.huddle-cal-legend {
+  display: inline-flex;
+  gap: 14px;
+  color: var(--tx-lo);
+  font-family: var(--font);
+  font-size: 12px;
+}
+.huddle-cal-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.huddle-cal-legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+}
+.huddle-cal-new-event {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  min-height: 0;
+  padding: 0 13px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #1a1106;
+  border: 0;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12.5px;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-cal-new-event:hover { background: var(--accent-hi); }
+.huddle-cal-new-event svg { width: 14px; height: 14px; }
+.huddle-cal-close {
+  width: 32px;
+  height: 32px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--tx-lo);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-cal-close:hover { background: var(--bg-3); color: var(--tx-hi); }
+.huddle-cal-close svg { width: 17px; height: 17px; }
+
+/* Day-of-week header row. */
+.huddle-cal-days {
+  display: grid;
+  grid-template-columns: 60px repeat(7, 1fr);
+  border-bottom: 1px solid var(--line-soft);
+  flex-shrink: 0;
+}
+.huddle-cal-days-gutter {
+  /* spacer that aligns to the hour-label gutter below */
+}
+.huddle-cal-day-head {
+  padding: 11px 0;
+  text-align: center;
+  border-left: 1px solid var(--line-soft);
+}
+.huddle-cal-day-name {
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--tx-lo);
+}
+.huddle-cal-day-head.is-today .huddle-cal-day-name {
+  color: var(--accent-tx);
+}
+.huddle-cal-day-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  margin-top: 4px;
+  font-family: var(--font);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--tx-hi);
+}
+.huddle-cal-day-num.is-today {
+  color: var(--bg-0);
+  background: var(--accent);
+}
+
+/* Grid: hour gutter + 7 day columns. The grid wrapper scrolls
+   so the header row stays anchored. */
+.huddle-cal-grid-wrap {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+}
+.huddle-cal-grid {
+  display: grid;
+  grid-template-columns: 60px repeat(7, 1fr);
+  position: relative;
+}
+.huddle-cal-gutter {
+  position: relative;
+}
+.huddle-cal-hour {
+  height: 56px;
+  position: relative;
+}
+.huddle-cal-hour-label {
+  position: absolute;
+  top: -8px;
+  right: 8px;
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 10.5px;
+  color: var(--tx-faint);
+}
+.huddle-cal-col {
+  position: relative;
+  border-left: 1px solid var(--line-soft);
+}
+.huddle-cal-col.is-today {
+  background: var(--accent-dim);
+}
+.huddle-cal-cell {
+  height: 56px;
+  border-top: 1px solid var(--line-soft);
+}
+.huddle-cal-empty {
+  padding: 60px 24px;
+  text-align: center;
+  color: var(--tx-lo);
+  font-family: var(--font);
+}
+
+/* Now-line overlay on today's column. */
+.huddle-cal-now {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  z-index: 3;
+  pointer-events: none;
+}
+.huddle-cal-now-dot {
+  position: absolute;
+  left: -5px;
+  top: -4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* Absolutely-positioned event block. */
+.huddle-cal-event {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  border-radius: 8px;
+  padding: 5px 8px;
+  background: color-mix(in oklch, var(--cal-event-color, var(--accent)) 16%, var(--bg-1));
+  border: 1px solid var(--cal-event-color, var(--accent));
+  border-left-width: 3px;
+  cursor: pointer;
+  overflow: hidden;
+  font-family: var(--font);
+  z-index: 2;
+}
+.huddle-cal-event.is-live {
+  background: var(--live-dim);
+  border-color: var(--live);
+}
+.huddle-cal-event-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.huddle-cal-event-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--live);
+  animation: huddle-pulse 1.5s infinite;
+  flex-shrink: 0;
+}
+.huddle-cal-event-title {
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--tx-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.huddle-cal-event-meta {
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 10px;
+  color: var(--tx-lo);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ============================================================
+   v2 Phase 6.1 — in-call header pills + captions footer +
+   screen-share speaker pill.
+   ============================================================ */
+
+/* v2-only visibility helpers. Both classes hide by default so
+   legacy chrome is unaffected when the flag is off. */
+.v2-only,
+.v2-call-only { display: none; }
+[data-ui="v2"] .v2-only { display: flex; }
+/* v2-call-only chips appear whenever body.huddle-in-call is set.
+   (The :has(#btn-leave) approach we tried first stopped working
+   once setupCallDock() moved #btn-leave into a sibling dock —
+   the selector then has nothing to match against inside
+   .header-actions.) */
+[data-ui="v2"] body.huddle-in-call .v2-call-only {
+  display: inline-flex;
+}
+
+/* LIVE pill */
+[data-ui="v2"] .huddle-call-live-pill {
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px 4px 9px;
+  border-radius: 20px;
+  background: var(--live-dim);
+  border: 1px solid var(--live);
+  color: var(--live);
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  user-select: none;
+  flex-shrink: 0;
+}
+[data-ui="v2"] .huddle-call-live-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--live);
+  animation: huddle-pulse 1.6s infinite;
+}
+
+/* People count + elapsed timer — design's mono span between the
+   LIVE pill and the LiveKit pill ("4 people · 12:04"). */
+[data-ui="v2"] .huddle-call-meta {
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 11.5px;
+  color: var(--tx-lo);
+  user-select: none;
+  flex-shrink: 0;
+}
+[data-ui="v2"] .huddle-call-meta-sep { opacity: 0.5; }
+
+/* LiveKit pill */
+[data-ui="v2"] .huddle-call-livekit-pill {
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--tx-lo);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 600;
+  user-select: none;
+  flex-shrink: 0;
+}
+[data-ui="v2"] .huddle-call-livekit-pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--online);
+}
+
+/* Captions panel footer with /summarize button. */
+[data-ui="v2"] .captions-footer {
+  padding: 10px 13px;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  flex-shrink: 0;
+}
+[data-ui="v2"] .captions-summarize {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 32px;
+  min-height: 0;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--accent-tx);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: none;
+}
+[data-ui="v2"] .captions-summarize:hover {
+  background: var(--bg-2);
+  border-color: var(--line);
+  color: var(--accent-tx);
+}
+
+/* ============================================================
+   v2 in-call layout — bottom CallControl dock + chat-hide while
+   in call. The dock is created at runtime by ui-v2-shell.js,
+   which physically moves the mic/cam/blur/share/hand/react/cc/
+   leave buttons out of .stage-header into the dock. body class
+   "huddle-in-call" is synced from #btn-leave's visibility.
+   ============================================================ */
+
+/* Dock — fixed full-width at bottom of .stage. Hidden when not
+   in a call (no body.huddle-in-call.huddle-on-call-channel) so the moved buttons don't
+   stick out as orphans. */
+.huddle-call-dock { display: none; }
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 22px;
+  background: var(--bg-0);
+  border-top: 1px solid var(--line-soft);
+  z-index: 30;
+}
+/* Buttons inside the dock are still .ctrl.icon-only from legacy.
+   Override the small chat-header sizing for these in the dock
+   context — bigger 48px squares per the design's CallControl
+   widget; .danger ("Leave") becomes a wide rounded pill. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock .ctrl.icon-only {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock .ctrl.icon-only:hover {
+  background: var(--bg-3);
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock .ctrl.icon-only svg {
+  width: 22px;
+  height: 22px;
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock .ctrl.muted {
+  background: var(--danger);
+  color: #fff;
+  border-color: transparent;
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock #btn-cc.active {
+  background: var(--accent);
+  color: var(--bg-0);
+  border-color: transparent;
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock #btn-leave.ctrl {
+  width: auto;
+  height: 48px;
+  padding: 0 22px;
+  border-radius: 24px;
+  background: oklch(0.55 0.18 25);
+  color: #fff;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 14px;
+  border: 0;
+  gap: 8px;
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock #btn-leave.ctrl:hover {
+  background: var(--danger);
+}
+[data-ui="v2"] .huddle-call-dock-divider {
+  width: 1px;
+  height: 40px;
+  background: var(--line);
+  margin: 0 6px;
+  align-self: center;
+}
+body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
+
+/* While in call: hide the chat content (messages + composer) and
+   chat-only header buttons; expand the tile grid to fill the
+   stage area between header and dock. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .messages,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .composer,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .typing,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #attachment-chips,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #channel-notify-btn,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #search-btn,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #pinned-btn,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #copy-call-link,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .channel-topic {
+  display: none !important;
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .tiles {
+  flex: 1 1 auto;
+  max-height: none;
+  padding-bottom: 96px; /* leave room for the dock */
+}
+
+/* Captions panel docks to the right side during a call. Uses
+   position: absolute so it can dock to the right edge, but the
+   :has() rule below pushes the tile grid leftward by the captions
+   width so the two don't overlap. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #captions {
+  position: absolute;
+  top: 76px;
+  right: 16px;
+  bottom: 96px;
+  width: 296px;
+  max-height: none;
+  min-height: 0;
+  margin: 0;
+  z-index: 20;
+}
+/* When captions panel is visible (not .hidden), reserve right
+   space on the tile grid so tiles don't sit underneath the
+   panel. :has() is supported in Chromium-based Electron. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)) .tiles {
+  padding-right: 312px; /* 296 panel + 16 right edge gap */
+}
+
+/* ============================================================
+   Persistent call-return dock — surfaces above v2 overlay views
+   (AI panel z-100, Calendar grid z-100) when the user has
+   navigated away from an active call. z-150 so it sits above
+   overlays but below modals (z-200).
+   Design source: huddle/app.jsx:CallDock.
+   ============================================================ */
+.huddle-call-return-dock { display: none; }
+[data-ui="v2"] .huddle-call-return-dock {
+  position: fixed;
+  top: 0;
+  /* Inset from the left so we don't cover the nav rail + sidebar,
+     matching the v2 overlay views (AI panel, calendar grid). */
+  left: calc(var(--rail-w, 68px) + var(--panel-w, 256px));
+  right: 0;
+  z-index: 150;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  background: var(--live-dim);
+  border-bottom: 1px solid var(--live);
+  font-family: var(--font);
+  animation: huddle-fade-up 0.2s ease forwards;
+}
+@media (max-width: 900px) {
+  [data-ui="v2"] .huddle-call-return-dock { left: 0; }
+}
+
+/* While the call-return dock is visible (in-call + overlay open),
+   shove the AI panel + Calendar grid down by the dock height so
+   the overlay's own header isn't hidden underneath. Dock is
+   ~52px tall (10 top + 30 button + 10 bottom + 1 border). */
+[data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .huddle-ai-view,
+[data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .huddle-cal-view {
+  top: 52px;
+}
+/* When the dock surfaces over a non-call channel (no overlay),
+   push the chat surface down so the dock doesn't sit on top of
+   the chat header. */
+[data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .stage {
+  padding-top: 52px;
+}
+
+/* Mirror muted state on the return-dock buttons so the user can
+   see at a glance whether mic/cam are off. */
+.huddle-call-return-mute.is-muted,
+.huddle-call-return-cam.is-off {
+  background: var(--danger);
+  color: #fff;
+}
+.huddle-call-return-mute.is-muted:hover,
+.huddle-call-return-cam.is-off:hover {
+  background: oklch(0.55 0.20 25);
+}
+[data-ui="v2"] .huddle-call-return-dock:not(.hidden) { display: flex; }
+.huddle-call-return-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--live);
+}
+.huddle-call-return-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--live);
+  animation: huddle-pulse 1.6s infinite;
+}
+.huddle-call-return-channel {
+  color: var(--live);
+  font-weight: 700;
+}
+.huddle-call-return-spacer { flex: 1; }
+.huddle-call-return-mute,
+.huddle-call-return-cam {
+  width: 30px;
+  height: 30px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 8px;
+  background: rgba(8, 8, 10, 0.4);
+  border: 0;
+  color: var(--tx-hi);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-call-return-mute:hover,
+.huddle-call-return-cam:hover {
+  background: rgba(8, 8, 10, 0.6);
+}
+.huddle-call-return-mute svg,
+.huddle-call-return-cam svg { width: 16px; height: 16px; }
+.huddle-call-return-back,
+.huddle-call-return-leave {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  min-height: 0;
+  padding: 0 11px;
+  border-radius: 8px;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12.5px;
+  border: 0;
+  cursor: pointer;
+  box-shadow: none;
+}
+.huddle-call-return-back {
+  background: var(--live);
+  color: #04201f;
+}
+.huddle-call-return-back:hover { filter: brightness(1.08); }
+.huddle-call-return-leave {
+  background: oklch(0.55 0.18 25);
+  color: #fff;
+}
+.huddle-call-return-leave:hover { background: var(--danger); }
+.huddle-call-return-back svg,
+.huddle-call-return-leave svg { width: 14px; height: 14px; }
+
+/* "Open whiteboard" + "Create ticket" buttons sit in the header
+   during a call (per design). Bump them to a solid chrome so they
+   read as actions rather than icon-only nav. The Whiteboard button
+   is #whiteboard-btn (legacy icon-only); add a label via pseudo. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #whiteboard-btn::after,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #btn-jira::after {
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: -0.01em;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #whiteboard-btn::after { content: "Whiteboard"; }
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #btn-jira::after { content: "Ticket"; }
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #whiteboard-btn,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #btn-jira {
+  width: auto;
+  padding: 0 12px 0 11px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #whiteboard-btn:hover,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #btn-jira:hover {
+  background: var(--bg-3);
+}
+
+/* Screen-share speaker pill — move .tile-label from bottom-left
+   to top-left for screen tiles per design, prepend a live-colored
+   screen icon (via mask), and let the rest of the label text
+   (Window — Nick) render in Hanken Grotesk. */
+[data-ui="v2"] .tile.screen .tile-label {
+  bottom: auto;
+  top: 14px;
+  left: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 9px;
+  border-radius: 8px;
+  background: rgba(8, 8, 10, 0.6);
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 12.5px;
+}
+[data-ui="v2"] .tile.screen .tile-label::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  background-color: var(--live);
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='2.5' y='4' width='19' height='13' rx='2.5'/><line x1='8' y1='21' x2='16' y2='21'/><line x1='12' y1='17' x2='12' y2='21'/></svg>") center / contain no-repeat;
+          mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='2.5' y='4' width='19' height='13' rx='2.5'/><line x1='8' y1='21' x2='16' y2='21'/><line x1='12' y1='17' x2='12' y2='21'/></svg>") center / contain no-repeat;
+}
+
+
