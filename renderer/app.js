@@ -1994,10 +1994,16 @@ function appendCaptionLine(line) {
   const who = document.createElement('span');
   who.className = 'caption-from';
   who.textContent = line.fromName || 'someone';
+  // Mono timestamp per design (3.1): formatted HH:MM in tabular nums.
+  // Hidden under legacy CSS so the legacy "from: text" row format
+  // remains unchanged; v2 styles place the time after the name.
+  const when = document.createElement('span');
+  when.className = 'caption-time mono';
+  when.textContent = new Date(line.ts || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const what = document.createElement('span');
   what.className = 'caption-text';
   what.textContent = line.text;
-  row.append(who, what);
+  row.append(who, when, what);
   // Strip a trailing interim node before appending so finals always
   // sit below interim flicker.
   const interim = els.captionsList.querySelector('.caption-interim');
@@ -3811,6 +3817,10 @@ function refreshSavedSidebarCount() {
   if (!els.savedCount) return;
   const n = state.savedById.size;
   els.savedCount.textContent = String(n);
+  // Hide the badge when there's nothing saved — matches the design
+  // (count badges only render when > 0) and sidesteps the visual
+  // cramping of a single "0" digit in a min-width pill.
+  els.savedCount.classList.toggle('hidden', n === 0);
 }
 
 // Realtime fan-in. The HuddleClient dispatches one of three events per
@@ -3980,7 +3990,10 @@ async function renderSavedDrawer() {
   const all = document.createElement('button');
   all.type = 'button';
   all.className = 'saved-label-chip' + (state.savedActiveLabel == null ? ' active' : '');
-  all.textContent = `All (${state.savedById.size})`;
+  // Design's label-chip rail uses chip text alone (no inline counts).
+  // The total is implicit from the list below; the inline `(N)` made
+  // the chip read as cramped especially at small counts.
+  all.textContent = 'All';
   all.onclick = () => { state.savedActiveLabel = null; renderSavedDrawer(); };
   els.savedLabels.appendChild(all);
   for (const label of labels) {
@@ -4415,7 +4428,19 @@ function commitStreamAsCamera(streamId) {
   const key = `peer:${pending.fromId}`;
   const peer = state.huddle.peerInfo.get(pending.fromId);
   const tile = makeTile({ key, label: peer ? peer.name : 'guest', kind: 'remote', userId: pending.fromId });
-  tile.querySelector('video').srcObject = pending.stream;
+  const video = tile.querySelector('video');
+  video.srcObject = pending.stream;
+  // Late remote tiles can land in a `paused: true` state under
+  // Chrome's autoplay policy even though `autoplay=true` is set in
+  // makeTile — when audio + video tracks arrive at slightly
+  // different times the implicit play() can be dropped silently,
+  // leaving the element paused (no video, no audio) for that peer.
+  // Explicit play() + addtrack re-prime keeps every late joiner
+  // audible without affecting earlier joiners.
+  video.play().catch(() => {});
+  pending.stream.addEventListener('addtrack', () => {
+    video.play().catch(() => {});
+  });
   // Apply platform marker (Mobile pip) if this peer is on the mobile
   // app. Sourced from LiveKit participant.metadata via peer-joined.
   const platform = state.peerPlatforms.get(pending.fromId);
@@ -4535,6 +4560,10 @@ function toggleAnnotate(streamId) {
   // a place to store them. Toggle visibility per-surface.
   const isWhiteboard = state.whiteboardSessions.has(streamId);
   els.drawAddNote.classList.toggle('hidden', !isWhiteboard);
+  // Design 4.1: the whiteboard view's tool palette is left-vertical
+  // (vs. screen-share annotation's bottom-center pill). Stamp a
+  // body class so CSS can reposition #draw-toolbar accordingly.
+  document.body.classList.toggle('huddle-annotating-whiteboard', isWhiteboard);
   // Zoom controls also only apply to whiteboards (the screen
   // annotation overlay is locked to the underlying video frame).
   els.drawZoomIn.classList.toggle('hidden', !isWhiteboard);
@@ -4551,6 +4580,19 @@ function focusAnnotation(streamId) {
 }
 
 function closeAnnotate() {
+  document.body.classList.remove('huddle-annotating-whiteboard');
+  // Reset drag-position inline styles so the next annotate session
+  // starts at the CSS default (vertical-left for whiteboard,
+  // bottom-center for screen-share). Without this, the user's last
+  // dragged position would persist across surfaces.
+  if (els.drawToolbar) {
+    els.drawToolbar.style.left = '';
+    els.drawToolbar.style.top = '';
+    els.drawToolbar.style.bottom = '';
+    els.drawToolbar.style.right = '';
+    els.drawToolbar.style.transform = '';
+    els.drawToolbar.classList.remove('is-dragging');
+  }
   if (!state.activeAnnotation) { els.drawToolbar.classList.add('hidden'); return; }
   const layer = state.drawLayers.get(state.activeAnnotation);
   if (layer) layer.setActive(false);
@@ -4561,6 +4603,60 @@ function closeAnnotate() {
 // ---------------------------------------------------------------------------
 // Controls (mic/cam/share + drawing toolbar + create channel + DM picker)
 // ---------------------------------------------------------------------------
+
+// Make the shared draw-toolbar draggable so users can reposition the
+// whiteboard's left-vertical palette out of the way. Tracks the drag
+// via pointer events; commits position to inline left/top on first
+// drag (clearing the CSS centering transform). Reset per session
+// when closeAnnotate hides the toolbar.
+function setupDraggableDrawToolbar() {
+  if (!els.drawToolbar || els.drawToolbar.dataset.dragWired) return;
+  els.drawToolbar.dataset.dragWired = '1';
+  let dragging = false;
+  let startX = 0, startY = 0;
+  let originLeft = 0, originTop = 0;
+  els.drawToolbar.addEventListener('pointerdown', (e) => {
+    // Don't start a drag when the user clicked an interactive
+    // element (tool button, color input, etc.) — those need their
+    // own events.
+    if (e.target.closest('button, input, label, select')) return;
+    dragging = true;
+    els.drawToolbar.classList.add('is-dragging');
+    els.drawToolbar.setPointerCapture(e.pointerId);
+    const rect = els.drawToolbar.getBoundingClientRect();
+    // On first drag, freeze the toolbar's current screen position
+    // as explicit left/top so we can move it freely without the
+    // CSS transform (which centers it) interfering.
+    els.drawToolbar.style.left = rect.left + 'px';
+    els.drawToolbar.style.top = rect.top + 'px';
+    els.drawToolbar.style.transform = 'none';
+    els.drawToolbar.style.bottom = 'auto';
+    els.drawToolbar.style.right = 'auto';
+    originLeft = rect.left;
+    originTop = rect.top;
+    startX = e.clientX;
+    startY = e.clientY;
+    e.preventDefault();
+  });
+  els.drawToolbar.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const nextLeft = originLeft + (e.clientX - startX);
+    const nextTop = originTop + (e.clientY - startY);
+    // Clamp to viewport so the toolbar can't be dragged offscreen.
+    const w = els.drawToolbar.offsetWidth;
+    const h = els.drawToolbar.offsetHeight;
+    els.drawToolbar.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, nextLeft)) + 'px';
+    els.drawToolbar.style.top = Math.max(8, Math.min(window.innerHeight - h - 8, nextTop)) + 'px';
+  });
+  const endDrag = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    els.drawToolbar.classList.remove('is-dragging');
+    try { els.drawToolbar.releasePointerCapture(e.pointerId); } catch {}
+  };
+  els.drawToolbar.addEventListener('pointerup', endDrag);
+  els.drawToolbar.addEventListener('pointercancel', endDrag);
+}
 
 function wireControls() {
   // Sidebar collapse — persisted across launches so the user's choice
@@ -4812,6 +4908,7 @@ function wireControls() {
 // call popout (which doesn't run setupListeners) can call it after
 // reparenting #draw-toolbar into popout-stage.
 function wireDrawToolbar() {
+  setupDraggableDrawToolbar();
   els.drawToolbar.querySelectorAll('[data-tool]').forEach((b) => {
     b.onclick = () => {
       els.drawToolbar.querySelectorAll('[data-tool]').forEach((x) => x.classList.remove('active'));
