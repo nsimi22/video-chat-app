@@ -195,7 +195,16 @@
             mandatory: {
               chromeMediaSource: 'desktop',
               chromeMediaSourceId: sourceId,
-              maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30,
+              // Min + max bounds: without `min*`, Chromium's
+              // desktopCapturer often returned tiny captures
+              // (~853×475 observed) because nothing was telling
+              // it to prefer high res. Min asks for at least 720p
+              // (downscaled to source size if the source is
+              // smaller, which is correct). Max bumps to 1440p
+              // so high-DPI / 4K screens aren't capped at 1080.
+              minWidth: 1280, minHeight: 720,
+              maxWidth: 2560, maxHeight: 1440,
+              minFrameRate: 15, maxFrameRate: 30,
             },
           },
         });

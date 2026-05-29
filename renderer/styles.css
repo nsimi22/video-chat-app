@@ -6525,13 +6525,18 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
    by :has() rather than the spotlight click. Whiteboard tiles
    carry `.screen` for sizing (see makeTile) so explicitly exclude
    them — whiteboards stay wide-span. */
-[data-ui="v2"] .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) {
+/* Filmstrip side-strip is a MAIN-WINDOW layout. Popout windows
+   (body.popout) want the single shared tile to fill the entire
+   popout — the body:not(.popout) gate keeps these rules off the
+   popout's .popout-tiles, where they were sizing the screen tile
+   to 1fr/70vh and reserving a 184px phantom filmstrip column. */
+[data-ui="v2"] body:not(.popout) .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) {
   grid-template-columns: minmax(0, 1fr) 184px;
   grid-auto-rows: auto;
   grid-auto-flow: row dense;
   max-height: 70vh;
 }
-[data-ui="v2"] .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) .tile {
+[data-ui="v2"] body:not(.popout) .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) .tile {
   grid-column: 2;
   min-height: 0;
   /* 16:10 camera aspect per design (3.4). At 184px wide the tile
@@ -6540,7 +6545,7 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
      when more peers join. */
   aspect-ratio: 16 / 10;
 }
-[data-ui="v2"] .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) .tile.screen:not(.whiteboard) {
+[data-ui="v2"] body:not(.popout) .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) .tile.screen:not(.whiteboard) {
   grid-column: 1;
   grid-row: 1 / span 99;
   min-height: 360px;
