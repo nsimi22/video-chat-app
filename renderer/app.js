@@ -4541,6 +4541,10 @@ function toggleAnnotate(streamId) {
   // a place to store them. Toggle visibility per-surface.
   const isWhiteboard = state.whiteboardSessions.has(streamId);
   els.drawAddNote.classList.toggle('hidden', !isWhiteboard);
+  // Design 4.1: the whiteboard view's tool palette is left-vertical
+  // (vs. screen-share annotation's bottom-center pill). Stamp a
+  // body class so CSS can reposition #draw-toolbar accordingly.
+  document.body.classList.toggle('huddle-annotating-whiteboard', isWhiteboard);
   // Zoom controls also only apply to whiteboards (the screen
   // annotation overlay is locked to the underlying video frame).
   els.drawZoomIn.classList.toggle('hidden', !isWhiteboard);
@@ -4557,6 +4561,7 @@ function focusAnnotation(streamId) {
 }
 
 function closeAnnotate() {
+  document.body.classList.remove('huddle-annotating-whiteboard');
   if (!state.activeAnnotation) { els.drawToolbar.classList.add('hidden'); return; }
   const layer = state.drawLayers.get(state.activeAnnotation);
   if (layer) layer.setActive(false);

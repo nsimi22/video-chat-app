@@ -4227,7 +4227,67 @@ body.popout-call .popout-stage > .draw-toolbar {
   box-shadow: var(--sh-card);
 }
 [data-ui="v2"] .tile.whiteboard {
-  background: #fdfcf8; /* design keeps the warm off-white whiteboard surface */
+  /* Design 4.2: dotted-grid background (radial-dot, 26px grid).
+     Surface stays warm off-white for visibility of existing
+     dark-on-light user strokes; the design shows a dark variant
+     but flipping the surface would break legacy content. The grid
+     itself uses --line-soft so it reads as cue, not noise. */
+  background-color: #fdfcf8;
+  background-image: radial-gradient(circle, rgba(60, 60, 70, 0.18) 1px, transparent 1px);
+  background-size: 26px 26px;
+  background-position: 13px 13px;
+}
+
+/* 4.1 — Whiteboard view's tool palette is left-vertical (per design)
+   rather than the bottom-center pill that screen-share annotation
+   uses. body.huddle-annotating-whiteboard is set by toggleAnnotate
+   in app.js when the active surface is a whiteboard. Repositions
+   the same #draw-toolbar so we don't have two toolbars to maintain. */
+[data-ui="v2"] body.huddle-annotating-whiteboard .draw-toolbar:not(.hidden) {
+  left: 24px;
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%);
+  flex-direction: column;
+  width: max-content;
+  max-width: none;
+  align-items: stretch;
+  gap: 4px;
+  padding: 8px;
+}
+/* Inside the vertical palette, the "Drawing on <name>" target label
+   would push the column too tall — hide it; the surface context is
+   already obvious from the active whiteboard tile. */
+[data-ui="v2"] body.huddle-annotating-whiteboard .draw-toolbar .draw-target {
+  display: none;
+}
+/* Tool buttons stay icon-only (already enforced under v2 above)
+   and render as 36×36 square stacks per design. */
+[data-ui="v2"] body.huddle-annotating-whiteboard .draw-toolbar .tool {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+}
+/* Color picker stays at 28×28 inline with the column. */
+[data-ui="v2"] body.huddle-annotating-whiteboard .draw-toolbar input[type="color"] {
+  width: 36px;
+}
+
+/* 4.3 — remote-cursor name pill v2 polish: keep the dark fill so
+   white text is readable against any user-chosen stroke color, but
+   thicken the author-colored border so it reads as "this is Leigh's
+   cursor" at a glance. Design shows a tinted pill; this is the
+   safer interpretation that doesn't risk unreadable text when a
+   user picks a light stroke color. */
+[data-ui="v2"] .tile .remote-cursor-name {
+  background: rgba(8, 8, 10, 0.78);
+  color: #fff;
+  border: 2px solid currentColor;
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  padding: 2px 8px;
 }
 
 /* Cam-off tile background under v2: a per-user radial gradient
