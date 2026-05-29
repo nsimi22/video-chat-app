@@ -818,5 +818,8 @@
     <!-- v2 UI shell wiring: nav rail icon population + click bridges.
          No-op when [data-ui="v2"] is not set (rail isn't rendered). -->
     <script src="ui-v2-shell.js"></script>
+    <!-- v2 Cmd-K command palette. Only fires when [data-ui="v2"]
+         is set; lazy-creates its DOM on first open. -->
+    <script src="command-palette.js"></script>
   </body>
 </html>

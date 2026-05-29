@@ -4517,4 +4517,148 @@ body.popout-call .popout-stage > .draw-toolbar {
   font-family: var(--font);
 }
 
+/* ============================================================
+   v2 Phase 5.1 — Cmd-K command palette.
+   The overlay lives in <body> (appended at runtime by
+   command-palette.js). All hooks scoped under .huddle-cp-*.
+   Hidden by default; opens via ⌘K when [data-ui="v2"] is set.
+   ============================================================ */
+.huddle-command-palette {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(6, 6, 8, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  display: flex;
+  justify-content: center;
+  padding-top: 12vh;
+  font-family: var(--font, system-ui);
+}
+.huddle-command-palette.hidden {
+  display: none;
+}
+.huddle-cp-modal {
+  width: 600px;
+  max-width: 92vw;
+  max-height: 70vh;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-pop);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: huddle-pop 0.14s ease forwards;
+}
+.huddle-cp-search {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.huddle-cp-search-icon {
+  display: inline-flex;
+  color: var(--tx-lo);
+  flex-shrink: 0;
+}
+.huddle-cp-search-icon svg {
+  width: 19px;
+  height: 19px;
+}
+.huddle-cp-input {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-size: 16px;
+  padding: 0;
+  letter-spacing: -0.01em;
+}
+.huddle-cp-input::placeholder { color: var(--tx-lo); }
+.huddle-cp-esc {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--tx-faint);
+  border: 1px solid var(--line);
+  padding: 2px 7px;
+  border-radius: 6px;
+  user-select: none;
+}
+.huddle-cp-body {
+  overflow-y: auto;
+  padding: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.huddle-cp-empty {
+  padding: 26px;
+  text-align: center;
+  color: var(--tx-lo);
+  font-size: 13.5px;
+}
+.huddle-cp-group {
+  padding: 9px 12px 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tx-faint);
+}
+.huddle-cp-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 9px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  min-height: 0;
+  box-shadow: none;
+}
+.huddle-cp-item.selected,
+.huddle-cp-item:hover {
+  background: var(--bg-3);
+}
+.huddle-cp-item-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--tx-mid);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.huddle-cp-item-icon svg {
+  width: 16px;
+  height: 16px;
+}
+.huddle-cp-item-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.huddle-cp-item-hint {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--accent-tx);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
 
