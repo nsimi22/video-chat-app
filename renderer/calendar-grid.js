@@ -14,8 +14,8 @@
 //   - prev / next / today nav; "New event" opens existing schedule modal
 (function () {
   const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const HOUR_START = 8;
-  const HOUR_END = 18;       // 6pm
+  const HOUR_START = 7;      // 7am — covers early stand-ups
+  const HOUR_END = 22;       // 10pm — covers late international calls
   const HOUR_HEIGHT = 56;
   const GUTTER = 60;
   let root = null;
@@ -61,13 +61,36 @@
     return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
   }
 
-  // Map legacy event "kind" → design's calendar-color band. The legacy
-  // app doesn't track team/design/personal categories, so we map by
-  // origin: scheduled huddles → "online" (green), ICS feeds → "away"
-  // (amber). Live events overlay with --live regardless.
+  // Categorize an event into one of the design's 4 calendar bands:
+  //   team     → channel name matches a team-y keyword (general,
+  //              leadership, team, all-hands, standup, sync)
+  //   design   → channel name contains "design"
+  //   huddle   → other scheduled huddles
+  //   personal → ICS feed events (external calendars)
+  //
+  // Source-of-truth for category-to-color mapping per the design
+  // tokens table in the bundle README:
+  //   team    = --accent (indigo)
+  //   design  = --live   (teal)
+  //   huddle  = --online (green)  // current default
+  //   personal= --away   (amber)
+  const TEAM_KEYWORDS = /\b(team|general|leadership|all-?hands|stand-?up|sync|company)\b/i;
+  const DESIGN_KEYWORDS = /\bdesign\b/i;
+  function eventCategory(e) {
+    if (e.kind !== 'huddle') return 'personal';
+    const name = e.channelId ? (window.huddleApp?.getChannelName?.(e.channelId) || '') : '';
+    if (DESIGN_KEYWORDS.test(name)) return 'design';
+    if (TEAM_KEYWORDS.test(name)) return 'team';
+    return 'huddle';
+  }
   function eventColor(e) {
-    if (e.kind === 'huddle') return 'var(--online)';
-    return 'var(--away)';
+    switch (eventCategory(e)) {
+      case 'team':     return 'var(--accent)';
+      case 'design':   return 'var(--live)';
+      case 'personal': return 'var(--away)';
+      case 'huddle':
+      default:         return 'var(--online)';
+    }
   }
 
   function isLive(e, now) {
@@ -92,8 +115,10 @@
         <button class="huddle-cal-today" data-nav="today">Today</button>
         <div class="huddle-cal-spacer"></div>
         <span class="huddle-cal-legend">
-          <span class="huddle-cal-legend-item"><span class="huddle-cal-legend-dot" style="background:var(--online)"></span>Huddles</span>
-          <span class="huddle-cal-legend-item"><span class="huddle-cal-legend-dot" style="background:var(--away)"></span>External</span>
+          <span class="huddle-cal-legend-item"><span class="huddle-cal-legend-dot" style="background:var(--accent)"></span>Team</span>
+          <span class="huddle-cal-legend-item"><span class="huddle-cal-legend-dot" style="background:var(--live)"></span>Design</span>
+          <span class="huddle-cal-legend-item"><span class="huddle-cal-legend-dot" style="background:var(--online)"></span>Huddle</span>
+          <span class="huddle-cal-legend-item"><span class="huddle-cal-legend-dot" style="background:var(--away)"></span>Personal</span>
         </span>
         <button class="huddle-cal-new-event" title="Schedule a new event">${svg('plus')}<span>New event</span></button>
         <button class="huddle-cal-close" title="Close" aria-label="Close">${svg('x')}</button>
