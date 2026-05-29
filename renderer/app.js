@@ -5178,13 +5178,11 @@ async function refreshSettings() {
 
 // Apply density + accent hue to :root. CSS reads:
 //   --row-py / --msg-gap / --ui (density-driven, set as overrides)
-//   --accent-h (drives --accent / --accent-hi / --accent-dim / --accent-tx
-//               via the oklch(h) values in the v2 token block)
-// Note: the v2 token block defines --accent as a literal color today,
-// not an oklch() expression keyed off --accent-h. So changing the hue
-// alone won't recolor existing rules until those tokens are switched
-// to var-driven oklch(). Track that as a follow-up; the swatch click
-// still persists the choice so the migration is a one-step flip.
+//   --accent-h drives --accent / --accent-hi / --accent-dim / --accent-tx
+//   via the oklch(... var(--accent-h)) values in the v2 token block
+//   (styles.css around the `--accent-h: 250` definition). Any rule
+//   using `var(--accent)` (~60 consumers) recolors when the swatch
+//   click writes --accent-h to :root below.
 function applyAppearance(appearance) {
   const root = document.documentElement;
   const density = appearance?.density === 'compact' ? 'compact' : 'comfortable';
