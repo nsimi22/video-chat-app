@@ -4661,4 +4661,217 @@ body.popout-call .popout-stage > .draw-toolbar {
   flex-shrink: 0;
 }
 
+/* ============================================================
+   v2 Phase 5.2 — Calendar + Saved drawer + schedule modal.
+   Same DOM hooks (.saved-drawer chrome shared by both; calendar
+   adds .cal-* row classes; schedule modal uses .schedule-modal).
+   ============================================================ */
+
+/* Shared right-side drawer chrome (saved + calendar). */
+[data-ui="v2"] .saved-drawer {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-pop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-ui="v2"] .saved-drawer-head {
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--tx-hi);
+  padding: 12px 14px;
+}
+[data-ui="v2"] .saved-labels {
+  border-bottom: 1px solid var(--line-soft);
+  gap: 7px;
+  padding: 10px 12px;
+}
+[data-ui="v2"] .saved-label-chip {
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  color: var(--tx-lo);
+  border-radius: 20px;
+  padding: 4px 11px;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+}
+[data-ui="v2"] .saved-label-chip:hover {
+  background: var(--bg-3);
+  border-color: var(--line);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .saved-label-chip.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent-tx);
+}
+[data-ui="v2"] .saved-list {
+  padding: 8px;
+}
+[data-ui="v2"] .saved-item {
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  padding: 11px 13px;
+  margin-bottom: 6px;
+  font-family: var(--font);
+}
+[data-ui="v2"] .saved-item:hover {
+  background: var(--bg-3);
+  border-color: var(--line);
+}
+[data-ui="v2"] .saved-item-head {
+  color: var(--tx-faint);
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 11px;
+}
+[data-ui="v2"] .saved-item-body {
+  color: var(--tx-mid);
+  font-family: var(--font);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+[data-ui="v2"] .saved-item-label {
+  background: color-mix(in oklch, var(--away) 18%, transparent);
+  color: var(--away);
+  border-radius: 20px;
+  padding: 2px 9px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* Calendar list rows. */
+[data-ui="v2"] .cal-list {
+  padding: 10px 12px 18px;
+}
+[data-ui="v2"] .cal-empty {
+  color: var(--tx-lo);
+  font-family: var(--font);
+  font-size: 13px;
+}
+[data-ui="v2"] .cal-day-header {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--tx-faint);
+  border-bottom: 1px solid var(--line-soft);
+  text-transform: uppercase;
+  padding: 14px 0 6px;
+}
+[data-ui="v2"] .cal-row {
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-family: var(--font);
+  gap: 12px;
+}
+[data-ui="v2"] .cal-row:hover {
+  background: var(--bg-2);
+}
+[data-ui="v2"] .cal-row-time {
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 12px;
+  color: var(--tx-lo);
+}
+[data-ui="v2"] .cal-row-title {
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .cal-row-meta {
+  font-family: var(--font);
+  color: var(--tx-lo);
+  font-size: 11.5px;
+}
+[data-ui="v2"] .cal-row-join {
+  background: var(--accent);
+  color: #1a1106;
+  border: 0;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12px;
+  height: 26px;
+  border-radius: 7px;
+  padding: 0 11px;
+  box-shadow: none;
+  min-height: 0;
+}
+[data-ui="v2"] .cal-row-join:hover {
+  background: var(--accent-hi);
+  filter: none;
+}
+[data-ui="v2"] .cal-row-del {
+  color: var(--tx-faint);
+}
+[data-ui="v2"] .cal-row-del:hover {
+  color: var(--danger);
+}
+[data-ui="v2"] .cal-row-ics {
+  border-left: 2px solid var(--line);
+  padding-left: 10px;
+}
+
+/* Schedule-event modal (the new-event form). */
+[data-ui="v2"] .schedule-modal h2 {
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 18px;
+  color: var(--tx-hi);
+  letter-spacing: -0.02em;
+}
+[data-ui="v2"] .schedule-modal label {
+  font-family: var(--font);
+  color: var(--tx-mid);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+[data-ui="v2"] .schedule-modal input,
+[data-ui="v2"] .schedule-modal select,
+[data-ui="v2"] .schedule-modal textarea {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-size: 14px;
+  padding: 9px 12px;
+}
+[data-ui="v2"] .schedule-modal input:focus,
+[data-ui="v2"] .schedule-modal select:focus,
+[data-ui="v2"] .schedule-modal textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* Settings → Calendar subscriptions sub-list. */
+[data-ui="v2"] .set-cal-row {
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  font-family: var(--font);
+}
+[data-ui="v2"] .set-cal-row-name {
+  color: var(--tx-hi);
+  font-weight: 600;
+}
+[data-ui="v2"] .set-cal-row-url {
+  color: var(--tx-lo);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+[data-ui="v2"] .set-cal-row-del {
+  color: var(--tx-faint);
+}
+[data-ui="v2"] .set-cal-row-del:hover {
+  color: var(--danger);
+}
+
 
