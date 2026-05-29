@@ -218,10 +218,25 @@
       }
       let publication;
       try {
-        publication = await this.room.localParticipant.publishTrack(screenTrack, {
+        // Explicit HD encoding so screen-share doesn't fall to a
+        // low-bitrate default. LK's ScreenSharePresets exposes
+        // tuned configs — h1080fps15 (≈1080p @ 15fps, ~3 Mbps)
+        // is the right balance for text-readability of code /
+        // settings panels without burning bandwidth on motion.
+        // Falls back to LK defaults if the preset constant isn't
+        // exposed by the bundled livekit-client version.
+        const screenPreset = LK.ScreenSharePresets?.h1080fps15
+          || LK.VideoPresets43?.h1080
+          || null;
+        const publishOpts = {
           source: LK.Track.Source.ScreenShare,
           name: label,
-        });
+          simulcast: false,
+        };
+        if (screenPreset?.encoding) {
+          publishOpts.videoEncoding = screenPreset.encoding;
+        }
+        publication = await this.room.localParticipant.publishTrack(screenTrack, publishOpts);
       } catch (err) {
         for (const t of stream.getTracks()) t.stop();
         throw err;
