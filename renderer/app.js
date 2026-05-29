@@ -1994,10 +1994,16 @@ function appendCaptionLine(line) {
   const who = document.createElement('span');
   who.className = 'caption-from';
   who.textContent = line.fromName || 'someone';
+  // Mono timestamp per design (3.1): formatted HH:MM in tabular nums.
+  // Hidden under legacy CSS so the legacy "from: text" row format
+  // remains unchanged; v2 styles place the time after the name.
+  const when = document.createElement('span');
+  when.className = 'caption-time mono';
+  when.textContent = new Date(line.ts || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const what = document.createElement('span');
   what.className = 'caption-text';
   what.textContent = line.text;
-  row.append(who, what);
+  row.append(who, when, what);
   // Strip a trailing interim node before appending so finals always
   // sit below interim flicker.
   const interim = els.captionsList.querySelector('.caption-interim');

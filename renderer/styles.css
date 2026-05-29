@@ -3162,8 +3162,11 @@ body.popout-call .popout-stage > .draw-toolbar {
   font-weight: 700;
   background: var(--tx-lo);
   color: var(--bg-0);
-  padding: 0 6px;
-  min-width: 19px;
+  /* Slight horizontal padding bump so a lone-digit count (e.g. "0"
+     or "9") sits with breathing room on either side rather than
+     hugging the pill edges. */
+  padding: 0 8px;
+  min-width: 22px;
   height: 19px;
   border-radius: 10px;
   display: inline-flex;
@@ -4445,9 +4448,20 @@ body.popout-call .popout-stage > .draw-toolbar {
   gap: 6px;
 }
 [data-ui="v2"] .draw-toolbar .tool svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
+}
+/* Design 3.2: icon-only tool buttons under v2 — labels add noise
+   and break the floating-pill aesthetic. Tooltips on the buttons
+   (via title attribute) carry the same info. */
+[data-ui="v2"] .draw-toolbar .tool span {
+  display: none;
+}
+[data-ui="v2"] .draw-toolbar .tool {
+  padding: 0;
+  width: 32px;
+  justify-content: center;
 }
 [data-ui="v2"] .draw-toolbar .tool:hover {
   background: var(--bg-3);
@@ -4514,23 +4528,75 @@ body.popout-call .popout-stage > .draw-toolbar {
   padding: 10px 13px;
 }
 [data-ui="v2"] .caption-line {
-  gap: 10px;
+  display: grid;
+  grid-template-columns: max-content max-content 1fr;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin-bottom: 8px;
 }
 [data-ui="v2"] .caption-from {
   color: var(--tx-mid);
   font-family: var(--font);
   font-weight: 700;
   font-size: 12.5px;
+  min-width: 0;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Mono timestamp (3.1) — sits between author + text. Hidden under
+   legacy CSS by default. */
+[data-ui="v2"] .caption-time {
+  color: var(--tx-faint);
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 10.5px;
+  white-space: nowrap;
 }
 [data-ui="v2"] .caption-text {
   color: var(--tx-mid);
   font-family: var(--font);
+  grid-column: 1 / -1;
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.5;
 }
 [data-ui="v2"] .caption-self .caption-from {
   color: var(--accent-tx);
 }
 [data-ui="v2"] .caption-interim .caption-text {
   color: var(--tx-lo);
+}
+/* Hide timestamp under legacy chrome so the legacy "from: text"
+   single-row layout doesn't reflow. */
+:not([data-ui="v2"]) .caption-time { display: none; }
+
+/* Design 3.1: while in-call AND on the call channel, dock the
+   captions panel to the right side of the stage as a persistent
+   side panel (296px), not a footer banner. The tile grid gets a
+   right margin so it doesn't slide under. Hide chat composer +
+   message stream is already handled by other in-call rules. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .captions:not(.hidden) {
+  position: absolute;
+  top: 60px;       /* below the stage-header */
+  right: 14px;
+  bottom: 100px;   /* above the bottom dock */
+  width: 296px;
+  max-height: none;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  z-index: 25;
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .captions-list {
+  flex: 1;
+  overflow-y: auto;
+}
+/* Make room on the right of the tile grid for the captions dock
+   when it's visible. Uses :has() so the rule only fires when a
+   non-hidden #captions exists. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)) .tiles {
+  margin-right: 310px;
 }
 
 /* CC toggle active state — match the design's "captions on" affordance.
@@ -6265,6 +6331,42 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   font-weight: 600;
   font-size: 12.5px;
 }
+/* Screen-share center hint (design item 3.3). Faded mono text
+   reading "shared screen · draw to annotate" sits behind the
+   screen-share video to nudge users that annotation is available.
+   Hidden on small filmstrip tiles in the spotlight rail since the
+   text would clip awkwardly at 184px. */
+[data-ui="v2"] .tile.screen:not(.whiteboard)::after {
+  content: "shared screen · draw to annotate";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.18);
+  pointer-events: none;
+  z-index: 1;
+  text-align: center;
+  padding: 0 12px;
+}
+/* The hint sits BEHIND the video so once content is being shared
+   the user sees the screen, not the hint. The video element above
+   covers it when its track is live. */
+[data-ui="v2"] .tile.screen:not(.whiteboard) .tile-content,
+[data-ui="v2"] .tile.screen:not(.whiteboard) video {
+  position: relative;
+  z-index: 2;
+}
+/* Suppress the hint on small filmstrip tiles in the spotlight rail
+   — the text would clip and read as visual noise. */
+[data-ui="v2"] .tiles.has-spotlight .tile.screen:not(.spotlighted):not(.whiteboard)::after {
+  display: none;
+}
+
 [data-ui="v2"] .tile.screen .tile-label::before {
   content: "";
   width: 14px;
@@ -6290,7 +6392,12 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 }
 [data-ui="v2"] .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) .tile {
   grid-column: 2;
-  min-height: 120px;
+  min-height: 0;
+  /* 16:10 camera aspect per design (3.4). At 184px wide the tile
+     resolves to ~115px tall — locked rather than min-height-driven
+     so the strip reads as a uniform filmstrip instead of stretching
+     when more peers join. */
+  aspect-ratio: 16 / 10;
 }
 [data-ui="v2"] .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) .tile.screen:not(.whiteboard) {
   grid-column: 1;
@@ -6305,6 +6412,12 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
    regardless of which trigger fired first. */
 [data-ui="v2"] .tiles.has-spotlight {
   grid-template-columns: minmax(0, 1fr) 184px;
+}
+/* Same 16:10 lock for the spotlight rail's filmstrip tiles
+   (excluding the spotlighted tile itself, which fills the stage). */
+[data-ui="v2"] .tiles.has-spotlight .tile:not(.spotlighted) {
+  min-height: 0;
+  aspect-ratio: 16 / 10;
 }
 
 /* Two-part screen-tile label spans (setScreenTileLabel in app.js).
