@@ -51,14 +51,48 @@
     return name || id;
   }
 
+  // Returns up to N suggestions tailored to whatever signals are
+  // available in the current channel + app state:
+  //   - call active anywhere → swap in a brief-the-call prompt
+  //   - JIRA ticket key seen recently → swap in a status-on-ticket prompt
+  // Falls back to the static "team decided" / "draft a ticket" lines
+  // when no context-specific signal is present. Stays at 3 chips so
+  // the chip row layout doesn't reflow between channels.
   function defaultSuggestions() {
     const ch = getActiveChannelLabel();
-    const base = [
-      ch ? `Summarize today in #${ch}` : 'Summarize today in this channel',
-      'Draft a Jira ticket for the latest discussion',
-      'What did the team decide this week?',
-    ];
-    return base;
+    const chPrefix = ch ? `#${ch}` : 'this channel';
+    const inCall = document.body.classList.contains('huddle-in-call');
+    const recentJiraKey = findRecentJiraKey();
+
+    const summary = inCall
+      ? `Brief me on the call in ${chPrefix}`
+      : `Summarize today in ${chPrefix}`;
+    const middle = recentJiraKey
+      ? `What's the latest on ${recentJiraKey}?`
+      : 'Draft a Jira ticket for the latest discussion';
+    const tail = 'What did the team decide this week?';
+
+    return [summary, middle, tail];
+  }
+
+  // Scan the last few visible messages in the current channel for a
+  // JIRA ticket key like "DAP-123". Returns the first match or null.
+  // Reads from the DOM rather than app state — avoids growing the
+  // huddleApp surface for one feature, and DOM order already reflects
+  // chat order. Capped at the last 20 messages so a huge channel
+  // backscroll doesn't churn through hundreds of nodes on every chip
+  // re-render.
+  const JIRA_KEY_RE = /\b([A-Z][A-Z0-9_]{1,9})-(\d{1,6})\b/;
+  function findRecentJiraKey() {
+    const bodies = document.querySelectorAll('#messages .msg .msg-body');
+    if (!bodies.length) return null;
+    const start = Math.max(0, bodies.length - 20);
+    for (let i = bodies.length - 1; i >= start; i--) {
+      const txt = bodies[i]?.textContent || '';
+      const m = JIRA_KEY_RE.exec(txt);
+      if (m) return m[0];
+    }
+    return null;
   }
 
   // --- DOM ---------------------------------------------------------

@@ -2429,16 +2429,13 @@ function appendChannelToSidebar(channel, makeActive) {
   if (isChannelMuted(channel.id)) li.classList.add('muted');
   else if (isChannelNotifyAll(channel.id)) li.classList.add('notify-all');
 
-  // Group DMs get a Users SVG before the name; private channels get
-  // a Lock SVG. Matches the lucide Users / Lock icons mobile uses in
-  // its sidebar (mobile/app/(app)/(tabs)/channels.tsx). For 1:1 DMs
+  // Group DMs get a 2-avatar stack (per design — see styles.css
+  // `.ch-dm-stack`); private channels get a Lock SVG. For 1:1 DMs
   // and public channels the `@` / `#` textual prefix in
   // displayLabelFor handles distinction.
   if (isGroupDm(channel)) {
-    const icon = document.createElement('span');
-    icon.className = 'ch-icon';
-    icon.innerHTML = window.HuddleIcons.users;
-    li.appendChild(icon);
+    const stack = renderDmAvatarStack(channel);
+    if (stack) li.appendChild(stack);
   } else if (channel.type === 'private') {
     const icon = document.createElement('span');
     icon.className = 'ch-icon';
@@ -2538,6 +2535,7 @@ function focusChannel(channelId) {
     state.lurkingChannelId = null;
   }
   renderCallHeader();
+  renderHeaderMembers(channel);
   refreshNotifyButton();
   // Visiting a channel clears its unread.
   state.unread.delete(channelId);
@@ -2743,6 +2741,83 @@ function dmLabelFor(channel) {
     }
   }
   return channel.name || 'unknown';
+}
+
+// Chat-header member-avatar stack: shows up to MAX_HEADER_AVATARS
+// member avatars (others, not self) plus a "+N" chip for overflow.
+// Called from focusChannel on every channel switch. The placeholder
+// span lives in index.html and is hidden under legacy via CSS.
+const MAX_HEADER_AVATARS = 4;
+function renderHeaderMembers(channel) {
+  const wrap = document.getElementById('huddle-header-members');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const me = state.huddle?.peerId;
+  // Resolve member ids per channel type:
+  //   DMs always carry channel.memberIds (populated on creation).
+  //   Public channels include everyone — use the full team roster.
+  //   Private channels with no cached memberIds: skip (we don't
+  //   want to leak the team roster as if everyone were a member).
+  let memberIds = [];
+  let memberSnap = null; // index-aligned with memberIds when present
+  if (channel?.memberIds?.length) {
+    memberIds = channel.memberIds;
+    memberSnap = channel.members;
+  } else if (channel?.type === 'public' && state.huddle?.roster?.size) {
+    memberIds = Array.from(state.huddle.roster.keys());
+  } else {
+    return;
+  }
+  const ids = memberIds.filter((id) => id !== me);
+  if (!ids.length) return;
+  const visible = ids.slice(0, MAX_HEADER_AVATARS);
+  const overflow = ids.length - visible.length;
+  for (const id of visible) {
+    const peer = state.huddle?.peerInfo?.get(id);
+    const rosterEntry = state.huddle?.roster?.get(id);
+    const idx = memberIds.indexOf(id);
+    const snapName = memberSnap?.[idx >= 0 ? idx : 0];
+    const name = peer?.name || rosterEntry?.name || snapName || '?';
+    const color = peer?.color || rosterEntry?.color || '#666';
+    const dot = document.createElement('span');
+    dot.className = 'huddle-header-avatar';
+    dot.style.background = color;
+    dot.textContent = (name || '?').slice(0, 1).toUpperCase();
+    dot.title = name;
+    wrap.appendChild(dot);
+  }
+  if (overflow > 0) {
+    const more = document.createElement('span');
+    more.className = 'huddle-header-avatar-more';
+    more.textContent = `+${overflow}`;
+    more.title = `${overflow} more`;
+    wrap.appendChild(more);
+  }
+}
+
+// 2-avatar stack for group DM sidebar rows (replaces the Users SVG
+// per design). Picks the first 2 members other than self, prefers
+// live peerInfo (color + name) over the stale channel.members
+// snapshot. Returns null if no other members are known yet so the
+// caller can skip rendering rather than show a broken stub.
+function renderDmAvatarStack(channel) {
+  const me = state.huddle?.peerId;
+  const ids = (channel.memberIds || []).filter((id) => id !== me);
+  if (!ids.length) return null;
+  const stack = document.createElement('span');
+  stack.className = 'ch-dm-stack';
+  for (const id of ids.slice(0, 2)) {
+    const peer = state.huddle?.peerInfo?.get(id);
+    const snapName = channel.members?.[channel.memberIds?.indexOf(id) ?? -1];
+    const name = peer?.name || snapName || '?';
+    const color = peer?.color || '#666';
+    const dot = document.createElement('span');
+    dot.className = 'ch-dm-avatar';
+    dot.style.background = color;
+    dot.textContent = (name || '?').slice(0, 1).toUpperCase();
+    stack.appendChild(dot);
+  }
+  return stack;
 }
 
 function canDelete(channel) {
