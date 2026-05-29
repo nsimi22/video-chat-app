@@ -5593,4 +5593,275 @@ body.popout-call .popout-stage > .draw-toolbar {
   text-overflow: ellipsis;
 }
 
+/* ============================================================
+   v2 Phase 6.1 — in-call header pills + captions footer +
+   screen-share speaker pill.
+   ============================================================ */
+
+/* v2-only visibility helpers. Both classes hide by default so
+   legacy chrome is unaffected when the flag is off. */
+.v2-only,
+.v2-call-only { display: none; }
+[data-ui="v2"] .v2-only { display: flex; }
+/* In-call pills appear only while the in-call cluster is mounted
+   (i.e. #btn-leave is not .hidden). :has() is supported in
+   Chromium-based Electron. */
+[data-ui="v2"] .header-actions:has(#btn-leave:not(.hidden)) .v2-call-only {
+  display: inline-flex;
+}
+
+/* LIVE pill */
+[data-ui="v2"] .huddle-call-live-pill {
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px 4px 9px;
+  border-radius: 20px;
+  background: var(--live-dim);
+  border: 1px solid var(--live);
+  color: var(--live);
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  user-select: none;
+  flex-shrink: 0;
+}
+[data-ui="v2"] .huddle-call-live-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--live);
+  animation: huddle-pulse 1.6s infinite;
+}
+
+/* LiveKit pill */
+[data-ui="v2"] .huddle-call-livekit-pill {
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--tx-lo);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 600;
+  user-select: none;
+  flex-shrink: 0;
+}
+[data-ui="v2"] .huddle-call-livekit-pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--online);
+}
+
+/* Captions panel footer with /summarize button. */
+[data-ui="v2"] .captions-footer {
+  padding: 10px 13px;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  flex-shrink: 0;
+}
+[data-ui="v2"] .captions-summarize {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 32px;
+  min-height: 0;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--accent-tx);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: none;
+}
+[data-ui="v2"] .captions-summarize:hover {
+  background: var(--bg-2);
+  border-color: var(--line);
+  color: var(--accent-tx);
+}
+
+/* ============================================================
+   v2 in-call layout — bottom CallControl dock + chat-hide while
+   in call. The dock is created at runtime by ui-v2-shell.js,
+   which physically moves the mic/cam/blur/share/hand/react/cc/
+   leave buttons out of .stage-header into the dock. body class
+   "huddle-in-call" is synced from #btn-leave's visibility.
+   ============================================================ */
+
+/* Dock — fixed full-width at bottom of .stage. Hidden when not
+   in a call (no body.huddle-in-call) so the moved buttons don't
+   stick out as orphans. */
+.huddle-call-dock { display: none; }
+[data-ui="v2"] body.huddle-in-call .huddle-call-dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 22px;
+  background: var(--bg-0);
+  border-top: 1px solid var(--line-soft);
+  z-index: 30;
+}
+/* Buttons inside the dock are still .ctrl.icon-only from legacy.
+   Override the small chat-header sizing for these in the dock
+   context — bigger 48px squares per the design's CallControl
+   widget; .danger ("Leave") becomes a wide rounded pill. */
+[data-ui="v2"] body.huddle-in-call .huddle-call-dock .ctrl.icon-only {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+}
+[data-ui="v2"] body.huddle-in-call .huddle-call-dock .ctrl.icon-only:hover {
+  background: var(--bg-3);
+}
+[data-ui="v2"] body.huddle-in-call .huddle-call-dock .ctrl.icon-only svg {
+  width: 22px;
+  height: 22px;
+}
+[data-ui="v2"] body.huddle-in-call .huddle-call-dock .ctrl.muted {
+  background: var(--danger);
+  color: #fff;
+  border-color: transparent;
+}
+[data-ui="v2"] body.huddle-in-call .huddle-call-dock #btn-cc.active {
+  background: var(--accent);
+  color: var(--bg-0);
+  border-color: transparent;
+}
+[data-ui="v2"] body.huddle-in-call .huddle-call-dock #btn-leave.ctrl {
+  width: auto;
+  height: 48px;
+  padding: 0 22px;
+  border-radius: 24px;
+  background: oklch(0.55 0.18 25);
+  color: #fff;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 14px;
+  border: 0;
+  gap: 8px;
+}
+[data-ui="v2"] body.huddle-in-call .huddle-call-dock #btn-leave.ctrl:hover {
+  background: var(--danger);
+}
+[data-ui="v2"] .huddle-call-dock-divider {
+  width: 1px;
+  height: 40px;
+  background: var(--line);
+  margin: 0 6px;
+  align-self: center;
+}
+body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
+
+/* While in call: hide the chat content (messages + composer) and
+   chat-only header buttons; expand the tile grid to fill the
+   stage area between header and dock. */
+[data-ui="v2"] body.huddle-in-call .messages,
+[data-ui="v2"] body.huddle-in-call .composer,
+[data-ui="v2"] body.huddle-in-call .typing,
+[data-ui="v2"] body.huddle-in-call #attachment-chips,
+[data-ui="v2"] body.huddle-in-call #channel-notify-btn,
+[data-ui="v2"] body.huddle-in-call #search-btn,
+[data-ui="v2"] body.huddle-in-call #pinned-btn,
+[data-ui="v2"] body.huddle-in-call #copy-call-link,
+[data-ui="v2"] body.huddle-in-call .channel-topic {
+  display: none !important;
+}
+[data-ui="v2"] body.huddle-in-call .tiles {
+  flex: 1 1 auto;
+  max-height: none;
+  padding-bottom: 96px; /* leave room for the dock */
+}
+
+/* Captions panel docks to the right side during a call. Uses
+   position: absolute so it can dock to the right edge, but the
+   :has() rule below pushes the tile grid leftward by the captions
+   width so the two don't overlap. */
+[data-ui="v2"] body.huddle-in-call #captions {
+  position: absolute;
+  top: 76px;
+  right: 16px;
+  bottom: 96px;
+  width: 296px;
+  max-height: none;
+  min-height: 0;
+  margin: 0;
+  z-index: 20;
+}
+/* When captions panel is visible (not .hidden), reserve right
+   space on the tile grid so tiles don't sit underneath the
+   panel. :has() is supported in Chromium-based Electron. */
+[data-ui="v2"] body.huddle-in-call .stage:has(#captions:not(.hidden)) .tiles {
+  padding-right: 312px; /* 296 panel + 16 right edge gap */
+}
+
+/* "Open whiteboard" + "Create ticket" buttons sit in the header
+   during a call (per design). Bump them to a solid chrome so they
+   read as actions rather than icon-only nav. The Whiteboard button
+   is #whiteboard-btn (legacy icon-only); add a label via pseudo. */
+[data-ui="v2"] body.huddle-in-call #whiteboard-btn::after,
+[data-ui="v2"] body.huddle-in-call #btn-jira::after {
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: -0.01em;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+[data-ui="v2"] body.huddle-in-call #whiteboard-btn::after { content: "Whiteboard"; }
+[data-ui="v2"] body.huddle-in-call #btn-jira::after { content: "Ticket"; }
+[data-ui="v2"] body.huddle-in-call #whiteboard-btn,
+[data-ui="v2"] body.huddle-in-call #btn-jira {
+  width: auto;
+  padding: 0 12px 0 11px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+}
+[data-ui="v2"] body.huddle-in-call #whiteboard-btn:hover,
+[data-ui="v2"] body.huddle-in-call #btn-jira:hover {
+  background: var(--bg-3);
+}
+
+/* Screen-share speaker pill — move .tile-label from bottom-left
+   to top-left for screen tiles per design, prepend a live-colored
+   screen icon (via mask), and let the rest of the label text
+   (Window — Nick) render in Hanken Grotesk. */
+[data-ui="v2"] .tile.screen .tile-label {
+  bottom: auto;
+  top: 14px;
+  left: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 9px;
+  border-radius: 8px;
+  background: rgba(8, 8, 10, 0.6);
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 12.5px;
+}
+[data-ui="v2"] .tile.screen .tile-label::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  background-color: var(--live);
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='2.5' y='4' width='19' height='13' rx='2.5'/><line x1='8' y1='21' x2='16' y2='21'/><line x1='12' y1='17' x2='12' y2='21'/></svg>") center / contain no-repeat;
+          mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='2.5' y='4' width='19' height='13' rx='2.5'/><line x1='8' y1='21' x2='16' y2='21'/><line x1='12' y1='17' x2='12' y2='21'/></svg>") center / contain no-repeat;
+}
+
 

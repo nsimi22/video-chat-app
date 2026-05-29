@@ -99,6 +99,82 @@
     // of whether the v2 sign-in DOM is currently visible.
     paintSigninBrandPills();
     wireSplitOtp();
+
+    // v2 captions footer "/summarize" button — kicks off the
+    // live-call transcript recap (same prompt + posting path as the
+    // post-call recap). Composer is hidden during the call so
+    // prefilling /summarize there wouldn't help; this triggers the
+    // AI directly and posts the recap to the channel for after-call.
+    const sumBtn = document.getElementById('captions-summarize-btn');
+    if (sumBtn && !sumBtn.dataset.wired) {
+      sumBtn.dataset.wired = '1';
+      sumBtn.addEventListener('click', () => {
+        sumBtn.disabled = true;
+        sumBtn.textContent = 'Summarizing…';
+        Promise.resolve(window.huddleApp?.summarizeCallNow?.())
+          .finally(() => {
+            sumBtn.disabled = false;
+            sumBtn.innerHTML = `
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="11" x2="20" y2="11"/><line x1="4" y1="16" x2="14" y2="16"/><circle cx="18.5" cy="17" r="3.2"/>
+              </svg>
+              <span>/summarize</span>
+            `;
+          });
+      });
+    }
+
+    // v2 call-view layout: dock mic / cam / share / etc. at the
+    // bottom and toggle a body class when in-call so CSS can hide
+    // chat + reposition the captions panel.
+    setupCallDock();
+  }
+
+  // -------- v2 in-call layout (Phase 6) ----------------------------
+  //
+  // The design (huddle/call.jsx) puts the active call controls in a
+  // dedicated BOTTOM bar — mic / cam / share / captions / raise /
+  // board / leave. Legacy stuffs them all into the chat header's
+  // right cluster. To match the design without rebuilding the app,
+  // we physically move those buttons into a new .huddle-call-dock
+  // element appended to .stage. The buttons keep their event
+  // listeners + the legacy code that toggles their .hidden class
+  // keeps working — only their parent in the DOM changes.
+  //
+  // We also watch #btn-leave for class changes and toggle a
+  // body.huddle-in-call class so CSS can hide chat / composer /
+  // unrelated header buttons while a call is active.
+  function setupCallDock() {
+    const stage = document.querySelector('.stage');
+    const leaveBtn = document.getElementById('btn-leave');
+    if (!stage || !leaveBtn || document.querySelector('.huddle-call-dock')) return;
+
+    const dockIds = ['btn-mic', 'btn-cam', 'btn-blur', 'btn-share', 'btn-hand', 'btn-react', 'btn-cc', 'btn-leave'];
+    const dock = document.createElement('div');
+    dock.className = 'huddle-call-dock';
+    dock.setAttribute('aria-label', 'Call controls');
+    // Insert a divider before #btn-leave per design — visual cue
+    // that Leave is destructive and separate from the toggle row.
+    const beforeLeave = document.createElement('span');
+    beforeLeave.className = 'huddle-call-dock-divider';
+    for (const id of dockIds) {
+      const btn = document.getElementById(id);
+      if (!btn) continue;
+      if (id === 'btn-leave') dock.appendChild(beforeLeave);
+      dock.appendChild(btn);
+    }
+    stage.appendChild(dock);
+
+    // Sync body.huddle-in-call from #btn-leave's visibility.
+    const syncBodyClass = () => {
+      const inCall = !leaveBtn.classList.contains('hidden');
+      document.body.classList.toggle('huddle-in-call', inCall);
+    };
+    syncBodyClass();
+    new MutationObserver(syncBodyClass).observe(leaveBtn, {
+      attributes: true,
+      attributeFilter: ['class'],
+    });
   }
 
   function paintSigninBrandPills() {
