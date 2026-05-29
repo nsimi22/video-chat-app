@@ -1824,7 +1824,7 @@ class ChatView {
     this.els.gifSearch.focus();
     this.els.gifAttribution?.classList.toggle('hidden', !this._giphyKey);
     if (!this._giphyKey) {
-      this._renderGifEmpty('Add a Giphy API key in Settings (⚙) to enable the GIF picker. Get one at https://developers.giphy.com/');
+      this._renderGifEmpty('Add a Giphy API key in Settings to enable the GIF picker. Get one at https://developers.giphy.com/');
       return;
     }
     // Show trending GIFs as the default state.
@@ -1921,7 +1921,7 @@ class ChatView {
       }
       const jira = this.hooks.getJira?.();
       if (!jira?.isConfigured()) {
-        alert('Jira is not configured. Open settings (⚙) to add your Atlassian credentials.');
+        alert('Jira is not configured. Open Settings to add your Atlassian credentials.');
         return true;
       }
       // Treat the rest as an issue key.
@@ -1977,7 +1977,7 @@ class ChatView {
   async _runSlashAi(prompt) {
     const ai = this.hooks.getAi?.();
     if (!ai || !ai.isConfigured()) {
-      alert('No AI provider is configured. Open Settings (⚙) to add an Anthropic or OpenRouter API key.');
+      alert('No AI provider is configured. Open Settings to add an Anthropic or OpenRouter API key.');
       return true;
     }
     if (!prompt) {
@@ -2055,16 +2055,16 @@ class ChatView {
     const ai = this.hooks.getAi?.();
     const jira = this.hooks.getJira?.();
     if (!ai?.isConfigured()) {
-      alert('No AI provider configured. Open Settings (⚙) → AI assistant.');
+      alert('No AI provider configured. Open Settings → AI assistant.');
       return true;
     }
     if (!jira?.isConfigured()) {
-      alert('Jira is not configured. Open Settings (⚙) → Jira.');
+      alert('Jira is not configured. Open Settings → Jira.');
       return true;
     }
     const projectKey = (this.hooks.getDefaultJiraProject?.() || '').toUpperCase();
     if (!projectKey) {
-      alert('No default Jira project set. Open Settings (⚙) → Jira → Default project.');
+      alert('No default Jira project set. Open Settings → Jira → Default project.');
       return true;
     }
     if (!prompt) {
@@ -2156,7 +2156,7 @@ class ChatView {
   async _runSlashSummarize() {
     const ai = this.hooks.getAi?.();
     if (!ai || !ai.isConfigured()) {
-      alert('No AI provider is configured. Open Settings (⚙) to add an Anthropic or OpenRouter API key.');
+      alert('No AI provider is configured. Open Settings to add an Anthropic or OpenRouter API key.');
       return true;
     }
     // Summarize the last 100 visible messages of the current channel/thread.
@@ -2195,7 +2195,7 @@ class ChatView {
   async _runSlashGh(arg) {
     const gh = this.hooks.getGitHub?.();
     if (!gh || !gh.isConfigured()) {
-      alert('GitHub is not configured. Open Settings (⚙) to add a Personal Access Token.');
+      alert('GitHub is not configured. Open Settings to add a Personal Access Token.');
       return true;
     }
     if (!arg) {

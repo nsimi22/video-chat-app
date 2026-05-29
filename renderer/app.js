@@ -3221,7 +3221,7 @@ function setHandRaised(peerId, raised) {
   if (raised && !badge) {
     badge = document.createElement('div');
     badge.className = 'tile-hand';
-    badge.textContent = '✋';
+    badge.innerHTML = window.HuddleIcons?.hand || '';
     tile.appendChild(badge);
   } else if (!raised && badge) {
     badge.remove();
