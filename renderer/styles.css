@@ -4541,6 +4541,18 @@ body.popout-call .popout-stage > .draw-toolbar {
   color: var(--accent-tx);
 }
 
+/* Layout switcher (2.2) active state: same accent treatment as the
+   CC toggle so toggle-state buttons in the call header read
+   consistently. .active is applied by toggleForceGridLayout(). */
+#btn-layout.active {
+  background: var(--accent);
+  color: white;
+}
+[data-ui="v2"] #btn-layout.active {
+  background: var(--accent-dim);
+  color: var(--accent-tx);
+}
+
 /* ============================================================
    v2 Phase 4.2 — polish: profile card, react popover, banners,
    attachment chips, channel empty state, load-more, team picker,

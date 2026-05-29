@@ -90,6 +90,7 @@ const els = {
   btnShare: $('#btn-share'),
   btnLeave: $('#btn-leave'),
   btnPopoutCall: $('#btn-popout-call'),
+  btnLayout: $('#btn-layout'),
   btnHand: $('#btn-hand'),
   btnReact: $('#btn-react'),
   reactPopover: $('#react-popover'),
@@ -237,6 +238,12 @@ const state = {
   channelMeta: new Map(),
   activeAnnotation: null,
   spotlightKey: null,
+  // 2.2 layout switcher: when true, suppress the auto-spotlight that
+  // renderRemoteScreen normally applies to incoming screen shares,
+  // and force the tile grid into the equal-size grid layout. Per-
+  // session toggle (not persisted) — the user holds it during a
+  // call and it resets on leaveCall.
+  forceGridLayout: false,
   // Tile key (e.g. `screen:<sid>`) currently rendered in fullscreen-over-
   // the-window mode. At most one tile fullscreened at a time; null when
   // none. Local UI state only — each viewer toggles their own.
@@ -2259,6 +2266,10 @@ function renderCallHeader() {
   const ccSupported = !!window.HuddleTranscript?.TranscriptManager?.isSupported();
   els.btnCc?.classList.toggle('hidden', !inCallHere || !ccSupported);
   els.btnPopoutCall.classList.toggle('hidden', !inCallHere);
+  // Layout switcher visibility is driven by refreshLayoutSwitcherUi
+  // (contextual on screen-share presence); skip the blanket in-call
+  // toggle here — refresh recomputes the right state.
+  refreshLayoutSwitcherUi?.();
   els.btnLeave.classList.toggle('hidden', !inCallHere);
 }
 
@@ -3097,17 +3108,21 @@ function makeTile({ key, label, kind, userId }) {
   // local cam (startCall), remote cam (commitStreamAsCamera), screen
   // shares (renderRemoteScreen / addLocalScreenTile), and whiteboards.
   syncTilesVisibility();
+  // Layout switcher visibility is contextual on screen-share presence.
+  if (kind === 'screen') refreshLayoutSwitcherUi?.();
   return tile;
 }
 
 function removeTile(key) {
   const tile = state.tilesByKey.get(key);
+  const wasScreen = tile?.classList.contains('screen') && !tile.classList.contains('whiteboard');
   if (tile) tile.remove();
   state.tilesByKey.delete(key);
   state.zoomByKey.delete(key);
   if (state.spotlightKey === key) clearSpotlight();
   if (state.fullscreenKey === key) clearFullscreen();
   syncTilesVisibility();
+  if (wasScreen) refreshLayoutSwitcherUi?.();
 }
 
 // Spotlight: stage one screen/whiteboard tile in the main column with the
@@ -3124,6 +3139,39 @@ function toggleSpotlight(key) {
   tile.classList.add('spotlighted');
   els.tiles.classList.add('has-spotlight');
   state.spotlightKey = key;
+}
+
+// 2.2 layout switcher — toggle between auto-arranged (current) and
+// equal-size grid. Turning grid layout on clears any active spotlight
+// and suppresses future auto-spotlights for remote screen shares
+// (see renderRemoteScreen). Turning it off restores the default
+// behavior; if a screen is already shared, the user can manually
+// spotlight it via the per-tile button.
+function toggleForceGridLayout() {
+  state.forceGridLayout = !state.forceGridLayout;
+  if (state.forceGridLayout) {
+    clearSpotlight();
+  }
+  refreshLayoutSwitcherUi();
+}
+
+function refreshLayoutSwitcherUi() {
+  if (!els.btnLayout) return;
+  els.btnLayout.classList.toggle('active', !!state.forceGridLayout);
+  els.btnLayout.setAttribute('aria-pressed', state.forceGridLayout ? 'true' : 'false');
+  const title = state.forceGridLayout
+    ? 'Switch to stage layout (auto-arrange around screen share)'
+    : 'Switch to grid layout (equal-size tiles)';
+  els.btnLayout.title = title;
+  els.btnLayout.setAttribute('aria-label', title);
+  // Visibility: the switcher is only meaningful when there's a stage
+  // layout to flip out of — that's true when a screen-share tile
+  // exists (auto-spotlight is the default) OR when the user already
+  // forced grid mode (so they can flip back). Otherwise it's a ghost
+  // button. Called from makeTile / removeTile / call lifecycle below.
+  const hasScreenTile = !!els.tiles?.querySelector('.tile.screen:not(.whiteboard)');
+  const shouldShow = state.forceGridLayout || hasScreenTile;
+  els.btnLayout.classList.toggle('hidden', !shouldShow);
 }
 
 function clearSpotlight() {
@@ -4149,6 +4197,8 @@ function resetCallEphemera() {
   state.pendingStreams.clear();
   closeAnnotate();
   clearSpotlight();
+  state.forceGridLayout = false;
+  refreshLayoutSwitcherUi();
   setSpeakingPeer(null);
   state.raisedHands.clear();
   state.peerPlatforms.clear();
@@ -4408,7 +4458,10 @@ function renderRemoteScreen(stream, screen) {
   // tiles (addLocalScreenTile) deliberately stay in the grid; the
   // sharer doesn't need their own attention redirected to their
   // own screen.
-  if (!state.spotlightKey) toggleSpotlight(key);
+  // When the 2.2 layout switcher is on (state.forceGridLayout), the
+  // user has explicitly asked for equal-size grid — skip the
+  // auto-spotlight that'd otherwise pull them into stage layout.
+  if (!state.spotlightKey && !state.forceGridLayout) toggleSpotlight(key);
 }
 
 function onScreenAnnounce(detail) {
@@ -4557,6 +4610,7 @@ function wireControls() {
   // team" is in the sidebar's sign-out menu.
   els.btnLeave.onclick = leaveCall;
   els.btnPopoutCall.onclick = popOutCurrentCall;
+  if (els.btnLayout) els.btnLayout.onclick = toggleForceGridLayout;
   if (els.btnHand) els.btnHand.onclick = toggleSelfHand;
   if (els.pinnedBtn) els.pinnedBtn.onclick = () => state.chat?.openPinnedDrawer();
   if (els.pinnedClose) els.pinnedClose.onclick = closePinnedDrawer;
@@ -5560,6 +5614,13 @@ window.huddleApp = {
   getMe: () => state.me,
   getCalendar: () => state.calendar,
   getActiveChannelId: () => state.chat?.currentChannel,
+  // Channel-name lookup, used by calendar-grid.js to derive event
+  // categories from channel naming. Returns null for unknown ids
+  // (e.g. an event in a channel the user isn't a member of yet).
+  getChannelName: (channelId) => {
+    const ch = state.channelMeta.get(channelId);
+    return ch?.name || null;
+  },
   postIntoComposer: (text) => {
     const ta = document.getElementById('composer-input');
     if (!ta) return;
