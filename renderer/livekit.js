@@ -195,16 +195,15 @@
             mandatory: {
               chromeMediaSource: 'desktop',
               chromeMediaSourceId: sourceId,
-              // Min + max bounds: without `min*`, Chromium's
-              // desktopCapturer often returned tiny captures
-              // (~853×475 observed) because nothing was telling
-              // it to prefer high res. Min asks for at least 720p
-              // (downscaled to source size if the source is
-              // smaller, which is correct). Max bumps to 1440p
-              // so high-DPI / 4K screens aren't capped at 1080.
-              minWidth: 1280, minHeight: 720,
-              maxWidth: 2560, maxHeight: 1440,
-              minFrameRate: 15, maxFrameRate: 30,
+              // Max bounds only — `min*` constraints in this
+              // mandatory dict are HARD floors for desktopCapturer
+              // (Chromium throws if the source is smaller). Users
+              // sharing a small window would hit "no video track"
+              // errors. The quality lifting comes from the explicit
+              // ScreenSharePresets encoding preset on publishTrack
+              // below, not from up-binding the capture. Bumped max
+              // to 1440p so high-DPI / 4K screens aren't capped.
+              maxWidth: 2560, maxHeight: 1440, maxFrameRate: 30,
             },
           },
         });
