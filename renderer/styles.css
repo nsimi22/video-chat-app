@@ -1156,6 +1156,44 @@ body.popout-screen .tile-action-annotate { display: none; }
 }
 .tile.fullscreen-mode video { object-fit: contain; }
 body.has-fullscreen-tile { overflow: hidden; }
+
+/* v2 fullscreen-mode: fill the tile-grid panel rather than the
+   whole viewport. The rail + channels sidebar + stage header +
+   bottom dock stay visible; only the tile area inflates. Nick's
+   "should take up the whole panel it is in" pattern. */
+[data-ui="v2"] .tiles {
+  position: relative;  /* anchor for absolute child */
+}
+[data-ui="v2"] .tile.fullscreen-mode {
+  position: absolute;
+  inset: 0;
+  z-index: 50;          /* above siblings, below modals/dock */
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  max-height: none;
+}
+/* When the tile is fullscreen-mode'd under v2, the OTHER tiles in
+   the grid stay in the DOM but get visually hidden underneath the
+   fullscreen one. Their grid placement still consumes cells, but
+   they're behind the absolute-positioned fullscreen sibling. No
+   special hiding needed — they're occluded by inset:0 on top. */
+
+/* While a tile is fullscreened, expand .tiles to fill the stage
+   (lift the 55vh cap) and suppress the chat surfaces below it.
+   Without these, "fullscreen" only fills the 55vh tile-grid slot
+   and chat stays visible underneath. */
+[data-ui="v2"] body.has-fullscreen-tile .tiles {
+  flex: 1 1 auto;
+  max-height: none;
+}
+[data-ui="v2"] body.has-fullscreen-tile .stage > .messages,
+[data-ui="v2"] body.has-fullscreen-tile .stage > .composer,
+[data-ui="v2"] body.has-fullscreen-tile .stage > .typing,
+[data-ui="v2"] body.has-fullscreen-tile .stage > #attachment-chips,
+[data-ui="v2"] body.has-fullscreen-tile .stage > #reconnect-banner {
+  display: none;
+}
 /* Active speaker: soft accent ring driven by JS audio-level polling.
    Transitions ease in/out so quick volume bursts don't strobe. */
 .tile.speaking {
@@ -1840,6 +1878,14 @@ body.has-fullscreen-tile { overflow: hidden; }
   margin: 0;
   z-index: 50;
 }
+/* Under v2, while on the call channel of an active call, the bottom
+   ~80px is occupied by .huddle-call-dock (Mute/Camera/Share/…/Leave).
+   At `bottom: 24px` the drawing toolbar would sit ON TOP of the dock
+   and cover its center controls. Lift the toolbar above the dock
+   so both surfaces stay reachable during screen-share annotation. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .draw-toolbar:not(.hidden) {
+  bottom: 110px;
+}
 
 /* Live captions panel. Sits between the tile grid and the messages
    list so it can soak up vertical space without competing with the
@@ -2410,6 +2456,17 @@ body.popout #login,
 body.popout #app,
 body.popout #toasts { display: none !important; }
 body.popout .popout-stage { display: block; }
+/* The custom 36px titlebar (PR #184) renders from index.html and
+   would paint INSIDE popout windows too — but popouts open with
+   the native OS frame already, so we'd end up with two titlebars
+   and the body's `padding-top: 36px` + `box-sizing: border-box`
+   would push the .popout-stage content (specifically the bottom
+   call dock) off-screen. Hide the custom titlebar + revert the
+   body padding inside popouts. */
+body.popout #huddle-titlebar { display: none; }
+body.popout {
+  padding-top: 0 !important;
+}
 .popout-stage { display: none; width: 100vw; height: 100vh; }
 .popout-whiteboard {
   width: 100%; height: 100%;
@@ -6468,13 +6525,18 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
    by :has() rather than the spotlight click. Whiteboard tiles
    carry `.screen` for sizing (see makeTile) so explicitly exclude
    them — whiteboards stay wide-span. */
-[data-ui="v2"] .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) {
+/* Filmstrip side-strip is a MAIN-WINDOW layout. Popout windows
+   (body.popout) want the single shared tile to fill the entire
+   popout — the body:not(.popout) gate keeps these rules off the
+   popout's .popout-tiles, where they were sizing the screen tile
+   to 1fr/70vh and reserving a 184px phantom filmstrip column. */
+[data-ui="v2"] body:not(.popout) .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) {
   grid-template-columns: minmax(0, 1fr) 184px;
   grid-auto-rows: auto;
   grid-auto-flow: row dense;
   max-height: 70vh;
 }
-[data-ui="v2"] .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) .tile {
+[data-ui="v2"] body:not(.popout) .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) .tile {
   grid-column: 2;
   min-height: 0;
   /* 16:10 camera aspect per design (3.4). At 184px wide the tile
@@ -6483,7 +6545,7 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
      when more peers join. */
   aspect-ratio: 16 / 10;
 }
-[data-ui="v2"] .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) .tile.screen:not(.whiteboard) {
+[data-ui="v2"] body:not(.popout) .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) .tile.screen:not(.whiteboard) {
   grid-column: 1;
   grid-row: 1 / span 99;
   min-height: 360px;
@@ -6496,6 +6558,17 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
    regardless of which trigger fired first. */
 [data-ui="v2"] .tiles.has-spotlight {
   grid-template-columns: minmax(0, 1fr) 184px;
+  /* 115px row slots in the filmstrip column so each non-spotlighted
+     tile lives in its own row. Without explicit row-slot height,
+     row 1 inherits the spotlighted tile's 360px min-height and the
+     first filmstrip tile sits at the top with a 245px gap below —
+     subsequent tiles end up "stacked in the top corner" visually. */
+  grid-template-rows: repeat(auto-fill, 115px);
+  grid-auto-rows: 115px;
+}
+/* Spotlighted tile spans all filmstrip rows so col 1 is one tall cell. */
+[data-ui="v2"] .tiles.has-spotlight .tile.spotlighted {
+  grid-row: 1 / -1;
 }
 /* Same 16:10 lock for the spotlight rail's filmstrip tiles
    (excluding the spotlighted tile itself, which fills the stage). */
@@ -6737,6 +6810,28 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 [data-ui="v2"] body[data-platform="win32"] .app {
   height: calc(100vh - 36px);
   grid-template-rows: calc(100vh - 36px);
+}
+/* Platform-conditional titlebar height. Used by every full-bleed
+   overlay that anchors `top: 0` (AI panel, calendar grid view,
+   in-call return dock) so they don't render BEHIND the 36px
+   titlebar on Mac/Win. Linux falls back to 0 (no custom bar). */
+[data-ui="v2"] body[data-platform="darwin"],
+[data-ui="v2"] body[data-platform="win32"] {
+  --titlebar-h: 36px;
+}
+[data-ui="v2"] .huddle-ai-view,
+[data-ui="v2"] .huddle-cal-view,
+[data-ui="v2"] .huddle-call-return-dock {
+  top: var(--titlebar-h, 0px);
+}
+/* When the return dock is visible AND on top of an overlay, the
+   overlay's top shift already accounts for the dock (+52px) — add
+   the titlebar height on top so the overlay's header isn't hidden. */
+[data-ui="v2"] body[data-platform="darwin"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-ai-view,
+[data-ui="v2"] body[data-platform="darwin"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-cal-view,
+[data-ui="v2"] body[data-platform="win32"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-ai-view,
+[data-ui="v2"] body[data-platform="win32"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-cal-view {
+  top: calc(var(--titlebar-h, 0px) + 52px);
 }
 /* Login backdrop is fixed: inset(0); it'll cover the titlebar
    unless we explicitly nudge it. Push its top edge down too. */

@@ -41,6 +41,11 @@ contextBridge.exposeInMainWorld('huddle', {
   // from per-tile fullscreen which only inflates one screen-share
   // tile over the existing window.
   toggleFullscreen: () => ipcRenderer.invoke('toggle-window-fullscreen'),
+  // Resize the calling renderer's BrowserWindow to a specific content
+  // size, preserving the caller's display + clamping to the work-area.
+  // Used by the screen-share popout to match the shared video's
+  // aspect ratio so the popout isn't padded with empty chrome.
+  resizeWindowToContent: (w, h) => ipcRenderer.invoke('resize-window-to-content', { width: w, height: h }),
   getScreenSources: () => ipcRenderer.invoke('get-screen-sources'),
   getSupabaseConfig: () => ipcRenderer.invoke('get-supabase-config'),
   fetchProxy: (req) => ipcRenderer.invoke('fetch-proxy', req),

@@ -1243,7 +1243,27 @@ async function bootScreenPopout(cfg) {
     const tile = makeTile({ key, label: fromName || cfg.title || 'Shared screen', kind: 'screen', userId: targetParticipantId });
     tile.dataset.streamId = targetShareId;
     tile.dataset.userId = targetParticipantId;
-    tile.querySelector('video').srcObject = stream;
+    const video = tile.querySelector('video');
+    video.srcObject = stream;
+    // Resize the popout window to match the shared video's aspect
+    // ratio once the source's intrinsic dimensions are known. Without
+    // this the window stays at its default 1100×760 and the video
+    // letterboxes (object-fit: contain), leaving dark space below
+    // the content. Capped + aspect-preserved by main.js.
+    const fitToVideo = () => {
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      if (!w || !h) return;
+      window.huddle?.resizeWindowToContent?.(w, h)?.catch?.(() => {});
+    };
+    // `loadedmetadata` fires once per source. If the participant
+    // re-shares (different share id closes + reopens this popout),
+    // bootScreenPopout runs fresh; we don't have to handle multi-stream.
+    video.addEventListener('loadedmetadata', fitToVideo, { once: true });
+    // Some Chromium builds fire loadedmetadata before the listener
+    // attaches (rare race). Try once immediately too — readyState ≥ 1
+    // means metadata is already in.
+    if (video.readyState >= 1) fitToVideo();
     attachDrawingLayer(tile, targetShareId, /*owner*/ false);
     // The popout starts in spotlight mode (it IS the focus) so the
     // zoom controls are immediately visible and behave the same as on
@@ -4266,7 +4286,17 @@ function wireReactPopover(btn, popover) {
 
 function addLocalCameraTile(stream, name) {
   const tile = makeTile({ key: 'self-cam', label: `${name} (you)`, kind: 'self', userId: state.huddle.peerId });
-  tile.querySelector('video').srcObject = stream;
+  const video = tile.querySelector('video');
+  video.srcObject = stream;
+  // Match the autoplay-drop fix in commitStreamAsCamera — popout
+  // windows open via IPC without a user gesture in the popout's
+  // own context, so Chrome's autoplay policy can silently drop the
+  // implicit play() for the self-cam tile, leaving it black even
+  // though the stream is wired. Non-fatal on rejection.
+  video.play().catch(() => {});
+  stream.addEventListener('addtrack', () => {
+    video.play().catch(() => {});
+  });
 }
 
 // ---------------------------------------------------------------------------

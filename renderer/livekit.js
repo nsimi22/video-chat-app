@@ -195,7 +195,15 @@
             mandatory: {
               chromeMediaSource: 'desktop',
               chromeMediaSourceId: sourceId,
-              maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30,
+              // Max bounds only — `min*` constraints in this
+              // mandatory dict are HARD floors for desktopCapturer
+              // (Chromium throws if the source is smaller). Users
+              // sharing a small window would hit "no video track"
+              // errors. The quality lifting comes from the explicit
+              // ScreenSharePresets encoding preset on publishTrack
+              // below, not from up-binding the capture. Bumped max
+              // to 1440p so high-DPI / 4K screens aren't capped.
+              maxWidth: 2560, maxHeight: 1440, maxFrameRate: 30,
             },
           },
         });
@@ -209,10 +217,25 @@
       }
       let publication;
       try {
-        publication = await this.room.localParticipant.publishTrack(screenTrack, {
+        // Explicit HD encoding so screen-share doesn't fall to a
+        // low-bitrate default. LK's ScreenSharePresets exposes
+        // tuned configs — h1080fps15 (≈1080p @ 15fps, ~3 Mbps)
+        // is the right balance for text-readability of code /
+        // settings panels without burning bandwidth on motion.
+        // Falls back to LK defaults if the preset constant isn't
+        // exposed by the bundled livekit-client version.
+        const screenPreset = LK.ScreenSharePresets?.h1080fps15
+          || LK.VideoPresets43?.h1080
+          || null;
+        const publishOpts = {
           source: LK.Track.Source.ScreenShare,
           name: label,
-        });
+          simulcast: false,
+        };
+        if (screenPreset?.encoding) {
+          publishOpts.videoEncoding = screenPreset.encoding;
+        }
+        publication = await this.room.localParticipant.publishTrack(screenTrack, publishOpts);
       } catch (err) {
         for (const t of stream.getTracks()) t.stop();
         throw err;

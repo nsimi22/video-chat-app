@@ -45,10 +45,18 @@
   function getActiveChannelLabel() {
     const id = window.huddleApp?.getActiveChannelId?.();
     if (!id) return null;
+    // Prefer the bare channel.name from app state (e.g. "general")
+    // — the sidebar's .ch-name text carries displayLabelFor's
+    // prefix ("# general"), and prepending another `#` in the
+    // caller produced "## general" in suggestions.
+    const bare = window.huddleApp?.getChannelName?.(id);
+    if (bare) return bare;
     const li = document.querySelector(`#channels li[data-id="${id}"]`)
       || document.querySelector(`#channels li[data-channel-id="${id}"]`);
     const name = li?.querySelector('.ch-name')?.textContent?.trim();
-    return name || id;
+    // Strip a leading `# ` / `@ ` / lock-emoji that displayLabelFor
+    // may have prepended — defaultSuggestions formats the prefix.
+    return (name || id).replace(/^[#@🔒]\s*/, '');
   }
 
   // Returns up to N suggestions tailored to whatever signals are
