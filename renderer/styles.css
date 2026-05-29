@@ -4306,4 +4306,215 @@ body.popout-call .popout-stage > .draw-toolbar {
   color: var(--accent-tx);
 }
 
+/* ============================================================
+   v2 Phase 4.2 — polish: profile card, react popover, banners,
+   attachment chips, channel empty state, load-more, team picker,
+   typing AI indicator, drag-over drop target.
+   ============================================================ */
+
+/* Profile card popover (avatar hover/click). */
+[data-ui="v2"] .profile-card {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-pop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  font-family: var(--font);
+  color: var(--tx-mid);
+  padding: 18px;
+}
+[data-ui="v2"] .profile-card-loading {
+  color: var(--tx-lo);
+  font-family: var(--font);
+}
+[data-ui="v2"] .profile-card-error {
+  color: var(--danger);
+  font-family: var(--font);
+}
+[data-ui="v2"] .profile-card-avatar {
+  border-radius: 30%;
+  background: var(--bg-3);
+  box-shadow: none;
+  font-family: var(--font);
+}
+[data-ui="v2"] .profile-card-avatar.fallback {
+  font-weight: 700;
+  color: #fff;
+}
+[data-ui="v2"] .profile-card-name {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--tx-hi);
+  letter-spacing: -0.02em;
+}
+[data-ui="v2"] .profile-card-email {
+  color: var(--tx-lo);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+[data-ui="v2"] .profile-card-bio {
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  color: var(--tx-mid);
+  font-family: var(--font);
+  font-size: 13px;
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+}
+[data-ui="v2"] .profile-card-btn {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+  border: 0;
+  border-radius: 8px;
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 13px;
+  height: 34px;
+  min-height: 0;
+  padding: 0 12px;
+  box-shadow: none;
+}
+[data-ui="v2"] .profile-card-btn:hover {
+  background: var(--bg-2);
+}
+
+/* Reactions quick-picker popover (call-control bar). */
+[data-ui="v2"] .react-popover {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-pop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-radius: 13px;
+  padding: 5px;
+  gap: 2px;
+}
+[data-ui="v2"] .react-popover .react-emoji {
+  border-radius: 8px;
+  padding: 6px 9px;
+}
+[data-ui="v2"] .react-popover .react-emoji:hover {
+  background: var(--bg-3);
+}
+
+/* Reconnect banner (top of stage when websocket drops). */
+[data-ui="v2"] .reconnect-banner {
+  background: var(--away);
+  color: #1a1300;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12.5px;
+  letter-spacing: 0;
+  padding: 9px 16px;
+}
+
+/* Attachment chips — both the message-rendered chip and the pending
+   uploads bar above the composer. */
+[data-ui="v2"] .attachment-chip {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--tx-mid);
+  border-radius: 20px;
+  padding: 5px 12px;
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+[data-ui="v2"] .attachment-chip:hover {
+  background: var(--bg-3);
+  border-color: var(--line);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .attachment-chips {
+  background: var(--bg-0);
+  border-top: 1px solid var(--line-soft);
+}
+[data-ui="v2"] .attachment-chips .chip {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  font-family: var(--font);
+  font-size: 12.5px;
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .attachment-chips .chip.uploading .chip-status { background: var(--away); }
+[data-ui="v2"] .attachment-chips .chip.done .chip-status { background: var(--online); }
+[data-ui="v2"] .attachment-chips .chip.failed .chip-status { background: var(--danger); }
+[data-ui="v2"] .attachment-chips .chip button {
+  color: var(--tx-lo);
+}
+[data-ui="v2"] .attachment-chips .chip button:hover {
+  color: var(--tx-hi);
+}
+
+/* Channel empty state (new channel / first visit). */
+[data-ui="v2"] .channel-empty {
+  color: var(--tx-mid);
+  font-family: var(--font);
+}
+[data-ui="v2"] .channel-empty-icon {
+  color: var(--accent-tx);
+  opacity: 1;
+}
+[data-ui="v2"] .channel-empty-title {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--tx-hi);
+  letter-spacing: -0.02em;
+}
+[data-ui="v2"] .channel-empty-hint {
+  color: var(--tx-lo);
+  font-family: var(--font);
+  font-size: 13.5px;
+}
+
+/* Drag-over upload affordance — accent-dim instead of accent-2 blue. */
+[data-ui="v2"] .stage.drag-over::after {
+  background: var(--accent-dim);
+  border: 2px dashed var(--accent);
+  color: var(--accent-tx);
+  font-family: var(--font);
+}
+
+/* "Load more" button at top of message list. */
+[data-ui="v2"] .load-more {
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  color: var(--tx-mid);
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: none;
+}
+[data-ui="v2"] .load-more:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+  border-color: var(--line);
+}
+
+/* Team picker rows in the sign-in flow. */
+[data-ui="v2"] .team-pick {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--tx-hi);
+  font-family: var(--font);
+  box-shadow: none;
+}
+[data-ui="v2"] .team-pick:hover {
+  background: var(--bg-3);
+  border-color: var(--line);
+}
+
+/* Typing-AI indicator (small spinner row). */
+[data-ui="v2"] .typing-ai {
+  color: var(--accent-tx);
+  font-family: var(--font);
+}
+
 
