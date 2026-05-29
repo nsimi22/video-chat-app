@@ -6006,4 +6006,32 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
           mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='2.5' y='4' width='19' height='13' rx='2.5'/><line x1='8' y1='21' x2='16' y2='21'/><line x1='12' y1='17' x2='12' y2='21'/></svg>") center / contain no-repeat;
 }
 
+/* Mentions inbox sidebar count (4.1). Visible only when there's
+   unread @me content; styled as the design's "loud" red badge
+   (matching the DM/mention unread-pill color tokens) so it stands
+   out from the neutral Saved count. Hidden state retains the .hidden
+   class from index.html, so no count -> no badge. */
+[data-ui="v2"] .sidebar-quick-link#open-mentions .count {
+  background: var(--danger);
+  color: #fff;
+  font-weight: 700;
+}
+
+/* 4.2 — Saved drawer body preview clamp + Mentions drawer reuse.
+   Long saved messages bloat the list when fully rendered; clamp
+   the preview to 4 lines with an ellipsis. Mentions drawer shares
+   the .saved-item / .saved-item-body markup so it inherits this. */
+[data-ui="v2"] .saved-item-body {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Light spacing tweak for the head row so the meta line reads
+   distinct from the body preview without losing density. */
+[data-ui="v2"] .saved-item-head {
+  margin-bottom: 6px;
+}
+
 

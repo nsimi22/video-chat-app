@@ -106,6 +106,11 @@ const els = {
   savedClose: $('#saved-close'),
   savedLabels: $('#saved-labels'),
   savedList: $('#saved-list'),
+  openMentions: $('#open-mentions'),
+  mentionsCount: $('#mentions-count'),
+  mentionsDrawer: $('#mentions-drawer'),
+  mentionsClose: $('#mentions-close'),
+  mentionsList: $('#mentions-list'),
   openCalendar: $('#open-calendar'),
   calendarCount: $('#calendar-count'),
   calendarDrawer: $('#calendar-drawer'),
@@ -277,6 +282,12 @@ const state = {
   savePopoverTarget: null,
   pendingStreams: new Map(),
   unread: new Map(), // channelId -> { count, mentions } both ints
+  // Mentions inbox unread state. Loaded on welcome and bumped by
+  // onCrossChannelMessage when a new @me / @here / @channel lands.
+  // Cleared to 0 on openMentionsDrawer (which also persists
+  // mentions_last_read_at via api.markMentionsRead).
+  mentionsUnread: 0,
+  mentionsLastReadAt: null,
   _email: null,
   settings: {},      // user_integrations.settings; loaded post-auth
   jira: null,        // JiraClient — rebuilt whenever settings change
@@ -2149,6 +2160,9 @@ async function teardownTeam() {
   }
   state.savedById.clear();
   refreshSavedSidebarCount();
+  state.mentionsUnread = 0;
+  state.mentionsLastReadAt = null;
+  updateMentionsBadge();
   if (els.pinnedBtn) els.pinnedBtn.classList.add('hidden');
   els.app.classList.add('hidden');
 }
@@ -2339,6 +2353,10 @@ function onWelcome({ peers, channels }) {
   // sidebar count + bookmark indicators read from this; realtime keeps
   // it current after the first load.
   refreshSavedCache().catch((err) => console.warn('saved cache seed failed', err));
+  // Mentions inbox unread count (4.1) — load mentions_last_read_at +
+  // recent mentions list and seed the sidebar badge. Realtime
+  // bumps from onCrossChannelMessage take over after this.
+  refreshMentionsUnread().catch((err) => console.warn('mentions unread seed failed', err));
   // Seed the calendar (internal scheduled-calls + ICS subscriptions)
   // once the team is up. Realtime + the 15-min ICS poller keep it
   // current after that.
@@ -2631,6 +2649,14 @@ function onChatMessage(m) {
   const isActive = state.chat?.currentChannel === m.channelId && windowFocused;
   const muted = isChannelMuted(m.channelId);
   if (!isActive) bumpUnread(m.channelId, mentionsMe);
+  // Cross-channel mentions inbox bookkeeping (4.1). Bump the inbox
+  // unread counter when this message qualifies as a mention regardless
+  // of whether the user is viewing the channel — opening the inbox
+  // is the only thing that clears it.
+  if (mentionsMe) {
+    state.mentionsUnread = (state.mentionsUnread || 0) + 1;
+    updateMentionsBadge();
+  }
   // Muted channels never produce a desktop notification — that's
   // the whole point of the toggle. They still bump the sidebar
   // badge (with muted styling via updateUnreadBadge) so the user
@@ -3667,6 +3693,107 @@ function closeSavedDrawer() {
   els.savedDrawer.setAttribute('aria-hidden', 'true');
 }
 
+// Mentions inbox drawer (4.1). Mirrors the Saved drawer chrome; the
+// row list is queried fresh on each open via api.loadMentions, then
+// the per-user read timestamp gets bumped to now() so the sidebar
+// badge clears.
+async function openMentionsDrawer() {
+  if (!els.mentionsDrawer) return;
+  await renderMentionsDrawer();
+  els.mentionsDrawer.classList.remove('hidden');
+  els.mentionsDrawer.setAttribute('aria-hidden', 'false');
+  // Persist read state in the background; UI doesn't wait. Update
+  // local cache + badge optimistically so the chip clears immediately.
+  state.mentionsUnread = 0;
+  updateMentionsBadge();
+  state.huddle?.markMentionsRead?.()
+    .then((ts) => { if (ts) state.mentionsLastReadAt = ts; })
+    .catch((err) => console.warn('markMentionsRead failed', err));
+}
+
+function closeMentionsDrawer() {
+  if (!els.mentionsDrawer) return;
+  els.mentionsDrawer.classList.add('hidden');
+  els.mentionsDrawer.setAttribute('aria-hidden', 'true');
+}
+
+async function renderMentionsDrawer() {
+  if (!state.huddle || !els.mentionsList) return;
+  els.mentionsList.replaceChildren();
+  const rows = await state.huddle.loadMentions({ limit: 100 });
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'pinned-empty';
+    empty.textContent = "Nothing yet. @-mentions of you and broadcasts (@here / @channel) in channels you're in will land here.";
+    els.mentionsList.appendChild(empty);
+    return;
+  }
+  for (const m of rows) {
+    const row = document.createElement('div');
+    row.className = 'saved-item';
+    row.setAttribute('role', 'button');
+    row.setAttribute('tabindex', '0');
+    const goToMessage = () => {
+      closeMentionsDrawer();
+      focusChannel(m.channelId);
+      state.chat?.scrollToMessage(m.id);
+    };
+    row.onclick = goToMessage;
+    row.onkeydown = (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); goToMessage(); }
+    };
+    const head = document.createElement('div');
+    head.className = 'saved-item-head';
+    const channelMeta = state.channelMeta.get(m.channelId);
+    const channelText = channelMeta ? displayLabelFor(channelMeta) : `#${m.channelId}`;
+    head.textContent = `${m.authorName} · ${channelText} · ${new Date(m.ts).toLocaleString()}`;
+    const body = document.createElement('div');
+    body.className = 'saved-item-body';
+    if (window.renderMarkdown) body.innerHTML = window.renderMarkdown(m.text || '', { mentionNames: [], myName: state.myName });
+    else body.textContent = m.text || '';
+    row.append(head, body);
+    els.mentionsList.appendChild(row);
+  }
+}
+
+// Update the sidebar Mentions badge from state.mentionsUnread.
+function updateMentionsBadge() {
+  if (!els.mentionsCount) return;
+  const n = state.mentionsUnread || 0;
+  if (n === 0) {
+    els.mentionsCount.classList.add('hidden');
+    els.mentionsCount.textContent = '0';
+  } else {
+    els.mentionsCount.classList.remove('hidden');
+    els.mentionsCount.textContent = String(n > 99 ? '99+' : n);
+  }
+}
+
+// One-shot initial load of mentions unread state after huddle is ready.
+// Reads last_read_at + current mentions list and counts the rows that
+// arrived since then. Safe to call multiple times; each call resets
+// the local counter from the source of truth.
+async function refreshMentionsUnread() {
+  if (!state.huddle) return;
+  try {
+    const [lastRead, mentions] = await Promise.all([
+      state.huddle.getMentionsLastReadAt(),
+      state.huddle.loadMentions({ limit: 100 }),
+    ]);
+    state.mentionsLastReadAt = lastRead;
+    const cutoff = lastRead ? new Date(lastRead).getTime() : 0;
+    let unread = 0;
+    for (const m of mentions) {
+      const ts = new Date(m.ts).getTime();
+      if (ts > cutoff && m.authorName !== state.myName) unread += 1;
+    }
+    state.mentionsUnread = unread;
+    updateMentionsBadge();
+  } catch (err) {
+    console.warn('refreshMentionsUnread failed', err);
+  }
+}
+
 // Render the chip rail (label filters) and the list of saved rows.
 // Re-fetches from the DB so labels removed elsewhere disappear from
 // the rail; the row list comes back filtered by state.savedActiveLabel
@@ -4285,6 +4412,8 @@ function wireControls() {
   if (els.pinnedBtn) els.pinnedBtn.onclick = () => state.chat?.openPinnedDrawer();
   if (els.pinnedClose) els.pinnedClose.onclick = closePinnedDrawer;
   if (els.openSaved) els.openSaved.onclick = openSavedDrawer;
+  if (els.openMentions) els.openMentions.onclick = openMentionsDrawer;
+  if (els.mentionsClose) els.mentionsClose.onclick = closeMentionsDrawer;
   if (els.openCalendar) {
     els.openCalendar.onclick = () => {
       if (!state.calendar) return;

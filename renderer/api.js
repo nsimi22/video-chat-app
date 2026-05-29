@@ -998,6 +998,76 @@
     // array contains the given label. Limit kept generous because the
     // panel loads incrementally and pinning the cap server-side avoids
     // a runaway query when a user has thousands of saves.
+    // Mentions inbox (UI v2 design item 4.1). Returns messages where
+    // the caller is @-mentioned by name, or where one of the broadcast
+    // sentinels (@here / @channel) is set on a channel they belong to.
+    // RLS on `messages` already constrains visibility to channels the
+    // user is a member of, so the broadcast sentinels can be ORed in
+    // without extra membership checks.
+    //
+    // Marshals through _marshalMessage so the rendered shape matches
+    // what chat.js already knows how to render.
+    async loadMentions({ limit = 100 } = {}) {
+      if (!this.name || !this.team?.id) return [];
+      // PostgREST's `.contains()` is the cleanest API for `array @>`
+      // checks but doesn't compose with `.or()` for multi-clause OR
+      // on the same column. Drop to the raw filter expression to OR
+      // three array-contains clauses on the `mentions` column.
+      const myName = this.name.replace(/[",{}]/g, '');
+      const orExpr = [
+        `mentions.cs.{"${myName}"}`,
+        `mentions.cs.{"@here"}`,
+        `mentions.cs.{"@channel"}`,
+      ].join(',');
+      const { data, error } = await this.supabase
+        .from('messages')
+        .select('*')
+        .eq('team_id', this.team.id)
+        .or(orExpr)
+        .order('ts', { ascending: false })
+        .limit(limit);
+      if (error) { console.warn('loadMentions failed', error); return []; }
+      return (data || []).map((row) => this._marshalMessage(row));
+    }
+
+    // Read the caller's persisted `mentions_last_read_at`. Used to
+    // compute the unread count for the sidebar badge. Returns null if
+    // never read OR if the column doesn't exist yet (migration not
+    // applied) — both states mean "show all as unread".
+    async getMentionsLastReadAt() {
+      if (!this.peerId) return null;
+      const { data, error } = await this.supabase
+        .from('profiles')
+        .select('mentions_last_read_at')
+        .eq('user_id', this.peerId)
+        .maybeSingle();
+      if (error) {
+        // Pre-migration: the column doesn't exist → PostgREST returns
+        // PGRST204 / 42703. Treat as "never read" so the inbox still
+        // works; the badge will just always show "all unread".
+        console.warn('getMentionsLastReadAt failed', error);
+        return null;
+      }
+      return data?.mentions_last_read_at || null;
+    }
+
+    // Mark all mentions read by bumping the per-user timestamp to now.
+    // Returns the new timestamp string so the renderer can update its
+    // cached unread baseline without a second roundtrip.
+    async markMentionsRead() {
+      if (!this.peerId) return null;
+      const ts = new Date().toISOString();
+      const { error } = await this.supabase
+        .from('profiles')
+        .update({ mentions_last_read_at: ts })
+        .eq('user_id', this.peerId);
+      if (error) {
+        console.warn('markMentionsRead failed', error);
+        return null;
+      }
+      return ts;
+    }
+
     async loadSavedMessages({ label, limit = 200 } = {}) {
       let q = this.supabase
         .from('saved_messages')
