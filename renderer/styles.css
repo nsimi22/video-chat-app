@@ -3724,4 +3724,360 @@ body.popout-call .popout-stage > .draw-toolbar {
   letter-spacing: 0.04em;
 }
 
+/* ============================================================
+   v2 unfurl cards — Jira + GitHub.
+   Same DOM hooks (.jira-unfurl, .jira-key, .jira-summary,
+   .jira-status[.todo|.inprogress|.done], .gh-unfurl, .gh-key,
+   .gh-summary, .gh-status[.open|.closed|.merged], .unfurl-reload).
+   Cards take the design's bg-2 surface with a hairline border;
+   Jira keeps a colored stripe on the left (live teal for active),
+   GitHub goes flat. Status pills retoken to live/online/accent
+   tints from the v2 palette.
+   ============================================================ */
+[data-ui="v2"] .jira-unfurl,
+[data-ui="v2"] .gh-unfurl {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 11px 14px;
+  margin-top: 8px;
+  max-width: 480px;
+  font-family: var(--font);
+  gap: 6px;
+}
+[data-ui="v2"] .jira-unfurl {
+  border-left: 3px solid var(--live);
+}
+[data-ui="v2"] .gh-unfurl {
+  border-left-width: 1px;
+}
+
+[data-ui="v2"] .jira-unfurl .jira-row,
+[data-ui="v2"] .gh-unfurl .gh-row {
+  font-size: 12px;
+  color: var(--tx-lo);
+  gap: 8px;
+}
+[data-ui="v2"] .jira-unfurl .jira-key {
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--live);
+  letter-spacing: 0;
+}
+[data-ui="v2"] .gh-unfurl .gh-key {
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tx-lo);
+  letter-spacing: 0;
+}
+[data-ui="v2"] .jira-unfurl .jira-summary,
+[data-ui="v2"] .gh-unfurl .gh-summary {
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .jira-unfurl a,
+[data-ui="v2"] .gh-unfurl a {
+  color: var(--accent-tx);
+}
+
+/* Status pills under the unfurl card. Each variant gets a tinted
+   bg that reads at a glance against the dark surface. */
+[data-ui="v2"] .jira-unfurl .jira-status,
+[data-ui="v2"] .gh-unfurl .gh-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: 20px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  background: var(--bg-3);
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .jira-unfurl .jira-status.todo {
+  background: var(--bg-3);
+  color: var(--tx-lo);
+}
+[data-ui="v2"] .jira-unfurl .jira-status.inprogress {
+  background: color-mix(in oklch, var(--live) 16%, transparent);
+  color: var(--live);
+}
+[data-ui="v2"] .jira-unfurl .jira-status.done {
+  background: color-mix(in oklch, var(--online) 16%, transparent);
+  color: var(--online);
+}
+[data-ui="v2"] .gh-unfurl .gh-status.open {
+  background: color-mix(in oklch, var(--online) 16%, transparent);
+  color: var(--online);
+}
+[data-ui="v2"] .gh-unfurl .gh-status.closed {
+  background: color-mix(in oklch, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+[data-ui="v2"] .gh-unfurl .gh-status.merged {
+  background: var(--accent-dim);
+  color: var(--accent-tx);
+}
+
+[data-ui="v2"] .jira-unfurl .jira-loading,
+[data-ui="v2"] .gh-unfurl .gh-loading {
+  color: var(--tx-faint);
+  font-family: var(--font);
+  font-size: 12px;
+  font-style: normal;
+}
+[data-ui="v2"] .jira-unfurl.error {
+  border-left-color: var(--danger);
+}
+[data-ui="v2"] .gh-unfurl.error {
+  border-color: var(--danger);
+}
+[data-ui="v2"] .unfurl-reload {
+  color: var(--tx-faint);
+  border-radius: 6px;
+}
+[data-ui="v2"] .unfurl-reload:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+
+/* ============================================================
+   v2 modals — generic .modal chrome (NOT login).
+   `:not(.login-modal)` scopes these rules away from the
+   2-column sign-in we already restyle in Phase 2.2. Picks up
+   create-channel, settings, search, and any other future modal.
+   ============================================================ */
+[data-ui="v2"] .modal-backdrop {
+  background: rgba(6, 6, 8, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+[data-ui="v2"] .modal:not(.login-modal) {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-pop);
+  font-family: var(--font);
+  padding: 22px 26px;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .modal:not(.login-modal) h2 {
+  font-family: var(--font);
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .modal:not(.login-modal) h3 {
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--tx-faint);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+[data-ui="v2"] .modal:not(.login-modal) label {
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--tx-mid);
+  margin: 12px 0 6px;
+}
+[data-ui="v2"] .modal:not(.login-modal) input[type="text"],
+[data-ui="v2"] .modal:not(.login-modal) input[type="email"],
+[data-ui="v2"] .modal:not(.login-modal) input[type="password"],
+[data-ui="v2"] .modal:not(.login-modal) input[type="search"],
+[data-ui="v2"] .modal:not(.login-modal) textarea,
+[data-ui="v2"] .modal:not(.login-modal) select {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-size: 14px;
+  padding: 10px 12px;
+}
+[data-ui="v2"] .modal:not(.login-modal) input:focus,
+[data-ui="v2"] .modal:not(.login-modal) textarea:focus,
+[data-ui="v2"] .modal:not(.login-modal) select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+[data-ui="v2"] .modal:not(.login-modal) code {
+  font-family: var(--mono);
+  background: var(--bg-3);
+  color: var(--accent-tx);
+  font-size: 0.86em;
+  padding: 1px 6px;
+  border-radius: 5px;
+}
+[data-ui="v2"] .modal:not(.login-modal) .primary,
+[data-ui="v2"] .modal:not(.login-modal) button.primary {
+  background: var(--accent);
+  color: #1a1106;
+  font-family: var(--font);
+  font-weight: 700;
+  border: 0;
+  border-radius: 9px;
+  box-shadow: none;
+  height: 38px;
+  min-height: 0;
+}
+[data-ui="v2"] .modal:not(.login-modal) .primary:hover,
+[data-ui="v2"] .modal:not(.login-modal) button.primary:hover {
+  background: var(--accent-hi);
+}
+[data-ui="v2"] .modal:not(.login-modal) .subtle {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+  border: 0;
+  border-radius: 9px;
+  height: 38px;
+  min-height: 0;
+  font-family: var(--font);
+  font-weight: 600;
+  box-shadow: none;
+}
+[data-ui="v2"] .modal:not(.login-modal) .subtle:hover {
+  background: var(--bg-2);
+}
+
+/* ============================================================
+   v2 pinned-messages drawer.
+   Anchored to the chat stage's right edge. Same DOM, just
+   retokens the surface and rows.
+   ============================================================ */
+[data-ui="v2"] .pinned-drawer {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-pop);
+  border-radius: var(--r-md);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-ui="v2"] .pinned-drawer-head {
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--tx-hi);
+  padding: 12px 14px;
+}
+[data-ui="v2"] .pinned-list {
+  padding: 8px;
+}
+[data-ui="v2"] .pinned-item {
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  padding: 10px 12px;
+  font-family: var(--font);
+  color: var(--tx-mid);
+  margin-bottom: 4px;
+}
+[data-ui="v2"] .pinned-item:hover {
+  background: var(--bg-2);
+  border: 0;
+}
+[data-ui="v2"] .pinned-item-head {
+  color: var(--tx-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-feature-settings: "tnum" 1;
+}
+[data-ui="v2"] .pinned-item-body {
+  color: var(--tx-mid);
+  font-size: 13.5px;
+  font-family: var(--font);
+}
+[data-ui="v2"] .pinned-empty {
+  color: var(--tx-faint);
+  font-family: var(--font);
+  font-size: 13px;
+}
+
+/* ============================================================
+   v2 search results — appears inside the search modal.
+   ============================================================ */
+[data-ui="v2"] .search-results {
+  border-color: var(--line-soft);
+  font-family: var(--font);
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .search-results .hit {
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+[data-ui="v2"] .search-results .hit:hover {
+  background: var(--bg-2);
+}
+[data-ui="v2"] .search-results .hit-meta {
+  color: var(--tx-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+[data-ui="v2"] .search-results .hit-text {
+  color: var(--tx-mid);
+  font-family: var(--font);
+}
+[data-ui="v2"] .search-results .empty {
+  color: var(--tx-faint);
+  font-family: var(--font);
+}
+/* Collapse the results container when there's nothing inside — the
+   hollow border+padding strip looked like an unfinished input slot
+   when the search modal opened with no query. */
+[data-ui="v2"] .search-results:empty {
+  display: none;
+}
+
+/* Search modal's "Close" button doesn't carry .primary / .subtle,
+   so it falls through the .modal:not(.login-modal) primary/subtle
+   rules. Style it explicitly as a ghost. */
+[data-ui="v2"] #search-cancel {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+  border: 0;
+  border-radius: 9px;
+  height: 36px;
+  min-height: 0;
+  padding: 0 14px;
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 13.5px;
+  box-shadow: none;
+}
+[data-ui="v2"] #search-cancel:hover {
+  background: var(--bg-2);
+}
+/* "Limit to current channel" row — drop the legacy 12px dim type
+   for v2 tone. */
+[data-ui="v2"] .search-scope {
+  color: var(--tx-mid);
+  font-family: var(--font);
+  font-size: 13px;
+}
+[data-ui="v2"] .search-scope label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  margin: 0;
+}
+[data-ui="v2"] .search-scope input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+}
+
 
