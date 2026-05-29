@@ -3169,11 +3169,11 @@ body.popout-call .popout-stage > .draw-toolbar {
 }
 [data-ui="v2"] .header-actions .icon-only,
 [data-ui="v2"] .stage-title #sidebar-toggle.icon-only {
-  width: 34px;
-  height: 34px;
+  width: 38px;
+  height: 38px;
   min-height: 0;
   padding: 0;
-  border-radius: 9px;
+  border-radius: 10px;
   background: transparent;
   border: 0;
   box-shadow: none;
@@ -3184,10 +3184,13 @@ body.popout-call .popout-stage > .draw-toolbar {
   background: var(--bg-3);
   color: var(--tx-hi);
 }
+/* SVGs inside header icon-buttons carry inline width="16" height="16"
+   attrs; these CSS rules win over the attrs and bring icons up to a
+   size that reads at-a-glance in the 10-button in-call cluster. */
 [data-ui="v2"] .header-actions .icon-only svg,
 [data-ui="v2"] .stage-title #sidebar-toggle.icon-only svg {
-  width: 19px;
-  height: 19px;
+  width: 22px;
+  height: 22px;
 }
 [data-ui="v2"] .header-actions .ctrl {
   height: 36px;
@@ -3200,6 +3203,17 @@ body.popout-call .popout-stage > .draw-toolbar {
   letter-spacing: -0.01em;
   box-shadow: none;
   border: 0;
+}
+/* Explicit override for buttons that carry BOTH .ctrl and .icon-only
+   (the in-call cluster: mic, cam, blur, share, hand, react, jira,
+   cc, popout). Without this the .ctrl rule above wins on height +
+   padding, squashing the SVG. */
+[data-ui="v2"] .header-actions .ctrl.icon-only {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 10px;
+  gap: 0;
 }
 [data-ui="v2"] .header-actions .ctrl.primary {
   background: var(--accent);
@@ -3264,6 +3278,251 @@ body.popout-call .popout-stage > .draw-toolbar {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+/* ============================================================
+   v2 chat body — message rows, day dividers, reactions, hover
+   actions, AI message card, thread continuation, mentions.
+   Same DOM hooks (.msg, .msg-head, .msg-author, .msg-time,
+   .msg-body, .msg-actions, .msg-action, .reaction, .date-divider)
+   so chat.js rendering is unchanged. Legacy chrome stays put
+   when the v2 flag is off.
+   ============================================================ */
+
+/* Day divider — design's mono uppercase pill on a bg-2 ground
+   flanked by thin --line-soft hairlines. */
+[data-ui="v2"] .date-divider {
+  margin: 12px 4px 6px;
+  gap: 14px;
+}
+[data-ui="v2"] .date-divider::before,
+[data-ui="v2"] .date-divider::after {
+  background: var(--line-soft);
+}
+[data-ui="v2"] .date-divider-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--tx-lo);
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  padding: 3px 11px;
+  border-radius: 20px;
+}
+
+/* Message rows. The 38px avatar with 34% radius (rounded square)
+   is the design's signature — distinct from the legacy circle. */
+[data-ui="v2"] .msg {
+  grid-template-columns: 38px 1fr;
+  gap: 12px;
+  padding: var(--row-py, 13px) 24px 4px;
+  border-radius: 0;
+}
+[data-ui="v2"] .msg:hover {
+  background: var(--bg-hover);
+}
+[data-ui="v2"] .msg .avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 34%;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  box-shadow: none;
+  font-family: var(--font);
+}
+[data-ui="v2"] .msg-followup .avatar {
+  border-radius: 34%;
+}
+[data-ui="v2"] .msg-head {
+  gap: 9px;
+  margin-bottom: 2px;
+}
+[data-ui="v2"] .msg-author {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 14.5px;
+  letter-spacing: -0.01em;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .msg-time {
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 11.5px;
+  color: var(--tx-faint);
+}
+[data-ui="v2"] .msg-followup .msg-time-hover {
+  font-family: var(--mono);
+  color: var(--tx-faint);
+}
+[data-ui="v2"] .msg-body {
+  font-family: var(--font);
+  font-size: var(--ui, 14.5px);
+  line-height: 1.58;
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .msg-body a {
+  color: var(--accent-tx);
+}
+[data-ui="v2"] .msg-body code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  background: var(--bg-3);
+  color: var(--accent-tx);
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+[data-ui="v2"] .msg-body pre {
+  background: var(--bg-1);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  font-family: var(--mono);
+}
+[data-ui="v2"] .msg-body pre code {
+  background: transparent;
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .msg-body blockquote {
+  border-left: 2px solid var(--line);
+  background: var(--bg-1);
+  border-radius: 0 8px 8px 0;
+  padding: 8px 13px;
+  margin: 4px 0;
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .msg-mentions-me {
+  background: linear-gradient(90deg, var(--accent-dim), transparent 60%);
+  border-left: 3px solid var(--accent);
+}
+[data-ui="v2"] .msg-edited {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--tx-faint);
+}
+
+/* Hover action toolbar — pop above the row with sh-pop, accent-tx
+   icons on hover. Sits a touch higher than legacy (top: -14) so it
+   reads as floating. */
+[data-ui="v2"] .msg-actions {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--sh-pop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  top: -14px;
+  right: 24px;
+  padding: 3px;
+  gap: 2px;
+}
+[data-ui="v2"] .msg-action {
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 7px;
+  color: var(--tx-lo);
+}
+[data-ui="v2"] .msg-action:hover {
+  background: var(--bg-3);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .msg-action svg {
+  width: 16px;
+  height: 16px;
+}
+[data-ui="v2"] .msg-action.active {
+  color: var(--accent-tx);
+  background: var(--accent-dim);
+}
+[data-ui="v2"] .msg-action.danger:hover {
+  color: #fff;
+  background: var(--danger);
+}
+
+/* Reaction chips */
+[data-ui="v2"] .reactions {
+  gap: 6px;
+  margin-top: 8px;
+}
+[data-ui="v2"] .reaction {
+  height: 26px;
+  padding: 0 9px 0 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 13px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  color: var(--tx-mid);
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+[data-ui="v2"] .reaction:hover {
+  background: var(--bg-3);
+  border-color: var(--line);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .reaction.mine {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent-tx);
+}
+
+/* Thread continuation chip (the link under a message that opens
+   its replies). Promotes the legacy text-only treatment to a pill
+   that reads more like the design's "N replies" indicator. */
+[data-ui="v2"] .thread-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 4px 11px;
+  border-radius: 20px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--accent-tx);
+}
+[data-ui="v2"] .thread-link:hover {
+  background: var(--bg-3);
+  text-decoration: none;
+}
+
+/* AI message card — accent border + accent-dim gradient wash. The
+   .msg.msg-ai class is set by chat.js when chat.aiGenerated. The
+   .avatar-ai gradient picks up the accent so the bot avatar reads
+   as branded across themes. */
+[data-ui="v2"] .msg.msg-ai {
+  background: linear-gradient(180deg, var(--accent-dim), transparent 60%), var(--bg-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-md);
+  margin: 8px 14px;
+  padding: 13px 16px;
+}
+[data-ui="v2"] .msg.msg-ai:hover {
+  background: linear-gradient(180deg, var(--accent-dim), transparent 60%), var(--bg-2);
+}
+[data-ui="v2"] .msg .avatar-ai {
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent));
+  color: var(--bg-0);
+}
+
+/* Pinned + flash variants */
+[data-ui="v2"] .msg.msg-pinned {
+  background: linear-gradient(90deg, oklch(0.80 0.13 80 / 0.10), transparent 50%);
+  border-left: 3px solid var(--away);
+}
+[data-ui="v2"] .msg.msg-flash {
+  background: var(--accent-dim);
+  transition: background 0.4s;
 }
 
 
