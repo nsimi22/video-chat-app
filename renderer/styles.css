@@ -1156,6 +1156,44 @@ body.popout-screen .tile-action-annotate { display: none; }
 }
 .tile.fullscreen-mode video { object-fit: contain; }
 body.has-fullscreen-tile { overflow: hidden; }
+
+/* v2 fullscreen-mode: fill the tile-grid panel rather than the
+   whole viewport. The rail + channels sidebar + stage header +
+   bottom dock stay visible; only the tile area inflates. Nick's
+   "should take up the whole panel it is in" pattern. */
+[data-ui="v2"] .tiles {
+  position: relative;  /* anchor for absolute child */
+}
+[data-ui="v2"] .tile.fullscreen-mode {
+  position: absolute;
+  inset: 0;
+  z-index: 50;          /* above siblings, below modals/dock */
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  max-height: none;
+}
+/* When the tile is fullscreen-mode'd under v2, the OTHER tiles in
+   the grid stay in the DOM but get visually hidden underneath the
+   fullscreen one. Their grid placement still consumes cells, but
+   they're behind the absolute-positioned fullscreen sibling. No
+   special hiding needed — they're occluded by inset:0 on top. */
+
+/* While a tile is fullscreened, expand .tiles to fill the stage
+   (lift the 55vh cap) and suppress the chat surfaces below it.
+   Without these, "fullscreen" only fills the 55vh tile-grid slot
+   and chat stays visible underneath. */
+[data-ui="v2"] body.has-fullscreen-tile .tiles {
+  flex: 1 1 auto;
+  max-height: none;
+}
+[data-ui="v2"] body.has-fullscreen-tile .stage > .messages,
+[data-ui="v2"] body.has-fullscreen-tile .stage > .composer,
+[data-ui="v2"] body.has-fullscreen-tile .stage > .typing,
+[data-ui="v2"] body.has-fullscreen-tile .stage > #attachment-chips,
+[data-ui="v2"] body.has-fullscreen-tile .stage > #reconnect-banner {
+  display: none;
+}
 /* Active speaker: soft accent ring driven by JS audio-level polling.
    Transitions ease in/out so quick volume bursts don't strobe. */
 .tile.speaking {
