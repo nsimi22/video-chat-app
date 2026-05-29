@@ -83,10 +83,14 @@
   }
 
   // Custom titlebar (UI v2 design 1.1). Paints the workspace label
-  // ("Huddle — <workspace>") from the team name once it's known, and
-  // wires the ⌘K search pill to the command palette. The label
-  // listens on a MutationObserver of the legacy team-name element so
-  // it updates on team switch without each path having to ping us.
+  // ("Huddle — <workspace>") from .workspace-name (the sidebar
+  // header that app.js writes the team name to on welcome and
+  // team-switch), and wires the ⌘K search pill to the command
+  // palette. The label re-paints only when the .workspace-name
+  // element's text actually mutates — observing the whole document
+  // body subtree (the previous approach) fired on every keystroke /
+  // typing indicator / reaction render, which is a real perf
+  // foot-gun under active chat.
   function wireCustomTitlebar() {
     const labelEl = document.getElementById('huddle-titlebar-label');
     const searchBtn = document.getElementById('huddle-titlebar-search');
@@ -97,22 +101,23 @@
       });
     }
     if (!labelEl) return;
+    const teamEl = document.querySelector('.workspace-name');
     const paintLabel = () => {
-      // Source of workspace name: the team picker / sidebar header.
-      // Falls back to "Huddle" alone if no team is active.
-      const teamEl = document.querySelector('.team-name')
-        || document.querySelector('.sidebar-header .name')
-        || document.querySelector('#team-name');
       const team = teamEl?.textContent?.trim();
-      labelEl.textContent = team ? `Huddle — ${team}` : 'Huddle';
+      // The initial text is literally "Huddle" — drop the "— Huddle"
+      // suffix in that case so the label reads as just "Huddle"
+      // before sign-in (otherwise: "Huddle — Huddle").
+      labelEl.textContent = (team && team !== 'Huddle') ? `Huddle — ${team}` : 'Huddle';
     };
     paintLabel();
-    // Re-paint when the team header changes (team switch, rename).
-    if ('MutationObserver' in window) {
-      new MutationObserver(paintLabel).observe(document.body, {
+    if (teamEl && 'MutationObserver' in window) {
+      // Scope the observer to .workspace-name only. characterData on
+      // a small element is cheap; without `subtree` we don't watch
+      // anything else.
+      new MutationObserver(paintLabel).observe(teamEl, {
         childList: true,
-        subtree: true,
         characterData: true,
+        subtree: true,
       });
     }
   }
