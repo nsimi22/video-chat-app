@@ -252,6 +252,10 @@ const state = {
   // Local hand-raised state (mirrored from huddle.raisedHands when remote
   // peers toggle, written here when the local user toggles).
   raisedHands: new Set(),
+  // Per-peer platform marker (mobile / desktop / null), sourced from
+  // LiveKit participant.metadata. Drives the bottom-right "Mobile"
+  // pip on remote video tiles. Cleared on peer-left / leaveCall.
+  peerPlatforms: new Map(),
   // Teardown for the React popover's document-level listeners. Cleared on
   // teardownTeam so re-joining a team doesn't accumulate handlers.
   reactPopoverCleanup: null,
@@ -2248,9 +2252,11 @@ function onCallPeerJoined(peer) {
   // Per-call peer joined; the call client already opened the LiveKit
   // subscription — we just need to render an empty tile they can stream
   // into. Track callbacks fill in the actual stream once it arrives.
-  // (For now, the track event creates the tile imperatively; this is
-  // a no-op hook left for future "show participant before their first
-  // frame" UX.)
+  // Stash any platform marker (mobile/desktop) so the cam tile can
+  // surface a "Mobile" pip when commitStreamAsCamera builds it.
+  if (peer?.id && peer.platform) {
+    state.peerPlatforms.set(peer.id, peer.platform);
+  }
 }
 
 function onCallPeerLeft(peerId) {
@@ -2270,6 +2276,7 @@ function onCallConnectionFailed(detail) {
 function removePersonFromCall(peerId) {
   removeTile(`peer:${peerId}`);
   state.raisedHands.delete(peerId);
+  state.peerPlatforms.delete(peerId);
   if (state.speakingPeer === peerId) setSpeakingPeer(null);
   // Drop any screen tiles owned by this peer too.
   for (const [key, tile] of state.tilesByKey.entries()) {
@@ -2914,6 +2921,19 @@ function makeTile({ key, label, kind, userId }) {
   lbl.textContent = label;
   if (userId) attachProfileTrigger(lbl, userId);
   tile.appendChild(lbl);
+  // Speaking-state 3-bar indicator on camera tiles (self + remote
+  // cam). Always-rendered DOM, hidden by default via CSS; only
+  // visible while .tile.speaking. Screen / whiteboard tiles don't
+  // carry audio levels, so skip.
+  if (kind === 'self' || kind === 'remote' || kind === 'cam') {
+    const bars = document.createElement('span');
+    bars.className = 'tile-speaker-bars';
+    bars.setAttribute('aria-hidden', 'true');
+    bars.appendChild(document.createElement('span'));
+    bars.appendChild(document.createElement('span'));
+    bars.appendChild(document.createElement('span'));
+    tile.appendChild(bars);
+  }
   if (kind === 'screen' || kind === 'whiteboard') {
     const actions = document.createElement('div');
     actions.className = 'tile-actions';
@@ -3259,6 +3279,19 @@ function setPeerCamOn(peerId, camOn) {
   if (!camOn) ensureCamOffOverlay(tile, peerId);
 }
 
+// Hash any short string (user id / name) to a stable hue 0–360.
+// Used by the cam-off radial-gradient background under v2 — each
+// user gets a consistent tile tint so a roomful of cam-off tiles
+// reads as varied, not a wall of grey. djb2-style folding with a
+// small prime — collision rate is fine for the small participant
+// counts in a call.
+function hashHue(key) {
+  const s = String(key || '');
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return Math.abs(h) % 360;
+}
+
 // The overlay is what users see in place of the (black) video when a
 // peer turns their camera off — a colored avatar circle with their
 // initial and their name underneath. Built lazily on first cam-off and
@@ -3272,6 +3305,11 @@ function ensureCamOffOverlay(tile, peerId) {
     : state.huddle?.peerInfo?.get(peerId) || state.huddle?.callPeerInfo?.get(peerId) || {};
   const name = peer.name || 'guest';
   const color = peer.color || '#666';
+  // Per-user hue (0–360) driving the radial-gradient cam-off
+  // background under v2 (see styles.css var(--tile-hue) rule).
+  // Stamped on the tile itself, not the overlay, so the gradient
+  // covers the full tile area behind the avatar.
+  tile.style.setProperty('--tile-hue', String(hashHue(peerId || name)));
   const overlay = document.createElement('div');
   overlay.className = 'tile-cam-off';
   const avatar = document.createElement('div');
@@ -3911,6 +3949,7 @@ function resetCallEphemera() {
   clearSpotlight();
   setSpeakingPeer(null);
   state.raisedHands.clear();
+  state.peerPlatforms.clear();
   if (els.btnHand) els.btnHand.classList.remove('active');
   clearAllReactions();
   syncTilesVisibility();
@@ -4044,10 +4083,40 @@ function shareIdFor(stream) {
   return stream.__huddleShareId || stream.id;
 }
 
+// Two-part screen-tile label per design: "<owner>'s screen · <window
+// title>". Renders as two spans so the window-title half can pick up
+// the mono treatment from styles.css. Called by both the local and
+// remote screen-tile entry points after makeTile() has stamped the
+// fallback single-line textContent. Idempotent — replaces children.
+function setScreenTileLabel(tile, ownerLabel, contextText) {
+  const lbl = tile.querySelector('.tile-label');
+  if (!lbl) return;
+  lbl.textContent = '';
+  const owner = document.createElement('span');
+  owner.className = 'tile-label-owner';
+  owner.textContent = `${ownerLabel} screen`;
+  lbl.appendChild(owner);
+  if (contextText) {
+    const sep = document.createElement('span');
+    sep.className = 'tile-label-sep';
+    sep.textContent = '·';
+    sep.setAttribute('aria-hidden', 'true');
+    lbl.appendChild(sep);
+    const ctx = document.createElement('span');
+    ctx.className = 'tile-label-context';
+    ctx.textContent = contextText;
+    lbl.appendChild(ctx);
+  }
+}
+
 function addLocalScreenTile(stream, label) {
   const shareId = shareIdFor(stream);
   const key = `screen:${shareId}`;
   const tile = makeTile({ key, label: `${label} — you`, kind: 'screen', userId: state.huddle?.peerId });
+  // Two-part label per design: "<owner>'s screen · <window title>"
+  // with the window title in mono. Overrides the textContent makeTile
+  // applied so the · separator + context can be styled independently.
+  setScreenTileLabel(tile, 'Your', label);
   tile.dataset.streamId = shareId;
   // The popout button reads the publisher identity off the tile. Local
   // screens publish under the main client's peerId; remote screens stamp
@@ -4093,6 +4162,10 @@ function commitStreamAsCamera(streamId) {
   const peer = state.huddle.peerInfo.get(pending.fromId);
   const tile = makeTile({ key, label: peer ? peer.name : 'guest', kind: 'remote', userId: pending.fromId });
   tile.querySelector('video').srcObject = pending.stream;
+  // Apply platform marker (Mobile pip) if this peer is on the mobile
+  // app. Sourced from LiveKit participant.metadata via peer-joined.
+  const platform = state.peerPlatforms.get(pending.fromId);
+  if (platform) tile.dataset.platform = platform;
   // Catch up on hand-raised state in case the broadcast arrived before the tile.
   if (state.raisedHands.has(pending.fromId)) setHandRaised(pending.fromId, true);
   // Catch up on mute / cam state too — same race: the mute-state
@@ -4108,12 +4181,13 @@ function commitStreamAsCamera(streamId) {
 function renderRemoteScreen(stream, screen) {
   const shareId = shareIdFor(stream);
   const key = `screen:${shareId}`;
+  const ownerLabel = `${screen.fromName}'s`;
   if (state.tilesByKey.has(key)) {
-    state.tilesByKey.get(key).querySelector('.tile-label').textContent =
-      `${screen.label} — ${screen.fromName}`;
+    setScreenTileLabel(state.tilesByKey.get(key), ownerLabel, screen.label);
     return;
   }
-  const tile = makeTile({ key, label: `${screen.label} — ${screen.fromName}`, kind: 'screen', userId: screen.from });
+  const tile = makeTile({ key, label: `${screen.fromName}'s screen · ${screen.label}`, kind: 'screen', userId: screen.from });
+  setScreenTileLabel(tile, ownerLabel, screen.label);
   tile.dataset.streamId = shareId;
   // Same as addLocalScreenTile: the popout button reads the publisher
   // identity off the dataset. makeTile only uses `userId` for the

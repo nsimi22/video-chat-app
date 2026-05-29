@@ -164,6 +164,46 @@
     // from #tiles[data-kind] DOM and a per-second timer started
     // when body.huddle-in-call is set.
     setupCallMeta();
+
+    // Calls rail item: pulsing live dot when in-call, disabled when
+    // idle, and a return-to-call click handler when active.
+    setupCallsRailItem();
+  }
+
+  // Mirror body.huddle-in-call onto the Calls rail item:
+  //   in-call  → .has-live (pulsing dot) + enabled + return-to-call
+  //   idle     → no dot + disabled (no destination yet — Calls view
+  //              isn't built; surfacing a click would be a dead end).
+  // The return click closes any open v2 overlay so the underlying
+  // call tile grid becomes visible — same effect as the existing
+  // return-dock back button (.huddle-call-return-back).
+  function setupCallsRailItem() {
+    const railItem = document.querySelector('.huddle-rail-item[data-view="calls"]');
+    if (!railItem) return;
+    const apply = () => {
+      const inCall = document.body.classList.contains('huddle-in-call');
+      railItem.classList.toggle('has-live', inCall);
+      railItem.classList.toggle('is-disabled', !inCall);
+      if (inCall) railItem.removeAttribute('aria-disabled');
+      else railItem.setAttribute('aria-disabled', 'true');
+    };
+    apply();
+    new MutationObserver(apply).observe(document.body, {
+      attributes: true, attributeFilter: ['class']
+    });
+    // Override the visual-only stub click handler in wireClicks() —
+    // when in-call, close overlays so the tile grid is on top. When
+    // idle, swallow the click + .is-active flip the stub applied.
+    railItem.addEventListener('click', (e) => {
+      const inCall = document.body.classList.contains('huddle-in-call');
+      if (!inCall) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        return;
+      }
+      window.HuddleAIPanel?.close?.();
+      window.HuddleCalendarGrid?.close?.();
+    }, true); // capture, before wireClicks' bubble-phase handler
   }
 
   // Track call start time + render "N people · MM:SS" while body
@@ -266,6 +306,20 @@
     if (!stage || !leaveBtn || document.querySelector('.huddle-call-dock')) return;
 
     const dockIds = ['btn-mic', 'btn-cam', 'btn-blur', 'btn-share', 'btn-hand', 'btn-react', 'btn-cc', 'btn-leave'];
+    // Short labels rendered under each icon-only button per design
+    // (CallControl widgets are icon-over-label). Map by id rather than
+    // reusing each button's verbose `title` attr ("Toggle microphone"
+    // etc.) since the design wants single-word affordances. Leave
+    // already has an inline label and skips this map.
+    const dockLabels = {
+      'btn-mic': 'Mute',
+      'btn-cam': 'Camera',
+      'btn-blur': 'Blur',
+      'btn-share': 'Share',
+      'btn-hand': 'Raise',
+      'btn-react': 'React',
+      'btn-cc': 'Captions',
+    };
     const dock = document.createElement('div');
     dock.className = 'huddle-call-dock';
     dock.setAttribute('aria-label', 'Call controls');
@@ -277,19 +331,43 @@
       const btn = document.getElementById(id);
       if (!btn) continue;
       if (id === 'btn-leave') dock.appendChild(beforeLeave);
+      // Inject the under-icon label as a sibling span. The button keeps
+      // its existing event listeners; only its parent changes (here)
+      // and a label gets appended to itself (below).
+      const labelText = dockLabels[id];
+      if (labelText && !btn.querySelector('.huddle-call-dock-label')) {
+        const label = document.createElement('span');
+        label.className = 'huddle-call-dock-label';
+        label.textContent = labelText;
+        label.setAttribute('aria-hidden', 'true');
+        btn.appendChild(label);
+      }
       dock.appendChild(btn);
     }
     stage.appendChild(dock);
 
-    // Sync body.huddle-in-call from #btn-leave's visibility, AND
-    // body.huddle-on-call-channel from #tiles visibility. Splitting
-    // the two so CSS can scope the full call layout (hide chat,
-    // show bottom dock) only when the user is actually ON the call
-    // channel; if they navigate to a different channel mid-call,
-    // chat stays visible and the top return-dock surfaces.
+    // Sync body classes:
+    //   huddle-in-call          = a call is active SOMEWHERE (driven by
+    //                             the self-cam tile's existence — that
+    //                             tile is created on startCall and
+    //                             removed on leaveCall, and persists in
+    //                             DOM across channel navigation).
+    //   huddle-on-call-channel  = user is currently viewing the call
+    //                             channel right now (driven by #tiles
+    //                             visibility — gets `.hidden` when the
+    //                             user nav's to a non-call channel).
+    //
+    // Splitting the two so CSS can scope the full call layout (hide
+    // chat, show bottom dock) only when ON the call channel; if the
+    // user navigates away mid-call, chat stays visible, the bottom
+    // dock disappears, and the top return-dock surfaces. Previous
+    // implementation used #btn-leave visibility for `huddle-in-call`,
+    // but that button is also channel-scoped (renderControls hides it
+    // when off-channel), so the body class flipped false on nav-away
+    // — breaking the return-dock + Calls-rail "is call active" cues.
     const tilesEl = document.getElementById('tiles');
     const syncBodyClass = () => {
-      const inCall = !leaveBtn.classList.contains('hidden');
+      const inCall = !!tilesEl?.querySelector('.tile[data-kind="self"]');
       document.body.classList.toggle('huddle-in-call', inCall);
     };
     const syncOnChannel = () => {
@@ -298,11 +376,13 @@
     };
     syncBodyClass();
     syncOnChannel();
-    new MutationObserver(syncBodyClass).observe(leaveBtn, {
-      attributes: true,
-      attributeFilter: ['class'],
-    });
     if (tilesEl) {
+      // The self-cam tile is added/removed as a child of #tiles, so
+      // watch childList. The grid's `.hidden` toggle (channel-scoped)
+      // is on attributes — watch separately.
+      new MutationObserver(syncBodyClass).observe(tilesEl, {
+        childList: true,
+      });
       new MutationObserver(syncOnChannel).observe(tilesEl, {
         attributes: true,
         attributeFilter: ['class'],

@@ -2709,6 +2709,20 @@ body.popout-call .popout-stage > .draw-toolbar {
   border: 2px solid var(--bg-0);
   animation: huddle-pulse 1.6s infinite;
 }
+/* Calls rail item is the only nav destination that doesn't have a
+   built-out view yet — when idle, surface it as muted + non-clickable
+   rather than letting it light up the active indicator. Click is
+   intercepted in JS (ui-v2-shell.js:setupCallsRailItem) so we can
+   keep hover-affordances tame without disabling the element entirely
+   (which would also drop the tooltip). */
+[data-ui="v2"] .huddle-rail-item.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+[data-ui="v2"] .huddle-rail-item.is-disabled:hover {
+  background: transparent;
+  color: var(--tx-lo);
+}
 [data-ui="v2"] .huddle-rail-me {
   width: 34px;
   height: 34px;
@@ -4106,6 +4120,29 @@ body.popout-call .popout-stage > .draw-toolbar {
   background: #fdfcf8; /* design keeps the warm off-white whiteboard surface */
 }
 
+/* Cam-off tile background under v2: a per-user radial gradient
+   (warm-charcoal varied by --tile-hue, stamped by app.js
+   ensureCamOffOverlay) plus a faint 3px scan-line overlay for
+   texture/depth. Replaces the flat --bg-1 from the base .tile-cam-off
+   rule. The overlay div is what renders these — base .tile already
+   has background:#000, which the gradient covers when .cam-off
+   hides the video. */
+[data-ui="v2"] .tile.cam-off .tile-cam-off {
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.025) 0,
+      rgba(255, 255, 255, 0.025) 1px,
+      transparent 1px,
+      transparent 3px
+    ),
+    radial-gradient(
+      120% 120% at 30% 20%,
+      oklch(0.4 0.07 var(--tile-hue, 70)),
+      oklch(0.22 0.04 var(--tile-hue, 70))
+    );
+}
+
 /* Active-speaker ring switches from accent (indigo) to live (teal)
    per the design — speaking is a "live state", distinct from any
    accent-coded UI affordance. */
@@ -4113,6 +4150,93 @@ body.popout-call .popout-stage > .draw-toolbar {
   outline: 2px solid var(--live);
   outline-offset: -2px;
   box-shadow: 0 0 0 4px var(--live-dim);
+}
+
+/* 3-bar speaker indicator: top-right of speaking cam tiles. Always
+   in the DOM (huddle-app.js makeTile); hidden until .tile.speaking
+   lights up. Staggered animation delays keep the bars feeling lively
+   without strobing. */
+.tile-speaker-bars {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: none;
+  align-items: flex-end;
+  gap: 3px;
+  height: 18px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: rgba(8, 8, 10, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 24;
+  pointer-events: none;
+}
+.tile-speaker-bars span {
+  display: block;
+  width: 3px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--live, #4ec9d0);
+  transform-origin: bottom;
+  animation: huddle-speaker-bar 0.9s ease-in-out infinite;
+}
+.tile-speaker-bars span:nth-child(2) { animation-delay: 0.15s; }
+.tile-speaker-bars span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes huddle-speaker-bar {
+  0%, 100% { transform: scaleY(0.35); }
+  50%      { transform: scaleY(1.7); }
+}
+[data-ui="v2"] .tile.speaking .tile-speaker-bars { display: inline-flex; }
+
+/* Decorative phone-frame outline overlay on mobile-peer tiles
+   (design item 5.1). A centered, phone-proportioned rounded
+   rectangle hints at the device shape behind the video — paired
+   with the "Mobile" pip below for redundant signaling. Pure
+   decoration: pointer-events none, low-opacity stroke. Capped
+   in width so it stays a cue on large tiles instead of dominating
+   the frame. */
+[data-ui="v2"] .tile[data-platform="mobile"]::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(38%, 110px);
+  aspect-ratio: 9 / 19.5;
+  transform: translate(-50%, -50%);
+  border: 2px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  pointer-events: none;
+  z-index: 22;
+}
+
+/* "Mobile" pip on tiles where the peer joined from the mobile app.
+   Bottom-right corner so it doesn't collide with the mute/name pill
+   at bottom-left or the speaker bars at top-right. Triggered by
+   data-platform="mobile" stamped in commitStreamAsCamera. The phone
+   icon is rendered as a left-padded inline-SVG background-image so
+   the whole chip stays a single pseudo-element. */
+[data-ui="v2"] .tile[data-platform="mobile"]::after {
+  content: "Mobile";
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px 4px 24px;
+  border-radius: 8px;
+  background:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='7' y='2' width='10' height='20' rx='2'/><line x1='12' y1='18' x2='12.01' y2='18'/></svg>") 7px center / 11px 14px no-repeat,
+    rgba(8, 8, 10, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  z-index: 24;
+  pointer-events: none;
 }
 
 /* Bottom-left mute/name pill. */
@@ -5732,11 +5856,20 @@ body.popout-call .popout-stage > .draw-toolbar {
 }
 /* Buttons inside the dock are still .ctrl.icon-only from legacy.
    Override the small chat-header sizing for these in the dock
-   context — bigger 48px squares per the design's CallControl
-   widget; .danger ("Leave") becomes a wide rounded pill. */
+   context — design's CallControl widget is a 48px icon stacked
+   over a 10.5px tx-lo label. The icon button keeps its 48px
+   square footprint; the label sibling (.huddle-call-dock-label)
+   sits below it as a separate row in the flex-column. */
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock .ctrl.icon-only {
-  width: 48px;
-  height: 48px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 56px;
+  height: auto;
+  min-height: 0;
+  padding: 8px 4px 6px;
   border-radius: 14px;
   background: var(--bg-2);
   border: 1px solid var(--line);
@@ -5747,6 +5880,23 @@ body.popout-call .popout-stage > .draw-toolbar {
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock .ctrl.icon-only svg {
   width: 22px;
   height: 22px;
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock .huddle-call-dock-label {
+  font-family: var(--font);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--tx-lo);
+  line-height: 1;
+  user-select: none;
+}
+/* Active/muted states tint the label too so it doesn't read flat
+   while the icon is highlighted. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock .ctrl.muted .huddle-call-dock-label {
+  color: #fff;
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock #btn-cc.active .huddle-call-dock-label {
+  color: var(--bg-0);
 }
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock .ctrl.muted {
   background: var(--danger);
@@ -6004,6 +6154,61 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   background-color: var(--live);
   -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='2.5' y='4' width='19' height='13' rx='2.5'/><line x1='8' y1='21' x2='16' y2='21'/><line x1='12' y1='17' x2='12' y2='21'/></svg>") center / contain no-repeat;
           mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='2.5' y='4' width='19' height='13' rx='2.5'/><line x1='8' y1='21' x2='16' y2='21'/><line x1='12' y1='17' x2='12' y2='21'/></svg>") center / contain no-repeat;
+}
+/* Screen-share side-strip layout per design: when a remote/local
+   screen tile exists in the grid (and spotlight isn't already
+   producing its own side-rail), arrange as stage-left + 184px
+   right column of camera tiles. Mirrors the existing
+   .tiles.has-spotlight pattern but narrower per design and gated
+   by :has() rather than the spotlight click. Whiteboard tiles
+   carry `.screen` for sizing (see makeTile) so explicitly exclude
+   them — whiteboards stay wide-span. */
+[data-ui="v2"] .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) {
+  grid-template-columns: minmax(0, 1fr) 184px;
+  grid-auto-rows: auto;
+  grid-auto-flow: row dense;
+  max-height: 70vh;
+}
+[data-ui="v2"] .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) .tile {
+  grid-column: 2;
+  min-height: 120px;
+}
+[data-ui="v2"] .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) .tile.screen:not(.whiteboard) {
+  grid-column: 1;
+  grid-row: 1 / span 99;
+  min-height: 360px;
+  max-height: 70vh;
+}
+
+/* Auto-spotlight (renderRemoteScreen) already widens the screen
+   to the left + a right rail; retune the rail to 184px under v2
+   so the spotlighted layout matches the side-strip layout above
+   regardless of which trigger fired first. */
+[data-ui="v2"] .tiles.has-spotlight {
+  grid-template-columns: minmax(0, 1fr) 184px;
+}
+
+/* Two-part screen-tile label spans (setScreenTileLabel in app.js).
+   "<Owner>'s screen · <window title in mono>" — design wants the
+   context (window title) in mono so it reads as system-furnished
+   metadata, distinct from the user-attributed owner. */
+[data-ui="v2"] .tile.screen .tile-label-owner {
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .tile.screen .tile-label-sep {
+  color: var(--tx-faint);
+  margin: 0 2px;
+}
+[data-ui="v2"] .tile.screen .tile-label-context {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-weight: 500;
+  font-size: 11.5px;
+  color: var(--tx-lo);
+  font-feature-settings: "tnum";
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 
