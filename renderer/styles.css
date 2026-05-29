@@ -4238,27 +4238,51 @@ body.popout-call .popout-stage > .draw-toolbar {
   background-position: 13px 13px;
 }
 
+/* Settings lives on the left rail (data-action="settings"). The
+   legacy sidebar me-row also carries a gear (#open-settings) —
+   under v2 hide the duplicate so there's a single entry point. */
+[data-ui="v2"] .me-row #open-settings {
+  display: none;
+}
+
 /* 4.1 — Whiteboard view's tool palette is left-vertical (per design)
    rather than the bottom-center pill that screen-share annotation
    uses. body.huddle-annotating-whiteboard is set by toggleAnnotate
    in app.js when the active surface is a whiteboard. Repositions
-   the same #draw-toolbar so we don't have two toolbars to maintain. */
+   the same #draw-toolbar so we don't have two toolbars to maintain.
+   Default `left` skips past the rail (68px) + channels sidebar
+   (256px) so the palette doesn't overlap. JS in setupDraggableDrawToolbar
+   lets the user drag it elsewhere during the session. */
 [data-ui="v2"] body.huddle-annotating-whiteboard .draw-toolbar:not(.hidden) {
-  left: 24px;
+  left: calc(var(--rail-w, 68px) + var(--panel-w, 256px) + 24px);
   bottom: auto;
   top: 50%;
   transform: translateY(-50%);
   flex-direction: column;
   width: max-content;
   max-width: none;
-  align-items: stretch;
+  /* Center children horizontally. `stretch` was making the toolbar
+     width follow the widest text button (Note/Clear/Done), and the
+     36px tool buttons then sat at the left edge of that wider box. */
+  align-items: center;
   gap: 4px;
   padding: 8px;
+  cursor: grab;
+}
+[data-ui="v2"] body.huddle-annotating-whiteboard .draw-toolbar.is-dragging {
+  cursor: grabbing;
 }
 /* Inside the vertical palette, the "Drawing on <name>" target label
    would push the column too tall — hide it; the surface context is
-   already obvious from the active whiteboard tile. */
-[data-ui="v2"] body.huddle-annotating-whiteboard .draw-toolbar .draw-target {
+   already obvious from the active whiteboard tile. Same goes for
+   the stroke-width slider + zoom buttons (zoom is on Ctrl+wheel) —
+   the column would be ~16 items tall otherwise. Keep Note / Clear /
+   Done (whiteboard essentials) plus tool buttons + color picker. */
+[data-ui="v2"] body.huddle-annotating-whiteboard .draw-toolbar .draw-target,
+[data-ui="v2"] body.huddle-annotating-whiteboard .draw-toolbar #draw-size,
+[data-ui="v2"] body.huddle-annotating-whiteboard .draw-toolbar #draw-zoom-out,
+[data-ui="v2"] body.huddle-annotating-whiteboard .draw-toolbar #draw-zoom-reset,
+[data-ui="v2"] body.huddle-annotating-whiteboard .draw-toolbar #draw-zoom-in {
   display: none;
 }
 /* Tool buttons stay icon-only (already enforced under v2 above)
