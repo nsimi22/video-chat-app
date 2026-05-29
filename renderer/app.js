@@ -5172,6 +5172,7 @@ async function openSourcePicker() {
 window.huddleApp = {
   getAi: () => state.ai,
   getMe: () => state.me,
+  getCalendar: () => state.calendar,
   getActiveChannelId: () => state.chat?.currentChannel,
   postIntoComposer: (text) => {
     const ta = document.getElementById('composer-input');

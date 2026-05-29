@@ -276,9 +276,10 @@
     // Combines internal scheduled calls + cached ICS events into one
     // chronological list. Rendered on every change; cheap because the
     // combined list is bounded (~weeks of events = dozens of rows).
-    _render() {
-      const list = this._els.list;
-      if (!list) return;
+    // Public: combined internal-scheduled + external-ICS entries,
+    // sorted by start. Used by both the legacy list drawer (_render
+    // below) and the v2 week-grid view in renderer/calendar-grid.js.
+    listEvents() {
       const entries = [];
       for (const sc of this._scheduled.values()) {
         entries.push({
@@ -303,6 +304,33 @@
         }
       }
       entries.sort((a, b) => a.start - b.start);
+      return entries;
+    }
+
+    // Lightweight observer for grid view rerenders. The legacy drawer
+    // re-renders inline; the grid subscribes via onChange to repaint
+    // when scheduled/ICS data shifts (new event, ICS poll, realtime
+    // delete, etc.). Returns an unsubscribe fn.
+    subscribe(fn) {
+      if (!this._subscribers) this._subscribers = new Set();
+      this._subscribers.add(fn);
+      return () => this._subscribers.delete(fn);
+    }
+
+    _emitChange() {
+      if (!this._subscribers) return;
+      for (const fn of this._subscribers) {
+        try { fn(); } catch (e) { console.error('[calendar] subscriber failed:', e); }
+      }
+    }
+
+    _render() {
+      const list = this._els.list;
+      // _emitChange() runs even when the legacy drawer isn't bound
+      // (grid view can be the only consumer).
+      this._emitChange();
+      if (!list) return;
+      const entries = this.listEvents();
       list.innerHTML = '';
       if (!entries.length) {
         const empty = document.createElement('div');

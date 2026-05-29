@@ -3860,6 +3860,10 @@ body.popout-call .popout-stage > .draw-toolbar {
   background: rgba(6, 6, 8, 0.55);
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
+  /* Sit above the v2 overlay views (AI panel, calendar grid at
+     z-100) so the schedule modal launched from the grid header
+     isn't covered by the surface that opened it. */
+  z-index: 200;
 }
 [data-ui="v2"] .modal:not(.login-modal) {
   background: var(--bg-1);
@@ -5289,5 +5293,304 @@ body.popout-call .popout-stage > .draw-toolbar {
 .huddle-ai-send:hover { background: var(--accent-hi); }
 .huddle-ai-send:disabled { opacity: 0.55; cursor: not-allowed; }
 .huddle-ai-send svg { width: 14px; height: 14px; }
+
+/* ============================================================
+   v2 Phase 5.5 — Calendar week-grid view.
+   Full-stage overlay opened by the nav-rail's "Calendar" item.
+   Same z-100 layer as the AI panel; legacy drawer still
+   reachable from the sidebar quick-link.
+   ============================================================ */
+.huddle-cal-view {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: calc(var(--rail-w, 68px) + var(--panel-w, 256px));
+  z-index: 100;
+  background: var(--bg-0);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font);
+  animation: huddle-fade-up 0.22s ease forwards;
+}
+.huddle-cal-view.hidden { display: none; }
+@media (max-width: 900px) {
+  .huddle-cal-view { left: 0; }
+}
+
+/* Header bar. */
+.huddle-cal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--line-soft);
+  flex-shrink: 0;
+}
+.huddle-cal-header-icon {
+  color: var(--accent-tx);
+  display: inline-flex;
+}
+.huddle-cal-header-icon svg { width: 19px; height: 19px; }
+.huddle-cal-month {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+  color: var(--tx-hi);
+}
+.huddle-cal-nav {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: 4px;
+}
+.huddle-cal-nav-btn {
+  width: 30px;
+  height: 30px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--tx-lo);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-cal-nav-btn:hover { background: var(--bg-3); color: var(--tx-hi); }
+.huddle-cal-nav-btn svg { width: 17px; height: 17px; }
+.huddle-cal-today {
+  height: 32px;
+  min-height: 0;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 12.5px;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-cal-today:hover { background: var(--bg-3); }
+.huddle-cal-spacer { flex: 1; }
+.huddle-cal-legend {
+  display: inline-flex;
+  gap: 14px;
+  color: var(--tx-lo);
+  font-family: var(--font);
+  font-size: 12px;
+}
+.huddle-cal-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.huddle-cal-legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+}
+.huddle-cal-new-event {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  min-height: 0;
+  padding: 0 13px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #1a1106;
+  border: 0;
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 12.5px;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-cal-new-event:hover { background: var(--accent-hi); }
+.huddle-cal-new-event svg { width: 14px; height: 14px; }
+.huddle-cal-close {
+  width: 32px;
+  height: 32px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--tx-lo);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+  cursor: pointer;
+}
+.huddle-cal-close:hover { background: var(--bg-3); color: var(--tx-hi); }
+.huddle-cal-close svg { width: 17px; height: 17px; }
+
+/* Day-of-week header row. */
+.huddle-cal-days {
+  display: grid;
+  grid-template-columns: 60px repeat(7, 1fr);
+  border-bottom: 1px solid var(--line-soft);
+  flex-shrink: 0;
+}
+.huddle-cal-days-gutter {
+  /* spacer that aligns to the hour-label gutter below */
+}
+.huddle-cal-day-head {
+  padding: 11px 0;
+  text-align: center;
+  border-left: 1px solid var(--line-soft);
+}
+.huddle-cal-day-name {
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--tx-lo);
+}
+.huddle-cal-day-head.is-today .huddle-cal-day-name {
+  color: var(--accent-tx);
+}
+.huddle-cal-day-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  margin-top: 4px;
+  font-family: var(--font);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--tx-hi);
+}
+.huddle-cal-day-num.is-today {
+  color: var(--bg-0);
+  background: var(--accent);
+}
+
+/* Grid: hour gutter + 7 day columns. The grid wrapper scrolls
+   so the header row stays anchored. */
+.huddle-cal-grid-wrap {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+}
+.huddle-cal-grid {
+  display: grid;
+  grid-template-columns: 60px repeat(7, 1fr);
+  position: relative;
+}
+.huddle-cal-gutter {
+  position: relative;
+}
+.huddle-cal-hour {
+  height: 56px;
+  position: relative;
+}
+.huddle-cal-hour-label {
+  position: absolute;
+  top: -8px;
+  right: 8px;
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 10.5px;
+  color: var(--tx-faint);
+}
+.huddle-cal-col {
+  position: relative;
+  border-left: 1px solid var(--line-soft);
+}
+.huddle-cal-col.is-today {
+  background: var(--accent-dim);
+}
+.huddle-cal-cell {
+  height: 56px;
+  border-top: 1px solid var(--line-soft);
+}
+.huddle-cal-empty {
+  padding: 60px 24px;
+  text-align: center;
+  color: var(--tx-lo);
+  font-family: var(--font);
+}
+
+/* Now-line overlay on today's column. */
+.huddle-cal-now {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  z-index: 3;
+  pointer-events: none;
+}
+.huddle-cal-now-dot {
+  position: absolute;
+  left: -5px;
+  top: -4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* Absolutely-positioned event block. */
+.huddle-cal-event {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  border-radius: 8px;
+  padding: 5px 8px;
+  background: color-mix(in oklch, var(--cal-event-color, var(--accent)) 16%, var(--bg-1));
+  border: 1px solid var(--cal-event-color, var(--accent));
+  border-left-width: 3px;
+  cursor: pointer;
+  overflow: hidden;
+  font-family: var(--font);
+  z-index: 2;
+}
+.huddle-cal-event.is-live {
+  background: var(--live-dim);
+  border-color: var(--live);
+}
+.huddle-cal-event-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.huddle-cal-event-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--live);
+  animation: huddle-pulse 1.5s infinite;
+  flex-shrink: 0;
+}
+.huddle-cal-event-title {
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--tx-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.huddle-cal-event-meta {
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+  font-size: 10px;
+  color: var(--tx-lo);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 

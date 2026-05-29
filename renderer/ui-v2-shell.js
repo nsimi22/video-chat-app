@@ -22,14 +22,19 @@
 
   // data-view / data-action → existing legacy element to click.
   // chat / calls are visual-only at this step; "ai" opens the
-  // dedicated Huddle AI panel via window.HuddleAIPanel.
+  // dedicated Huddle AI panel; "calendar" opens the week-grid view
+  // (falls back to the legacy drawer if the grid module hasn't
+  // loaded yet).
   const LEGACY_BRIDGE = {
-    calendar: 'open-calendar',
     settings: 'open-settings',
     whiteboard: 'whiteboard-btn',
   };
   const CUSTOM_BRIDGE = {
     ai: () => window.HuddleAIPanel?.open?.(),
+    calendar: () => (
+      window.HuddleCalendarGrid?.open?.()
+      ?? document.getElementById('open-calendar')?.click()
+    ),
   };
 
   function paintIcons(rail) {
