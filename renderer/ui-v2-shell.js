@@ -306,6 +306,20 @@
     if (!stage || !leaveBtn || document.querySelector('.huddle-call-dock')) return;
 
     const dockIds = ['btn-mic', 'btn-cam', 'btn-blur', 'btn-share', 'btn-hand', 'btn-react', 'btn-cc', 'btn-leave'];
+    // Short labels rendered under each icon-only button per design
+    // (CallControl widgets are icon-over-label). Map by id rather than
+    // reusing each button's verbose `title` attr ("Toggle microphone"
+    // etc.) since the design wants single-word affordances. Leave
+    // already has an inline label and skips this map.
+    const dockLabels = {
+      'btn-mic': 'Mute',
+      'btn-cam': 'Camera',
+      'btn-blur': 'Blur',
+      'btn-share': 'Share',
+      'btn-hand': 'Raise',
+      'btn-react': 'React',
+      'btn-cc': 'Captions',
+    };
     const dock = document.createElement('div');
     dock.className = 'huddle-call-dock';
     dock.setAttribute('aria-label', 'Call controls');
@@ -317,6 +331,17 @@
       const btn = document.getElementById(id);
       if (!btn) continue;
       if (id === 'btn-leave') dock.appendChild(beforeLeave);
+      // Inject the under-icon label as a sibling span. The button keeps
+      // its existing event listeners; only its parent changes (here)
+      // and a label gets appended to itself (below).
+      const labelText = dockLabels[id];
+      if (labelText && !btn.querySelector('.huddle-call-dock-label')) {
+        const label = document.createElement('span');
+        label.className = 'huddle-call-dock-label';
+        label.textContent = labelText;
+        label.setAttribute('aria-hidden', 'true');
+        btn.appendChild(label);
+      }
       dock.appendChild(btn);
     }
     stage.appendChild(dock);

@@ -3279,6 +3279,19 @@ function setPeerCamOn(peerId, camOn) {
   if (!camOn) ensureCamOffOverlay(tile, peerId);
 }
 
+// Hash any short string (user id / name) to a stable hue 0–360.
+// Used by the cam-off radial-gradient background under v2 — each
+// user gets a consistent tile tint so a roomful of cam-off tiles
+// reads as varied, not a wall of grey. djb2-style folding with a
+// small prime — collision rate is fine for the small participant
+// counts in a call.
+function hashHue(key) {
+  const s = String(key || '');
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return Math.abs(h) % 360;
+}
+
 // The overlay is what users see in place of the (black) video when a
 // peer turns their camera off — a colored avatar circle with their
 // initial and their name underneath. Built lazily on first cam-off and
@@ -3292,6 +3305,11 @@ function ensureCamOffOverlay(tile, peerId) {
     : state.huddle?.peerInfo?.get(peerId) || state.huddle?.callPeerInfo?.get(peerId) || {};
   const name = peer.name || 'guest';
   const color = peer.color || '#666';
+  // Per-user hue (0–360) driving the radial-gradient cam-off
+  // background under v2 (see styles.css var(--tile-hue) rule).
+  // Stamped on the tile itself, not the overlay, so the gradient
+  // covers the full tile area behind the avatar.
+  tile.style.setProperty('--tile-hue', String(hashHue(peerId || name)));
   const overlay = document.createElement('div');
   overlay.className = 'tile-cam-off';
   const avatar = document.createElement('div');
@@ -4065,10 +4083,40 @@ function shareIdFor(stream) {
   return stream.__huddleShareId || stream.id;
 }
 
+// Two-part screen-tile label per design: "<owner>'s screen · <window
+// title>". Renders as two spans so the window-title half can pick up
+// the mono treatment from styles.css. Called by both the local and
+// remote screen-tile entry points after makeTile() has stamped the
+// fallback single-line textContent. Idempotent — replaces children.
+function setScreenTileLabel(tile, ownerLabel, contextText) {
+  const lbl = tile.querySelector('.tile-label');
+  if (!lbl) return;
+  lbl.textContent = '';
+  const owner = document.createElement('span');
+  owner.className = 'tile-label-owner';
+  owner.textContent = `${ownerLabel} screen`;
+  lbl.appendChild(owner);
+  if (contextText) {
+    const sep = document.createElement('span');
+    sep.className = 'tile-label-sep';
+    sep.textContent = '·';
+    sep.setAttribute('aria-hidden', 'true');
+    lbl.appendChild(sep);
+    const ctx = document.createElement('span');
+    ctx.className = 'tile-label-context';
+    ctx.textContent = contextText;
+    lbl.appendChild(ctx);
+  }
+}
+
 function addLocalScreenTile(stream, label) {
   const shareId = shareIdFor(stream);
   const key = `screen:${shareId}`;
   const tile = makeTile({ key, label: `${label} — you`, kind: 'screen', userId: state.huddle?.peerId });
+  // Two-part label per design: "<owner>'s screen · <window title>"
+  // with the window title in mono. Overrides the textContent makeTile
+  // applied so the · separator + context can be styled independently.
+  setScreenTileLabel(tile, 'Your', label);
   tile.dataset.streamId = shareId;
   // The popout button reads the publisher identity off the tile. Local
   // screens publish under the main client's peerId; remote screens stamp
@@ -4133,12 +4181,13 @@ function commitStreamAsCamera(streamId) {
 function renderRemoteScreen(stream, screen) {
   const shareId = shareIdFor(stream);
   const key = `screen:${shareId}`;
+  const ownerLabel = `${screen.fromName}'s`;
   if (state.tilesByKey.has(key)) {
-    state.tilesByKey.get(key).querySelector('.tile-label').textContent =
-      `${screen.label} — ${screen.fromName}`;
+    setScreenTileLabel(state.tilesByKey.get(key), ownerLabel, screen.label);
     return;
   }
-  const tile = makeTile({ key, label: `${screen.label} — ${screen.fromName}`, kind: 'screen', userId: screen.from });
+  const tile = makeTile({ key, label: `${screen.fromName}'s screen · ${screen.label}`, kind: 'screen', userId: screen.from });
+  setScreenTileLabel(tile, ownerLabel, screen.label);
   tile.dataset.streamId = shareId;
   // Same as addLocalScreenTile: the popout button reads the publisher
   // identity off the dataset. makeTile only uses `userId` for the
