@@ -4874,4 +4874,100 @@ body.popout-call .popout-stage > .draw-toolbar {
   color: var(--danger);
 }
 
+/* ============================================================
+   v2 Phase 5.3 — GIF picker + shortcuts modal + whiteboard notes.
+   Same DOM hooks, CSS-only.
+   ============================================================ */
+
+/* GIF picker — sits above the composer like the emoji picker. */
+[data-ui="v2"] .gif-picker {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-pop);
+  border-radius: var(--r-md);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  padding: 12px;
+  gap: 10px;
+  font-family: var(--font);
+}
+[data-ui="v2"] .gif-search-row input {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--tx-hi);
+  font-family: var(--font);
+  font-size: 13.5px;
+  padding: 8px 12px;
+}
+[data-ui="v2"] .gif-search-row input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+[data-ui="v2"] .gif-grid img:hover {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+[data-ui="v2"] .gif-grid .empty {
+  color: var(--tx-lo);
+  font-family: var(--font);
+}
+[data-ui="v2"] .gif-attribution {
+  color: var(--tx-faint);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+
+/* Shortcuts cheat sheet modal — opened via ⌘/ (Ctrl-/). */
+[data-ui="v2"] .shortcut-table {
+  font-family: var(--font);
+  font-size: 13.5px;
+}
+[data-ui="v2"] .shortcut-table td {
+  border-bottom: 1px solid var(--line-soft);
+  padding: 9px 0;
+}
+[data-ui="v2"] .shortcut-table td:first-child {
+  color: var(--tx-mid);
+}
+[data-ui="v2"] .shortcut-table td:last-child {
+  color: var(--tx-lo);
+}
+[data-ui="v2"] .shortcut-table kbd {
+  background: var(--bg-3);
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  color: var(--tx-hi);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  box-shadow: none;
+  letter-spacing: 0;
+}
+
+/* Whiteboard sticky notes — keep the saturated yellow as the
+   note's visual signature (it's user content), but match the
+   surrounding chrome to v2 (slightly softer handle, lighter
+   shadow, drop pixel-perfect alignment). */
+[data-ui="v2"] .wb-note {
+  background: #fbe27a;
+  border-radius: 8px;
+  box-shadow: var(--sh-pop);
+  color: #1a1a1c;
+}
+[data-ui="v2"] .wb-note-handle {
+  background: rgba(0, 0, 0, 0.06);
+  height: 20px;
+}
+[data-ui="v2"] .wb-note-close {
+  border-radius: 5px;
+}
+[data-ui="v2"] .wb-note-text {
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 8px 10px;
+}
+
 
