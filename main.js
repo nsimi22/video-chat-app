@@ -306,6 +306,37 @@ ipcMain.handle('get-supabase-config', () => ({ url: SUPABASE_URL, anonKey: SUPAB
 // — distinct from the per-tile fullscreen which only inflates one
 // screen-share tile over the existing window. Returns the new state
 // so the renderer can update its button affordance immediately.
+// Resize the calling window's content area to the requested width
+// + height (typically the aspect ratio of a video the renderer is
+// hosting, like a popped-out screen share). Clamps to the current
+// display's work-area so we don't open a window larger than the
+// screen. No-op if width/height aren't positive finite numbers.
+ipcMain.handle('resize-window-to-content', (event, opts) => {
+  const wc = event.sender;
+  const win = BrowserWindow.fromWebContents(wc) || mainWindow;
+  if (!win || win.isDestroyed()) return null;
+  const w = Number(opts?.width);
+  const h = Number(opts?.height);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  // Cap to the work-area of the display this window currently sits
+  // on (Electron / Chromium tracks the active display per window).
+  const display = require('electron').screen.getDisplayMatching(win.getBounds());
+  const area = display?.workArea || { width: 1920, height: 1080 };
+  const margin = 24;
+  const maxW = Math.max(640, area.width - margin * 2);
+  const maxH = Math.max(360, area.height - margin * 2);
+  // Preserve aspect ratio while clamping. Scale down uniformly if
+  // either dimension would exceed the work-area cap.
+  const scale = Math.min(1, maxW / w, maxH / h);
+  const targetW = Math.round(w * scale);
+  const targetH = Math.round(h * scale);
+  try { win.setContentSize(targetW, targetH); } catch (err) {
+    console.warn('resize-window-to-content failed', err);
+    return null;
+  }
+  return { width: targetW, height: targetH };
+});
+
 ipcMain.handle('toggle-window-fullscreen', (event) => {
   const wc = event.sender;
   // Find which BrowserWindow owns this webContents — either the main
