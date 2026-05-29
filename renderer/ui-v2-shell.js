@@ -346,15 +346,28 @@
     }
     stage.appendChild(dock);
 
-    // Sync body.huddle-in-call from #btn-leave's visibility, AND
-    // body.huddle-on-call-channel from #tiles visibility. Splitting
-    // the two so CSS can scope the full call layout (hide chat,
-    // show bottom dock) only when the user is actually ON the call
-    // channel; if they navigate to a different channel mid-call,
-    // chat stays visible and the top return-dock surfaces.
+    // Sync body classes:
+    //   huddle-in-call          = a call is active SOMEWHERE (driven by
+    //                             the self-cam tile's existence — that
+    //                             tile is created on startCall and
+    //                             removed on leaveCall, and persists in
+    //                             DOM across channel navigation).
+    //   huddle-on-call-channel  = user is currently viewing the call
+    //                             channel right now (driven by #tiles
+    //                             visibility — gets `.hidden` when the
+    //                             user nav's to a non-call channel).
+    //
+    // Splitting the two so CSS can scope the full call layout (hide
+    // chat, show bottom dock) only when ON the call channel; if the
+    // user navigates away mid-call, chat stays visible, the bottom
+    // dock disappears, and the top return-dock surfaces. Previous
+    // implementation used #btn-leave visibility for `huddle-in-call`,
+    // but that button is also channel-scoped (renderControls hides it
+    // when off-channel), so the body class flipped false on nav-away
+    // — breaking the return-dock + Calls-rail "is call active" cues.
     const tilesEl = document.getElementById('tiles');
     const syncBodyClass = () => {
-      const inCall = !leaveBtn.classList.contains('hidden');
+      const inCall = !!tilesEl?.querySelector('.tile[data-kind="self"]');
       document.body.classList.toggle('huddle-in-call', inCall);
     };
     const syncOnChannel = () => {
@@ -363,11 +376,13 @@
     };
     syncBodyClass();
     syncOnChannel();
-    new MutationObserver(syncBodyClass).observe(leaveBtn, {
-      attributes: true,
-      attributeFilter: ['class'],
-    });
     if (tilesEl) {
+      // The self-cam tile is added/removed as a child of #tiles, so
+      // watch childList. The grid's `.hidden` toggle (channel-scoped)
+      // is on attributes — watch separately.
+      new MutationObserver(syncBodyClass).observe(tilesEl, {
+        childList: true,
+      });
       new MutationObserver(syncOnChannel).observe(tilesEl, {
         attributes: true,
         attributeFilter: ['class'],
