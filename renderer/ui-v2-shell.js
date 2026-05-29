@@ -136,6 +136,14 @@
       });
     }
 
+    // The rest of the v2 UI infrastructure only makes sense when
+    // [data-ui="v2"] is the active mode. setupCallDock() in
+    // particular physically moves the in-call buttons into a new
+    // dock div — if that ran in legacy mode (?ui=legacy), the
+    // buttons would end up inside a display:none container and
+    // become unreachable. Gate the whole v2-only block.
+    if (document.documentElement.getAttribute('data-ui') !== 'v2') return;
+
     // v2 call-view layout: dock mic / cam / share / etc. at the
     // bottom and toggle a body class when in-call so CSS can hide
     // chat + reposition the captions panel.
