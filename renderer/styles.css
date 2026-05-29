@@ -4189,6 +4189,27 @@ body.popout-call .popout-stage > .draw-toolbar {
 }
 [data-ui="v2"] .tile.speaking .tile-speaker-bars { display: inline-flex; }
 
+/* Decorative phone-frame outline overlay on mobile-peer tiles
+   (design item 5.1). A centered, phone-proportioned rounded
+   rectangle hints at the device shape behind the video — paired
+   with the "Mobile" pip below for redundant signaling. Pure
+   decoration: pointer-events none, low-opacity stroke. Capped
+   in width so it stays a cue on large tiles instead of dominating
+   the frame. */
+[data-ui="v2"] .tile[data-platform="mobile"]::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(38%, 110px);
+  aspect-ratio: 9 / 19.5;
+  transform: translate(-50%, -50%);
+  border: 2px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  pointer-events: none;
+  z-index: 22;
+}
+
 /* "Mobile" pip on tiles where the peer joined from the mobile app.
    Bottom-right corner so it doesn't collide with the mute/name pill
    at bottom-left or the speaker bars at top-right. Triggered by
