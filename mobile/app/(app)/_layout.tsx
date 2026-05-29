@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { View } from 'react-native';
 import { Stack, router, useSegments } from 'expo-router';
-import { LiveKitRoom } from '@livekit/react-native';
+import { LiveKitRoom, useLocalParticipant } from '@livekit/react-native';
 import { useAuth } from '@/context/AuthContext';
 import { CallProvider, useCall } from '@/context/CallContext';
 import { UnreadProvider } from '@/context/UnreadContext';
@@ -93,6 +93,29 @@ export default function AppLayout() {
 // rebuild the entire Stack and bounces the user to (tabs) mid-startCall.
 // They'd then see the floater on the channels list because activeCall
 // was set — exactly the "starts in PiP mode" bug reported on #150.
+// Stamps `platform: "mobile"` on the LiveKit participant metadata once
+// the local participant is connected. Desktop viewers read this via
+// `participant.metadata` (renderer/livekit.js _parsePlatform) to render
+// the "Mobile" pip + phone-frame outline on this participant's tile
+// (UI v2 design items 2.4 + 5.1, shipped in PR #179). Idempotent —
+// useEffect only fires when localParticipant.identity changes
+// (= connect / reconnect). Lives as a child of <LiveKitRoom> so the
+// useLocalParticipant() hook has a Room context to read from.
+function PlatformMetadataPublisher() {
+  const { localParticipant } = useLocalParticipant();
+  useEffect(() => {
+    if (!localParticipant) return;
+    try {
+      localParticipant.setMetadata(JSON.stringify({ platform: 'mobile' }));
+    } catch (err) {
+      // Non-fatal — the pip just won't render on desktop tiles. Log
+      // for visibility; don't break the call.
+      console.warn('[livekit] setMetadata failed', err);
+    }
+  }, [localParticipant?.identity]);
+  return null;
+}
+
 function CallRoomShell({ children }: { children: React.ReactNode }) {
   const { activeCall, perms, endCall } = useCall();
   const ready = !!activeCall && !!perms;
@@ -109,6 +132,7 @@ function CallRoomShell({ children }: { children: React.ReactNode }) {
       // call screen, if visible, navigates back.
       onDisconnected={endCall}
     >
+      <PlatformMetadataPublisher />
       {children}
     </LiveKitRoom>
   );
