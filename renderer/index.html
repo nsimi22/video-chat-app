@@ -513,129 +513,186 @@
     <!-- Settings modal -->
     <div id="settings-modal" class="modal-backdrop hidden">
       <div class="modal settings-modal">
-        <h2>Settings</h2>
-        <p class="hint">Drop in API keys for the integrations you want to use. Keys are stored in your private Supabase row and never shared with teammates.</p>
+        <!-- v2 sidebar — 4 tab buttons. Hidden under legacy via CSS;
+             under v2 the modal becomes a 760×540 sidebar+content
+             layout per design. Default-active tab = integrations. -->
+        <nav class="settings-tabs" aria-label="Settings sections">
+          <div class="settings-tabs-title">Settings</div>
+          <button class="settings-tab is-active" data-tab="integrations" type="button">Integrations</button>
+          <button class="settings-tab" data-tab="profile" type="button">Profile</button>
+          <button class="settings-tab" data-tab="notifications" type="button">Notifications</button>
+          <button class="settings-tab" data-tab="appearance" type="button">Appearance</button>
+        </nav>
+        <div class="settings-content">
+          <h2>Settings</h2>
+          <p class="hint settings-intro">Drop in API keys for the integrations you want to use. Keys are stored in your private Supabase row and never shared with teammates.</p>
 
-        <details class="settings-section" id="settings-profile-section" open>
-          <summary id="settings-profile-anchor">Profile</summary>
-          <div class="settings-section-body">
-            <p class="hint">Visible to teammates. Click your name anywhere in the app to preview the card.</p>
-            <div class="profile-edit">
-              <div class="profile-edit-avatar">
-                <img id="set-avatar-preview" alt="" />
-                <div id="set-avatar-fallback" class="profile-card-avatar fallback"></div>
-                <label class="subtle profile-edit-avatar-pick" for="set-avatar-file">Change…</label>
-                <input id="set-avatar-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
-                <button id="set-avatar-clear" class="subtle">Remove</button>
+          <!-- ──────── Profile tab ──────── -->
+          <div class="settings-tab-panel" data-tab-panel="profile">
+            <details class="settings-section" id="settings-profile-section" open>
+              <summary id="settings-profile-anchor">Profile</summary>
+              <div class="settings-section-body">
+                <p class="hint">Visible to teammates. Click your name anywhere in the app to preview the card.</p>
+                <div class="profile-edit">
+                  <div class="profile-edit-avatar">
+                    <img id="set-avatar-preview" alt="" />
+                    <div id="set-avatar-fallback" class="profile-card-avatar fallback"></div>
+                    <label class="subtle profile-edit-avatar-pick" for="set-avatar-file">Change…</label>
+                    <input id="set-avatar-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
+                    <button id="set-avatar-clear" class="subtle">Remove</button>
+                  </div>
+                  <div class="profile-edit-fields">
+                    <label>Display name</label>
+                    <input id="set-profile-name" type="text" maxlength="32" />
+                    <label>Bio <span class="hint-inline">(up to 280 chars)</span></label>
+                    <textarea id="set-profile-bio" rows="3" maxlength="280"></textarea>
+                  </div>
+                </div>
               </div>
-              <div class="profile-edit-fields">
-                <label>Display name</label>
-                <input id="set-profile-name" type="text" maxlength="32" />
-                <label>Bio <span class="hint-inline">(up to 280 chars)</span></label>
-                <textarea id="set-profile-bio" rows="3" maxlength="280"></textarea>
+            </details>
+
+            <details class="settings-section">
+              <summary>Password</summary>
+              <div class="settings-section-body">
+                <p class="hint">Set or change the password for the "Sign in" option on the login screen. Leave this alone if you only ever use an emailed code — that keeps working either way.</p>
+                <label>New password <span class="hint-inline">(6+ characters)</span></label>
+                <input id="set-new-password" type="password" autocomplete="new-password" />
+                <label>Confirm new password</label>
+                <input id="set-new-password-confirm" type="password" autocomplete="new-password" />
+                <div id="set-password-status" class="settings-status hidden"></div>
+                <button id="set-password-update" class="primary">Update password</button>
               </div>
-            </div>
+            </details>
           </div>
-        </details>
 
-        <details class="settings-section">
-          <summary>Password</summary>
-          <div class="settings-section-body">
-            <p class="hint">Set or change the password for the "Sign in" option on the login screen. Leave this alone if you only ever use an emailed code — that keeps working either way.</p>
-            <label>New password <span class="hint-inline">(6+ characters)</span></label>
-            <input id="set-new-password" type="password" autocomplete="new-password" />
-            <label>Confirm new password</label>
-            <input id="set-new-password-confirm" type="password" autocomplete="new-password" />
-            <div id="set-password-status" class="settings-status hidden"></div>
-            <button id="set-password-update" class="primary">Update password</button>
+          <!-- ──────── Integrations tab ──────── -->
+          <div class="settings-tab-panel is-active" data-tab-panel="integrations">
+            <details class="settings-section">
+              <summary>Slash commands</summary>
+              <div class="settings-section-body">
+                <p class="hint">Type these in any message composer to trigger an action. Configure the relevant integration below first.</p>
+                <!-- Populated from window.SLASH_COMMANDS at boot — single
+                     source of truth shared with the composer autocomplete. -->
+                <ul id="slash-list" class="slash-list"></ul>
+              </div>
+            </details>
+
+            <details class="settings-section">
+              <summary>Jira</summary>
+              <div class="settings-section-body">
+                <label>Atlassian site (e.g. <code>acme.atlassian.net</code>)</label>
+                <input id="set-jira-host" type="text" placeholder="acme.atlassian.net" />
+                <label>Email</label>
+                <input id="set-jira-email" type="email" placeholder="you@team.com" />
+                <label>API token <span class="hint-inline">(create one at <code>id.atlassian.com/manage-profile/security/api-tokens</code>)</span></label>
+                <input id="set-jira-token" type="password" autocomplete="off" />
+                <label>Default project <span class="hint-inline">(project key — pre-selected when you open the create-ticket modal)</span></label>
+                <input id="set-jira-project" type="text" placeholder="DAP" maxlength="20" />
+                <label>AI ticket context <span class="hint-inline">(prepended to every <code>/ai-ticket</code> system prompt — describe your product, terminology, tone, what's in scope)</span></label>
+                <textarea id="set-ai-ticket-context" rows="6" maxlength="4000" placeholder="e.g. Slack-style desktop app on Supabase. Small team. Tickets should reference existing modules (chat.js, webrtc.js, app.js). Default to 'Bug' only when there's a clear repro path; otherwise 'Task'."></textarea>
+                <label>AI ticket GitHub repo <span class="hint-inline">(<code>owner/name</code> — when set, <code>/ai-ticket</code> can search code, read files, scan issues, and list recent commits before drafting. Requires a GitHub token in the section below.)</span></label>
+                <input id="set-ai-ticket-repo" type="text" placeholder="acme/web" maxlength="120" />
+              </div>
+            </details>
+
+            <details class="settings-section">
+              <summary>AI assistant</summary>
+              <div class="settings-section-body">
+                <p class="hint">Powers <code>/ai</code> and <code>/summarize</code>. Pick a provider and supply a key — only the selected provider's key is used.</p>
+                <label>Provider</label>
+                <select id="set-ai-provider">
+                  <option value="anthropic">Anthropic (Claude direct)</option>
+                  <option value="openrouter">OpenRouter (Claude + many models)</option>
+                </select>
+                <label>Anthropic API key <span class="hint-inline">(<code>console.anthropic.com</code>)</span></label>
+                <input id="set-anthropic-key" type="password" autocomplete="off" />
+                <label>Anthropic default model <span class="hint-inline">(default <code>claude-opus-4-7</code>)</span></label>
+                <input id="set-anthropic-model" type="text" placeholder="claude-opus-4-7" />
+                <label>OpenRouter API key <span class="hint-inline">(<code>openrouter.ai/keys</code>)</span></label>
+                <input id="set-openrouter-key" type="password" autocomplete="off" />
+                <label>OpenRouter default model <span class="hint-inline">(default <code>anthropic/claude-opus-4-7</code>)</span></label>
+                <input id="set-openrouter-model" type="text" placeholder="anthropic/claude-opus-4-7" />
+              </div>
+            </details>
+
+            <details class="settings-section">
+              <summary>GitHub</summary>
+              <div class="settings-section-body">
+                <label>Personal access token <span class="hint-inline">(<code>github.com/settings/tokens</code>; needs <code>repo</code> scope)</span></label>
+                <input id="set-github-token" type="password" autocomplete="off" />
+              </div>
+            </details>
+
+            <details class="settings-section">
+              <summary>Giphy (GIF picker)</summary>
+              <div class="settings-section-body">
+                <label>API key <span class="hint-inline">(<code>developers.giphy.com</code>)</span></label>
+                <input id="set-giphy-key" type="password" autocomplete="off" />
+              </div>
+            </details>
+
+            <details class="settings-section">
+              <summary>Calendar subscriptions</summary>
+              <div class="settings-section-body">
+                <p class="hint-inline">
+                  Paste an ICS / webcal URL from any calendar provider (Google,
+                  Apple, Outlook…). Events appear in the Calendar drawer
+                  alongside scheduled Huddles. Refreshed every 15 minutes.
+                </p>
+                <div id="set-calendar-list" class="set-cal-list"></div>
+                <div class="set-cal-add">
+                  <input id="set-calendar-name" type="text" placeholder="Name (e.g. Personal)" maxlength="60" />
+                  <input id="set-calendar-url" type="url" placeholder="https://… or webcal://…" />
+                  <button id="set-calendar-add" type="button" class="ctrl">Add</button>
+                </div>
+              </div>
+            </details>
           </div>
-        </details>
 
-        <details class="settings-section">
-          <summary>Slash commands</summary>
-          <div class="settings-section-body">
-            <p class="hint">Type these in any message composer to trigger an action. Configure the relevant integration below first.</p>
-            <!-- Populated from window.SLASH_COMMANDS at boot — single
-                 source of truth shared with the composer autocomplete. -->
-            <ul id="slash-list" class="slash-list"></ul>
+          <!-- ──────── Notifications tab ──────── -->
+          <div class="settings-tab-panel" data-tab-panel="notifications">
+            <details class="settings-section" open>
+              <summary>Notifications</summary>
+              <div class="settings-section-body">
+                <p class="hint">Per-channel notification settings live on each channel — click the bell icon in the channel header to cycle between Default / All messages / Mute.</p>
+                <p class="hint settings-placeholder">Global notification preferences will land here as they're built.</p>
+              </div>
+            </details>
           </div>
-        </details>
 
-        <details class="settings-section">
-          <summary>Jira</summary>
-          <div class="settings-section-body">
-            <label>Atlassian site (e.g. <code>acme.atlassian.net</code>)</label>
-            <input id="set-jira-host" type="text" placeholder="acme.atlassian.net" />
-            <label>Email</label>
-            <input id="set-jira-email" type="email" placeholder="you@team.com" />
-            <label>API token <span class="hint-inline">(create one at <code>id.atlassian.com/manage-profile/security/api-tokens</code>)</span></label>
-            <input id="set-jira-token" type="password" autocomplete="off" />
-            <label>Default project <span class="hint-inline">(project key — pre-selected when you open the create-ticket modal)</span></label>
-            <input id="set-jira-project" type="text" placeholder="DAP" maxlength="20" />
-            <label>AI ticket context <span class="hint-inline">(prepended to every <code>/ai-ticket</code> system prompt — describe your product, terminology, tone, what's in scope)</span></label>
-            <textarea id="set-ai-ticket-context" rows="6" maxlength="4000" placeholder="e.g. Slack-style desktop app on Supabase. Small team. Tickets should reference existing modules (chat.js, webrtc.js, app.js). Default to 'Bug' only when there's a clear repro path; otherwise 'Task'."></textarea>
-            <label>AI ticket GitHub repo <span class="hint-inline">(<code>owner/name</code> — when set, <code>/ai-ticket</code> can search code, read files, scan issues, and list recent commits before drafting. Requires a GitHub token in the section below.)</span></label>
-            <input id="set-ai-ticket-repo" type="text" placeholder="acme/web" maxlength="120" />
+          <!-- ──────── Appearance tab (item 2.8) ──────── -->
+          <div class="settings-tab-panel" data-tab-panel="appearance">
+            <details class="settings-section" open>
+              <summary>Density</summary>
+              <div class="settings-section-body">
+                <p class="hint">Tighten the layout for more content, or breathe for readability. Applies instantly.</p>
+                <div class="settings-radio-row" role="radiogroup" aria-label="Density">
+                  <label><input type="radio" name="set-density" value="comfortable" /> Comfortable</label>
+                  <label><input type="radio" name="set-density" value="compact" /> Compact</label>
+                </div>
+              </div>
+            </details>
+
+            <details class="settings-section" open>
+              <summary>Accent color</summary>
+              <div class="settings-section-body">
+                <p class="hint">Tints active states and AI affordances. Doesn't change semantic colors (call / live / danger).</p>
+                <div class="settings-accent-row" role="radiogroup" aria-label="Accent color">
+                  <button type="button" class="settings-accent-swatch" data-hue="250" aria-label="Indigo" title="Indigo" style="--swatch-h:250"></button>
+                  <button type="button" class="settings-accent-swatch" data-hue="45" aria-label="Terracotta" title="Terracotta" style="--swatch-h:45"></button>
+                  <button type="button" class="settings-accent-swatch" data-hue="155" aria-label="Green" title="Green" style="--swatch-h:155"></button>
+                  <button type="button" class="settings-accent-swatch" data-hue="300" aria-label="Violet" title="Violet" style="--swatch-h:300"></button>
+                  <button type="button" class="settings-accent-swatch" data-hue="200" aria-label="Cyan" title="Cyan" style="--swatch-h:200"></button>
+                </div>
+              </div>
+            </details>
           </div>
-        </details>
 
-        <details class="settings-section">
-          <summary>AI assistant</summary>
-          <div class="settings-section-body">
-            <p class="hint">Powers <code>/ai</code> and <code>/summarize</code>. Pick a provider and supply a key — only the selected provider's key is used.</p>
-            <label>Provider</label>
-            <select id="set-ai-provider">
-              <option value="anthropic">Anthropic (Claude direct)</option>
-              <option value="openrouter">OpenRouter (Claude + many models)</option>
-            </select>
-            <label>Anthropic API key <span class="hint-inline">(<code>console.anthropic.com</code>)</span></label>
-            <input id="set-anthropic-key" type="password" autocomplete="off" />
-            <label>Anthropic default model <span class="hint-inline">(default <code>claude-opus-4-7</code>)</span></label>
-            <input id="set-anthropic-model" type="text" placeholder="claude-opus-4-7" />
-            <label>OpenRouter API key <span class="hint-inline">(<code>openrouter.ai/keys</code>)</span></label>
-            <input id="set-openrouter-key" type="password" autocomplete="off" />
-            <label>OpenRouter default model <span class="hint-inline">(default <code>anthropic/claude-opus-4-7</code>)</span></label>
-            <input id="set-openrouter-model" type="text" placeholder="anthropic/claude-opus-4-7" />
+          <div id="settings-status" class="settings-status hidden"></div>
+          <div class="btn-row">
+            <button id="settings-cancel" class="subtle">Cancel</button>
+            <button id="settings-save" class="primary">Save</button>
           </div>
-        </details>
-
-        <details class="settings-section">
-          <summary>GitHub</summary>
-          <div class="settings-section-body">
-            <label>Personal access token <span class="hint-inline">(<code>github.com/settings/tokens</code>; needs <code>repo</code> scope)</span></label>
-            <input id="set-github-token" type="password" autocomplete="off" />
-          </div>
-        </details>
-
-        <details class="settings-section">
-          <summary>Giphy (GIF picker)</summary>
-          <div class="settings-section-body">
-            <label>API key <span class="hint-inline">(<code>developers.giphy.com</code>)</span></label>
-            <input id="set-giphy-key" type="password" autocomplete="off" />
-          </div>
-        </details>
-
-        <details class="settings-section">
-          <summary>Calendar subscriptions</summary>
-          <div class="settings-section-body">
-            <p class="hint-inline">
-              Paste an ICS / webcal URL from any calendar provider (Google,
-              Apple, Outlook…). Events appear in the Calendar drawer
-              alongside scheduled Huddles. Refreshed every 15 minutes.
-            </p>
-            <div id="set-calendar-list" class="set-cal-list"></div>
-            <div class="set-cal-add">
-              <input id="set-calendar-name" type="text" placeholder="Name (e.g. Personal)" maxlength="60" />
-              <input id="set-calendar-url" type="url" placeholder="https://… or webcal://…" />
-              <button id="set-calendar-add" type="button" class="ctrl">Add</button>
-            </div>
-          </div>
-        </details>
-
-        <div id="settings-status" class="settings-status hidden"></div>
-        <div class="btn-row">
-          <button id="settings-cancel" class="subtle">Cancel</button>
-          <button id="settings-save" class="primary">Save</button>
         </div>
       </div>
     </div>

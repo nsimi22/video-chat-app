@@ -4507,6 +4507,32 @@ function wireControls() {
   els.settingsSave.onclick = saveSettings;
   els.setPasswordUpdate.onclick = updatePasswordFromSettings;
 
+  // Settings v2 tab sidebar — delegate clicks once on the sidebar
+  // rather than per-button so the handler survives any re-render.
+  // Idempotent: re-runs in wireControls just overwrite the same prop.
+  const tabsNav = els.settingsModal.querySelector('.settings-tabs');
+  if (tabsNav) {
+    tabsNav.onclick = (e) => {
+      const btn = e.target.closest('.settings-tab');
+      if (!btn || !btn.dataset.tab) return;
+      activateSettingsTab(btn.dataset.tab);
+    };
+  }
+  // Appearance live preview: changing density or accent updates the
+  // running app immediately so users see the effect before saving.
+  // Discarded on Cancel because we re-apply state.settings.appearance
+  // in closeSettingsAndDiscardPending (see below).
+  els.settingsModal.querySelectorAll('input[name="set-density"]').forEach((r) => {
+    r.onchange = () => applyAppearance(collectAppearanceFromForm());
+  });
+  els.settingsModal.querySelectorAll('.settings-accent-swatch').forEach((sw) => {
+    sw.onclick = () => {
+      els.settingsModal.querySelectorAll('.settings-accent-swatch').forEach((s) => s.classList.remove('is-active'));
+      sw.classList.add('is-active');
+      applyAppearance(collectAppearanceFromForm());
+    };
+  });
+
   // Avatar picker. The actual upload is deferred to saveSettings so
   // hitting Cancel after picking a file doesn't leave a half-saved
   // avatar lying around in storage.
@@ -4947,6 +4973,68 @@ async function refreshSettings() {
   rebuildJiraClient();
   rebuildAiClient();
   rebuildGitHubClient();
+  // Apply persisted appearance preferences (density + accent hue) on
+  // every load. Stored under state.settings.appearance and written
+  // to :root as CSS custom properties so existing v2 tokens pick up
+  // the change without each consumer re-rendering.
+  applyAppearance(state.settings?.appearance || {});
+}
+
+// Apply density + accent hue to :root. CSS reads:
+//   --row-py / --msg-gap / --ui (density-driven, set as overrides)
+//   --accent-h (drives --accent / --accent-hi / --accent-dim / --accent-tx
+//               via the oklch(h) values in the v2 token block)
+// Note: the v2 token block defines --accent as a literal color today,
+// not an oklch() expression keyed off --accent-h. So changing the hue
+// alone won't recolor existing rules until those tokens are switched
+// to var-driven oklch(). Track that as a follow-up; the swatch click
+// still persists the choice so the migration is a one-step flip.
+function applyAppearance(appearance) {
+  const root = document.documentElement;
+  const density = appearance?.density === 'compact' ? 'compact' : 'comfortable';
+  if (density === 'compact') {
+    root.style.setProperty('--row-py', '7px');
+    root.style.setProperty('--msg-gap', '12px');
+    root.style.setProperty('--ui', '13.5px');
+  } else {
+    root.style.removeProperty('--row-py');
+    root.style.removeProperty('--msg-gap');
+    root.style.removeProperty('--ui');
+  }
+  const hue = Number.isFinite(appearance?.accentHue) ? appearance.accentHue : null;
+  if (hue !== null) {
+    root.style.setProperty('--accent-h', String(hue));
+  } else {
+    root.style.removeProperty('--accent-h');
+  }
+}
+
+// Read the current Appearance form selections back into the shape
+// stored in state.settings.appearance: { density, accentHue }. Used
+// by saveSettings() (writes to user_integrations.settings) and the
+// live-preview wiring in wireControls() (calls applyAppearance for
+// instant visual feedback before Save).
+function collectAppearanceFromForm() {
+  const modal = document.getElementById('settings-modal');
+  if (!modal) return state.settings?.appearance || {};
+  const checked = modal.querySelector('input[name="set-density"]:checked');
+  const density = checked?.value === 'compact' ? 'compact' : 'comfortable';
+  const activeSwatch = modal.querySelector('.settings-accent-swatch.is-active');
+  const accentHue = activeSwatch ? Number(activeSwatch.dataset.hue) : null;
+  return { density, accentHue };
+}
+
+// Activate one of the v2 settings tabs by id. No-op under legacy mode
+// since the sidebar is display:none and every panel is visible.
+function activateSettingsTab(tabId) {
+  const modal = document.getElementById('settings-modal');
+  if (!modal) return;
+  modal.querySelectorAll('.settings-tab').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.dataset.tab === tabId);
+  });
+  modal.querySelectorAll('.settings-tab-panel').forEach((panel) => {
+    panel.classList.toggle('is-active', panel.dataset.tabPanel === tabId);
+  });
 }
 
 function rebuildJiraClient() {
@@ -5007,15 +5095,30 @@ async function openSettings() {
     state._editingAvatarUrl = null;
     renderAvatarPreview(null, state.huddle?.color, state.huddle?.name);
   }
+  // Populate appearance form from state.settings.appearance, then
+  // mark the active accent swatch. Density radios default to
+  // "comfortable" when unset.
+  const appearance = state.settings?.appearance || {};
+  const density = appearance.density === 'compact' ? 'compact' : 'comfortable';
+  els.settingsModal.querySelectorAll('input[name="set-density"]').forEach((r) => {
+    r.checked = r.value === density;
+  });
+  const activeHue = Number.isFinite(appearance.accentHue) ? appearance.accentHue : 250;
+  els.settingsModal.querySelectorAll('.settings-accent-swatch').forEach((sw) => {
+    sw.classList.toggle('is-active', Number(sw.dataset.hue) === activeHue);
+  });
+  // Default to the Integrations tab whenever the modal opens — the
+  // most common destination. openSettingsToProfile() overrides this.
+  activateSettingsTab('integrations');
   els.settingsModal.classList.remove('hidden');
   els.setProfileName.focus();
 }
 
 function openSettingsToProfile() {
   openSettings().then(() => {
-    // Profile is wrapped in a <details> accordion. If the user
-    // collapsed it previously, force-open it before scrolling so the
-    // body is actually visible.
+    // Profile tab under v2; under legacy the panel is always visible,
+    // so still force-expand the <details> + scroll to it.
+    activateSettingsTab('profile');
     const section = document.getElementById('settings-profile-section');
     if (section) section.open = true;
     els.settingsProfileAnchor?.scrollIntoView({ block: 'start' });
@@ -5032,6 +5135,10 @@ function closeSettingsAndDiscardPending() {
   els.setAvatarFile.value = '';
   els.setNewPassword.value = '';
   els.setNewPasswordConfirm.value = '';
+  // Roll back appearance live preview to whatever was saved. Without
+  // this, density/accent changes during the open session would stick
+  // even after Cancel because applyAppearance writes to :root directly.
+  applyAppearance(state.settings?.appearance || {});
   els.settingsModal.classList.add('hidden');
 }
 
@@ -5129,6 +5236,7 @@ async function saveSettings() {
     // remove buttons (which already wrote to state.settings); just
     // pass them through unchanged so save() persists the edits.
     calendar: state.settings?.calendar || {},
+    appearance: collectAppearanceFromForm(),
   };
   try {
     // Upload pending avatar first so the URL is included in the

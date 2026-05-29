@@ -6318,4 +6318,145 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   white-space: nowrap;
 }
 
+/* ============================================================
+   v2 Settings — 2-column tabbed layout (item 2.9) + Appearance
+   tab controls (item 2.8). Markup lives in index.html under
+   #settings-modal — a <nav class="settings-tabs"> sidebar plus
+   .settings-tab-panel content panes keyed off data-tab-panel.
+   Legacy UI continues to use the original vertical accordion;
+   .settings-tabs is hidden and every panel shows by default.
+   ============================================================ */
+
+/* Legacy mode: hide the v2-only sidebar; let the panels render
+   in document order so all sections are visible (accordion). */
+.settings-tabs { display: none; }
+
+[data-ui="v2"] .settings-modal {
+  /* Per design: 760×540 fixed-size 2-column modal. Override the
+     legacy 520px width + the v2-modal default padding so the
+     sidebar can edge the modal cleanly. */
+  width: 760px;
+  max-width: 92vw;
+  height: 540px;
+  max-height: 86vh;
+  padding: 0;
+  display: flex;
+  overflow: hidden;
+}
+[data-ui="v2"] .settings-tabs {
+  display: flex;
+  flex-direction: column;
+  width: 200px;
+  flex-shrink: 0;
+  background: var(--bg-0);
+  border-right: 1px solid var(--line-soft);
+  padding: 22px 14px 18px;
+  gap: 4px;
+}
+[data-ui="v2"] .settings-tabs-title {
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tx-faint);
+  padding: 0 10px 10px;
+  user-select: none;
+}
+[data-ui="v2"] .settings-tab {
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: var(--tx-mid);
+  font-family: var(--font);
+  font-size: 13.5px;
+  font-weight: 600;
+  padding: 9px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  min-height: 0;
+  letter-spacing: 0;
+}
+[data-ui="v2"] .settings-tab:hover {
+  background: var(--bg-2);
+  color: var(--tx-hi);
+}
+[data-ui="v2"] .settings-tab.is-active {
+  background: var(--accent-dim);
+  color: var(--accent-tx);
+}
+
+[data-ui="v2"] .settings-content {
+  flex: 1;
+  min-width: 0;
+  padding: 22px 26px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+/* Only show the active panel under v2; legacy shows all in order. */
+[data-ui="v2"] .settings-tab-panel { display: none; }
+[data-ui="v2"] .settings-tab-panel.is-active { display: block; }
+/* The intro hint is integrations-tab-specific; hide it on other
+   tabs so it doesn't read as a global instruction. */
+[data-ui="v2"] .settings-content > .settings-intro { display: none; }
+[data-ui="v2"] .settings-tab-panel[data-tab-panel="integrations"].is-active ~ .settings-intro,
+[data-ui="v2"] .settings-modal:has(.settings-tab.is-active[data-tab="integrations"]) .settings-intro {
+  display: block;
+}
+[data-ui="v2"] .settings-placeholder {
+  color: var(--tx-faint);
+  font-style: italic;
+}
+
+/* Density radio row in Appearance tab. */
+[data-ui="v2"] .settings-radio-row {
+  display: flex;
+  gap: 18px;
+  margin-top: 6px;
+}
+[data-ui="v2"] .settings-radio-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--tx-mid);
+  cursor: pointer;
+  margin: 0;
+}
+[data-ui="v2"] .settings-radio-row input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+/* Accent swatch row in Appearance tab — 5 curated hues per the
+   design tokens table (Terracotta 45 / Indigo 250 / Green 155 /
+   Violet 300 / Cyan 200). The currently-applied hue gets a ring;
+   wired by JS in app.js. */
+[data-ui="v2"] .settings-accent-row {
+  display: flex;
+  gap: 12px;
+  margin-top: 6px;
+}
+[data-ui="v2"] .settings-accent-swatch {
+  width: 34px;
+  height: 34px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: oklch(0.70 0.145 var(--swatch-h, 250));
+  cursor: pointer;
+  box-shadow: none;
+  transition: transform 120ms ease;
+}
+[data-ui="v2"] .settings-accent-swatch:hover {
+  transform: scale(1.07);
+}
+[data-ui="v2"] .settings-accent-swatch.is-active {
+  border-color: var(--tx-hi);
+  box-shadow: 0 0 0 2px var(--bg-1);
+}
+
 
