@@ -43,6 +43,39 @@ export function formatDateBanner(ts: string | Date): string {
   });
 }
 
+// "Today 8:04 PM" / "Yesterday 8:04 PM" / "Wednesday 8:04 PM" — the day
+// a message was sent, inline beside the time, so you don't have to scroll
+// to its date banner to place it. Past a week the weekday names start
+// repeating and read ambiguously, so we switch to a numeric date
+// ("5/22 8:04 PM"), mirroring the friendly→explicit escalation in
+// formatDateBanner above. Kept in lockstep with the desktop renderer's
+// _formatMessageTime so both clients behave the same. `undefined` (not
+// []) is the locale arg — older Android Hermes/JSC reject the empty-array
+// form (see the note in formatDateBanner).
+export function formatMessageTime(ts: string | Date): string {
+  const d = new Date(ts);
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (isSameLocalDay(d, today)) return `Today ${time}`;
+  if (isSameLocalDay(d, yesterday)) return `Yesterday ${time}`;
+  // Local-midnight day delta for the week boundary — calendar days, not
+  // 24h spans, so it doesn't drift with time-of-day.
+  const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const startMsg = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const daysAgo = Math.round((startToday.getTime() - startMsg.getTime()) / 86400000);
+  if (daysAgo >= 7) {
+    const sameYear = d.getFullYear() === today.getFullYear();
+    const date = d.toLocaleDateString(undefined, {
+      month: 'numeric', day: 'numeric',
+      ...(sameYear ? {} : { year: '2-digit' }),
+    });
+    return `${date} ${time}`;
+  }
+  return `${d.toLocaleDateString(undefined, { weekday: 'long' })} ${time}`;
+}
+
 export function DateBanner({ ts }: { ts: string | Date }) {
   return (
     <View

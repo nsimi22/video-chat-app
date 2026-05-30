@@ -46,7 +46,7 @@ import { supabase } from '@/lib/supabase';
 import { teamTopic } from '@/lib/topics';
 import { Avatar, Markdown } from '@/components/ui';
 import { MessageUnfurls } from '@/components/Unfurl';
-import { DateBanner, isSameLocalDay } from '@/components/DateBanner';
+import { DateBanner, isSameLocalDay, formatMessageTime } from '@/components/DateBanner';
 import { ReactorSheet } from '@/components/ReactorSheet';
 import { ImageLightbox } from '@/components/ImageLightbox';
 import { colors, radius, space } from '@/theme';
@@ -459,7 +459,7 @@ export default function ChannelScreen() {
                         {isAi ? 'AI' : (p?.name ?? 'Unknown')}{'  '}
                         <Text style={{ color: colors.textDim, fontWeight: '400', fontSize: 11 }}>
                           {isAi && p ? `via ${p.name} · ` : ''}
-                          {new Date(item.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          {formatMessageTime(item.ts)}
                         </Text>
                       </Text>
                       {item.pinned_at ? (
