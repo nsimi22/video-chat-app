@@ -50,7 +50,7 @@ import { useFavorites } from '@/context/FavoritesContext';
 import { usePresence } from '@/context/PresenceContext';
 import { AiMessageCard, Avatar, Markdown } from '@/components/ui';
 import { MessageUnfurls } from '@/components/Unfurl';
-import { DateBanner, isSameLocalDay } from '@/components/DateBanner';
+import { DateBanner, isSameLocalDay, formatMessageTime } from '@/components/DateBanner';
 import { ReactorSheet } from '@/components/ReactorSheet';
 import { ImageLightbox } from '@/components/ImageLightbox';
 import { colors, radius, space } from '@/theme';
@@ -473,7 +473,7 @@ export default function ChannelScreen() {
                       <Text style={{ color: colors.text, fontWeight: '600' }}>
                         {isAi ? 'Huddle AI' : (p?.name ?? 'Unknown')}{'  '}
                         <Text style={{ color: colors.textDim, fontWeight: '400', fontSize: 11 }}>
-                          {new Date(item.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          {formatMessageTime(item.ts)}
                         </Text>
                       </Text>
                       {item.pinned_at ? (
