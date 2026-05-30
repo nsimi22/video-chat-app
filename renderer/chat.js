@@ -1326,33 +1326,43 @@ class ChatView {
     });
   }
 
-  // "Today" / "Yesterday" / weekday name, prefixed onto the time so
-  // each message carries its own day inline — not just via the
-  // scroll-position date divider. Past a week the weekday names start
-  // repeating and read ambiguously, so we escalate to a numeric date,
-  // mirroring the friendly→explicit handling in _formatDateDivider
-  // above. The year is appended only when it differs from the current
-  // one so older archives aren't ambiguous.
+  // Prefix the time with the day a message was sent so each line carries
+  // its own day inline — not just via the scroll-position date divider.
+  // Today is the exception: it gets no prefix, because the message sits
+  // under a "Today" divider that already says so and repeating it on
+  // every line is noise in the common case. "Yesterday" and weekday
+  // names cover the recent past; past a week the weekday names start
+  // repeating and read ambiguously, so we escalate to a numeric date
+  // (year appended only when it differs from now), mirroring the
+  // friendly→explicit handling in _formatDateDivider above.
   _formatMessageTime(ts) {
     const d = new Date(ts);
     const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     const now = new Date();
+    // _isSameLocalDay (shared with _formatDateDivider) keeps the two
+    // helpers aligned and also means a message whose clock runs slightly
+    // ahead of ours still reads as today, rather than a negative day
+    // delta falling through to a misleading weekday name.
+    if (this._isSameLocalDay(d.getTime(), now.getTime())) return time;
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    if (this._isSameLocalDay(d.getTime(), yesterday.getTime())) return `Yesterday ${time}`;
+    // Beyond yesterday: weekday name, escalating to a numeric date once
+    // weekday names start repeating (>= 7 days). Math.max guards a
+    // timestamp dated more than a day into the future (clock skew) from
+    // being mislabeled as last week.
     const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const startMsg = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    const daysAgo = Math.round((startToday - startMsg) / 86400000);
-    let day;
-    if (daysAgo === 0) day = 'Today';
-    else if (daysAgo === 1) day = 'Yesterday';
-    else if (daysAgo >= 7) {
+    const daysAgo = Math.max(0, Math.round((startToday - startMsg) / 86400000));
+    if (daysAgo >= 7) {
       const sameYear = d.getFullYear() === now.getFullYear();
-      day = d.toLocaleDateString([], {
+      const date = d.toLocaleDateString([], {
         month: 'numeric', day: 'numeric',
         ...(sameYear ? {} : { year: '2-digit' }),
       });
-    } else {
-      day = d.toLocaleDateString([], { weekday: 'long' });
+      return `${date} ${time}`;
     }
-    return `${day} ${time}`;
+    return `${d.toLocaleDateString([], { weekday: 'long' })} ${time}`;
   }
 
   _buildDateDivider(ts) {
