@@ -53,6 +53,12 @@
           "cameraPermission": "Huddle uses your camera for video calls."
         }
       ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Huddle uses Face ID to unlock the app."
+        }
+      ],
       "expo-notifications",
       "@livekit/react-native-expo-plugin",
       "@react-native-community/datetimepicker",

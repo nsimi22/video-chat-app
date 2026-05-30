@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
-import { View, Text, Alert, ActivityIndicator, ScrollView } from 'react-native';
+import { View, Text, Alert, ActivityIndicator, ScrollView, Switch } from 'react-native';
 import { router } from 'expo-router';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { getProfile } from '@/lib/api';
 import { Avatar, Button, Field, H1, Screen } from '@/components/ui';
+import { capability, prompt, label, type BiometricCapability } from '@/lib/biometric';
+import { isEnabled as biometricPrefEnabled, setEnabled as setBiometricPref } from '@/lib/biometricPref';
 import { colors, space } from '@/theme';
 
 export default function SettingsScreen() {
@@ -19,6 +21,9 @@ export default function SettingsScreen() {
   // password set here also works for sign-in on the desktop app.
   const [newPassword, setNewPassword] = useState('');
   const [savingPassword, setSavingPassword] = useState(false);
+  const [bioCap, setBioCap] = useState<BiometricCapability | null>(null);
+  const [bioEnabled, setBioEnabled] = useState(false);
+  const [bioBusy, setBioBusy] = useState(false);
 
   useEffect(() => {
     if (!userId) return;
@@ -30,12 +35,44 @@ export default function SettingsScreen() {
     });
   }, [userId]);
 
+  useEffect(() => {
+    capability().then(setBioCap);
+    if (userId) biometricPrefEnabled(userId).then(setBioEnabled);
+  }, [userId]);
+
   const save = async () => {
     setSaving(true);
     const { error } = await supabase.from('profiles').update({ name: name.trim(), bio: bio.trim() }).eq('user_id', userId!);
     setSaving(false);
     if (error) Alert.alert('Could not save', error.message);
     else Alert.alert('Saved');
+  };
+
+  const toggleBiometric = async (next: boolean) => {
+    if (bioBusy || !userId) return;
+    if (next && !bioCap?.available) return;
+    setBioBusy(true);
+    // Wrapped in try/finally so a SecureStore write failure or an OS-level
+    // prompt error can't leave the switch permanently disabled.
+    try {
+      if (next) {
+        // Turning on: require a successful biometric prompt right now to
+        // prove enrollment works — otherwise the user could lock themselves
+        // out by enabling without actually being able to authenticate.
+        const ok = await prompt(`Confirm ${label(bioCap!.kind)} to enable lock`);
+        if (!ok) return;
+        await setBiometricPref(userId, true);
+        setBioEnabled(true);
+      } else {
+        await setBiometricPref(userId, false);
+        setBioEnabled(false);
+      }
+    } catch (err) {
+      console.warn('[biometric] toggle failed', err);
+      Alert.alert('Could not update App Lock', 'Please try again.');
+    } finally {
+      setBioBusy(false);
+    }
   };
 
   const savePassword = async () => {
@@ -86,6 +123,31 @@ export default function SettingsScreen() {
           textContentType="newPassword"
         />
         <Button title="Update password" onPress={savePassword} loading={savingPassword} disabled={newPassword.length < 6} />
+
+        <View style={{ height: 1, backgroundColor: colors.border, marginVertical: space(6) }} />
+        <Text style={{ color: colors.text, fontSize: 17, fontWeight: '600', marginBottom: space(2) }}>App lock</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View style={{ flex: 1, paddingRight: space(3) }}>
+            <Text style={{ color: colors.text, fontSize: 15 }}>
+              Unlock with {bioCap ? label(bioCap.kind) : 'biometrics'}
+            </Text>
+            <Text style={{ color: colors.textDim, fontSize: 13, marginTop: space(1) }}>
+              {bioCap == null
+                ? 'Checking device support…'
+                : !bioCap.hasHardware
+                ? 'This device does not support biometric unlock.'
+                : !bioCap.isEnrolled
+                ? `Enroll ${label(bioCap.kind)} in your device settings to use this.`
+                : 'Required each time the app is launched.'}
+            </Text>
+          </View>
+          <Switch
+            value={bioEnabled}
+            onValueChange={toggleBiometric}
+            disabled={!bioCap?.available || bioBusy}
+            trackColor={{ true: colors.accent, false: colors.border }}
+          />
+        </View>
 
         <View style={{ height: 1, backgroundColor: colors.border, marginVertical: space(6) }} />
         <Text style={{ color: colors.textDim, marginBottom: space(2) }}>Active team: {activeTeam?.name ?? '—'}</Text>
