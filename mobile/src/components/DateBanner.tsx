@@ -43,6 +43,47 @@ export function formatDateBanner(ts: string | Date): string {
   });
 }
 
+// Prefix the time with the day a message was sent so each line carries
+// its own day inline — not just via the scroll-position date banner.
+// Today is the exception: it gets no prefix, because the message sits
+// under a "Today" banner that already says so and repeating it on every
+// line is noise in the common case. "Yesterday" and weekday names cover
+// the recent past; past a week the weekday names start repeating and read
+// ambiguously, so we escalate to a numeric date (year appended only when
+// it differs from now), mirroring formatDateBanner above. Kept in
+// lockstep with the desktop renderer's _formatMessageTime so both clients
+// behave the same. `undefined` (not []) is the locale arg — older Android
+// Hermes/JSC reject the empty-array form (see the note in formatDateBanner).
+export function formatMessageTime(ts: string | Date): string {
+  const d = new Date(ts);
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const today = new Date();
+  // isSameLocalDay also means a message whose clock runs slightly ahead
+  // of ours still reads as today, rather than a negative day delta
+  // falling through to a misleading weekday name.
+  if (isSameLocalDay(d, today)) return time;
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (isSameLocalDay(d, yesterday)) return `Yesterday ${time}`;
+  // Beyond yesterday: weekday name, escalating to a numeric date once
+  // weekday names start repeating (>= 7 days). Math.max guards a
+  // timestamp dated more than a day into the future (clock skew) from
+  // being mislabeled as last week. Calendar-day delta (local midnights),
+  // not 24h spans, so it doesn't drift with time-of-day.
+  const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const startMsg = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const daysAgo = Math.max(0, Math.round((startToday.getTime() - startMsg.getTime()) / 86400000));
+  if (daysAgo >= 7) {
+    const sameYear = d.getFullYear() === today.getFullYear();
+    const date = d.toLocaleDateString(undefined, {
+      month: 'numeric', day: 'numeric',
+      ...(sameYear ? {} : { year: '2-digit' }),
+    });
+    return `${date} ${time}`;
+  }
+  return `${d.toLocaleDateString(undefined, { weekday: 'long' })} ${time}`;
+}
+
 export function DateBanner({ ts }: { ts: string | Date }) {
   return (
     <View
