@@ -1326,6 +1326,35 @@ class ChatView {
     });
   }
 
+  // "Today" / "Yesterday" / weekday name, prefixed onto the time so
+  // each message carries its own day inline — not just via the
+  // scroll-position date divider. Past a week the weekday names start
+  // repeating and read ambiguously, so we escalate to a numeric date,
+  // mirroring the friendly→explicit handling in _formatDateDivider
+  // above. The year is appended only when it differs from the current
+  // one so older archives aren't ambiguous.
+  _formatMessageTime(ts) {
+    const d = new Date(ts);
+    const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startMsg = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const daysAgo = Math.round((startToday - startMsg) / 86400000);
+    let day;
+    if (daysAgo === 0) day = 'Today';
+    else if (daysAgo === 1) day = 'Yesterday';
+    else if (daysAgo >= 7) {
+      const sameYear = d.getFullYear() === now.getFullYear();
+      day = d.toLocaleDateString([], {
+        month: 'numeric', day: 'numeric',
+        ...(sameYear ? {} : { year: '2-digit' }),
+      });
+    } else {
+      day = d.toLocaleDateString([], { weekday: 'long' });
+    }
+    return `${day} ${time}`;
+  }
+
   _buildDateDivider(ts) {
     const wrap = document.createElement('div');
     wrap.className = 'date-divider';
@@ -1498,7 +1527,7 @@ class ChatView {
       // so users can still timestamp a line in a burst.
       const timeHover = document.createElement('span');
       timeHover.className = 'msg-time-hover';
-      timeHover.textContent = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      timeHover.textContent = new Date(m.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
       wrap.appendChild(timeHover);
     }
 
@@ -1529,7 +1558,7 @@ class ChatView {
     if (!m.aiGenerated) this.hooks.attachProfileTrigger?.(author, m.authorId);
     const time = document.createElement('span');
     time.className = 'msg-time';
-    time.textContent = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    time.textContent = this._formatMessageTime(m.ts);
     head.append(author);
     // AI messages get an "ASSISTANT" mono badge between the name and
     // the time, per design. The model name moves out of the head and
