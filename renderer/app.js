@@ -305,7 +305,11 @@ const state = {
   jira: null,        // JiraClient — rebuilt whenever settings change
   ai: null,          // AiClient — rebuilt whenever settings change
   github: null,      // GitHubClient — rebuilt whenever settings change
-  whiteboardSessions: new Map(), // whiteboardId -> WhiteboardSession
+  whiteboardSessions: new Map(), // whiteboardId -> WhiteboardSession (legacy popout path; kept for back-compat)
+  // Whiteboard redesign (2026-05-31): WhiteboardView replaces WhiteboardSession's
+  // DOM. Two mount modes coexist — stage-mode mounts into #whiteboard-stage and
+  // takes over the chat area; tile-mode mounts into a #tiles tile during a call.
+  whiteboardViews: new Map(),    // whiteboardId -> { view, mode, hostEl }
   // Invite-link redemption hop. When stepJoinViaLink redeems a link
   // that includes a channel/call, we stash the target here; onWelcome
   // (which fires after the team subscription is up) consumes it.
@@ -471,6 +475,17 @@ function setupModalFocusRestore() {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
       const tag = (document.activeElement?.tagName || '').toLowerCase();
       if (tag === 'textarea' || tag === 'input') return;
+      // The redesigned WhiteboardView (stage + tile mounts) hooks
+      // Cmd-Z itself, but tile-mode handlers only fire while focus is
+      // inside the view. When the user's focus is elsewhere (e.g. the
+      // chat composer just lost focus) the document-level listener
+      // here still needs a path to undo, so check both maps.
+      const viewEntry = state.whiteboardViews?.get(state.activeAnnotation);
+      if (viewEntry) {
+        e.preventDefault();
+        try { viewEntry.view.undo(); } catch (err) { console.warn('whiteboard undo failed', err); }
+        return;
+      }
       const session = state.whiteboardSessions?.get(state.activeAnnotation);
       if (session) {
         e.preventDefault();
@@ -861,38 +876,33 @@ async function bootWhiteboardPopout(cfg) {
   // dedupes by key, so the popout's track would overwrite the main
   // window's metadata, and when the popout closes the main window
   // would briefly show as "offline" to other peers. The whiteboard
-  // session only needs a bare client (supabase + peerId) for its
+  // view only needs a bare client (supabase + peerId) for its
   // ensureWhiteboardChannel + persist methods, so the lighter
   // construction is both correct and cheaper.
   const huddle = await window.huddleApi.startHuddle({ id: cfg.teamId, name: cfg.teamId });
   state.huddle = huddle;
   state.myName = huddle.name;
 
-  // Build a popout-only stage: a single tile that fills the window
-  // hosting the WhiteboardSession.
+  // Mount the redesigned WhiteboardView into the popout window — it
+  // builds its own full-window UI (header + canvas + palette + …),
+  // so we hand it the whole stage container.
   const stage = document.getElementById('popout-stage') || document.body;
   stage.replaceChildren();
-  const wrap = document.createElement('div');
-  wrap.className = 'popout-whiteboard';
-  stage.appendChild(wrap);
+  stage.style.position = 'relative';
+  stage.style.width = '100vw';
+  stage.style.height = '100vh';
+  stage.classList.add('wbv-stage');
 
-  const tile = document.createElement('div');
-  tile.className = 'tile screen whiteboard popout-tile';
-  const label = document.createElement('div');
-  label.className = 'tile-label';
-  label.textContent = cfg.title || 'Whiteboard';
-  tile.appendChild(label);
-  wrap.appendChild(tile);
-
-  // Whiteboard meta: the popout was given the whiteboard id; the
-  // session only needs `{id}` to subscribe + persist.
-  const session = new window.WhiteboardSession({
+  const view = new window.WhiteboardView({
     huddle,
     channelId: cfg.channelId,
-    whiteboard: { id: cfg.whiteboardId },
-    tile,
+    whiteboard: { id: cfg.whiteboardId, title: cfg.title || 'Whiteboard' },
+    mount: stage,
+    mode: 'stage',
+    title: cfg.title || 'Whiteboard',
+    onClose: () => window.close(),
   });
-  await session.start();
+  state._popoutWhiteboardView = view;
   document.title = cfg.title || 'Whiteboard — Huddle';
 }
 
@@ -1893,8 +1903,15 @@ async function leaveCall() {
   finalizeCallTranscript();
   // stop() is async (flushes pending note-save timers); await all
   // sessions in parallel so a slow DB write doesn't block the rest.
+  // Tear down legacy WhiteboardSessions (still used by older popout
+  // paths) and the new WhiteboardViews together — both flush their
+  // own pending DB writes in destroy()/stop().
   await Promise.allSettled([...state.whiteboardSessions.values()].map((s) => s.stop()));
   state.whiteboardSessions.clear();
+  await Promise.allSettled([...state.whiteboardViews.values()].map((e) => e.view.destroy()));
+  state.whiteboardViews.clear();
+  const wbStage = document.getElementById('whiteboard-stage');
+  if (wbStage) { wbStage.innerHTML = ''; wbStage.classList.add('hidden'); }
   state.mesh.disconnect();
   state.mesh = null;
   state.inCallChannelId = null;
@@ -2576,6 +2593,13 @@ function focusChannel(channelId) {
   const list = channel.type === 'dm' ? els.dms : els.channels;
   const li = list.querySelector(`[data-id="${cssEscape(channel.id)}"]`);
   if (li) li.classList.add('active');
+  // Stage-mode whiteboard is bound to a channel — switching channels
+  // implicitly closes any open stage board so the new channel's chat
+  // is visible. Tile-mode boards live alongside a call and stay open
+  // (the user can come back to the channel mid-call).
+  for (const [wbId, entry] of state.whiteboardViews) {
+    if (entry.mode === 'stage') closeWhiteboard(wbId);
+  }
   state.chat.setChannel(channel.id, channel.topic, displayLabelFor(channel), channel.type);
   refreshPinnedCount();
   closePinnedDrawer();
@@ -5185,6 +5209,18 @@ function renderSearchResults({ query, results }) {
 // Whiteboard (one collaborative canvas per channel, persisted to Postgres)
 // ---------------------------------------------------------------------------
 
+// Whiteboard entry point — used by every surface that wants to open
+// the board: chat-header #whiteboard-btn, command palette "Open
+// whiteboard", v2 rail Whiteboard tab, slash command, …
+//
+// Dual-mount per the redesign:
+//   • In a call (state.inCallChannelId set) → mount as a tile in #tiles
+//     so the whiteboard sits alongside video tiles.
+//   • Not in a call → mount as a full-stage overlay in #whiteboard-stage
+//     that covers the chat area for the duration the board is open.
+//
+// A second click toggles the board closed (matching the chat-header
+// button's prior contract).
 async function openWhiteboard() {
   if (!state.huddle || !state.chat) return;
   const channelId = state.chat.currentChannel;
@@ -5193,96 +5229,117 @@ async function openWhiteboard() {
   try { wb = await state.huddle.getOrCreateWhiteboard(channelId); }
   catch (err) { alert('Could not open whiteboard: ' + (err.message || err)); return; }
 
-  // If already open as a tile, just refocus it (don't toggle off).
-  const key = `whiteboard:${wb.id}`;
-  if (state.tilesByKey.has(key)) {
-    focusAnnotation(wb.id);
-    return;
+  // Toggle if the same board is already open. The chat-header button
+  // historically did this for tile mode; preserve the behavior for
+  // stage mode too so an accidental second click closes rather than
+  // re-mounts.
+  if (state.whiteboardViews.has(wb.id)) { closeWhiteboard(wb.id); return; }
+
+  const inCall = !!state.inCallChannelId && state.inCallChannelId === channelId;
+  const labelText = `Whiteboard — ${channel ? displayLabelFor(channel) : '#' + channelId}`;
+  let mode, host, tileNode;
+
+  if (inCall) {
+    // ── Tile mode ──────────────────────────────────────────────
+    const key = `whiteboard:${wb.id}`;
+    if (state.tilesByKey.has(key)) { focusAnnotation(wb.id); return; }
+    tileNode = makeTile({ key, label: labelText, kind: 'whiteboard' });
+    tileNode.dataset.streamId = wb.id;
+    // Pop-out button — same wiring as the legacy WhiteboardSession path.
+    const actions = tileNode.querySelector('.tile-actions');
+    if (actions && window.huddle?.openPopout) {
+      const popBtn = document.createElement('button');
+      popBtn.textContent = '⤢ Pop out';
+      popBtn.title = 'Open in a separate window';
+      popBtn.onclick = async (e) => {
+        e.stopPropagation();
+        try {
+          await window.huddle.openPopout({
+            target: `whiteboard:${wb.id}`,
+            teamId: state.huddle.team.id,
+            channelId,
+            whiteboardId: wb.id,
+            title: labelText,
+          });
+          showToast('Whiteboard opened in a new window');
+        } catch (err) {
+          console.warn('popout failed', err);
+          showCallError('Could not open popout: ' + (err?.message || err));
+        }
+      };
+      actions.insertBefore(popBtn, actions.firstChild);
+      const closeBtn = document.createElement('button');
+      closeBtn.title = 'Close whiteboard'; closeBtn.setAttribute('aria-label', 'Close whiteboard');
+      closeBtn.innerHTML = `${window.HuddleIcons.x}<span>Close</span>`;
+      closeBtn.onclick = () => closeWhiteboard(wb.id);
+      actions.appendChild(closeBtn);
+    }
+    // The view mounts into the tile body (which is everything below
+    // `.tile-actions` / `.tile-label`). Use the tile itself as the
+    // host so the view's :root sizes to the tile's CSS box.
+    mode = 'tile';
+    host = tileNode;
+  } else {
+    // ── Stage mode ─────────────────────────────────────────────
+    host = document.getElementById('whiteboard-stage');
+    if (!host) { console.warn('[whiteboard] stage mount node missing'); return; }
+    host.innerHTML = '';
+    host.classList.remove('hidden');
+    host.setAttribute('aria-hidden', 'false');
+    mode = 'stage';
   }
 
-  const tile = makeTile({
-    key,
-    label: `Whiteboard — ${channel ? displayLabelFor(channel) : '#' + channelId}`,
-    kind: 'whiteboard',
+  // Surface the v2 rail "active" state when in stage mode.
+  if (mode === 'stage') document.body.classList.add('huddle-on-whiteboard');
+
+  const view = new window.WhiteboardView({
+    huddle: state.huddle,
+    channelId,
+    whiteboard: wb,
+    mount: host,
+    mode,
+    title: labelText,
+    onClose: () => closeWhiteboard(wb.id),
   });
-  tile.dataset.streamId = wb.id;
 
-  const session = new window.WhiteboardSession({
-    huddle: state.huddle, channelId, whiteboard: wb, tile,
-  });
-  state.whiteboardSessions.set(wb.id, session);
-
-  // Pop-out button — sits next to the existing × Close in
-  // .tile-actions. Clicking spawns a child window that subscribes
-  // to the same whiteboard:<id> realtime topic so strokes/notes
-  // keep syncing across both windows.
-  const actions = tile.querySelector('.tile-actions');
-  if (actions && window.huddle?.openPopout) {
-    const popBtn = document.createElement('button');
-    popBtn.textContent = '⤢ Pop out';
-    popBtn.title = 'Open in a separate window';
-    popBtn.onclick = async (e) => {
-      e.stopPropagation();
-      try {
-        await window.huddle.openPopout({
-          target: `whiteboard:${wb.id}`,
-          teamId: state.huddle.team.id,
-          channelId,
-          whiteboardId: wb.id,
-          title: `Whiteboard — ${channel ? displayLabelFor(channel) : '#' + channelId}`,
-        });
-        showToast('Whiteboard opened in a new window');
-      } catch (err) {
-        console.warn('popout failed', err);
-        showCallError('Could not open popout: ' + (err?.message || err));
-      }
-    };
-    // Insert before the existing × Close so the layout reads:
-    // [Pop out] [× Close]
-    actions.insertBefore(popBtn, actions.firstChild);
+  state.whiteboardViews.set(wb.id, { view, mode, hostEl: host, tileNode });
+  // Tile mode wires into the legacy drawLayers map so Cmd-Z still
+  // reaches the canvas via state.activeAnnotation.
+  if (mode === 'tile') {
+    state.drawLayers.set(wb.id, view.canvas);
+    state.activeAnnotation = wb.id;
   }
-  try { await session.start(); }
-  catch (err) {
-    console.warn('whiteboard start failed', err);
-    closeWhiteboard(wb.id);
-    return;
-  }
-  // Register the canvas so the existing draw toolbar (color, size,
-  // tool) controls the whiteboard the same way it controls a screen
-  // annotation. Whiteboards now use InfiniteCanvas (world coords +
-  // pan/zoom) instead of DrawingLayer; both expose the same setTool
-  // / setColor / setSize / clearAll surface for toolbar interop.
-  state.drawLayers.set(wb.id, session.canvas);
-
-  // Tile actions: just close (the toolbar's Clear button covers
-  // clearing). The pop-out button was already inserted above; this
-  // appends Close after it.
-  const closeBtn = document.createElement('button');
-  closeBtn.title = 'Close whiteboard'; closeBtn.setAttribute('aria-label', 'Close whiteboard');
-  closeBtn.innerHTML = `${window.HuddleIcons.x}<span>Close</span>`;
-  closeBtn.onclick = () => closeWhiteboard(wb.id);
-  actions.appendChild(closeBtn);
-
-  // Drawing is always active on a whiteboard; reuse the screen-annotation
-  // toolbar so pen/arrow/eraser/color/size all work.
-  toggleAnnotate(wb.id);
 }
 
 async function closeWhiteboard(whiteboardId) {
-  const session = state.whiteboardSessions.get(whiteboardId);
-  // Drop the session-map entry up front so concurrent close calls
-  // don't double-fire the async stop(). Awaited stop() flushes
-  // pending note-save timers before the realtime channel goes away.
-  state.whiteboardSessions.delete(whiteboardId);
-  if (session) await session.stop();
+  const entry = state.whiteboardViews.get(whiteboardId);
+  state.whiteboardViews.delete(whiteboardId);
+  if (entry) {
+    try { await entry.view.destroy(); } catch (err) { console.warn('[whiteboard] destroy failed', err); }
+    if (entry.mode === 'stage') {
+      const host = document.getElementById('whiteboard-stage');
+      if (host) {
+        host.innerHTML = '';
+        host.classList.add('hidden');
+        host.setAttribute('aria-hidden', 'true');
+      }
+      document.body.classList.remove('huddle-on-whiteboard');
+    } else if (entry.mode === 'tile') {
+      removeTile(`whiteboard:${whiteboardId}`);
+    }
+  }
   state.drawLayers.delete(whiteboardId);
-  // removeTile yanks the DOM node + clears the tilesByKey entry +
-  // re-runs syncTilesVisibility. Plain Map.delete used to leave the
-  // tile DOM node orphaned in #tiles forever.
-  removeTile(`whiteboard:${whiteboardId}`);
   if (state.activeAnnotation === whiteboardId) {
     state.activeAnnotation = null;
-    els.drawToolbar.classList.add('hidden');
+    els.drawToolbar?.classList.add('hidden');
+  }
+  // Belt-and-suspenders: if a legacy WhiteboardSession is somehow
+  // still around (older tile path triggered out of band), tear it
+  // down too.
+  const legacy = state.whiteboardSessions.get(whiteboardId);
+  if (legacy) {
+    state.whiteboardSessions.delete(whiteboardId);
+    try { await legacy.stop(); } catch {}
   }
 }
 

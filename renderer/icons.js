@@ -105,6 +105,8 @@
     arrowRight: `<svg ${A}><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>`,
     reply: `<svg ${A}><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>`,
     star: `<svg ${A}><path d="M12 3l2.7 5.6L21 9.5l-4.5 4.4 1 6.1L12 17.2 6.5 20l1-6.1L3 9.5l6.3-.9z"/></svg>`,
+    stickyNote: `<svg ${A}><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9l7-7V5a2 2 0 0 0-2-2z"/><path d="M14 21v-5a2 2 0 0 1 2-2h5"/></svg>`,
+    frame: `<svg ${A}><rect x="3" y="6" width="18" height="14" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><circle cx="6.5" cy="8" r="0.5"/></svg>`,
   };
 
   // Merge: V2 design icons land alongside legacy icons. Legacy keys

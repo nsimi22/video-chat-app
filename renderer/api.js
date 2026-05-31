@@ -1499,7 +1499,7 @@
     async fetchWhiteboardNotes(whiteboardId) {
       const { data, error } = await this.supabase
         .from('whiteboard_notes')
-        .select('id, x, y, w, h, text, color, author_id, updated_at')
+        .select('id, x, y, w, h, text, color, color_key, votes, voted_by, author_id, updated_at')
         .eq('whiteboard_id', whiteboardId)
         .order('created_at', { ascending: true });
       if (error) throw error;
@@ -1521,8 +1521,21 @@
         text: note.text || '',
         color: note.color || '#ffd866',
       };
+      if (note.color_key) row.color_key = note.color_key;
       const { error } = await this.supabase.from('whiteboard_notes').insert(row);
       if (error) throw error;
+    }
+
+    // Toggle the caller's upvote on a sticky note. Returns the new
+    // count + whether the caller currently has a vote, so the client
+    // can render the filled/hollow arrow + count without a second
+    // round-trip. Uses an RPC so the read-modify-write is atomic.
+    async toggleWhiteboardNoteVote(noteId) {
+      const { data, error } = await this.supabase
+        .rpc('toggle_whiteboard_note_vote', { p_note_id: noteId });
+      if (error) throw error;
+      const row = Array.isArray(data) ? data[0] : data;
+      return { votes: row?.votes ?? 0, mine: !!row?.mine };
     }
 
     async updateWhiteboardNote(noteId, patch) {
@@ -1548,25 +1561,107 @@
       ).catch((err) => console.warn('[whiteboard] note send before subscribe', err));
     }
 
+    // --- Whiteboard frames (titled background regions) -----------------
+
+    async fetchWhiteboardFrames(whiteboardId) {
+      const { data, error } = await this.supabase
+        .from('whiteboard_frames')
+        .select('id, x, y, w, h, title, tint, dashed, author_id, updated_at')
+        .eq('whiteboard_id', whiteboardId)
+        .order('created_at', { ascending: true });
+      if (error) {
+        // Soft-fail before the migration lands so the rest of the
+        // whiteboard still mounts. The view will just show no frames.
+        if (/relation .* does not exist/i.test(error.message || '')) return [];
+        throw error;
+      }
+      return data || [];
+    }
+
+    async createWhiteboardFrame(whiteboardId, frame) {
+      const row = {
+        id: frame.id,
+        whiteboard_id: whiteboardId,
+        author_id: this.peerId,
+        x: frame.x, y: frame.y, w: frame.w, h: frame.h,
+        title: frame.title || '',
+        tint: frame.tint || 'accent',
+        dashed: !!frame.dashed,
+      };
+      const { error } = await this.supabase.from('whiteboard_frames').insert(row);
+      if (error) throw error;
+    }
+
+    async updateWhiteboardFrame(frameId, patch) {
+      const next = { ...patch, updated_at: new Date().toISOString() };
+      const { error } = await this.supabase.from('whiteboard_frames').update(next).eq('id', frameId);
+      if (error) throw error;
+    }
+
+    async deleteWhiteboardFrame(frameId) {
+      const { error } = await this.supabase.from('whiteboard_frames').delete().eq('id', frameId);
+      if (error) throw error;
+    }
+
+    sendWhiteboardFrame(whiteboardId, payload) {
+      const cached = this._whiteboardChannels.get(whiteboardId);
+      if (!cached) return;
+      Promise.resolve(cached).then((ch) =>
+        ch.send({ type: 'broadcast', event: 'frame', payload: { from: this.peerId, ...payload } })
+      ).catch((err) => console.warn('[whiteboard] frame send before subscribe', err));
+    }
+
+    // Live cursor broadcast for ghost-cursor presence. Throttled by the
+    // caller (the WhiteboardView caps to ~20Hz). The realtime channel is
+    // already team-scoped, so other clients only see cursors they're
+    // entitled to see.
+    sendWhiteboardCursor(whiteboardId, cursor) {
+      const cached = this._whiteboardChannels.get(whiteboardId);
+      if (!cached) return;
+      Promise.resolve(cached).then((ch) =>
+        ch.send({ type: 'broadcast', event: 'cursor', payload: { from: this.peerId, cursor } })
+      ).catch(() => {}); // cursors are fire-and-forget
+    }
+
+    // Vote toggles: optimistic on the originator's side, then a broadcast
+    // so peers update their counts without waiting for a DB roundtrip.
+    sendWhiteboardVote(whiteboardId, payload) {
+      const cached = this._whiteboardChannels.get(whiteboardId);
+      if (!cached) return;
+      Promise.resolve(cached).then((ch) =>
+        ch.send({ type: 'broadcast', event: 'vote', payload: { from: this.peerId, ...payload } })
+      ).catch((err) => console.warn('[whiteboard] vote send before subscribe', err));
+    }
+
     // Subscribe to live strokes on a whiteboard. Idempotent — repeated calls
     // for the same whiteboardId await the cached subscription. The latest
-    // onStroke replaces the previous handler. Topic is `team:<id>:wb:<uuid>`
+    // handlers replace the previous ones. Topic is `team:<id>:wb:<uuid>`
     // so the realtime broadcast policy can gate by team membership instead
-    // of relying on the UUID being secret.
-    async ensureWhiteboardChannel(whiteboardId, onStroke, onNote) {
+    // of relying on the UUID being secret. Handlers: strokes, notes, frames,
+    // votes, live cursors — all five share this single channel.
+    async ensureWhiteboardChannel(whiteboardId, onStroke, onNote, handlers = {}) {
       const cached = this._whiteboardChannels.get(whiteboardId);
       if (cached) {
         const ch = await Promise.resolve(cached);
         ch._onStroke = onStroke;
         ch._onNote = onNote;
+        ch._onFrame = handlers.onFrame || ch._onFrame;
+        ch._onVote = handlers.onVote || ch._onVote;
+        ch._onCursor = handlers.onCursor || ch._onCursor;
         return ch;
       }
       const topic = `team:${this.team.id}:wb:${whiteboardId}`;
       const ch = this.supabase.channel(topic, { config: { broadcast: { self: false }, private: true } });
       ch._onStroke = onStroke;
       ch._onNote = onNote;
+      ch._onFrame = handlers.onFrame;
+      ch._onVote = handlers.onVote;
+      ch._onCursor = handlers.onCursor;
       ch.on('broadcast', { event: 'stroke' }, ({ payload }) => ch._onStroke?.(payload));
       ch.on('broadcast', { event: 'note' }, ({ payload }) => ch._onNote?.(payload));
+      ch.on('broadcast', { event: 'frame' }, ({ payload }) => ch._onFrame?.(payload));
+      ch.on('broadcast', { event: 'vote' }, ({ payload }) => ch._onVote?.(payload));
+      ch.on('broadcast', { event: 'cursor' }, ({ payload }) => ch._onCursor?.(payload));
       const ready = new Promise((res, rej) => {
         ch.subscribe((s, e) => {
           if (s === 'SUBSCRIBED') res(ch);

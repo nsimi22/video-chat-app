@@ -498,6 +498,11 @@
           <div id="gif-grid" class="gif-grid"></div>
           <div id="gif-attribution" class="gif-attribution hidden">Powered by GIPHY</div>
         </div>
+
+        <!-- Whiteboard stage mount (full-fill, replaces the chat content
+             while open and the user is not in a call). The WhiteboardView
+             class builds its UI into this container. Hidden by default. -->
+        <section id="whiteboard-stage" class="wbv-stage hidden" aria-hidden="true"></section>
       </main>
     </div>
 
@@ -948,6 +953,7 @@
     <script src="github.js"></script>
     <script src="infinite-canvas.js"></script>
     <script src="whiteboard.js"></script>
+    <script src="whiteboard-view_2026-05-31.js"></script>
     <!-- LiveKit UMD + call client. Sole call transport — the mobile
          app is LiveKit-only, so desktop joining the same room is the
          only way the two ends can see each other in a call. -->
