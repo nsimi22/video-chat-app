@@ -151,9 +151,28 @@
       this._render();
       this._dispatchViewport();
     }
+    // Hard-set the viewport (used by the redesigned whiteboard view's
+    // "zoom to fit content" action — it computes a target rect and
+    // hands the canvas the new (x, y, scale) in one shot rather than
+    // pinch-zooming there). Clamps scale to the same bounds the wheel
+    // path uses.
+    setViewport({ x, y, scale }) {
+      const s = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale ?? this.viewport.scale));
+      this.viewport = { x: x ?? this.viewport.x, y: y ?? this.viewport.y, scale: s };
+      this._render();
+      this._dispatchViewport();
+    }
     onViewportChange(cb) { this._viewportCb = cb; }
 
     getViewport() { return { ...this.viewport }; }
+
+    // PNG-of-current-viewport export. Matches the design's Export
+    // button: snapshot what the user sees right now (notes/frames/cursors
+    // are not painted onto the canvas, so they don't appear — a richer
+    // export is a follow-up).
+    toDataURL(type = 'image/png') {
+      try { return this.canvas.toDataURL(type); } catch { return null; }
+    }
 
     // Apply a remote stroke event from another peer. Same shape as
     // the local emit: { action, x, y, tool, color, size, uuid }.
