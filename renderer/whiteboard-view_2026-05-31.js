@@ -162,6 +162,15 @@
       this.mode = mode; // 'stage' | 'tile'
       this.boardTitle = whiteboard.title || title || 'Whiteboard';
       this.onClose = onClose;
+      // Per-view UUID so two windows of the same user (main + popout)
+      // can tell each other's broadcasts apart. peerId alone is the
+      // auth user id, identical across windows; filtering on peerId
+      // would silently drop legitimate cross-window updates. Every
+      // self-filter check below compares the inbound payload's `from`
+      // against this viewId, never against peerId.
+      this.viewId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `${this.huddle.peerId}-${Math.random().toString(36).slice(2)}`;
 
       this.tool = 'sticky';     // matches the design's default
       this.drawColor = 'var(--accent)';
@@ -513,7 +522,7 @@
       const uuid = this._localStrokeUuids.pop();
       this.canvas?.removeStroke(uuid);
       this._paintedStrokeUuids.add(uuid);
-      this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'delete-stroke', uuid });
+      this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'delete-stroke', uuid }, this.viewId);
       this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid)
         .catch((err) => console.warn('[wbv] undo persist-delete failed', err));
     }
@@ -521,14 +530,14 @@
     async clearAll() {
       if (!confirm('Clear the whiteboard for everyone? This cannot be undone.')) return;
       this.canvas?.clearAll();
-      this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'clear' });
+      this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'clear' }, this.viewId);
       for (const id of [...this.notes.keys()]) {
         this._removeNoteEl(id);
-        this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'delete', id });
+        this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'delete', id }, this.viewId);
       }
       for (const id of [...this.frames.keys()]) {
         this._removeFrameEl(id);
-        this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'delete', id });
+        this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'delete', id }, this.viewId);
         try { await this.huddle.deleteWhiteboardFrame(id); } catch {}
       }
       try { await this.huddle.clearWhiteboard(this.whiteboardId); }
@@ -536,7 +545,7 @@
     }
 
     _broadcastStroke(stroke) {
-      this.huddle.sendWhiteboardStroke(this.whiteboardId, stroke);
+      this.huddle.sendWhiteboardStroke(this.whiteboardId, stroke, this.viewId);
     }
 
     _persistFinishedStroke(polyline) {
@@ -552,7 +561,7 @@
     _eraseStroke(uuid) {
       if (!uuid) return;
       this._paintedStrokeUuids.add(uuid);
-      this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'delete-stroke', uuid });
+      this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'delete-stroke', uuid }, this.viewId);
       this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid)
         .catch((err) => console.warn('[wbv] erase persist failed', err));
     }
@@ -564,7 +573,7 @@
     }
 
     _onRemoteStroke(payload) {
-      if (payload.from === this.huddle.peerId) return;
+      if (payload.from === this.viewId) return;
       const stroke = payload.stroke;
       if (stroke?.action === 'delete-stroke' && stroke.uuid) {
         this.canvas.removeStroke(stroke.uuid);
@@ -606,7 +615,7 @@
         votes: 0, mine: false,
       };
       this._renderNote(note, { focus: true });
-      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note });
+      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note }, this.viewId);
       try {
         await this.huddle.createWhiteboardNote(this.whiteboardId, {
           id, x, y, w: NOTE_W, h: NOTE_H, text: '',
@@ -628,7 +637,7 @@
         votes: 0, mine: false,
       };
       this._renderNote(note, { focus: true });
-      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note });
+      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note }, this.viewId);
       try {
         await this.huddle.createWhiteboardNote(this.whiteboardId, {
           id, x, y, w: TEXT_W, h: TEXT_H, text: '',
@@ -851,7 +860,7 @@
           el.removeEventListener('pointerup', onUp);
           el.removeEventListener('pointercancel', onUp);
           if (this._noteDrag?.moved) {
-            this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: data.id, x: data.x, y: data.y } });
+            this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: data.id, x: data.x, y: data.y } }, this.viewId);
             this.huddle.updateWhiteboardNote(data.id, { x: data.x, y: data.y })
               .catch((err) => console.warn('[wbv] note move persist failed', err));
           }
@@ -865,7 +874,7 @@
       // Text edits — broadcast immediately, debounce DB.
       textEl.addEventListener('input', () => {
         data.text = textEl.innerText.trim();
-        this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: data.id, text: data.text } });
+        this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: data.id, text: data.text } }, this.viewId);
         clearTimeout(this._noteSaveTimers.get(data.id));
         const t = setTimeout(() => {
           this.huddle.updateWhiteboardNote(data.id, { text: data.text })
@@ -924,7 +933,7 @@
       entry.el.style.setProperty('--wbv-note-bg', p.bg);
       entry.el.style.setProperty('--wbv-note-tx', p.tx);
       entry.el.style.setProperty('--wbv-note-fold', p.fold);
-      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id, color_key: slug } });
+      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id, color_key: slug } }, this.viewId);
       this.huddle.updateWhiteboardNote(id, { color_key: slug, color: p.bg })
         .catch((err) => console.warn('[wbv] color save failed', err));
     }
@@ -943,7 +952,7 @@
 
     async _deleteNote(id) {
       this._removeNoteEl(id);
-      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'delete', id });
+      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'delete', id }, this.viewId);
       try { await this.huddle.deleteWhiteboardNote(id); }
       catch (err) { console.warn('[wbv] note delete failed', err); }
     }
@@ -957,7 +966,7 @@
       entry.data.votes = Math.max(0, entry.data.votes + (entry.data.mine ? 1 : -1));
       entry.voteCountEl.textContent = String(entry.data.votes);
       this._refreshVoteStyle(entry);
-      this.huddle.sendWhiteboardVote(this.whiteboardId, { id, votes: entry.data.votes, mine: entry.data.mine });
+      this.huddle.sendWhiteboardVote(this.whiteboardId, { id, votes: entry.data.votes, mine: entry.data.mine }, this.viewId);
       try {
         const res = await this.huddle.toggleWhiteboardNoteVote(id);
         // Reconcile with server truth in case multiple votes raced.
@@ -979,14 +988,14 @@
     }
 
     _onRemoteNote(payload) {
-      if (payload.from === this.huddle.peerId) return;
+      if (payload.from === this.viewId) return;
       if (payload.action === 'create' && payload.note) this._renderNote(this._normalizeNote(payload.note));
       else if (payload.action === 'update' && payload.note) this._applyNotePatch(this._normalizeNote(payload.note));
       else if (payload.action === 'delete' && payload.id) this._removeNoteEl(payload.id);
     }
 
     _onRemoteVote(payload) {
-      if (payload.from === this.huddle.peerId) return;
+      if (payload.from === this.viewId) return;
       const entry = this.notes.get(payload.id);
       if (!entry) return;
       entry.data.votes = payload.votes ?? entry.data.votes;
@@ -1009,7 +1018,7 @@
         title: 'Untitled frame', tint: 'accent', dashed: false,
       };
       this._renderFrame(frame, { editTitle: true });
-      this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'create', frame });
+      this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'create', frame }, this.viewId);
       try { await this.huddle.createWhiteboardFrame(this.whiteboardId, frame); }
       catch (err) { console.warn('[wbv] frame create failed', err); }
     }
@@ -1076,7 +1085,7 @@
           chipEl.removeEventListener('pointermove', onMove);
           chipEl.removeEventListener('pointerup', onUp);
           chipEl.removeEventListener('pointercancel', onUp);
-          this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id: data.id, x: data.x, y: data.y } });
+          this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id: data.id, x: data.x, y: data.y } }, this.viewId);
           this.huddle.updateWhiteboardFrame(data.id, { x: data.x, y: data.y })
             .catch((err) => console.warn('[wbv] frame move persist failed', err));
         };
@@ -1092,7 +1101,7 @@
         if (newTitle !== data.title) {
           data.title = newTitle;
           titleEl.textContent = newTitle;
-          this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id: data.id, title: newTitle } });
+          this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id: data.id, title: newTitle } }, this.viewId);
           this.huddle.updateWhiteboardFrame(data.id, { title: newTitle })
             .catch((err) => console.warn('[wbv] frame title save failed', err));
         }
@@ -1120,13 +1129,13 @@
 
     async _deleteFrame(id) {
       this._removeFrameEl(id);
-      this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'delete', id });
+      this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'delete', id }, this.viewId);
       try { await this.huddle.deleteWhiteboardFrame(id); }
       catch (err) { console.warn('[wbv] frame delete failed', err); }
     }
 
     _onRemoteFrame(payload) {
-      if (payload.from === this.huddle.peerId) return;
+      if (payload.from === this.viewId) return;
       if (payload.action === 'create' && payload.frame) this._renderFrame(payload.frame);
       else if (payload.action === 'update' && payload.frame) this._applyFramePatch(payload.frame);
       else if (payload.action === 'delete' && payload.id) this._removeFrameEl(payload.id);
@@ -1140,11 +1149,11 @@
       if (now - this._cursorLastSentAt < 50) return; // ~20Hz
       this._cursorLastSentAt = now;
       const w = this._clientToWorld(e.clientX, e.clientY);
-      this.huddle.sendWhiteboardCursor(this.whiteboardId, { x: w.x, y: w.y, t: now });
+      this.huddle.sendWhiteboardCursor(this.whiteboardId, { x: w.x, y: w.y, t: now }, this.viewId);
     }
 
     async _onRemoteCursor(payload) {
-      if (payload.from === this.huddle.peerId) return;
+      if (payload.from === this.viewId) return;
       const peerId = payload.from;
       const c = payload.cursor;
       if (!c) return;

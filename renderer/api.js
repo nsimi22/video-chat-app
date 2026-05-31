@@ -1553,11 +1553,18 @@
     // subscribe covers both. The ensureWhiteboardChannel handler now
     // dispatches `stroke` and `note` payloads through the same callback
     // — see below for the WhiteboardSession wiring.
-    sendWhiteboardNote(whiteboardId, payload) {
+    //
+    // `from` defaults to the auth user id for back-compat with the
+    // legacy WhiteboardSession callsites. The redesigned WhiteboardView
+    // passes its own per-instance UUID instead so two windows of the
+    // SAME user (e.g. main + popout) can distinguish each other's
+    // broadcasts — peerId alone would cause same-user echoes to filter
+    // out at the receiver.
+    sendWhiteboardNote(whiteboardId, payload, from = this.peerId) {
       const cached = this._whiteboardChannels.get(whiteboardId);
       if (!cached) return;
       Promise.resolve(cached).then((ch) =>
-        ch.send({ type: 'broadcast', event: 'note', payload: { from: this.peerId, ...payload } })
+        ch.send({ type: 'broadcast', event: 'note', payload: { from, ...payload } })
       ).catch((err) => console.warn('[whiteboard] note send before subscribe', err));
     }
 
@@ -1603,11 +1610,11 @@
       if (error) throw error;
     }
 
-    sendWhiteboardFrame(whiteboardId, payload) {
+    sendWhiteboardFrame(whiteboardId, payload, from = this.peerId) {
       const cached = this._whiteboardChannels.get(whiteboardId);
       if (!cached) return;
       Promise.resolve(cached).then((ch) =>
-        ch.send({ type: 'broadcast', event: 'frame', payload: { from: this.peerId, ...payload } })
+        ch.send({ type: 'broadcast', event: 'frame', payload: { from, ...payload } })
       ).catch((err) => console.warn('[whiteboard] frame send before subscribe', err));
     }
 
@@ -1615,21 +1622,21 @@
     // caller (the WhiteboardView caps to ~20Hz). The realtime channel is
     // already team-scoped, so other clients only see cursors they're
     // entitled to see.
-    sendWhiteboardCursor(whiteboardId, cursor) {
+    sendWhiteboardCursor(whiteboardId, cursor, from = this.peerId) {
       const cached = this._whiteboardChannels.get(whiteboardId);
       if (!cached) return;
       Promise.resolve(cached).then((ch) =>
-        ch.send({ type: 'broadcast', event: 'cursor', payload: { from: this.peerId, cursor } })
+        ch.send({ type: 'broadcast', event: 'cursor', payload: { from, cursor } })
       ).catch(() => {}); // cursors are fire-and-forget
     }
 
     // Vote toggles: optimistic on the originator's side, then a broadcast
     // so peers update their counts without waiting for a DB roundtrip.
-    sendWhiteboardVote(whiteboardId, payload) {
+    sendWhiteboardVote(whiteboardId, payload, from = this.peerId) {
       const cached = this._whiteboardChannels.get(whiteboardId);
       if (!cached) return;
       Promise.resolve(cached).then((ch) =>
-        ch.send({ type: 'broadcast', event: 'vote', payload: { from: this.peerId, ...payload } })
+        ch.send({ type: 'broadcast', event: 'vote', payload: { from, ...payload } })
       ).catch((err) => console.warn('[whiteboard] vote send before subscribe', err));
     }
 
@@ -1673,11 +1680,11 @@
       return ready;
     }
 
-    sendWhiteboardStroke(whiteboardId, stroke) {
+    sendWhiteboardStroke(whiteboardId, stroke, from = this.peerId) {
       const cached = this._whiteboardChannels.get(whiteboardId);
       if (!cached) return;
       Promise.resolve(cached).then((ch) =>
-        ch.send({ type: 'broadcast', event: 'stroke', payload: { from: this.peerId, stroke } })
+        ch.send({ type: 'broadcast', event: 'stroke', payload: { from, stroke } })
       ).catch((err) => console.warn('[whiteboard] send before subscribe', err));
     }
 
