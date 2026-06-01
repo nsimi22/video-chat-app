@@ -4778,9 +4778,19 @@ body.popout-call .popout-stage > .draw-toolbar {
 }
 /* Make room on the right of the tile grid for the captions dock
    when it's visible. Uses :has() so the rule only fires when a
-   non-hidden #captions exists. */
+   non-hidden #captions exists.
+   ---
+   The base .tiles grid uses minmax(320px, 1fr), which means a single
+   320px tile is the minimum before the grid collapses to one column.
+   With the 310px reservation here plus the rail (~68px) and sidebar
+   (~256px) eaten out of the stage, a default-width window can easily
+   fall below the 2×320 threshold and stack every tile into a single
+   narrow column — leaving a huge dead zone between the column and the
+   captions panel. Drop the minmax threshold when captions is on so
+   tiles can pack 2-3 per row in the squeezed area. */
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)) .tiles {
   margin-right: 310px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
 /* CC toggle active state — match the design's "captions on" affordance.
