@@ -693,9 +693,14 @@ input:focus, textarea:focus {
   border-color: rgba(255, 69, 58, 0.24);
 }
 
-/* Captions model row in Settings → Integrations. Status badge on the
-   left, action buttons on the right; progress bar slides in under the
-   status text while a download is in flight. */
+/* Captions model picker in Settings → Integrations. One row per
+   model; row state changes which buttons render and adds a top border
+   accent for the active model. */
+.set-captions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .set-captions-row {
   display: flex;
   align-items: center;
@@ -705,19 +710,41 @@ input:focus, textarea:focus {
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
 }
+.set-captions-row.is-active {
+  border-color: var(--accent, #5ea6ff);
+  background: rgba(94, 166, 255, 0.06);
+}
 .set-captions-meta {
   flex: 1;
   min-width: 0;
 }
-.set-captions-status {
+.set-captions-name {
   font-size: 13px;
+  font-weight: 500;
   color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.set-captions-active-badge {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent, #5ea6ff);
+  padding: 2px 6px;
+  border: 1px solid var(--accent, #5ea6ff);
+  border-radius: 3px;
+}
+.set-captions-status {
+  font-size: 12px;
+  color: var(--text-muted, #a0a8b4);
+  margin-top: 2px;
 }
 .set-captions-status[data-status="ready"]       { color: #7be88f; }
 .set-captions-status[data-status="downloading"] { color: var(--text-muted, #a0a8b4); }
 .set-captions-status[data-status="error"]       { color: #ff8a80; }
 .set-captions-progress {
-  margin-top: 8px;
+  margin-top: 6px;
   height: 4px;
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.08);

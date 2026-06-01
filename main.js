@@ -374,47 +374,122 @@ ipcMain.handle('whisper-binary-status', () => {
   return { available: !!binPath, path: binPath };
 });
 
-// Whisper model download lifecycle. The captions feature uses
-// `ggml-base.en.bin` (~141 MB) — too big to bundle in the installer,
-// so we lazy-download on first CC click into the user-data dir. The
-// same path is read back by the sidecar at inference time. Renderer
-// drives the flow via four IPCs (status / download / cancel / delete)
-// plus a streaming `whisper-model-progress` event for the progress bar.
+// Whisper model catalog + lifecycle. Captions runtime picks one model
+// from this catalog (default: base) and downloads it lazily on first
+// CC click. Settings → Captions exposes a picker so users on bigger
+// machines can opt into small / medium for better accuracy. Each
+// model lives at `whisper-models/<filename>` in user-data; the active
+// choice is persisted in `whisper-models/current.txt`.
 //
-// Upgraded from tiny.en after early testing — tiny.en was too lossy on
-// natural speech to be useful as a caption source. base.en cuts the
-// word-error rate roughly in half at ~150ms inference per 1.5s chunk
-// on M-series; well within the real-time budget.
-const WHISPER_MODEL_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin';
-const WHISPER_MODEL_EXPECTED_SIZE = 147964211; // bytes, ggml-base.en, observed 2026-06-01; treated as a sanity lower-bound only
+// Sizes verified against huggingface.co/ggerganov/whisper.cpp on
+// 2026-06-01; treated as 90%-floor sanity bounds, not strict equality.
+// Adding a new model: append here + verify size; downloads handle the
+// rest. We deliberately don't ship large-v3 (~3 GB) — disk + memory
+// asks are too steep for a desktop chat client.
+const WHISPER_MODELS = {
+  tiny: {
+    label: 'Tiny — fastest, lowest accuracy',
+    filename: 'ggml-tiny.en.bin',
+    size: 77704715,
+    url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin',
+  },
+  base: {
+    label: 'Base — recommended for laptops',
+    filename: 'ggml-base.en.bin',
+    size: 147964211,
+    url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin',
+  },
+  small: {
+    label: 'Small — better accuracy, more memory',
+    filename: 'ggml-small.en.bin',
+    size: 487614201,
+    url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin',
+  },
+  medium: {
+    label: 'Medium — best accuracy, slowest',
+    filename: 'ggml-medium.en.bin',
+    size: 1533774781,
+    url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin',
+  },
+};
+const WHISPER_DEFAULT_MODEL_ID = 'base';
 let whisperDownloadController = null; // AbortController of the in-flight download, or null
+let whisperDownloadingId = null;       // id of the model currently being downloaded
+
 function getWhisperModelDir() {
   return path.join(app.getPath('userData'), 'whisper-models');
 }
-function getWhisperModelPath() {
-  return path.join(getWhisperModelDir(), 'ggml-base.en.bin');
+function whisperCurrentFile() {
+  return path.join(getWhisperModelDir(), 'current.txt');
 }
-function whisperModelStatusSync() {
-  const p = getWhisperModelPath();
+function getCurrentWhisperModelId() {
+  try {
+    const id = require('fs').readFileSync(whisperCurrentFile(), 'utf8').trim();
+    if (WHISPER_MODELS[id]) return id;
+  } catch {}
+  return WHISPER_DEFAULT_MODEL_ID;
+}
+function setCurrentWhisperModelId(id) {
+  if (!WHISPER_MODELS[id]) return false;
+  const fs = require('fs');
+  try {
+    fs.mkdirSync(getWhisperModelDir(), { recursive: true });
+    fs.writeFileSync(whisperCurrentFile(), id, 'utf8');
+    return true;
+  } catch (err) {
+    console.warn('[whisper] setCurrentWhisperModelId failed', err);
+    return false;
+  }
+}
+function getWhisperModelPath(modelId) {
+  const id = WHISPER_MODELS[modelId] ? modelId : getCurrentWhisperModelId();
+  return path.join(getWhisperModelDir(), WHISPER_MODELS[id].filename);
+}
+function whisperModelStatusSync(modelId) {
+  const id = WHISPER_MODELS[modelId] ? modelId : getCurrentWhisperModelId();
+  const spec = WHISPER_MODELS[id];
+  const p = path.join(getWhisperModelDir(), spec.filename);
   try {
     const st = require('fs').statSync(p);
-    // Trust files that meet the expected size; a half-finished download
-    // (network drop, app quit mid-download) gets reported as missing so
-    // the UI can re-download instead of feeding the engine a truncated
-    // model. Allow a small slack in case HuggingFace re-encodes; treat
-    // < 90% of expected size as incomplete.
-    if (st.size < WHISPER_MODEL_EXPECTED_SIZE * 0.9) {
-      return { status: 'not-downloaded', bytes: st.size, total: WHISPER_MODEL_EXPECTED_SIZE };
+    // Same 90%-floor as before: a half-written file (network drop,
+    // app quit mid-download) reports as missing so the UI re-downloads
+    // instead of feeding the engine a truncated model.
+    if (st.size < spec.size * 0.9) {
+      return { status: 'not-downloaded', bytes: st.size, total: spec.size };
     }
     return { status: 'ready', bytes: st.size, total: st.size };
-  } catch { return { status: 'not-downloaded', bytes: 0, total: WHISPER_MODEL_EXPECTED_SIZE }; }
+  } catch { return { status: 'not-downloaded', bytes: 0, total: spec.size }; }
 }
-ipcMain.handle('whisper-model-status', () => {
-  if (whisperDownloadController) {
-    return { status: 'downloading', bytes: 0, total: WHISPER_MODEL_EXPECTED_SIZE };
-  }
-  return whisperModelStatusSync();
+
+ipcMain.handle('whisper-model-list', () => {
+  const currentId = getCurrentWhisperModelId();
+  return Object.entries(WHISPER_MODELS).map(([id, spec]) => {
+    const status = whisperDownloadingId === id
+      ? { status: 'downloading', bytes: 0, total: spec.size }
+      : whisperModelStatusSync(id);
+    return {
+      id,
+      label: spec.label,
+      size: spec.size,
+      isCurrent: id === currentId,
+      ...status,
+    };
+  });
 });
+
+ipcMain.handle('whisper-model-set', (_event, modelId) => {
+  if (!WHISPER_MODELS[modelId]) return { ok: false, error: `unknown model: ${modelId}` };
+  return { ok: setCurrentWhisperModelId(modelId), currentId: modelId };
+});
+
+ipcMain.handle('whisper-model-status', (_event, modelId) => {
+  if (whisperDownloadingId && (!modelId || modelId === whisperDownloadingId)) {
+    const spec = WHISPER_MODELS[whisperDownloadingId];
+    return { status: 'downloading', bytes: 0, total: spec.size };
+  }
+  return whisperModelStatusSync(modelId);
+});
+
 ipcMain.handle('whisper-model-cancel', () => {
   if (whisperDownloadController) {
     try { whisperDownloadController.abort(); } catch {}
@@ -422,39 +497,42 @@ ipcMain.handle('whisper-model-cancel', () => {
   }
   return false;
 });
-ipcMain.handle('whisper-model-delete', () => {
-  if (whisperDownloadController) return { ok: false, error: 'download in progress' };
-  try { require('fs').unlinkSync(getWhisperModelPath()); return { ok: true }; }
-  catch (err) {
+
+ipcMain.handle('whisper-model-delete', (_event, modelId) => {
+  const id = WHISPER_MODELS[modelId] ? modelId : getCurrentWhisperModelId();
+  if (whisperDownloadingId === id) return { ok: false, error: 'download in progress' };
+  try {
+    require('fs').unlinkSync(path.join(getWhisperModelDir(), WHISPER_MODELS[id].filename));
+    return { ok: true };
+  } catch (err) {
     if (err.code === 'ENOENT') return { ok: true };
     return { ok: false, error: err.message };
   }
 });
-ipcMain.handle('whisper-model-download', async (event) => {
+
+ipcMain.handle('whisper-model-download', async (event, modelId) => {
   if (whisperDownloadController) return { ok: false, error: 'already downloading' };
+  const id = WHISPER_MODELS[modelId] ? modelId : getCurrentWhisperModelId();
+  const spec = WHISPER_MODELS[id];
   const wc = event.sender;
   const fs = require('fs');
   const dir = getWhisperModelDir();
   try { fs.mkdirSync(dir, { recursive: true }); }
   catch (err) { return { ok: false, error: `mkdir: ${err.message}` }; }
-  const finalPath = getWhisperModelPath();
+  const finalPath = path.join(dir, spec.filename);
   const tmpPath = `${finalPath}.partial`;
-  // Best-effort cleanup of a previous partial — fresh start each time.
   try { fs.unlinkSync(tmpPath); } catch {}
-  // Reclaim disk: if an older tiny.en model (pre-base.en swap) is
-  // still in user-data from an earlier install, drop it. Best-effort
-  // only — failure here doesn't block the download.
-  try { fs.unlinkSync(path.join(dir, 'ggml-tiny.en.bin')); } catch {}
   whisperDownloadController = new AbortController();
+  whisperDownloadingId = id;
   try {
-    const res = await fetch(WHISPER_MODEL_URL, {
+    const res = await fetch(spec.url, {
       signal: whisperDownloadController.signal,
       redirect: 'follow',
     });
     if (!res.ok) {
       return { ok: false, error: `http ${res.status}` };
     }
-    const total = Number(res.headers.get('content-length')) || WHISPER_MODEL_EXPECTED_SIZE;
+    const total = Number(res.headers.get('content-length')) || spec.size;
     const writeStream = fs.createWriteStream(tmpPath);
     let received = 0;
     let lastEmit = 0;
@@ -464,33 +542,30 @@ ipcMain.handle('whisper-model-download', async (event) => {
       if (done) break;
       writeStream.write(Buffer.from(value));
       received += value.length;
-      // Throttle progress events to ~10 Hz so the renderer doesn't drown
-      // in IPC traffic on a fast connection.
       const now = Date.now();
       if (now - lastEmit > 100) {
         lastEmit = now;
-        try { wc.send('whisper-model-progress', { received, total, percent: received / total }); } catch {}
+        try { wc.send('whisper-model-progress', { modelId: id, received, total, percent: received / total }); } catch {}
       }
     }
     await new Promise((resolve, reject) => {
       writeStream.end((err) => err ? reject(err) : resolve());
     });
-    // Sanity check: the file we just wrote should be at least the
-    // expected size. Anything smaller is a server-truncated download.
     const finalSize = fs.statSync(tmpPath).size;
-    if (finalSize < WHISPER_MODEL_EXPECTED_SIZE * 0.9) {
+    if (finalSize < spec.size * 0.9) {
       try { fs.unlinkSync(tmpPath); } catch {}
       return { ok: false, error: `truncated download (${finalSize} of ${total} bytes)` };
     }
     fs.renameSync(tmpPath, finalPath);
-    try { wc.send('whisper-model-progress', { received: finalSize, total: finalSize, percent: 1 }); } catch {}
-    return { ok: true, path: finalPath, bytes: finalSize };
+    try { wc.send('whisper-model-progress', { modelId: id, received: finalSize, total: finalSize, percent: 1 }); } catch {}
+    return { ok: true, modelId: id, path: finalPath, bytes: finalSize };
   } catch (err) {
     try { fs.unlinkSync(tmpPath); } catch {}
     if (err.name === 'AbortError') return { ok: false, error: 'cancelled' };
     return { ok: false, error: err.message || 'download failed' };
   } finally {
     whisperDownloadController = null;
+    whisperDownloadingId = null;
   }
 });
 

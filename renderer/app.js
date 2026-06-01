@@ -1971,15 +1971,11 @@ async function startCaptions() {
       }
       const model = await window.huddle.whisperModel.getStatus();
       if (model?.status !== 'ready') {
-        if (confirm('Live captions need a ~141 MB offline model. Download now?')) {
-          // Open Settings → Integrations so the user sees the progress
-          // bar; download starts there. They can hit CC again once it
-          // finishes.
+        if (confirm('Live captions need a local model. Open Settings to download one?')) {
+          // Open Settings → Integrations so the user picks + downloads
+          // a model from the catalog (tiny / base / small / medium).
           try { openSettings(); } catch {}
           captionsModelUi?.refresh?.();
-          // Kick off download immediately so the user doesn't have to
-          // hunt for the button.
-          document.getElementById('set-captions-download')?.click();
         }
         return;
       }
@@ -3941,21 +3937,29 @@ function normalizeIcsUrl(u) {
   catch { return String(u); }
 }
 
-// ── Captions model (whisper.cpp) — Settings → Integrations row ──
+// ── Captions model (whisper.cpp) — Settings → Integrations picker ──
 //
-// Manages the lifecycle UI for the ~141 MB `ggml-base.en.bin` model used
-// by the offline-captions sidecar. State is owned by main; this is just
-// a thin reflection layer that refreshes when the modal opens and
-// streams progress while a download is in flight. Wired once on first
-// render; subsequent openSettings() calls just call refresh.
+// Renders a row per whisper.cpp model (tiny / base / small / medium)
+// with status + download / delete / set-active controls. State is
+// owned by main; this is just a reflection layer that refreshes when
+// the Settings modal opens and on each progress event during an
+// in-flight download.
 const captionsModelUi = (() => {
-  let wired = false;
-  let downloading = false;
+  let progressUnsub = null;
+  let downloadingId = null;
+  let lastList = [];
 
-  function fmtMb(bytes) {
-    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  function fmtSize(bytes) {
+    if (bytes >= 1024 * 1024 * 1024) {
+      return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+    }
+    return `${(bytes / 1024 / 1024).toFixed(0)} MB`;
   }
-
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+  }
   function setError(msg) {
     const el = document.getElementById('set-captions-error');
     if (!el) return;
@@ -3964,105 +3968,111 @@ const captionsModelUi = (() => {
     el.textContent = msg;
   }
 
-  function render(state) {
-    const row    = document.getElementById('set-captions-row');
-    if (!row) return;
-    const status = row.querySelector('.set-captions-status');
-    const prog   = row.querySelector('.set-captions-progress');
-    const fill   = row.querySelector('.set-captions-progress-fill');
-    const btnDl  = document.getElementById('set-captions-download');
-    const btnCa  = document.getElementById('set-captions-cancel');
-    const btnRe  = document.getElementById('set-captions-redownload');
-    const btnDe  = document.getElementById('set-captions-delete');
-
-    const s = state.status;
-    status.dataset.status = s;
-    if (s === 'ready') {
-      status.textContent = `Ready — ${fmtMb(state.bytes)}`;
-      prog.classList.add('hidden');
-      btnDl.classList.add('hidden');
-      btnCa.classList.add('hidden');
-      btnRe.classList.remove('hidden');
-      btnDe.classList.remove('hidden');
-    } else if (s === 'downloading') {
-      const pct = state.total ? Math.round((state.bytes / state.total) * 100) : 0;
-      status.textContent = `Downloading ${pct}% — ${fmtMb(state.bytes)} of ${fmtMb(state.total)}`;
-      prog.classList.remove('hidden');
-      fill.style.width = `${pct}%`;
-      btnDl.classList.add('hidden');
-      btnRe.classList.add('hidden');
-      btnDe.classList.add('hidden');
-      btnCa.classList.remove('hidden');
-    } else {
-      status.textContent = `Not downloaded — ${fmtMb(state.total || 141 * 1024 * 1024)} required`;
-      prog.classList.add('hidden');
-      btnDl.classList.remove('hidden');
-      btnCa.classList.add('hidden');
-      btnRe.classList.add('hidden');
-      btnDe.classList.add('hidden');
+  function statusText(m) {
+    if (m.status === 'ready') return `Ready — ${fmtSize(m.bytes)}`;
+    if (m.status === 'downloading') {
+      const pct = m.total ? Math.round((m.bytes / m.total) * 100) : 0;
+      return `Downloading ${pct}% — ${fmtSize(m.bytes)} of ${fmtSize(m.total)}`;
     }
+    return `Not downloaded — ${fmtSize(m.total)}`;
+  }
+
+  function render(list) {
+    lastList = list;
+    const container = document.getElementById('set-captions-list');
+    if (!container) return;
+    container.innerHTML = list.map((m) => {
+      const pct = m.status === 'downloading' && m.total
+        ? Math.round((m.bytes / m.total) * 100)
+        : 0;
+      const showProg = m.status === 'downloading';
+      let actions = '';
+      if (m.status === 'ready') {
+        if (!m.isCurrent) {
+          actions += `<button class="ctrl" data-action="set" data-id="${m.id}" type="button">Make active</button>`;
+        }
+        actions += `<button class="ctrl ghost" data-action="delete" data-id="${m.id}" type="button">Delete</button>`;
+      } else if (m.status === 'downloading') {
+        actions += `<button class="ctrl" data-action="cancel" data-id="${m.id}" type="button">Cancel</button>`;
+      } else {
+        actions += `<button class="ctrl" data-action="download" data-id="${m.id}" type="button">Download</button>`;
+      }
+      return `
+        <div class="set-captions-row${m.isCurrent ? ' is-active' : ''}" data-id="${m.id}">
+          <div class="set-captions-meta">
+            <div class="set-captions-name">
+              ${escapeHtml(m.label)}
+              ${m.isCurrent ? '<span class="set-captions-active-badge">Active</span>' : ''}
+            </div>
+            <div class="set-captions-status" data-status="${m.status}">${escapeHtml(statusText(m))}</div>
+            <div class="set-captions-progress${showProg ? '' : ' hidden'}">
+              <div class="set-captions-progress-fill" style="width: ${pct}%"></div>
+            </div>
+          </div>
+          <div class="set-captions-actions">${actions}</div>
+        </div>
+      `;
+    }).join('');
+    container.querySelectorAll('button[data-action]').forEach((btn) => {
+      btn.onclick = () => handleAction(btn.dataset.action, btn.dataset.id);
+    });
   }
 
   async function refresh() {
     if (!window.huddle?.whisperModel) return;
     try {
-      const st = await window.huddle.whisperModel.getStatus();
-      downloading = st.status === 'downloading';
-      render(st);
+      const list = await window.huddle.whisperModel.list();
+      downloadingId = list.find((m) => m.status === 'downloading')?.id || null;
+      render(list);
     } catch (err) {
-      console.warn('captions status fetch failed', err);
+      console.warn('captions model list failed', err);
     }
   }
 
-  async function download() {
-    if (downloading) return;
+  async function handleAction(action, id) {
     setError(null);
-    downloading = true;
-    render({ status: 'downloading', bytes: 0, total: 147964211 });
     try {
-      const res = await window.huddle.whisperModel.download();
-      if (!res?.ok) {
-        setError(res?.error || 'Download failed');
+      if (action === 'download') {
+        downloadingId = id;
+        // Optimistically reflect the in-flight state so the user
+        // doesn't see a flash of stale "Not downloaded" between the
+        // click and the first progress event.
+        render(lastList.map((m) =>
+          m.id === id ? { ...m, status: 'downloading', bytes: 0 } : m));
+        const res = await window.huddle.whisperModel.download(id);
+        if (!res?.ok) setError(res?.error || 'Download failed');
+      } else if (action === 'cancel') {
+        await window.huddle.whisperModel.cancel();
+      } else if (action === 'delete') {
+        if (!confirm(`Delete this model? You can re-download anytime.`)) return;
+        const res = await window.huddle.whisperModel.deleteFile(id);
+        if (!res?.ok) setError(res?.error || 'Delete failed');
+      } else if (action === 'set') {
+        const res = await window.huddle.whisperModel.setCurrent(id);
+        if (!res?.ok) setError(res?.error || 'Could not set active model');
       }
     } catch (err) {
-      setError(err?.message || 'Download failed');
+      setError(err?.message || `${action} failed`);
     } finally {
-      downloading = false;
-      await refresh();
+      downloadingId = null;
+      refresh();
     }
-  }
-
-  async function cancel() {
-    if (!downloading) return;
-    try { await window.huddle.whisperModel.cancel(); } catch {}
-    // refresh happens via the download promise's finally
-  }
-
-  async function deleteFile() {
-    if (downloading) return;
-    if (!confirm('Delete the offline captions model? You can re-download anytime.')) return;
-    try { await window.huddle.whisperModel.deleteFile(); }
-    catch (err) { setError(err?.message || 'Delete failed'); }
-    refresh();
   }
 
   function wire() {
-    if (wired) return;
-    if (!window.huddle?.whisperModel) return;
-    const btnDl = document.getElementById('set-captions-download');
-    const btnCa = document.getElementById('set-captions-cancel');
-    const btnRe = document.getElementById('set-captions-redownload');
-    const btnDe = document.getElementById('set-captions-delete');
-    if (!btnDl) return; // HTML not in this build
-    btnDl.onclick = download;
-    btnCa.onclick = cancel;
-    btnRe.onclick = download; // same path; the file is overwritten via .partial → rename
-    btnDe.onclick = deleteFile;
-    window.huddle.whisperModel.onProgress((p) => {
-      if (!downloading) downloading = true;
-      render({ status: 'downloading', bytes: p.received, total: p.total });
+    if (progressUnsub) return;
+    if (!window.huddle?.whisperModel?.onProgress) return;
+    progressUnsub = window.huddle.whisperModel.onProgress((p) => {
+      if (!p?.modelId) return;
+      // Patch just the downloading row's progress + re-render — full
+      // list refresh on each progress tick would thrash the DOM at
+      // 10 Hz for nothing.
+      const idx = lastList.findIndex((m) => m.id === p.modelId);
+      if (idx === -1) { refresh(); return; }
+      const next = lastList.slice();
+      next[idx] = { ...next[idx], status: 'downloading', bytes: p.received, total: p.total };
+      render(next);
     });
-    wired = true;
   }
 
   return { refresh, wire };

@@ -53,14 +53,17 @@ contextBridge.exposeInMainWorld('huddle', {
   // was bundled (Linux today). Renderer flips the CC button to
   // disabled when unavailable.
   getWhisperBinaryStatus: () => ipcRenderer.invoke('whisper-binary-status'),
-  // Captions model lifecycle. The ~75 MB ggml-tiny.en.bin lives in
-  // user-data and is downloaded lazily on first CC click. Renderer
-  // calls download() and subscribes to onProgress for the progress bar.
+  // Captions model lifecycle. Multiple model sizes live in user-data
+  // (tiny / base / small / medium); the user picks one as active via
+  // Settings → Captions. Each lifecycle method takes an optional
+  // model id; omitting falls back to the active model.
   whisperModel: {
-    getStatus:  () => ipcRenderer.invoke('whisper-model-status'),
-    download:   () => ipcRenderer.invoke('whisper-model-download'),
+    list:       () => ipcRenderer.invoke('whisper-model-list'),
+    setCurrent: (id) => ipcRenderer.invoke('whisper-model-set', id),
+    getStatus:  (id) => ipcRenderer.invoke('whisper-model-status', id),
+    download:   (id) => ipcRenderer.invoke('whisper-model-download', id),
     cancel:     () => ipcRenderer.invoke('whisper-model-cancel'),
-    deleteFile: () => ipcRenderer.invoke('whisper-model-delete'),
+    deleteFile: (id) => ipcRenderer.invoke('whisper-model-delete', id),
     onProgress: (cb) => {
       const handler = (_e, payload) => { try { cb(payload); } catch {} };
       ipcRenderer.on('whisper-model-progress', handler);
