@@ -1521,6 +1521,14 @@ class ChatView {
   }
 
   _renderMessage(m, all, prev, mentionNames) {
+    // Meeting-thread anchors (meta.meeting_root) render as a compact
+    // system-style tile, not as a user-authored chat row. No hover
+    // toolbar (react / reply / edit / delete) — these are auto-posted
+    // system messages, not user content. Recap reply (if any) is
+    // surfaced inline via _renderMeetingRoot.
+    if (m.meta?.meeting_root) {
+      return this._renderMeetingRoot(m, all);
+    }
     const wrap = document.createElement('div');
     wrap.className = 'msg';
     wrap.dataset.messageId = m.id;
@@ -1811,6 +1819,80 @@ class ChatView {
     }
     right.append(...children);
     wrap.append(avatar, right);
+    return wrap;
+  }
+
+  // Compact "call started" tile rendered in the channel feed. No
+  // avatar / hover toolbar — this is a system-style row. Surfaces:
+  //   • a phone glyph + "Call started — <local time>"
+  //   • the reply count, when there are notes / a recap reply
+  //   • an inline preview of the most recent AI-generated reply
+  //     (the post-call recap) so non-thread viewers can see the
+  //     summary without opening the thread
+  //   • a single "Open notes →" action
+  _renderMeetingRoot(m, all) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg meeting-root-msg';
+    wrap.dataset.messageId = m.id;
+
+    const tile = document.createElement('div');
+    tile.className = 'meeting-root-tile';
+
+    const head = document.createElement('div');
+    head.className = 'meeting-root-head';
+    const icon = document.createElement('span');
+    icon.className = 'meeting-root-icon';
+    icon.textContent = '📞';
+    const title = document.createElement('span');
+    title.className = 'meeting-root-title';
+    const startedAt = m.meta?.started_at ? new Date(m.meta.started_at) : new Date(m.ts);
+    const timeStr = startedAt.toLocaleString([], { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' });
+    title.textContent = `Call started · ${timeStr}`;
+    const author = document.createElement('span');
+    author.className = 'meeting-root-author';
+    author.textContent = `by ${m.authorName || 'someone'}`;
+    head.append(icon, title, author);
+    tile.appendChild(head);
+
+    // Replies = the meeting thread's contents. Walk `all` once for
+    // count + recap surface. (`all` is the full marshaled message
+    // list passed by the caller; cheap O(N) is fine for chat-feed
+    // rendering scale.)
+    const replies = (all || []).filter((x) => x.parentId === m.id);
+    const recap = [...replies].reverse().find((x) => x.aiGenerated);
+    if (recap) {
+      const recapBlock = document.createElement('div');
+      recapBlock.className = 'meeting-root-recap';
+      const label = document.createElement('div');
+      label.className = 'meeting-root-recap-label';
+      label.textContent = '📋 Call recap';
+      const body = document.createElement('div');
+      body.className = 'meeting-root-recap-body';
+      if (typeof window.renderMarkdown === 'function') {
+        body.innerHTML = window.renderMarkdown(recap.text || '');
+      } else {
+        body.textContent = recap.text || '';
+      }
+      recapBlock.append(label, body);
+      tile.appendChild(recapBlock);
+    }
+
+    const foot = document.createElement('div');
+    foot.className = 'meeting-root-foot';
+    const count = document.createElement('span');
+    count.className = 'meeting-root-count';
+    const n = replies.length;
+    count.textContent = n === 0
+      ? 'No notes yet'
+      : `${n} ${n === 1 ? 'note' : 'notes'}`;
+    const openBtn = document.createElement('button');
+    openBtn.className = 'meeting-root-open';
+    openBtn.textContent = 'Open notes →';
+    openBtn.onclick = () => this.openThread(m.id);
+    foot.append(count, openBtn);
+    tile.appendChild(foot);
+
+    wrap.appendChild(tile);
     return wrap;
   }
 

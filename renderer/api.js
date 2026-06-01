@@ -311,6 +311,15 @@
         this.dispatchEvent(new CustomEvent('transcript-line', { detail: payload }));
       });
 
+      // Meeting-thread root id announced by whoever started the call.
+      // Joiners listen for this so the Notes panel mounts against the
+      // same thread without a DB roundtrip; falls through to
+      // fetchActiveMeetingRoot when missed.
+      ch.on('broadcast', { event: 'meeting-root' }, ({ payload }) => {
+        if (payload?.from === this.peerId) return;
+        this.dispatchEvent(new CustomEvent('meeting-root', { detail: payload }));
+      });
+
       await new Promise((resolve, reject) => {
         // Every failure path must unsubscribe before rejecting,
         // otherwise the channel sits subscribed in supabase-js with
@@ -884,6 +893,22 @@
       if (error) console.warn('sendMessage failed', error);
     }
 
+    // Strict variant — throws on supabase error instead of swallowing.
+    // Use when the caller has a UI-visible action to take on failure
+    // (restore typed text, show a banner, retry). The lenient
+    // sendMessage above stays in place for the main chat composer so a
+    // backgrounded keystroke doesn't surface every transient blip.
+    async sendMessageStrict({ channelId, parentId, text, attachments }) {
+      const knownNames = [...this.peerInfo.values()].map((p) => p.name).concat(this.name);
+      const mentions = extractMentions(text, knownNames);
+      const { error } = await this.supabase.from('messages').insert({
+        team_id: this.team.id, channel_id: channelId, parent_id: parentId || null,
+        author_id: this.peerId, author_name: this.name, author_color: this.color,
+        body: text || '', attachments: attachments || [], reactions: {}, mentions,
+      });
+      if (error) throw error;
+    }
+
     // Same shape as sendMessage but flags the row as AI-generated. The
     // human author still owns the row (RLS-wise) so they can edit/delete;
     // the renderer styles it with a robot avatar + model badge.
@@ -900,6 +925,84 @@
       // problem to the user — silently warning here meant a successful
       // Jira ticket would never appear in chat with no visible error.
       if (error) throw error;
+    }
+
+    // ----- Meeting threads ----------------------------------------------
+    //
+    // A "meeting thread" is anchored by a normal messages row whose
+    // meta.meeting_root = true. The call-start broadcasts the row's id
+    // over the call channel so joiners pick up the same root without
+    // racing on the DB; if they miss the broadcast they fall back to
+    // fetchActiveMeetingRoot below.
+
+    async sendMeetingRootMessage(channelId, { body, meta }) {
+      const knownNames = [...this.peerInfo.values()].map((p) => p.name).concat(this.name);
+      const mentions = extractMentions(body, knownNames);
+      const { data, error } = await this.supabase.from('messages').insert({
+        team_id: this.team.id, channel_id: channelId, parent_id: null,
+        author_id: this.peerId, author_name: this.name, author_color: this.color,
+        body: body || '', attachments: [], reactions: {}, mentions,
+        meta: meta || { meeting_root: true },
+      }).select('id, ts').single();
+      if (error) throw error;
+      return data;
+    }
+
+    // Look up the most recent meeting-root in the channel within a
+    // bounded window. The default 12h window is the "any call from
+    // today" sanity cutoff; the meeting-thread setup uses ~5min so a
+    // brand-new call doesn't accidentally adopt a stale prior-call
+    // anchor. Either way: returns null if nothing matches.
+    async fetchActiveMeetingRoot(channelId, { withinMs = 12 * 60 * 60 * 1000 } = {}) {
+      const cutoff = new Date(Date.now() - withinMs).toISOString();
+      const { data, error } = await this.supabase
+        .from('messages')
+        .select('id, ts, body, meta')
+        .eq('team_id', this.team.id)
+        .eq('channel_id', channelId)
+        .gte('ts', cutoff)
+        .filter('meta->>meeting_root', 'eq', 'true')
+        .order('ts', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) {
+        if (/column .* does not exist/i.test(error.message || '')) return null;
+        throw error;
+      }
+      return data || null;
+    }
+
+    // Fetch the existing thread replies for a meeting root. Used when
+    // the user opens the Notes panel mid-call to backfill replies that
+    // landed before the panel was mounted. Capped at 500 rows so a
+    // multi-hour call with active AI-agent posting doesn't fetch
+    // thousands of rows in one shot; matches the BATCH size the main
+    // chat catch-up uses. Older replies are reachable via the channel
+    // feed thread view.
+    async fetchThreadReplies(channelId, parentId) {
+      if (!parentId) return [];
+      const { data, error } = await this.supabase
+        .from('messages')
+        .select('*')
+        .eq('team_id', this.team.id)
+        .eq('channel_id', channelId)
+        .eq('parent_id', parentId)
+        .order('ts', { ascending: true })
+        .limit(500);
+      if (error) throw error;
+      return (data || []).map((m) => this._marshalMessage(m));
+    }
+
+    // Broadcast the meeting-root id over the active call channel so
+    // every peer in the call can mount Notes against the same thread
+    // without a DB roundtrip. Falls through to fetchActiveMeetingRoot
+    // for joiners who arrived after the broadcast.
+    sendCallMeetingRoot(channelId, messageId) {
+      const cached = this._callChannel;
+      if (!cached || this._callChannelId !== channelId) return;
+      Promise.resolve(cached).then((ch) =>
+        ch.send({ type: 'broadcast', event: 'meeting-root', payload: { from: this.peerId, messageId, channelId } })
+      ).catch((err) => console.warn('[meeting] root broadcast failed', err));
     }
 
     async editMessage(messageId, text) {
@@ -1815,6 +1918,10 @@
         pinnedBy: row.pinned_by || null,
         aiGenerated: !!row.ai_generated,
         aiModel: row.ai_model || null,
+        // Generic JSONB metadata. First consumer: meeting threads
+        // (meta.meeting_root = true for call-start anchors). Default
+        // to empty object so consumers don't have to null-guard.
+        meta: row.meta || {},
       };
     }
     _marshalChannel(row) {

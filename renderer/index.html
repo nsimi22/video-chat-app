@@ -363,6 +363,9 @@
             <button id="btn-cc" class="ctrl icon-only hidden" title="Live captions + post-call AI summary" aria-label="Toggle captions">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M7 14h3"/><path d="M14 14h3"/><path d="M7 11h3"/><path d="M14 11h3"/></svg>
             </button>
+            <button id="btn-notes" class="ctrl icon-only hidden" title="Meeting notes" aria-label="Toggle meeting notes">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="14 3 14 9 20 9"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+            </button>
             <button id="btn-popout-call" class="ctrl icon-only hidden" title="Move call to a separate window" aria-label="Pop out call">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3h7v7"/><path d="M10 14L21 3"/><path d="M21 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h6"/></svg>
             </button>
@@ -395,6 +398,26 @@
             </button>
           </div>
           <div id="captions-list" class="captions-list"></div>
+        </section>
+
+        <!-- Meeting notes: a right-side dock that mirrors the captions
+             panel. Mounted as a thread off the meeting-root message
+             (anchored when the call starts). Holds the thread message
+             list + a small composer so chat during the call doesn't
+             compete with the channel feed. -->
+        <section id="meeting-notes" class="meeting-notes hidden" aria-label="Meeting notes">
+          <div class="meeting-notes-header">
+            <span>Meeting notes</span>
+            <button id="meeting-notes-close" class="ghost icon-only" title="Hide meeting notes" aria-label="Hide meeting notes">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div id="meeting-notes-list" class="meeting-notes-list"></div>
+          <div id="meeting-notes-empty" class="meeting-notes-empty">No notes yet — type below to add one.</div>
+          <form id="meeting-notes-composer" class="meeting-notes-composer">
+            <textarea id="meeting-notes-input" rows="1" placeholder="Add a note for this call…" maxlength="2000"></textarea>
+            <button id="meeting-notes-send" type="submit" class="primary" title="Send (↵)">Send</button>
+          </form>
         </section>
 
         <!-- Drawing toolbar appears when a screen tile is focused for annotation. -->
