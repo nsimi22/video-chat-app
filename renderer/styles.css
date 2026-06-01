@@ -7006,7 +7006,17 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   flex-shrink: 0;
   background: var(--bg-0, #14171a);
 }
-.wbv-mode-tile .wbv-header { padding: 8px 12px; gap: 8px; }
+.wbv-mode-tile .wbv-header {
+  /* Tile mode mounts the whiteboard inside a #tiles tile, which has
+   * its own absolutely-positioned `.tile-actions` row (Pop out /
+   * Spotlight / Close) sitting at top:8 right:8 with z-index 30. Pad
+   * our header's right side so Frame + Export don't slide under that
+   * row and get visually swallowed. The redundant wbv-close is hidden
+   * separately — tile-actions already provides × Close. */
+  padding: 8px 270px 8px 12px;
+  gap: 8px;
+}
+.wbv-mode-tile .wbv-close { display: none; }
 .wbv-header .wbv-ico { color: var(--accent-tx, var(--accent, #0a84ff)); display: inline-flex; }
 .wbv-title {
   font-weight: 700;
