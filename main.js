@@ -375,19 +375,24 @@ ipcMain.handle('whisper-binary-status', () => {
 });
 
 // Whisper model download lifecycle. The captions feature uses
-// `ggml-tiny.en.bin` (~75 MB) — too big to bundle in the installer, so
-// we lazy-download on first CC click into the user-data dir. The same
-// path is read back by the sidecar at inference time. Renderer drives
-// the flow via four IPCs (status / download / cancel / delete) plus a
-// streaming `whisper-model-progress` event for the progress bar.
-const WHISPER_MODEL_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin';
-const WHISPER_MODEL_EXPECTED_SIZE = 77704715; // bytes, observed 2026-06-01; treated as a sanity lower-bound only
+// `ggml-base.en.bin` (~141 MB) — too big to bundle in the installer,
+// so we lazy-download on first CC click into the user-data dir. The
+// same path is read back by the sidecar at inference time. Renderer
+// drives the flow via four IPCs (status / download / cancel / delete)
+// plus a streaming `whisper-model-progress` event for the progress bar.
+//
+// Upgraded from tiny.en after early testing — tiny.en was too lossy on
+// natural speech to be useful as a caption source. base.en cuts the
+// word-error rate roughly in half at ~150ms inference per 1.5s chunk
+// on M-series; well within the real-time budget.
+const WHISPER_MODEL_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin';
+const WHISPER_MODEL_EXPECTED_SIZE = 147964211; // bytes, ggml-base.en, observed 2026-06-01; treated as a sanity lower-bound only
 let whisperDownloadController = null; // AbortController of the in-flight download, or null
 function getWhisperModelDir() {
   return path.join(app.getPath('userData'), 'whisper-models');
 }
 function getWhisperModelPath() {
-  return path.join(getWhisperModelDir(), 'ggml-tiny.en.bin');
+  return path.join(getWhisperModelDir(), 'ggml-base.en.bin');
 }
 function whisperModelStatusSync() {
   const p = getWhisperModelPath();
@@ -436,6 +441,10 @@ ipcMain.handle('whisper-model-download', async (event) => {
   const tmpPath = `${finalPath}.partial`;
   // Best-effort cleanup of a previous partial — fresh start each time.
   try { fs.unlinkSync(tmpPath); } catch {}
+  // Reclaim disk: if an older tiny.en model (pre-base.en swap) is
+  // still in user-data from an earlier install, drop it. Best-effort
+  // only — failure here doesn't block the download.
+  try { fs.unlinkSync(path.join(dir, 'ggml-tiny.en.bin')); } catch {}
   whisperDownloadController = new AbortController();
   try {
     const res = await fetch(WHISPER_MODEL_URL, {

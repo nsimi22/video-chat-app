@@ -1971,7 +1971,7 @@ async function startCaptions() {
       }
       const model = await window.huddle.whisperModel.getStatus();
       if (model?.status !== 'ready') {
-        if (confirm('Live captions need a ~75 MB offline model. Download now?')) {
+        if (confirm('Live captions need a ~141 MB offline model. Download now?')) {
           // Open Settings → Integrations so the user sees the progress
           // bar; download starts there. They can hit CC again once it
           // finishes.
@@ -3943,7 +3943,7 @@ function normalizeIcsUrl(u) {
 
 // ── Captions model (whisper.cpp) — Settings → Integrations row ──
 //
-// Manages the lifecycle UI for the ~75 MB `ggml-tiny.en.bin` model used
+// Manages the lifecycle UI for the ~141 MB `ggml-base.en.bin` model used
 // by the offline-captions sidecar. State is owned by main; this is just
 // a thin reflection layer that refreshes when the modal opens and
 // streams progress while a download is in flight. Wired once on first
@@ -3994,7 +3994,7 @@ const captionsModelUi = (() => {
       btnDe.classList.add('hidden');
       btnCa.classList.remove('hidden');
     } else {
-      status.textContent = `Not downloaded — ${fmtMb(state.total || 75 * 1024 * 1024)} required`;
+      status.textContent = `Not downloaded — ${fmtMb(state.total || 141 * 1024 * 1024)} required`;
       prog.classList.add('hidden');
       btnDl.classList.remove('hidden');
       btnCa.classList.add('hidden');
@@ -4018,7 +4018,7 @@ const captionsModelUi = (() => {
     if (downloading) return;
     setError(null);
     downloading = true;
-    render({ status: 'downloading', bytes: 0, total: 77704715 });
+    render({ status: 'downloading', bytes: 0, total: 147964211 });
     try {
       const res = await window.huddle.whisperModel.download();
       if (!res?.ok) {
