@@ -108,7 +108,11 @@
       if (this.active) return false;
       this.active = true;
       try {
-        this.ctx = new AudioContext();
+        // Drive the graph at 16 kHz so Chromium does the resampling
+        // (polyphase, properly anti-aliased) instead of our worklet.
+        // Earlier naive decimation in the worklet was leaking aliasing
+        // into the speech band and hurting whisper accuracy.
+        this.ctx = new AudioContext({ sampleRate: 16000 });
         await this.ctx.audioWorklet.addModule('whisper-audio-worklet.js');
         // One shared muted sink keeps every worklet in the audio graph
         // (worklets need a downstream node to pull frames) without
@@ -123,10 +127,21 @@
         return false;
       }
 
-      // Local mic.
+      // Local mic. Keep echo cancellation ON — we have remote audio
+      // playing through speakers during a call, so AEC is genuinely
+      // needed to keep that loopback out of the transcript. But drop
+      // noise suppression and auto-gain control: Chrome's NS is tuned
+      // for telephony and aggressively gates soft consonants (s, f,
+      // sh, t) that whisper specifically relies on. Whisper handles
+      // its own noise robustness internally.
       try {
         const localStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: 1,
+          },
           video: false,
         });
         this._addTrack({
