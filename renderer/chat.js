@@ -1074,9 +1074,24 @@ class ChatView {
     if (id) this._replaceNodeById(id);
   }
 
-  _delete(messageId) {
+  async _delete(messageId) {
     if (!confirm('Delete this message? It will be removed for everyone.')) return;
-    this.mesh.deleteMessage(messageId);
+    // Optimistic local removal. Without this, the UI waits for
+    // Supabase Realtime's DELETE event to fire — which it sometimes
+    // doesn't carry through reliably (REPLICA IDENTITY on `messages`
+    // is the default-FK form, so OLD.* columns can come back partial
+    // for ai_generated rows). The handler below is idempotent so a
+    // late DELETE event reaching us after the optimistic prune is a
+    // safe no-op.
+    for (const arr of this.byChannel.values()) {
+      const idx = arr.findIndex((x) => x.id === messageId);
+      if (idx >= 0) { arr.splice(idx, 1); break; }
+    }
+    const node = this.nodeById.get(messageId);
+    if (node) { node.remove(); this.nodeById.delete(messageId); }
+    this._render();
+    try { await this.mesh.deleteMessage(messageId); }
+    catch (err) { console.warn('deleteMessage failed', err); }
   }
 
   // --- Pinning + permalinks -----------------------------------------------

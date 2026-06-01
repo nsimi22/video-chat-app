@@ -166,29 +166,6 @@
     paintSigninBrandPills();
     wireSplitOtp();
 
-    // v2 captions footer "/summarize" button — kicks off the
-    // live-call transcript recap (same prompt + posting path as the
-    // post-call recap). Composer is hidden during the call so
-    // prefilling /summarize there wouldn't help; this triggers the
-    // AI directly and posts the recap to the channel for after-call.
-    const sumBtn = document.getElementById('captions-summarize-btn');
-    if (sumBtn && !sumBtn.dataset.wired) {
-      sumBtn.dataset.wired = '1';
-      sumBtn.addEventListener('click', () => {
-        sumBtn.disabled = true;
-        sumBtn.textContent = 'Summarizing…';
-        Promise.resolve(window.huddleApp?.summarizeCallNow?.())
-          .finally(() => {
-            sumBtn.disabled = false;
-            sumBtn.innerHTML = `
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="11" x2="20" y2="11"/><line x1="4" y1="16" x2="14" y2="16"/><circle cx="18.5" cy="17" r="3.2"/>
-              </svg>
-              <span>/summarize</span>
-            `;
-          });
-      });
-    }
 
     // The rest of the v2 UI infrastructure only makes sense when
     // [data-ui="v2"] is the active mode. setupCallDock() in
