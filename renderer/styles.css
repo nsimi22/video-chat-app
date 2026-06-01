@@ -6350,6 +6350,151 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   padding-right: 312px; /* 296 panel + 16 right edge gap */
 }
 
+/* Meeting-notes panel — mirrors the captions dock so they read as
+ * siblings. Stacks to the LEFT of captions when both are open. */
+.meeting-notes { display: none; }
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #meeting-notes {
+  position: absolute;
+  top: 76px;
+  right: 16px;
+  bottom: 96px;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  z-index: 20;
+  background: var(--bg-1, #1a1d22);
+  border: 1px solid var(--line, rgba(255,255,255,0.1));
+  border-radius: var(--r-md, 10px);
+  box-shadow: var(--sh-card, 0 1px 2px rgba(0,0,0,0.3));
+  overflow: hidden;
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel #meeting-notes.hidden { display: none; }
+/* When both panels open, slide meeting-notes left so it doesn't
+ * overlap captions. Captions is 296 + 16-edge gap → 312px; notes
+ * sits another 16 gap to the left. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)) #meeting-notes:not(.hidden) {
+  right: calc(296px + 16px + 16px);
+}
+/* Reserve tile-grid space the same way captions does. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#meeting-notes:not(.hidden)) .tiles {
+  padding-right: 356px; /* 340 panel + 16 edge gap */
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)):has(#meeting-notes:not(.hidden)) .tiles {
+  padding-right: calc(296px + 16px + 16px + 340px + 16px);
+}
+
+.meeting-notes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line, rgba(255,255,255,0.08));
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--tx-hi, #fff);
+}
+.meeting-notes-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.meeting-notes-empty {
+  padding: 12px;
+  color: var(--tx-lo, #8a8e96);
+  font-size: 12px;
+  font-style: italic;
+  text-align: center;
+}
+.meeting-notes-empty.hidden { display: none; }
+.meeting-note-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: var(--bg-2, rgba(255,255,255,0.04));
+  border-radius: var(--r-sm, 6px);
+}
+.meeting-note-row.is-ai {
+  background: var(--accent-dim, rgba(10,132,255,0.10));
+  border: 1px solid var(--accent, #0a84ff);
+}
+.meeting-note-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+}
+.meeting-note-author { font-weight: 700; color: var(--tx-mid, #c8ccd0); }
+.meeting-note-time { color: var(--tx-lo, #8a8e96); font-size: 10.5px; }
+.meeting-note-ai-badge {
+  margin-left: auto;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--accent, #0a84ff);
+  color: white;
+}
+.meeting-note-body {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--tx-hi, #fff);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.meeting-note-body p { margin: 0 0 6px; }
+.meeting-note-body p:last-child { margin-bottom: 0; }
+.meeting-note-body ul,
+.meeting-note-body ol { margin: 4px 0; padding-left: 18px; }
+.meeting-notes-composer {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line, rgba(255,255,255,0.08));
+  background: var(--bg-1, #1a1d22);
+}
+.meeting-notes-composer textarea {
+  flex: 1;
+  resize: none;
+  min-height: 34px;
+  max-height: 120px;
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 9px;
+  background: var(--bg-0, #14171a);
+  border: 1px solid var(--line, rgba(255,255,255,0.1));
+  border-radius: var(--r-sm, 6px);
+  color: var(--tx-hi, #fff);
+  outline: none;
+}
+.meeting-notes-composer textarea:focus { border-color: var(--accent, #0a84ff); }
+.meeting-notes-composer button {
+  height: 34px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--r-sm, 6px);
+  border: 0;
+  background: var(--accent, #0a84ff);
+  color: white;
+  cursor: pointer;
+}
+.meeting-notes-composer button:disabled {
+  background: var(--bg-3, rgba(255,255,255,0.1));
+  color: var(--tx-lo, #8a8e96);
+  cursor: not-allowed;
+}
+/* Notes button "open" state — same accent tint as #btn-cc.active. */
+[data-ui="v2"] #btn-notes.active {
+  background: var(--accent-dim, rgba(10,132,255,0.20));
+  color: var(--accent-tx, var(--accent, #0a84ff));
+}
+
 /* ============================================================
    Persistent call-return dock — surfaces above v2 overlay views
    (AI panel z-100, Calendar grid z-100) when the user has

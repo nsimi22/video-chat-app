@@ -228,6 +228,14 @@ const els = {
   aiTicketStatus: $('#ai-ticket-status'),
   aiTicketCancel: $('#ai-ticket-cancel'),
   aiTicketDraft: $('#ai-ticket-draft'),
+  btnNotes: $('#btn-notes'),
+  meetingNotes: $('#meeting-notes'),
+  meetingNotesClose: $('#meeting-notes-close'),
+  meetingNotesList: $('#meeting-notes-list'),
+  meetingNotesEmpty: $('#meeting-notes-empty'),
+  meetingNotesComposer: $('#meeting-notes-composer'),
+  meetingNotesInput: $('#meeting-notes-input'),
+  meetingNotesSend: $('#meeting-notes-send'),
 };
 
 const state = {
@@ -348,6 +356,18 @@ const state = {
     lastInterim: '',      // local interim, redrawn over the panel tail
     forChannelId: null,   // channel the buffer belongs to (for summary post)
     _finalizing: false,   // guards finalizeCallTranscript against re-entry
+  },
+  // Meeting thread: anchored by the "📞 Call started" message posted
+  // when startCall runs. Joiners pick the root up via the call-channel
+  // 'meeting-root' broadcast or fetchActiveMeetingRoot as a fallback.
+  // Cleared when the call ends (post-finalizeCallTranscript so the AI
+  // summary can attach as a reply).
+  meeting: {
+    threadRootId: null,
+    threadRootChannelId: null,
+    panelOpen: false,
+    replies: [],          // [marshaledMessage] — populated on panel open + via chat-message events
+    unsubReplyHandler: null,
   },
 };
 
@@ -1757,6 +1777,11 @@ async function joinTeamAndStart(teamId) {
   huddle.addEventListener('saved-message-added', (e) => onSavedMessageChange('add', e.detail.save));
   huddle.addEventListener('saved-message-updated', (e) => onSavedMessageChange('update', e.detail.save));
   huddle.addEventListener('saved-message-removed', (e) => onSavedMessageChange('remove', { messageId: e.detail.messageId }));
+  // Surface incoming messages to the meeting Notes panel. The handler
+  // filters by parent_id so non-meeting-thread messages are no-ops;
+  // gating it here (rather than only while in-call) is fine because
+  // state.meeting.threadRootId is null off-call.
+  huddle.addEventListener('chat-message', (e) => onIncomingMessageForMeeting(e.detail?.message));
 
   // Construct ChatView + assign state BEFORE huddle.start(), because
   // start() dispatches `welcome` synchronously at the end of its
@@ -1886,6 +1911,11 @@ async function startCall(channelId) {
   // now that a call is live here. peer-joined hooks keep it in sync
   // as participants arrive; this initial paint covers the bootstrap.
   refreshHeaderMembersForCurrent();
+  // Meeting thread: this caller is the call starter (Start call path —
+  // joinCall path runs through here too, hence the "post if no root yet"
+  // guard). Posts the "📞 Call started" anchor message and broadcasts
+  // its id so other participants pick the same thread root.
+  setupMeetingThreadAsStarter(channelId);
   // Pre-apply the persisted blur preference before setCamera so the
   // very first frame peers receive is already blurred — toggling
   // after the fact briefly publishes a sharp frame.
@@ -1939,6 +1969,12 @@ async function leaveCall() {
   // already nulled state.cc.manager.
   state.cc.lineSub?.();
   state.cc.lineSub = null;
+  // Drop the meeting-thread anchor + replies for this call.
+  // finalizeCallTranscript above runs in the background and reads
+  // state.meeting.threadRootId BEFORE we tear it down here — it
+  // snapshots the id synchronously into a closure variable, so the
+  // teardown can run immediately without racing the AI summary.
+  teardownMeetingThread();
   // Repaint the avatar stack now that the in-call source is gone —
   // falls back to channel roster (or DM members), matching the pre-call
   // state.
@@ -2124,6 +2160,222 @@ function shouldDedupeCaption(line) {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Meeting thread
+// ---------------------------------------------------------------------------
+
+// Anchor for the call's thread. The first joiner posts a "📞 Call started"
+// message and broadcasts its id over the call channel; later joiners pick
+// it up via that broadcast or fetchActiveMeetingRoot as a fallback. Once
+// state.meeting.threadRootId is set, the Notes panel mounts replies as a
+// thread off that message and the post-call AI summary lands as a reply.
+async function setupMeetingThreadAsStarter(channelId) {
+  if (!state.huddle || !channelId) return;
+  // Already wired for this channel? No-op (covers reconnect / popout
+  // rejoin paths that re-enter startCall).
+  if (state.meeting.threadRootId && state.meeting.threadRootChannelId === channelId) return;
+
+  // Listener: pick up the root id if another peer posted it. Wired
+  // unconditionally so the "I joined an existing call" path resolves
+  // even without the fetch fallback firing.
+  if (!state.meeting._unsubRoot) {
+    const handler = (e) => {
+      const d = e.detail || {};
+      if (d.channelId !== state.inCallChannelId) return;
+      if (state.meeting.threadRootId) return; // already resolved
+      state.meeting.threadRootId = d.messageId;
+      state.meeting.threadRootChannelId = d.channelId;
+      onMeetingThreadResolved();
+    };
+    state.huddle.addEventListener('meeting-root', handler);
+    state.meeting._unsubRoot = () => state.huddle.removeEventListener('meeting-root', handler);
+  }
+
+  // Joining an existing call → don't post a duplicate root. Try the
+  // fallback fetch in case we missed the realtime broadcast.
+  const others = state.huddle.callPeerInfo?.size || 0;
+  if (others > 0) {
+    try {
+      const row = await state.huddle.fetchActiveMeetingRoot(channelId);
+      if (row && !state.meeting.threadRootId) {
+        state.meeting.threadRootId = row.id;
+        state.meeting.threadRootChannelId = channelId;
+        onMeetingThreadResolved();
+      }
+    } catch (err) { console.warn('[meeting] fetch active root failed', err); }
+    return;
+  }
+
+  // Fresh call — I'm the starter. Post the anchor message + broadcast.
+  try {
+    const startedAt = new Date().toISOString();
+    const body = `📞 Call started — ${formatCallStartedTimestamp(startedAt)}`;
+    const row = await state.huddle.sendMeetingRootMessage(channelId, {
+      body,
+      meta: { meeting_root: true, started_at: startedAt },
+    });
+    state.meeting.threadRootId = row.id;
+    state.meeting.threadRootChannelId = channelId;
+    state.huddle.sendCallMeetingRoot(channelId, row.id);
+    onMeetingThreadResolved();
+  } catch (err) {
+    console.warn('[meeting] failed to post call-start anchor', err);
+  }
+}
+
+function formatCallStartedTimestamp(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' });
+  } catch { return iso; }
+}
+
+// Called when the meeting thread root id becomes available (either we
+// posted it, received the broadcast, or resolved via the fallback
+// fetch). Pre-loads existing replies + refreshes the Notes panel.
+async function onMeetingThreadResolved() {
+  if (!state.meeting.threadRootId) return;
+  try {
+    state.meeting.replies = await state.huddle.fetchThreadReplies(
+      state.meeting.threadRootChannelId,
+      state.meeting.threadRootId,
+    );
+  } catch (err) {
+    console.warn('[meeting] backfill replies failed', err);
+    state.meeting.replies = [];
+  }
+  renderMeetingNotesPanel();
+}
+
+// Surface incoming thread replies live. Wired once at boot in
+// wireControls; safe to invoke for every chat-message because the
+// filter short-circuits when the message isn't a meeting reply.
+function onIncomingMessageForMeeting(message) {
+  if (!message) return;
+  if (!state.meeting.threadRootId) return;
+  if (message.parentId !== state.meeting.threadRootId) return;
+  // Dedupe by id — the originator's own send echoes through here as
+  // well as the realtime postgres_changes INSERT.
+  if (state.meeting.replies.some((m) => m.id === message.id)) return;
+  state.meeting.replies.push(message);
+  renderMeetingNotesPanel();
+}
+
+function teardownMeetingThread() {
+  state.meeting._unsubRoot?.();
+  state.meeting._unsubRoot = null;
+  state.meeting.threadRootId = null;
+  state.meeting.threadRootChannelId = null;
+  state.meeting.replies = [];
+  // panelOpen intentionally NOT reset — the user's panel preference
+  // survives between calls in the same session.
+  renderMeetingNotesPanel();
+}
+
+// Toggle / show / hide the Notes side panel. The panel ONLY mounts
+// during a call (Notes button is .hidden otherwise) and only after
+// the meeting thread root has been resolved — composer is disabled
+// until then so an early click doesn't accept a note we can't anchor.
+function toggleMeetingNotesPanel() {
+  state.meeting.panelOpen = !state.meeting.panelOpen;
+  renderMeetingNotesPanel();
+  if (state.meeting.panelOpen) {
+    setTimeout(() => els.meetingNotesInput?.focus(), 0);
+  }
+}
+
+function renderMeetingNotesPanel() {
+  if (!els.meetingNotes) return;
+  const visible = !!state.inCallChannelId && state.meeting.panelOpen;
+  els.meetingNotes.classList.toggle('hidden', !visible);
+  els.btnNotes?.classList.toggle('active', state.meeting.panelOpen);
+  if (!visible) return;
+
+  const list = els.meetingNotesList;
+  list.innerHTML = '';
+  const replies = state.meeting.replies || [];
+  for (const m of replies) list.appendChild(buildMeetingNoteRow(m));
+  els.meetingNotesEmpty.classList.toggle('hidden', replies.length > 0);
+  // Auto-scroll to bottom so the newest reply is in view.
+  list.scrollTop = list.scrollHeight;
+
+  // Composer is disabled until the thread root is resolved. Without
+  // a root id we have nothing to anchor replies to.
+  const hasRoot = !!state.meeting.threadRootId;
+  els.meetingNotesInput.disabled = !hasRoot;
+  els.meetingNotesSend.disabled = !hasRoot;
+  els.meetingNotesInput.placeholder = hasRoot
+    ? 'Add a note for this call…'
+    : 'Setting up meeting thread…';
+}
+
+function buildMeetingNoteRow(m) {
+  const row = document.createElement('div');
+  row.className = 'meeting-note-row' + (m.aiGenerated ? ' is-ai' : '');
+  row.dataset.id = m.id;
+
+  const head = document.createElement('div');
+  head.className = 'meeting-note-head';
+  const name = document.createElement('span');
+  name.className = 'meeting-note-author';
+  name.textContent = m.authorName || 'someone';
+  if (m.authorColor) name.style.color = m.authorColor;
+  const when = document.createElement('span');
+  when.className = 'meeting-note-time mono';
+  when.textContent = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  head.append(name, when);
+  if (m.aiGenerated) {
+    const badge = document.createElement('span');
+    badge.className = 'meeting-note-ai-badge';
+    badge.textContent = 'AI';
+    head.appendChild(badge);
+  }
+  row.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'meeting-note-body';
+  // Render via the existing markdown helper so AI summaries (which use
+  // **bold** + bullets) format properly. window.renderMarkdown is set
+  // by renderer/markdown.js, loaded before app.js in index.html. Fall
+  // back to plain text if the helper isn't available.
+  if (typeof window.renderMarkdown === 'function') {
+    body.innerHTML = window.renderMarkdown(m.text || '');
+  } else {
+    body.textContent = m.text || '';
+  }
+  row.appendChild(body);
+
+  return row;
+}
+
+async function sendMeetingNote() {
+  const text = (els.meetingNotesInput.value || '').trim();
+  if (!text) return;
+  if (!state.meeting.threadRootId || !state.meeting.threadRootChannelId) return;
+  els.meetingNotesInput.value = '';
+  els.meetingNotesInput.disabled = true;
+  els.meetingNotesSend.disabled = true;
+  try {
+    await state.huddle?.sendMessage({
+      channelId: state.meeting.threadRootChannelId,
+      parentId: state.meeting.threadRootId,
+      text,
+    });
+    // The optimistic-append path is intentionally absent — the realtime
+    // chat-message INSERT echo lands within ~250ms and onIncomingMessageForMeeting
+    // dedupes on id. Skipping local append keeps the rendering source
+    // of truth single-pass.
+  } catch (err) {
+    console.warn('[meeting] send note failed', err);
+    // Restore the text so the user doesn't lose what they typed.
+    els.meetingNotesInput.value = text;
+  } finally {
+    els.meetingNotesInput.disabled = !state.meeting.threadRootId;
+    els.meetingNotesSend.disabled = !state.meeting.threadRootId;
+    setTimeout(() => els.meetingNotesInput?.focus(), 0);
+  }
+}
+
 function appendCaptionLine(line) {
   if (shouldDedupeCaption(line)) return;
   state.cc.lines.push(line);
@@ -2194,8 +2446,15 @@ function finalizeCallTranscript() {
   // Snapshot + reset shared state synchronously so a follow-up
   // call accumulates into a fresh buffer with no chance of being
   // cleared by an in-flight summary belonging to the previous one.
+  // The meetingThreadId snapshot is captured here, BEFORE the
+  // upcoming teardownMeetingThread() clears state.meeting — the
+  // background AI summary then posts to the right thread even after
+  // the call's local state has been wiped.
   const lines = state.cc.lines.slice();
   const channelId = state.cc.forChannelId;
+  const meetingThreadId = state.meeting?.threadRootChannelId === channelId
+    ? state.meeting.threadRootId
+    : null;
   state.cc.lines = [];
   state.cc.forChannelId = null;
   stopCaptions({ keepBuffer: true });
@@ -2228,8 +2487,14 @@ function finalizeCallTranscript() {
     }
     const body = `**📞 Call recap**\n\n${result.text || '(no recap produced)'}`;
     try {
+      // Prefer the meeting thread when a root id is set — the recap
+      // lives next to any in-call notes the user wrote, instead of
+      // dropping into the channel feed as a standalone message.
       await state.huddle?.sendAiMessage({
-        channelId, parentId: null, text: body, model: result.model,
+        channelId,
+        parentId: meetingThreadId || null,
+        text: body,
+        model: result.model,
       });
     } catch (err) {
       console.warn('failed to post call recap', err);
@@ -2411,6 +2676,7 @@ function renderCallHeader() {
   // toggle while there's nothing to caption.
   const ccSupported = !!window.HuddleTranscript?.TranscriptManager?.isSupported();
   els.btnCc?.classList.toggle('hidden', !inCallHere || !ccSupported);
+  els.btnNotes?.classList.toggle('hidden', !inCallHere);
   els.btnPopoutCall.classList.toggle('hidden', !inCallHere);
   els.btnFullscreen?.classList.toggle('hidden', !inCallHere);
   // Layout switcher visibility is driven by refreshLayoutSwitcherUi
@@ -5082,6 +5348,26 @@ function wireControls() {
   const toggleCaptions = () => (state.cc.on ? stopCaptions() : startCaptions());
   els.btnCc && (els.btnCc.onclick = toggleCaptions);
   els.captionsClose && (els.captionsClose.onclick = () => stopCaptions());
+
+  // Meeting notes — right-side dock. Toggle from the call dock's
+  // Notes button; the panel itself hosts a tiny composer that posts
+  // replies onto the meeting-thread root anchored at call start.
+  els.btnNotes && (els.btnNotes.onclick = toggleMeetingNotesPanel);
+  els.meetingNotesClose && (els.meetingNotesClose.onclick = () => {
+    state.meeting.panelOpen = false;
+    renderMeetingNotesPanel();
+  });
+  els.meetingNotesComposer && els.meetingNotesComposer.addEventListener('submit', (e) => {
+    e.preventDefault();
+    sendMeetingNote();
+  });
+  // Enter sends; Shift+Enter for newline (mirrors the main composer).
+  els.meetingNotesInput && els.meetingNotesInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMeetingNote();
+    }
+  });
   // Leave the call (drop media + tile grid, keep chat). Held-down "Leave
   // team" is in the sidebar's sign-out menu.
   els.btnLeave.onclick = leaveCall;
