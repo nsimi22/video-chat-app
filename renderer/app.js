@@ -2372,6 +2372,9 @@ function onCallPeerJoined(peer) {
   // Avatar stack in the chat header tracks the live participant set
   // (not the channel roster) while a call is in progress here.
   refreshHeaderMembersForCurrent();
+  // Call-channel presence has registered this peer; re-label any tile
+  // we stamped 'guest' before their name was known.
+  if (peer?.id) refreshTileLabelForPeer(peer.id);
 }
 
 function onCallPeerLeft(peerId) {
@@ -3120,6 +3123,9 @@ function onMemberOnline(peer) {
     r.color = peer.color || r.color;
   }
   renderRoster();
+  // Team presence finally landed for this peer — if their LK track
+  // already arrived and we stamped the tile 'guest', re-label it now.
+  refreshTileLabelForPeer(peer.id);
 }
 
 // (onMemberOffline + onCallPeerLeft above replace the old onPeerLeft —
@@ -3128,6 +3134,34 @@ function onMemberOnline(peer) {
 // ---------------------------------------------------------------------------
 // Tiles
 // ---------------------------------------------------------------------------
+
+// Pick the best label for a remote peer's tile given whatever presence
+// caches happen to be populated. Order goes most-specific (call-channel
+// presence sees the peer as they .track) → general team presence →
+// the durable roster snapshot → fallback. Used both at tile creation
+// time and when presence catches up after the LK track already landed.
+function resolveTileLabel(peerId) {
+  if (!peerId) return 'guest';
+  const huddle = state.huddle;
+  return huddle?.callPeerInfo?.get(peerId)?.name
+    || huddle?.peerInfo?.get(peerId)?.name
+    || huddle?.roster?.get(peerId)?.name
+    || 'guest';
+}
+
+// Re-label a peer's camera tile (if it exists) — used when team or call
+// presence resolves a peer's identity after the LK track already landed
+// and the initial tile was stamped 'guest'. Idempotent: a no-op if the
+// tile doesn't exist or the resolved name is still 'guest'.
+function refreshTileLabelForPeer(peerId) {
+  if (!peerId) return;
+  const tile = state.tilesByKey.get(`peer:${peerId}`);
+  if (!tile) return;
+  const lblEl = tile.querySelector('.tile-label');
+  if (!lblEl) return;
+  const next = resolveTileLabel(peerId);
+  if (next && lblEl.textContent !== next) lblEl.textContent = next;
+}
 
 function makeTile({ key, label, kind, userId }) {
   let tile = state.tilesByKey.get(key);
@@ -3575,9 +3609,16 @@ function hashHue(key) {
 function ensureCamOffOverlay(tile, peerId) {
   if (tile.querySelector('.tile-cam-off')) return;
   const isSelf = peerId === state.huddle?.peerId;
+  // Same fallback chain as resolveTileLabel — extend the existing
+  // peerInfo / callPeerInfo lookup with the durable roster snapshot
+  // so a cam-off that fires before team presence syncs still shows
+  // the right name instead of 'guest'.
   const peer = isSelf
     ? { name: state.huddle?.name, color: state.huddle?.color }
-    : state.huddle?.peerInfo?.get(peerId) || state.huddle?.callPeerInfo?.get(peerId) || {};
+    : (state.huddle?.callPeerInfo?.get(peerId)
+       || state.huddle?.peerInfo?.get(peerId)
+       || state.huddle?.roster?.get(peerId)
+       || {});
   const name = peer.name || 'guest';
   const color = peer.color || '#666';
   // Per-user hue (0–360) driving the radial-gradient cam-off
@@ -4681,8 +4722,16 @@ function commitStreamAsCamera(streamId) {
   state.pendingStreams.delete(streamId);
   clearTimeout(pending.timer);
   const key = `peer:${pending.fromId}`;
-  const peer = state.huddle.peerInfo.get(pending.fromId);
-  const tile = makeTile({ key, label: peer ? peer.name : 'guest', kind: 'remote', userId: pending.fromId });
+  // Fall-through name lookup: peerInfo is the team-wide presence cache
+  // and lags slightly behind LK joins; callPeerInfo is the call-channel
+  // presence cache (populated when the peer .tracks the call channel,
+  // which usually beats team presence on a fresh join); roster is the
+  // persistent membership snapshot loaded at signin. When LK delivers a
+  // remote track before any of these have the peer, we used to stamp
+  // the tile "guest" with no recovery path. resolveTileLabel handles
+  // both the initial label here and later refreshes when presence
+  // catches up.
+  const tile = makeTile({ key, label: resolveTileLabel(pending.fromId), kind: 'remote', userId: pending.fromId });
   const video = tile.querySelector('video');
   video.srcObject = pending.stream;
   // Late remote tiles can land in a `paused: true` state under
