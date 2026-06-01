@@ -7587,7 +7587,10 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .wbv-text.is-editing { cursor: text; background: rgba(0,0,0,0.25); }
 .wbv-text-input {
   outline: none;
-  min-width: 80px;
+  /* Fill the parent's data.w width so text wraps at the user-set
+   * width set by the east resize handle. min-height stays content-
+   * driven so an empty / one-line block doesn't pad downward. */
+  width: 100%;
   min-height: 22px;
   font-size: 17px;
   line-height: 1.32;
@@ -7596,8 +7599,59 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   color: var(--tx-hi, #f0f1f3);
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .wbv-text-input:empty::before {
   content: 'Type…';
   opacity: 0.45;
+}
+
+/* Sticky-note + text-block resize handles. Use the same class as the
+ * frame handles but keep the styling specific to each kind. Stickies
+ * get 4 corner dots (visible on hover); text blocks get a vertical
+ * east edge that conveys "drag right to set wrap width." */
+.wbv-resize-handle {
+  position: absolute;
+  background: transparent;
+  z-index: 3;
+}
+.wbv-resize-corner {
+  width: 12px;
+  height: 12px;
+}
+.wbv-resize-corner.is-nw { top: -6px; left: -6px;  cursor: nwse-resize; }
+.wbv-resize-corner.is-se { bottom: -6px; right: -6px; cursor: nwse-resize; }
+.wbv-resize-corner.is-ne { top: -6px; right: -6px; cursor: nesw-resize; }
+.wbv-resize-corner.is-sw { bottom: -6px; left: -6px;  cursor: nesw-resize; }
+.wbv-resize-corner::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: var(--accent, #0a84ff);
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.wbv-note:hover .wbv-resize-corner::after,
+.wbv-note.is-selected .wbv-resize-corner::after {
+  opacity: 0.65;
+}
+.wbv-resize-edge.is-e {
+  top: 8px; bottom: 8px; right: -4px; width: 8px;
+  cursor: ew-resize;
+}
+.wbv-resize-edge.is-e::after {
+  content: "";
+  position: absolute;
+  top: 50%; right: 1px;
+  width: 3px; height: 22px;
+  margin-top: -11px;
+  border-radius: 2px;
+  background: var(--accent, #0a84ff);
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.wbv-text:hover .wbv-resize-edge.is-e::after,
+.wbv-text.is-selected .wbv-resize-edge.is-e::after {
+  opacity: 0.55;
 }

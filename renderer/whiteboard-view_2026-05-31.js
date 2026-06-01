@@ -707,6 +707,20 @@
       toolbar.appendChild(del);
       el.appendChild(toolbar);
 
+      // 4 corner resize handles. Stickies stay roughly card-shaped so
+      // edge handles read as overkill; corners cover the common cases
+      // (pull NW/SE to scale, NE/SW to skew). The handles ride on the
+      // OUTER unrotated wrapper so the rotation transform on the card
+      // doesn't warp the pointer math — drag delta in screen coords
+      // ÷ viewport scale lands directly in world units.
+      for (const dir of ['nw', 'ne', 'se', 'sw']) {
+        const handle = h('span', {
+          class: `wbv-resize-handle is-${dir} wbv-resize-corner`,
+          attrs: { 'data-handle': dir, 'aria-hidden': 'true' },
+        });
+        el.appendChild(handle);
+      }
+
       this.worldLayer.appendChild(el);
 
       const entry = { data: { ...note }, el, textEl: text, voteEl: vote, voteCountEl: voteCount, authorNameEl: authorName, avatarEl: avatar };
@@ -747,6 +761,15 @@
       const text = h('div', { class: 'wbv-text-input', attrs: { contenteditable: 'false', spellcheck: 'false' } });
       text.textContent = note.text || '';
       el.appendChild(text);
+      // Single east-edge handle — height for text always follows
+      // content, so resizing here means "set the wrap width." Pulling
+      // it left tightens the wrap; right loosens / lets it stay one
+      // line.
+      const handle = h('span', {
+        class: 'wbv-resize-handle is-e wbv-resize-edge',
+        attrs: { 'data-handle': 'e', 'aria-hidden': 'true' },
+      });
+      el.appendChild(handle);
       this.worldLayer.appendChild(el);
       const entry = { data: { ...note }, el, textEl: text, kind: 'text' };
       this.notes.set(note.id, entry);
@@ -764,11 +787,12 @@
       el.style.left = ((data.x - vp.x) * vp.scale) + 'px';
       el.style.top = ((data.y - vp.y) * vp.scale) + 'px';
       if (entry.kind === 'text') {
-        // Text blocks size to content (no fixed w/h) so adding lines
-        // grows the selection border with the text instead of clipping
-        // past the seeded TEXT_W/TEXT_H. Apply the zoom via a CSS
-        // transform on the inner text so font/spacing scale visually.
-        el.style.width = '';
+        // Text blocks have a fixed wrap-width (data.w in world units)
+        // and grow vertically with content. The zoom is applied via
+        // CSS transform on the outer element so font / spacing scale
+        // visually; the inner contenteditable wraps at 100% of the
+        // parent's width.
+        el.style.width = (data.w || TEXT_W) + 'px';
         el.style.height = '';
         el.style.minWidth = '';
         el.style.transform = `scale(${vp.scale})`;
@@ -832,10 +856,10 @@
         if (this.editingNote === data.id) return;
         if (this.tool === 'sticky') return; // sticky tool stamps new notes; don't grab existing ones
         // Don't start dragging from inside the contextual toolbar
-        // (color swatches / delete) or the vote pill — those have their
-        // own click handlers and a tiny pointer drift would otherwise
-        // burn a spurious "moved" persist.
-        if (e.target.closest('.wbv-note-toolbar, .wbv-note-vote')) return;
+        // (color swatches / delete), the vote pill, or a resize
+        // handle — those have their own handlers and a tiny pointer
+        // drift would otherwise burn a spurious "moved" persist.
+        if (e.target.closest('.wbv-note-toolbar, .wbv-note-vote, .wbv-resize-handle')) return;
         e.stopPropagation();
         e.preventDefault();
         const vp = this.canvas?.getViewport() || { scale: 1 };
@@ -885,6 +909,68 @@
       textEl.addEventListener('blur', () => this._endEditNote(data.id));
       textEl.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') { e.preventDefault(); this._endEditNote(data.id); }
+      });
+
+      // Wire any resize handles the renderer attached (stickies have 4
+      // corners, text blocks have an east edge, plain notes have none).
+      this._wireNoteResizeHandles(entry);
+    }
+
+    // Resize handles for sticky notes + text blocks. Lives next to the
+    // frame resize logic conceptually but separated so we can clamp to
+    // kind-appropriate floors (stickies hold a 100×100 minimum; text
+    // blocks just hold a wrap-width floor — height is content-driven).
+    _wireNoteResizeHandles(entry) {
+      const { el, data } = entry;
+      const isText = entry.kind === 'text';
+      const MIN_W = isText ? 80 : 100;
+      const MIN_H = isText ? 0 : 100; // text height is always content-driven
+
+      el.querySelectorAll('.wbv-resize-handle').forEach((handle) => {
+        handle.addEventListener('pointerdown', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (this.editingNote === data.id) return; // never resize while typing
+          const dir = handle.dataset.handle; // 'nw' | 'ne' | 'se' | 'sw' | 'e' | …
+          const vp = this.canvas?.getViewport() || { scale: 1 };
+          const start = {
+            clientX: e.clientX, clientY: e.clientY, scale: vp.scale,
+            x: data.x, y: data.y, w: data.w, h: data.h,
+          };
+          handle.setPointerCapture?.(e.pointerId);
+          const onMove = (ev) => {
+            const dx = (ev.clientX - start.clientX) / start.scale;
+            const dy = (ev.clientY - start.clientY) / start.scale;
+            let { x, y, w, h } = start;
+            if (dir.includes('w')) { x = start.x + dx; w = start.w - dx; }
+            if (dir.includes('e')) { w = start.w + dx; }
+            if (!isText && dir.includes('n')) { y = start.y + dy; h = start.h - dy; }
+            if (!isText && dir.includes('s')) { h = start.h + dy; }
+            if (w < MIN_W) {
+              if (dir.includes('w')) x = start.x + (start.w - MIN_W);
+              w = MIN_W;
+            }
+            if (!isText && h < MIN_H) {
+              if (dir.includes('n')) y = start.y + (start.h - MIN_H);
+              h = MIN_H;
+            }
+            data.x = x; data.y = y; data.w = w; data.h = h;
+            this._positionNote(entry);
+            this._scheduleMinimapRender();
+          };
+          const onUp = () => {
+            handle.removeEventListener('pointermove', onMove);
+            handle.removeEventListener('pointerup', onUp);
+            handle.removeEventListener('pointercancel', onUp);
+            const patch = { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h };
+            this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: patch }, this.viewId);
+            this.huddle.updateWhiteboardNote(data.id, { x: data.x, y: data.y, w: data.w, h: data.h })
+              .catch((err) => console.warn('[wbv] note resize persist failed', err));
+          };
+          handle.addEventListener('pointermove', onMove);
+          handle.addEventListener('pointerup', onUp);
+          handle.addEventListener('pointercancel', onUp);
+        });
       });
     }
 
