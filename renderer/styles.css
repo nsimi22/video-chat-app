@@ -1044,6 +1044,21 @@ button.ctrl.muted.icon-only::after {
   border-radius: var(--r-md);
   overflow: hidden;
   box-shadow: var(--shadow-2);
+  /* Container query anchor so child rules can react to tile width.
+   * Used by .tile-actions to drop button labels when the tile is
+   * too narrow for them to fit on a single row (prevents the
+   * Pop out / Spotlight / × Close row from wrapping vertically). */
+  container-type: inline-size;
+  container-name: tile;
+}
+/* Squeeze the tile-actions row to icon-only when the containing
+ * tile is below ~340px. Hides the per-button text label; the SVG
+ * + tooltip keep the affordance discoverable. Whiteboard tiles in
+ * narrow stacked layouts hit this case routinely (captions + notes
+ * + sidebar + rail eat the stage width). */
+@container tile (max-width: 340px) {
+  .tile-actions button span { display: none; }
+  .tile-actions button { padding: 5px 7px; }
 }
 .tile.screen { grid-column: span 2; min-height: 360px; }
 .tile.whiteboard {
@@ -6345,9 +6360,13 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 }
 /* When captions panel is visible (not .hidden), reserve right
    space on the tile grid so tiles don't sit underneath the
-   panel. :has() is supported in Chromium-based Electron. */
+   panel. :has() is supported in Chromium-based Electron.
+   The extra 16px buffer (on top of 296 panel + 16 right edge)
+   creates a visible gap between the rightmost tile and the
+   panel — without it tiles butt directly against the panel
+   border. */
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)) .tiles {
-  padding-right: 312px; /* 296 panel + 16 right edge gap */
+  padding-right: 328px; /* 296 panel + 16 right edge + 16 buffer */
 }
 
 /* Meeting-notes panel — mirrors the captions dock so they read as
@@ -6376,12 +6395,20 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)) #meeting-notes:not(.hidden) {
   right: calc(296px + 16px + 16px);
 }
-/* Reserve tile-grid space the same way captions does. */
+/* Reserve tile-grid space the same way captions does, with the
+ * matching 16px buffer so the rightmost tile gets breathing room
+ * from the panel border. */
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#meeting-notes:not(.hidden)) .tiles {
-  padding-right: 356px; /* 340 panel + 16 edge gap */
+  padding-right: 372px; /* 340 panel + 16 right edge + 16 buffer */
 }
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)):has(#meeting-notes:not(.hidden)) .tiles {
-  padding-right: calc(296px + 16px + 16px + 340px + 16px);
+  padding-right: calc(296px + 16px + 16px + 340px + 16px + 16px); /* both panels + edge gaps + buffer */
+}
+/* When both panels are open the tile area is squeezed hard.
+ * Drop the minmax threshold further so tiles can still pack 2
+ * per row at default window widths instead of collapsing. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)):has(#meeting-notes:not(.hidden)) .tiles {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
 .meeting-notes-header {
