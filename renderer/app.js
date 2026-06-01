@@ -1944,8 +1944,38 @@ async function leaveCall() {
 // CC toggle, leaveCall, or popout-handoff) tears down the SR + the
 // mesh listener but keeps the buffer around long enough for
 // finalizeCallTranscript() to summarise it.
-function startCaptions() {
+async function startCaptions() {
   if (state.cc.on) return;
+  // Gate on the offline captions engine + model. Phase 3 will replace
+  // the Web Speech engine entirely with whisper.cpp; for now the gate
+  // ensures users see a clear path to download the model when missing
+  // and don't waste a click on the broken SR fallback when the binary
+  // isn't bundled for their platform.
+  if (window.huddle?.getWhisperBinaryStatus && window.huddle?.whisperModel) {
+    try {
+      const bin = await window.huddle.getWhisperBinaryStatus();
+      if (!bin?.available) {
+        showCallError('Captions aren\'t supported on this platform yet.');
+        return;
+      }
+      const model = await window.huddle.whisperModel.getStatus();
+      if (model?.status !== 'ready') {
+        if (confirm('Live captions need a ~75 MB offline model. Download now?')) {
+          // Open Settings → Integrations so the user sees the progress
+          // bar; download starts there. They can hit CC again once it
+          // finishes.
+          try { openSettings(); } catch {}
+          captionsModelUi?.refresh?.();
+          // Kick off download immediately so the user doesn't have to
+          // hunt for the button.
+          document.getElementById('set-captions-download')?.click();
+        }
+        return;
+      }
+    } catch (err) {
+      console.warn('captions gate check failed', err);
+    }
+  }
   if (!window.HuddleTranscript?.TranscriptManager?.isSupported()) {
     showCallError("This build's runtime doesn't expose the Web Speech API; live captions aren't available.");
     return;
@@ -3852,6 +3882,133 @@ function normalizeIcsUrl(u) {
   catch { return String(u); }
 }
 
+// ── Captions model (whisper.cpp) — Settings → Integrations row ──
+//
+// Manages the lifecycle UI for the ~75 MB `ggml-tiny.en.bin` model used
+// by the offline-captions sidecar. State is owned by main; this is just
+// a thin reflection layer that refreshes when the modal opens and
+// streams progress while a download is in flight. Wired once on first
+// render; subsequent openSettings() calls just call refresh.
+const captionsModelUi = (() => {
+  let wired = false;
+  let downloading = false;
+
+  function fmtMb(bytes) {
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  function setError(msg) {
+    const el = document.getElementById('set-captions-error');
+    if (!el) return;
+    if (!msg) { el.classList.add('hidden'); el.textContent = ''; return; }
+    el.classList.remove('hidden');
+    el.textContent = msg;
+  }
+
+  function render(state) {
+    const row    = document.getElementById('set-captions-row');
+    if (!row) return;
+    const status = row.querySelector('.set-captions-status');
+    const prog   = row.querySelector('.set-captions-progress');
+    const fill   = row.querySelector('.set-captions-progress-fill');
+    const btnDl  = document.getElementById('set-captions-download');
+    const btnCa  = document.getElementById('set-captions-cancel');
+    const btnRe  = document.getElementById('set-captions-redownload');
+    const btnDe  = document.getElementById('set-captions-delete');
+
+    const s = state.status;
+    status.dataset.status = s;
+    if (s === 'ready') {
+      status.textContent = `Ready — ${fmtMb(state.bytes)}`;
+      prog.classList.add('hidden');
+      btnDl.classList.add('hidden');
+      btnCa.classList.add('hidden');
+      btnRe.classList.remove('hidden');
+      btnDe.classList.remove('hidden');
+    } else if (s === 'downloading') {
+      const pct = state.total ? Math.round((state.bytes / state.total) * 100) : 0;
+      status.textContent = `Downloading ${pct}% — ${fmtMb(state.bytes)} of ${fmtMb(state.total)}`;
+      prog.classList.remove('hidden');
+      fill.style.width = `${pct}%`;
+      btnDl.classList.add('hidden');
+      btnRe.classList.add('hidden');
+      btnDe.classList.add('hidden');
+      btnCa.classList.remove('hidden');
+    } else {
+      status.textContent = `Not downloaded — ${fmtMb(state.total || 75 * 1024 * 1024)} required`;
+      prog.classList.add('hidden');
+      btnDl.classList.remove('hidden');
+      btnCa.classList.add('hidden');
+      btnRe.classList.add('hidden');
+      btnDe.classList.add('hidden');
+    }
+  }
+
+  async function refresh() {
+    if (!window.huddle?.whisperModel) return;
+    try {
+      const st = await window.huddle.whisperModel.getStatus();
+      downloading = st.status === 'downloading';
+      render(st);
+    } catch (err) {
+      console.warn('captions status fetch failed', err);
+    }
+  }
+
+  async function download() {
+    if (downloading) return;
+    setError(null);
+    downloading = true;
+    render({ status: 'downloading', bytes: 0, total: 77704715 });
+    try {
+      const res = await window.huddle.whisperModel.download();
+      if (!res?.ok) {
+        setError(res?.error || 'Download failed');
+      }
+    } catch (err) {
+      setError(err?.message || 'Download failed');
+    } finally {
+      downloading = false;
+      await refresh();
+    }
+  }
+
+  async function cancel() {
+    if (!downloading) return;
+    try { await window.huddle.whisperModel.cancel(); } catch {}
+    // refresh happens via the download promise's finally
+  }
+
+  async function deleteFile() {
+    if (downloading) return;
+    if (!confirm('Delete the offline captions model? You can re-download anytime.')) return;
+    try { await window.huddle.whisperModel.deleteFile(); }
+    catch (err) { setError(err?.message || 'Delete failed'); }
+    refresh();
+  }
+
+  function wire() {
+    if (wired) return;
+    if (!window.huddle?.whisperModel) return;
+    const btnDl = document.getElementById('set-captions-download');
+    const btnCa = document.getElementById('set-captions-cancel');
+    const btnRe = document.getElementById('set-captions-redownload');
+    const btnDe = document.getElementById('set-captions-delete');
+    if (!btnDl) return; // HTML not in this build
+    btnDl.onclick = download;
+    btnCa.onclick = cancel;
+    btnRe.onclick = download; // same path; the file is overwritten via .partial → rename
+    btnDe.onclick = deleteFile;
+    window.huddle.whisperModel.onProgress((p) => {
+      if (!downloading) downloading = true;
+      render({ status: 'downloading', bytes: p.received, total: p.total });
+    });
+    wired = true;
+  }
+
+  return { refresh, wire };
+})();
+
 function hostFromUrl(u) {
   try { return new URL(u.replace(/^webcal:\/\//i, 'https://')).hostname; }
   catch { return u; }
@@ -5455,6 +5612,8 @@ async function openSettings() {
   els.setGithubToken.value = s.github?.token || '';
   els.setGiphyKey.value = s.giphy?.key || '';
   renderCalendarSettingsList();
+  captionsModelUi.wire();
+  captionsModelUi.refresh();
   els.settingsStatus.classList.add('hidden');
   // Password fields are write-only — never prefilled, always cleared on open.
   els.setNewPassword.value = '';

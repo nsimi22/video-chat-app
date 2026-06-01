@@ -692,6 +692,49 @@ input:focus, textarea:focus {
   color: #ff8a80;
   border-color: rgba(255, 69, 58, 0.24);
 }
+
+/* Captions model row in Settings → Integrations. Status badge on the
+   left, action buttons on the right; progress bar slides in under the
+   status text while a download is in flight. */
+.set-captions-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+.set-captions-meta {
+  flex: 1;
+  min-width: 0;
+}
+.set-captions-status {
+  font-size: 13px;
+  color: var(--text);
+}
+.set-captions-status[data-status="ready"]       { color: #7be88f; }
+.set-captions-status[data-status="downloading"] { color: var(--text-muted, #a0a8b4); }
+.set-captions-status[data-status="error"]       { color: #ff8a80; }
+.set-captions-progress {
+  margin-top: 8px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.set-captions-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent, #5ea6ff);
+  transition: width 120ms ease-out;
+}
+.set-captions-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 .modal select {
   width: 100%;
   background: rgba(255, 255, 255, 0.04);
