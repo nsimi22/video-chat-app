@@ -1040,6 +1040,16 @@
       chip.appendChild(del);
       el.appendChild(chip);
 
+      // 8 resize handles (4 corners + 4 edges). Drag a corner to scale
+      // both dimensions, an edge to scale one. The frame body itself
+      // stays click-through (pointer-events:none in CSS) so drawing
+      // inside a frame still works — only the chip + handles capture.
+      const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+      for (const dir of HANDLES) {
+        const handle = h('span', { class: `wbv-frame-handle is-${dir}`, attrs: { 'data-handle': dir, 'aria-hidden': 'true' } });
+        el.appendChild(handle);
+      }
+
       this.worldLayer.insertBefore(el, this.worldLayer.firstChild); // behind notes
       const entry = { data: { ...frame }, el, titleEl, chipEl: chip };
       this.frames.set(frame.id, entry);
@@ -1065,6 +1075,7 @@
 
     _wireFrameHandlers(entry) {
       const { el, titleEl, chipEl, data } = entry;
+      const MIN_W = 80, MIN_H = 60; // world units
 
       // Drag the title chip to move the whole frame.
       chipEl.addEventListener('pointerdown', (e) => {
@@ -1092,6 +1103,63 @@
         chipEl.addEventListener('pointermove', onMove);
         chipEl.addEventListener('pointerup', onUp);
         chipEl.addEventListener('pointercancel', onUp);
+      });
+
+      // Resize via the 8 edge / corner handles. Each handle's `data-handle`
+      // attribute encodes which sides (n/s/e/w) it mutates. Anchoring
+      // the OPPOSITE corner means dragging "ne" moves top + right while
+      // keeping bottom-left fixed; "s" moves only the bottom edge; etc.
+      el.querySelectorAll('.wbv-frame-handle').forEach((handle) => {
+        handle.addEventListener('pointerdown', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const dir = handle.dataset.handle; // 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+          const vp = this.canvas?.getViewport() || { scale: 1 };
+          const start = {
+            clientX: e.clientX, clientY: e.clientY, scale: vp.scale,
+            x: data.x, y: data.y, w: data.w, h: data.h,
+          };
+          handle.setPointerCapture?.(e.pointerId);
+          const onMove = (ev) => {
+            const dx = (ev.clientX - start.clientX) / start.scale;
+            const dy = (ev.clientY - start.clientY) / start.scale;
+            let { x, y, w, h } = start;
+            // West/east mutate x + w (west keeps the right edge fixed,
+            // so x shifts in by dx and w shrinks by the same; east just
+            // grows w).
+            if (dir.includes('w')) { x = start.x + dx; w = start.w - dx; }
+            if (dir.includes('e')) { w = start.w + dx; }
+            if (dir.includes('n')) { y = start.y + dy; h = start.h - dy; }
+            if (dir.includes('s')) { h = start.h + dy; }
+            // Clamp to a floor so the frame can't collapse below its
+            // chip. When clamped on the "west" / "north" side, the
+            // origin (x or y) has to recompute against the fixed right
+            // / bottom edge so the frame doesn't drift.
+            if (w < MIN_W) {
+              if (dir.includes('w')) x = start.x + (start.w - MIN_W);
+              w = MIN_W;
+            }
+            if (h < MIN_H) {
+              if (dir.includes('n')) y = start.y + (start.h - MIN_H);
+              h = MIN_H;
+            }
+            data.x = x; data.y = y; data.w = w; data.h = h;
+            this._positionFrame(entry);
+            this._scheduleMinimapRender();
+          };
+          const onUp = () => {
+            handle.removeEventListener('pointermove', onMove);
+            handle.removeEventListener('pointerup', onUp);
+            handle.removeEventListener('pointercancel', onUp);
+            const patch = { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h };
+            this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: patch }, this.viewId);
+            this.huddle.updateWhiteboardFrame(data.id, { x: data.x, y: data.y, w: data.w, h: data.h })
+              .catch((err) => console.warn('[wbv] frame resize persist failed', err));
+          };
+          handle.addEventListener('pointermove', onMove);
+          handle.addEventListener('pointerup', onUp);
+          handle.addEventListener('pointercancel', onUp);
+        });
       });
 
       titleEl.addEventListener('dblclick', () => { titleEl.setAttribute('contenteditable', 'true'); titleEl.focus(); });

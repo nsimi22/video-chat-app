@@ -7367,9 +7367,66 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   border-radius: 16px;
   border: 1.5px solid var(--line, rgba(255,255,255,0.1));
   background: rgba(255,255,255,0.02);
-  pointer-events: auto;
+  /* Frame body is click-through so drawing / sticky-dropping inside a
+   * frame still works. Children (chip, delete button, resize handles)
+   * re-enable pointer-events individually below. */
+  pointer-events: none;
 }
 .wbv-frame-dashed { border-style: dashed; }
+.wbv-frame > * { pointer-events: auto; }
+
+/* Resize handles. 8 invisible boxes anchored to the frame's edges +
+ * corners. Their size + cursor convey the affordance; the visible
+ * frame border itself stays minimal. */
+.wbv-frame-handle {
+  position: absolute;
+  background: transparent;
+  z-index: 2;
+}
+.wbv-frame-handle.is-n,
+.wbv-frame-handle.is-s {
+  left: 8px; right: 8px; height: 8px;
+  cursor: ns-resize;
+}
+.wbv-frame-handle.is-e,
+.wbv-frame-handle.is-w {
+  top: 8px; bottom: 8px; width: 8px;
+  cursor: ew-resize;
+}
+.wbv-frame-handle.is-n  { top: -4px; }
+.wbv-frame-handle.is-s  { bottom: -4px; }
+.wbv-frame-handle.is-e  { right: -4px; }
+.wbv-frame-handle.is-w  { left: -4px; }
+.wbv-frame-handle.is-ne,
+.wbv-frame-handle.is-nw,
+.wbv-frame-handle.is-se,
+.wbv-frame-handle.is-sw {
+  width: 12px; height: 12px;
+}
+.wbv-frame-handle.is-nw { top: -6px; left: -6px;  cursor: nwse-resize; }
+.wbv-frame-handle.is-se { bottom: -6px; right: -6px; cursor: nwse-resize; }
+.wbv-frame-handle.is-ne { top: -6px; right: -6px; cursor: nesw-resize; }
+.wbv-frame-handle.is-sw { bottom: -6px; left: -6px;  cursor: nesw-resize; }
+/* Faint dot inside corner handles so they're discoverable without
+ * being noisy. Edges stay invisible — their cursor is the affordance. */
+.wbv-frame-handle.is-nw::after,
+.wbv-frame-handle.is-ne::after,
+.wbv-frame-handle.is-se::after,
+.wbv-frame-handle.is-sw::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: var(--wbv-frame-tint, var(--accent, #0a84ff));
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.wbv-frame:hover .wbv-frame-handle.is-nw::after,
+.wbv-frame:hover .wbv-frame-handle.is-ne::after,
+.wbv-frame:hover .wbv-frame-handle.is-se::after,
+.wbv-frame:hover .wbv-frame-handle.is-sw::after {
+  opacity: 0.6;
+}
 .wbv-frame-chip {
   position: absolute;
   top: -13px;
