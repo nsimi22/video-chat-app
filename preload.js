@@ -48,6 +48,11 @@ contextBridge.exposeInMainWorld('huddle', {
   resizeWindowToContent: (w, h) => ipcRenderer.invoke('resize-window-to-content', { width: w, height: h }),
   getScreenSources: () => ipcRenderer.invoke('get-screen-sources'),
   getSupabaseConfig: () => ipcRenderer.invoke('get-supabase-config'),
+  // Captions engine — whisper.cpp sidecar. Returns
+  // `{ available: false, path: null }` on platforms where no binary
+  // was bundled (Linux today). Renderer flips the CC button to
+  // disabled when unavailable.
+  getWhisperBinaryStatus: () => ipcRenderer.invoke('whisper-binary-status'),
   fetchProxy: (req) => ipcRenderer.invoke('fetch-proxy', req),
   // ICS calendar subscription fetch. Separate from fetchProxy because
   // it accepts any HTTPS host (user-supplied URL in Settings) — the

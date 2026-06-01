@@ -349,6 +349,31 @@ ipcMain.handle('toggle-window-fullscreen', (event) => {
   return next;
 });
 
+// Resolve the per-platform whisper-cli binary that ships under
+// `resources/whisper/<platform>-<arch>/`. In a packaged build the dir
+// lives at `process.resourcesPath/whisper`; in dev (electron .) it's
+// the source-tree resources/ scoped to the host's platform+arch.
+// Returns `null` when no binary was bundled for this platform (Linux
+// today, future hosts) so callers can disable captions instead of
+// crashing.
+function getWhisperDir() {
+  if (app.isPackaged) return path.join(process.resourcesPath, 'whisper');
+  return path.join(__dirname, 'resources', 'whisper', `${process.platform}-${process.arch}`);
+}
+function getWhisperBinaryPath() {
+  const dir = getWhisperDir();
+  const exe = process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';
+  const full = path.join(dir, exe);
+  try {
+    require('fs').accessSync(full, require('fs').constants.X_OK);
+    return full;
+  } catch { return null; }
+}
+ipcMain.handle('whisper-binary-status', () => {
+  const binPath = getWhisperBinaryPath();
+  return { available: !!binPath, path: binPath };
+});
+
 // Generic fetch proxy. Some third-party APIs (notably Atlassian Cloud)
 // don't permit browser-origin requests via CORS; routing through main lets
 // the renderer hit them with stored credentials. We only proxy https URLs
