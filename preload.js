@@ -67,6 +67,17 @@ contextBridge.exposeInMainWorld('huddle', {
       return () => ipcRenderer.removeListener('whisper-model-progress', handler);
     },
   },
+  // Captions inference. Renderer ships per-chunk WAV buffers; main
+  // spawns whisper-cli and replies with caption-line events tagged
+  // by the same chunkId the renderer included.
+  whisperEngine: {
+    transcribeChunk: (payload) => ipcRenderer.invoke('whisper-transcribe-chunk', payload),
+    onCaptionLine: (cb) => {
+      const handler = (_e, payload) => { try { cb(payload); } catch {} };
+      ipcRenderer.on('caption-line', handler);
+      return () => ipcRenderer.removeListener('caption-line', handler);
+    },
+  },
   fetchProxy: (req) => ipcRenderer.invoke('fetch-proxy', req),
   // ICS calendar subscription fetch. Separate from fetchProxy because
   // it accepts any HTTPS host (user-supplied URL in Settings) — the

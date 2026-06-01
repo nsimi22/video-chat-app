@@ -1976,28 +1976,28 @@ async function startCaptions() {
       console.warn('captions gate check failed', err);
     }
   }
-  if (!window.HuddleTranscript?.TranscriptManager?.isSupported()) {
-    showCallError("This build's runtime doesn't expose the Web Speech API; live captions aren't available.");
-    return;
-  }
   if (!state.mesh || !state.huddle) return;
   state.cc.on = true;
   state.cc.forChannelId = state.inCallChannelId;
   els.btnCc?.classList.add('active');
   showCaptionsPanel();
 
-  // Receive lines from peers (and from this peer's local SR via the
-  // self: false call channel — those go straight into the buffer
-  // without the network round-trip).
+  // Receive lines from peers via Supabase Realtime — same plumbing
+  // whether the local engine is SR or whisper.cpp.
   state.cc.unsub = bindTranscriptLines();
 
-  const mgr = new window.HuddleTranscript.TranscriptManager();
+  const ManagerCls = window.HuddleWhisperTranscript?.WhisperTranscriptManager
+    || window.HuddleTranscript?.TranscriptManager;
+  if (!ManagerCls) {
+    showCallError("Captions engine missing in this build.");
+    state.cc.on = false;
+    els.btnCc?.classList.remove('active');
+    hideCaptionsPanel();
+    return;
+  }
+  const mgr = new ManagerCls();
   state.cc.manager = mgr;
   mgr.onFinal((text) => {
-    // SR fires asynchronously, so teardownTeam may have nulled
-    // state.huddle between the time we started capturing and this
-    // callback resolving. Bail rather than crash the renderer
-    // dereferencing peerId / name on null.
     const huddle = state.huddle;
     if (!huddle) return;
     const line = {
@@ -2013,7 +2013,13 @@ async function startCaptions() {
     state.cc.lastInterim = text;
     renderInterim();
   });
-  mgr.start();
+  const startResult = mgr.start();
+  // Whisper manager returns a Promise; old SR manager returns a bool.
+  // Either way we don't await — start() failure is reflected through
+  // the empty captions panel + console warning, not a UI block.
+  if (startResult && typeof startResult.then === 'function') {
+    startResult.catch((err) => console.warn('[captions] start failed', err));
+  }
 }
 
 function stopCaptions({ keepBuffer = false } = {}) {

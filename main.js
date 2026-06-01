@@ -485,6 +485,105 @@ ipcMain.handle('whisper-model-download', async (event) => {
   }
 });
 
+// Whisper chunk-inference engine. Renderer ships per-chunk WAV
+// buffers via `whisper-transcribe-chunk`; we write each to a tmp file,
+// spawn the platform whisper-cli with the user-data model, parse
+// stdout (with -np -nt the only stdout content is the transcribed
+// text), and stream `caption-line` IPC events back to the sender.
+//
+// Concurrency is capped to 2 simultaneous engines so a slow chunk
+// can't starve the renderer of progress. The pending queue drops
+// oldest beyond MAX_QUEUE so a stall doesn't grow unbounded RAM.
+// Captions are best-effort — dropping a chunk just leaves a gap in
+// the transcript, never crashes the call.
+const WHISPER_MAX_ACTIVE = 2;
+const WHISPER_MAX_QUEUE  = 8;
+const whisperQueue = [];
+let whisperActive = 0;
+ipcMain.handle('whisper-transcribe-chunk', async (event, payload) => {
+  if (!payload || !payload.wavBuffer) return { ok: false, error: 'missing wavBuffer' };
+  const job = {
+    chunkId:       String(payload.chunkId || ''),
+    participantId: payload.participantId || null,
+    fromName:      payload.fromName || null,
+    isLocal:       !!payload.isLocal,
+    wavBuffer:     payload.wavBuffer,
+    senderId:      event.sender.id,
+    startedAt:     Date.now(),
+  };
+  if (whisperQueue.length >= WHISPER_MAX_QUEUE) {
+    whisperQueue.shift(); // drop oldest — best-effort captions
+  }
+  whisperQueue.push(job);
+  pumpWhisperQueue();
+  return { ok: true };
+});
+
+function pumpWhisperQueue() {
+  while (whisperActive < WHISPER_MAX_ACTIVE && whisperQueue.length > 0) {
+    const job = whisperQueue.shift();
+    whisperActive++;
+    runWhisperJob(job).finally(() => { whisperActive--; pumpWhisperQueue(); });
+  }
+}
+
+async function runWhisperJob(job) {
+  const binPath = getWhisperBinaryPath();
+  const modelPath = getWhisperModelPath();
+  const fs = require('fs');
+  if (!binPath || !fs.existsSync(modelPath)) {
+    // No engine / no model — silently skip; the renderer's CC gate
+    // should have prevented this from ever firing.
+    return;
+  }
+  const os = require('os');
+  const tmpFile = path.join(os.tmpdir(), `huddle-chunk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`);
+  try {
+    fs.writeFileSync(tmpFile, Buffer.from(job.wavBuffer));
+  } catch (err) {
+    console.warn('[whisper] tmp write failed', err);
+    return;
+  }
+  const { spawn } = require('child_process');
+  // -np  suppresses log lines on stdout (still go to stderr)
+  // -nt  suppresses timestamps
+  // -l en + tiny.en model are paired; the model file name encodes lang
+  // -t   thread count; 4 keeps headroom for the rest of the call
+  const cp = spawn(binPath, [
+    '-m', modelPath,
+    '-f', tmpFile,
+    '-l', 'en',
+    '-np',
+    '-nt',
+    '-t', '4',
+  ]);
+  let stdout = '';
+  cp.stdout.on('data', (d) => { stdout += d.toString(); });
+  cp.stderr.on('data', () => { /* ignore — see -np */ });
+  await new Promise((resolve) => {
+    cp.on('close', () => resolve());
+    cp.on('error', (err) => {
+      console.warn('[whisper] engine error', err);
+      resolve();
+    });
+  });
+  try { fs.unlinkSync(tmpFile); } catch {}
+  const text = stdout.trim();
+  if (!text) return;
+  const wc = require('electron').webContents.fromId(job.senderId);
+  if (wc && !wc.isDestroyed()) {
+    wc.send('caption-line', {
+      chunkId:       job.chunkId,
+      participantId: job.participantId,
+      fromName:      job.fromName,
+      isLocal:       job.isLocal,
+      text,
+      startedAt:     job.startedAt,
+      finishedAt:    Date.now(),
+    });
+  }
+}
+
 // Generic fetch proxy. Some third-party APIs (notably Atlassian Cloud)
 // don't permit browser-origin requests via CORS; routing through main lets
 // the renderer hit them with stored credentials. We only proxy https URLs
