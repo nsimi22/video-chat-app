@@ -1170,6 +1170,10 @@ async function startPopoutCall(channelId) {
     return;
   }
   state.inCallChannelId = channelId;
+  // Avatar stack switches to in-call source for popout's main-window
+  // header too. Safe no-op when running inside the popout window where
+  // the chat header isn't mounted.
+  refreshHeaderMembersForCurrent();
   // The mic/cam/share controls were disabled in bootCallPopout; flip
   // them on now that mesh.toggle{Mic,Cam}/addScreen have something to act on.
   els.btnMic.disabled = false;
@@ -1867,6 +1871,10 @@ async function startCall(channelId) {
     return;
   }
   state.inCallChannelId = channelId;
+  // Avatar stack switches from channel-roster to in-call-participants
+  // now that a call is live here. peer-joined hooks keep it in sync
+  // as participants arrive; this initial paint covers the bootstrap.
+  refreshHeaderMembersForCurrent();
   // Pre-apply the persisted blur preference before setCamera so the
   // very first frame peers receive is already blurred — toggling
   // after the fact briefly publishes a sharp frame.
@@ -1915,6 +1923,10 @@ async function leaveCall() {
   state.mesh.disconnect();
   state.mesh = null;
   state.inCallChannelId = null;
+  // Repaint the avatar stack now that the in-call source is gone —
+  // falls back to channel roster (or DM members), matching the pre-call
+  // state.
+  refreshHeaderMembersForCurrent();
   resetCallEphemera();
   try { await state.huddle?.leaveCall(); } catch {}
   // joinCall dropped the lurker for this channel when we became a
@@ -2357,10 +2369,14 @@ function onCallPeerJoined(peer) {
   if (peer?.id && peer.platform) {
     state.peerPlatforms.set(peer.id, peer.platform);
   }
+  // Avatar stack in the chat header tracks the live participant set
+  // (not the channel roster) while a call is in progress here.
+  refreshHeaderMembersForCurrent();
 }
 
 function onCallPeerLeft(peerId) {
   removePersonFromCall(peerId);
+  refreshHeaderMembersForCurrent();
 }
 
 // LiveKit Room emits 'Disconnected' on a fatal SFU drop (auth expired,
@@ -2872,14 +2888,23 @@ function renderHeaderMembers(channel) {
   if (!wrap) return;
   wrap.innerHTML = '';
   const me = state.huddle?.peerId;
-  // Resolve member ids per channel type:
-  //   DMs always carry channel.memberIds (populated on creation).
-  //   Public channels include everyone — use the full team roster.
-  //   Private channels with no cached memberIds: skip (we don't
-  //   want to leak the team roster as if everyone were a member).
+  // Resolve member ids per channel + call state:
+  //   • Call live in THIS channel → render IN-CALL participants only.
+  //     Channel membership is irrelevant in that state — the stack
+  //     should match the call meta's "N people" count. Previously this
+  //     branch fell through to the channel-membership case below, so
+  //     the stack showed every teammate even when only one person was
+  //     on the call ("stacking of all participants" bug).
+  //   • DMs → channel.memberIds (populated on creation).
+  //   • Public channels → full team roster.
+  //   • Private channels with no cached memberIds → skip; don't leak
+  //     the team roster as if everyone were a member.
   let memberIds = [];
   let memberSnap = null; // index-aligned with memberIds when present
-  if (channel?.memberIds?.length) {
+  const callLiveHere = !!state.inCallChannelId && state.inCallChannelId === channel?.id;
+  if (callLiveHere && state.huddle?.callPeerInfo) {
+    memberIds = Array.from(state.huddle.callPeerInfo.keys());
+  } else if (channel?.memberIds?.length) {
     memberIds = channel.memberIds;
     memberSnap = channel.members;
   } else if (channel?.type === 'public' && state.huddle?.roster?.size) {
@@ -2892,12 +2917,19 @@ function renderHeaderMembers(channel) {
   const visible = ids.slice(0, MAX_HEADER_AVATARS);
   const overflow = ids.length - visible.length;
   for (const id of visible) {
+    // In-call branch prefers callPeerInfo for name/color so the
+    // sticker matches the in-call meta. peerInfo (team-wide presence)
+    // can lag a beat behind LK joins, leaving avatars with stale or
+    // missing names; callPeerInfo is populated by the call-channel
+    // presence sync at the same time _callPeerInfo.size drives the
+    // "N people" count.
+    const callInfo = callLiveHere ? state.huddle?.callPeerInfo?.get(id) : null;
     const peer = state.huddle?.peerInfo?.get(id);
     const rosterEntry = state.huddle?.roster?.get(id);
     const idx = memberIds.indexOf(id);
     const snapName = memberSnap?.[idx >= 0 ? idx : 0];
-    const name = peer?.name || rosterEntry?.name || snapName || '?';
-    const color = peer?.color || rosterEntry?.color || '#666';
+    const name = callInfo?.name || peer?.name || rosterEntry?.name || snapName || '?';
+    const color = callInfo?.color || peer?.color || rosterEntry?.color || '#666';
     const dot = document.createElement('span');
     dot.className = 'huddle-header-avatar';
     dot.style.background = color;
@@ -2912,6 +2944,18 @@ function renderHeaderMembers(channel) {
     more.title = `${overflow} more`;
     wrap.appendChild(more);
   }
+}
+
+// Re-paint the chat-header avatar stack for whatever channel is
+// currently focused. Cheap enough to call from any call-lifecycle
+// event — the function is idempotent and renderHeaderMembers bails
+// when the wrap element isn't mounted (e.g. inside the popout
+// window).
+function refreshHeaderMembersForCurrent() {
+  const channelId = state.chat?.currentChannel;
+  if (!channelId) return;
+  const ch = state.channelMeta.get(channelId);
+  if (ch) renderHeaderMembers(ch);
 }
 
 // 2-avatar stack for group DM sidebar rows (replaces the Users SVG
