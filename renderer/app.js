@@ -1170,6 +1170,7 @@ async function startPopoutCall(channelId) {
     return;
   }
   state.inCallChannelId = channelId;
+  bindCallCaptionsListener();
   // The mic/cam/share controls were disabled in bootCallPopout; flip
   // them on now that mesh.toggle{Mic,Cam}/addScreen have something to act on.
   els.btnMic.disabled = false;
@@ -1867,6 +1868,11 @@ async function startCall(channelId) {
     return;
   }
   state.inCallChannelId = channelId;
+  // Captions listener — runs for the whole call so receivers see
+  // lines even without toggling CC themselves. The local engine
+  // (state.cc.manager) is independent; CC button still controls
+  // whether THIS peer transcribes.
+  bindCallCaptionsListener();
   // Pre-apply the persisted blur preference before setCamera so the
   // very first frame peers receive is already blurred — toggling
   // after the fact briefly publishes a sharp frame.
@@ -1915,6 +1921,11 @@ async function leaveCall() {
   state.mesh.disconnect();
   state.mesh = null;
   state.inCallChannelId = null;
+  // Drop the call-wide captions listener — receivers shouldn't keep
+  // rendering lines after the call ends. stopCaptions() (if CC was on)
+  // already nulled state.cc.manager.
+  state.cc.lineSub?.();
+  state.cc.lineSub = null;
   resetCallEphemera();
   try { await state.huddle?.leaveCall(); } catch {}
   // joinCall dropped the lurker for this channel when we became a
@@ -1982,10 +1993,6 @@ async function startCaptions() {
   els.btnCc?.classList.add('active');
   showCaptionsPanel();
 
-  // Receive lines from peers via Supabase Realtime — same plumbing
-  // whether the local engine is SR or whisper.cpp.
-  state.cc.unsub = bindTranscriptLines();
-
   const ManagerCls = window.HuddleWhisperTranscript?.WhisperTranscriptManager
     || window.HuddleTranscript?.TranscriptManager;
   if (!ManagerCls) {
@@ -1997,26 +2004,36 @@ async function startCaptions() {
   }
   const mgr = new ManagerCls();
   state.cc.manager = mgr;
-  mgr.onFinal((text) => {
+  // onFinal callback signature differs across managers:
+  //   - WhisperTranscriptManager: { text, from, fromName, isLocal }
+  //   - legacy TranscriptManager: text (string)
+  // Normalise to the structured form so the broadcast path always
+  // has attribution available for remote-speaker lines.
+  mgr.onFinal((arg) => {
     const huddle = state.huddle;
     if (!huddle) return;
-    const line = {
-      from: huddle.peerId, fromName: huddle.name,
-      text, ts: Date.now(),
-    };
-    appendCaptionLine(line);
+    const isStr = typeof arg === 'string';
+    const text = isStr ? arg : arg?.text;
+    if (!text) return;
+    const from     = isStr ? huddle.peerId : (arg.from     || huddle.peerId);
+    const fromName = isStr ? huddle.name   : (arg.fromName || huddle.name);
+    const ts = Date.now();
+    appendCaptionLine({ from, fromName, text, ts });
     state.cc.lastInterim = '';
     renderInterim();
-    try { huddle.sendTranscriptLine(text, line.ts); } catch {}
+    try { huddle.sendTranscriptLine(text, ts, from, fromName); } catch {}
   });
   mgr.onInterim((text) => {
     state.cc.lastInterim = text;
     renderInterim();
   });
-  const startResult = mgr.start();
-  // Whisper manager returns a Promise; old SR manager returns a bool.
-  // Either way we don't await — start() failure is reflected through
-  // the empty captions panel + console warning, not a UI block.
+  // Hand the LK room + local-peer meta over so the whisper manager can
+  // capture every audio track in the call (not just the local mic).
+  // The legacy SR manager ignores extra arguments — drop-in safe.
+  const startResult = mgr.start(state.mesh?.room || null, {
+    participantId: state.huddle.peerId,
+    fromName:      state.huddle.name,
+  });
   if (startResult && typeof startResult.then === 'function') {
     startResult.catch((err) => console.warn('[captions] start failed', err));
   }
@@ -2027,8 +2044,6 @@ function stopCaptions({ keepBuffer = false } = {}) {
   els.btnCc?.classList.remove('active');
   state.cc.manager?.stop();
   state.cc.manager = null;
-  state.cc.unsub?.();
-  state.cc.unsub = null;
   state.cc.lastInterim = '';
   if (!keepBuffer) {
     state.cc.lines = [];
@@ -2048,18 +2063,56 @@ function stopCaptions({ keepBuffer = false } = {}) {
   }
 }
 
-function bindTranscriptLines() {
-  if (!state.huddle) return () => {};
+// Wire the call-wide transcript-line listener — receivers see
+// captions on their screen whenever ANY enabler in the call is
+// transcribing, without needing to toggle CC themselves. Auto-shows
+// the captions panel on the first received line; the local engine
+// (state.cc.manager) is independent of this listener.
+//
+// Returns an unsubscribe function the caller can stash to detach on
+// leaveCall. Idempotent: a second call without first unsubscribing
+// would stack handlers, so guard via state.cc.lineSub.
+function bindCallCaptionsListener() {
+  if (!state.huddle || state.cc.lineSub) return state.cc.lineSub;
   const handler = (e) => {
     const d = e.detail || {};
     if (!d.text) return;
-    appendCaptionLine({ from: d.from, fromName: d.fromName, text: d.text, ts: d.ts || Date.now() });
+    const line = { from: d.from, fromName: d.fromName, text: d.text, ts: d.ts || Date.now() };
+    // Auto-show the captions panel on the first incoming line so
+    // non-enablers don't have to find the CC button to see what's
+    // being said.
+    if (els.captions?.classList.contains('hidden')) showCaptionsPanel();
+    appendCaptionLine(line);
   };
   state.huddle.addEventListener('transcript-line', handler);
-  return () => state.huddle?.removeEventListener('transcript-line', handler);
+  const unsub = () => {
+    try { state.huddle?.removeEventListener('transcript-line', handler); } catch {}
+    state.cc.lineSub = null;
+  };
+  state.cc.lineSub = unsub;
+  return unsub;
+}
+
+// Dedupe window for caption lines. If two participants both have CC
+// enabled, they're each transcribing every audio track in the call —
+// so a single utterance can arrive from both broadcasters. Skip a
+// line if the same speaker said the same text within
+// CAPTION_DEDUPE_MS. A proper claim/handover protocol (designated
+// transcriber) is queued for Phase 6; this is the cheap interim fix.
+const CAPTION_DEDUPE_MS = 3500;
+function shouldDedupeCaption(line) {
+  const cache = state.cc._dedupe || (state.cc._dedupe = []);
+  const now = line.ts || Date.now();
+  // Drop entries older than the window so the array doesn't grow.
+  while (cache.length && now - cache[0].ts > CAPTION_DEDUPE_MS) cache.shift();
+  const key = `${line.from || ''}::${line.text}`;
+  if (cache.some((e) => e.key === key)) return true;
+  cache.push({ key, ts: now });
+  return false;
 }
 
 function appendCaptionLine(line) {
+  if (shouldDedupeCaption(line)) return;
   state.cc.lines.push(line);
   if (!els.captionsList) return;
   const row = document.createElement('div');
