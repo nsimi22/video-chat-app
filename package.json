@@ -37,6 +37,15 @@
       "scripts/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "resources/whisper/${platform}-${arch}",
+        "to": "whisper",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
     "extraMetadata": {
       "main": "main.js"
     },

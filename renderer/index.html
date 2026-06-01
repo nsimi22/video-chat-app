@@ -680,6 +680,33 @@
                 </div>
               </div>
             </details>
+
+            <details class="settings-section">
+              <summary>Captions (offline)</summary>
+              <div class="settings-section-body">
+                <p class="hint">
+                  Live captions in calls use a local whisper.cpp model
+                  (<code>ggml-tiny.en</code>, ~75 MB). Downloaded once on
+                  first use; runs entirely on your machine — audio never
+                  leaves the device.
+                </p>
+                <div id="set-captions-row" class="set-captions-row">
+                  <div class="set-captions-meta">
+                    <div class="set-captions-status" data-status="loading">Checking…</div>
+                    <div class="set-captions-progress hidden">
+                      <div class="set-captions-progress-fill"></div>
+                    </div>
+                  </div>
+                  <div class="set-captions-actions">
+                    <button id="set-captions-download" type="button" class="ctrl">Download</button>
+                    <button id="set-captions-cancel" type="button" class="ctrl hidden">Cancel</button>
+                    <button id="set-captions-redownload" type="button" class="ctrl hidden">Re-download</button>
+                    <button id="set-captions-delete" type="button" class="ctrl ghost hidden">Delete</button>
+                  </div>
+                </div>
+                <div id="set-captions-error" class="settings-status error hidden"></div>
+              </div>
+            </details>
           </div>
 
           <!-- ──────── Notifications tab ──────── -->

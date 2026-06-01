@@ -349,6 +349,142 @@ ipcMain.handle('toggle-window-fullscreen', (event) => {
   return next;
 });
 
+// Resolve the per-platform whisper-cli binary that ships under
+// `resources/whisper/<platform>-<arch>/`. In a packaged build the dir
+// lives at `process.resourcesPath/whisper`; in dev (electron .) it's
+// the source-tree resources/ scoped to the host's platform+arch.
+// Returns `null` when no binary was bundled for this platform (Linux
+// today, future hosts) so callers can disable captions instead of
+// crashing.
+function getWhisperDir() {
+  if (app.isPackaged) return path.join(process.resourcesPath, 'whisper');
+  return path.join(__dirname, 'resources', 'whisper', `${process.platform}-${process.arch}`);
+}
+function getWhisperBinaryPath() {
+  const dir = getWhisperDir();
+  const exe = process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';
+  const full = path.join(dir, exe);
+  try {
+    require('fs').accessSync(full, require('fs').constants.X_OK);
+    return full;
+  } catch { return null; }
+}
+ipcMain.handle('whisper-binary-status', () => {
+  const binPath = getWhisperBinaryPath();
+  return { available: !!binPath, path: binPath };
+});
+
+// Whisper model download lifecycle. The captions feature uses
+// `ggml-tiny.en.bin` (~75 MB) — too big to bundle in the installer, so
+// we lazy-download on first CC click into the user-data dir. The same
+// path is read back by the sidecar at inference time. Renderer drives
+// the flow via four IPCs (status / download / cancel / delete) plus a
+// streaming `whisper-model-progress` event for the progress bar.
+const WHISPER_MODEL_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin';
+const WHISPER_MODEL_EXPECTED_SIZE = 77704715; // bytes, observed 2026-06-01; treated as a sanity lower-bound only
+let whisperDownloadController = null; // AbortController of the in-flight download, or null
+function getWhisperModelDir() {
+  return path.join(app.getPath('userData'), 'whisper-models');
+}
+function getWhisperModelPath() {
+  return path.join(getWhisperModelDir(), 'ggml-tiny.en.bin');
+}
+function whisperModelStatusSync() {
+  const p = getWhisperModelPath();
+  try {
+    const st = require('fs').statSync(p);
+    // Trust files that meet the expected size; a half-finished download
+    // (network drop, app quit mid-download) gets reported as missing so
+    // the UI can re-download instead of feeding the engine a truncated
+    // model. Allow a small slack in case HuggingFace re-encodes; treat
+    // < 90% of expected size as incomplete.
+    if (st.size < WHISPER_MODEL_EXPECTED_SIZE * 0.9) {
+      return { status: 'not-downloaded', bytes: st.size, total: WHISPER_MODEL_EXPECTED_SIZE };
+    }
+    return { status: 'ready', bytes: st.size, total: st.size };
+  } catch { return { status: 'not-downloaded', bytes: 0, total: WHISPER_MODEL_EXPECTED_SIZE }; }
+}
+ipcMain.handle('whisper-model-status', () => {
+  if (whisperDownloadController) {
+    return { status: 'downloading', bytes: 0, total: WHISPER_MODEL_EXPECTED_SIZE };
+  }
+  return whisperModelStatusSync();
+});
+ipcMain.handle('whisper-model-cancel', () => {
+  if (whisperDownloadController) {
+    try { whisperDownloadController.abort(); } catch {}
+    return true;
+  }
+  return false;
+});
+ipcMain.handle('whisper-model-delete', () => {
+  if (whisperDownloadController) return { ok: false, error: 'download in progress' };
+  try { require('fs').unlinkSync(getWhisperModelPath()); return { ok: true }; }
+  catch (err) {
+    if (err.code === 'ENOENT') return { ok: true };
+    return { ok: false, error: err.message };
+  }
+});
+ipcMain.handle('whisper-model-download', async (event) => {
+  if (whisperDownloadController) return { ok: false, error: 'already downloading' };
+  const wc = event.sender;
+  const fs = require('fs');
+  const dir = getWhisperModelDir();
+  try { fs.mkdirSync(dir, { recursive: true }); }
+  catch (err) { return { ok: false, error: `mkdir: ${err.message}` }; }
+  const finalPath = getWhisperModelPath();
+  const tmpPath = `${finalPath}.partial`;
+  // Best-effort cleanup of a previous partial — fresh start each time.
+  try { fs.unlinkSync(tmpPath); } catch {}
+  whisperDownloadController = new AbortController();
+  try {
+    const res = await fetch(WHISPER_MODEL_URL, {
+      signal: whisperDownloadController.signal,
+      redirect: 'follow',
+    });
+    if (!res.ok) {
+      return { ok: false, error: `http ${res.status}` };
+    }
+    const total = Number(res.headers.get('content-length')) || WHISPER_MODEL_EXPECTED_SIZE;
+    const writeStream = fs.createWriteStream(tmpPath);
+    let received = 0;
+    let lastEmit = 0;
+    const reader = res.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      writeStream.write(Buffer.from(value));
+      received += value.length;
+      // Throttle progress events to ~10 Hz so the renderer doesn't drown
+      // in IPC traffic on a fast connection.
+      const now = Date.now();
+      if (now - lastEmit > 100) {
+        lastEmit = now;
+        try { wc.send('whisper-model-progress', { received, total, percent: received / total }); } catch {}
+      }
+    }
+    await new Promise((resolve, reject) => {
+      writeStream.end((err) => err ? reject(err) : resolve());
+    });
+    // Sanity check: the file we just wrote should be at least the
+    // expected size. Anything smaller is a server-truncated download.
+    const finalSize = fs.statSync(tmpPath).size;
+    if (finalSize < WHISPER_MODEL_EXPECTED_SIZE * 0.9) {
+      try { fs.unlinkSync(tmpPath); } catch {}
+      return { ok: false, error: `truncated download (${finalSize} of ${total} bytes)` };
+    }
+    fs.renameSync(tmpPath, finalPath);
+    try { wc.send('whisper-model-progress', { received: finalSize, total: finalSize, percent: 1 }); } catch {}
+    return { ok: true, path: finalPath, bytes: finalSize };
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch {}
+    if (err.name === 'AbortError') return { ok: false, error: 'cancelled' };
+    return { ok: false, error: err.message || 'download failed' };
+  } finally {
+    whisperDownloadController = null;
+  }
+});
+
 // Generic fetch proxy. Some third-party APIs (notably Atlassian Cloud)
 // don't permit browser-origin requests via CORS; routing through main lets
 // the renderer hit them with stored credentials. We only proxy https URLs

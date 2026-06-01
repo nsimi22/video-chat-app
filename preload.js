@@ -48,6 +48,25 @@ contextBridge.exposeInMainWorld('huddle', {
   resizeWindowToContent: (w, h) => ipcRenderer.invoke('resize-window-to-content', { width: w, height: h }),
   getScreenSources: () => ipcRenderer.invoke('get-screen-sources'),
   getSupabaseConfig: () => ipcRenderer.invoke('get-supabase-config'),
+  // Captions engine — whisper.cpp sidecar. Returns
+  // `{ available: false, path: null }` on platforms where no binary
+  // was bundled (Linux today). Renderer flips the CC button to
+  // disabled when unavailable.
+  getWhisperBinaryStatus: () => ipcRenderer.invoke('whisper-binary-status'),
+  // Captions model lifecycle. The ~75 MB ggml-tiny.en.bin lives in
+  // user-data and is downloaded lazily on first CC click. Renderer
+  // calls download() and subscribes to onProgress for the progress bar.
+  whisperModel: {
+    getStatus:  () => ipcRenderer.invoke('whisper-model-status'),
+    download:   () => ipcRenderer.invoke('whisper-model-download'),
+    cancel:     () => ipcRenderer.invoke('whisper-model-cancel'),
+    deleteFile: () => ipcRenderer.invoke('whisper-model-delete'),
+    onProgress: (cb) => {
+      const handler = (_e, payload) => { try { cb(payload); } catch {} };
+      ipcRenderer.on('whisper-model-progress', handler);
+      return () => ipcRenderer.removeListener('whisper-model-progress', handler);
+    },
+  },
   fetchProxy: (req) => ipcRenderer.invoke('fetch-proxy', req),
   // ICS calendar subscription fetch. Separate from fetchProxy because
   // it accepts any HTTPS host (user-supplied URL in Settings) — the
