@@ -21,6 +21,25 @@
 (function () {
   const TARGET_SAMPLE_RATE = 16000;
 
+  // Locate the laptop's built-in microphone by enumerating audio
+  // input devices and matching a label hint. macOS labels the
+  // built-in as "MacBook Pro Microphone" / "MacBook Air Microphone";
+  // Windows tends to use "Microphone Array (Realtek/Intel...)" or
+  // "Internal Microphone". When nothing matches (Mac mini, external
+  // displays only, etc.) we fall back to the OS default by leaving
+  // deviceId unset on the constraint. Permission must already have
+  // been granted somewhere in the call lifecycle — otherwise the
+  // labels come back empty and the heuristic returns null.
+  async function findBuiltInMicId() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices.filter((d) => d.kind === 'audioinput');
+      const builtIn = inputs.find((d) =>
+        /macbook|built[- ]?in|internal|integrated|realtek|intel/i.test(d.label || ''));
+      return builtIn?.deviceId || null;
+    } catch { return null; }
+  }
+
   function encodeWav(pcmFloat32, sampleRate) {
     const n = pcmFloat32.length;
     const buffer = new ArrayBuffer(44 + n * 2);
@@ -134,14 +153,26 @@
       // for telephony and aggressively gates soft consonants (s, f,
       // sh, t) that whisper specifically relies on. Whisper handles
       // its own noise robustness internally.
+      //
+      // Prefer the machine's built-in mic over whatever the OS picked
+      // as the default for capture. Bluetooth headset mics (AirPods
+      // etc.) hand the OS a heavily-compressed ~16 kHz stream that
+      // whisper struggles with at any model size; the built-in mic
+      // is almost always a clean 48 kHz source. The call audio that
+      // goes OUT to remote participants is still owned by LiveKit and
+      // keeps whatever device the OS picked — only the captions
+      // capture is redirected here.
+      const builtInMicId = await findBuiltInMicId();
+      const audioConstraints = {
+        echoCancellation: true,
+        noiseSuppression: false,
+        autoGainControl: false,
+        channelCount: 1,
+      };
+      if (builtInMicId) audioConstraints.deviceId = { exact: builtInMicId };
       try {
         const localStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: false,
-            autoGainControl: false,
-            channelCount: 1,
-          },
+          audio: audioConstraints,
           video: false,
         });
         this._addTrack({
