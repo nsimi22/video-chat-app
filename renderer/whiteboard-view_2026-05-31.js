@@ -1149,30 +1149,44 @@
       if (now - this._cursorLastSentAt < 50) return; // ~20Hz
       this._cursorLastSentAt = now;
       const w = this._clientToWorld(e.clientX, e.clientY);
-      this.huddle.sendWhiteboardCursor(this.whiteboardId, { x: w.x, y: w.y, t: now }, this.viewId);
+      // Include the sender's peerId inside the cursor payload. The
+      // top-level `from` field carries the per-view UUID (so two
+      // windows of the same user self-filter correctly), but the
+      // receiver still needs the auth user id to look up the profile
+      // name + colour. Without this, getProfile got handed a viewId
+      // UUID and the label fell back to "Guest".
+      this.huddle.sendWhiteboardCursor(
+        this.whiteboardId,
+        { x: w.x, y: w.y, t: now, userId: this.huddle.peerId },
+        this.viewId,
+      );
     }
 
     async _onRemoteCursor(payload) {
       if (payload.from === this.viewId) return;
-      const peerId = payload.from;
       const c = payload.cursor;
       if (!c) return;
-      let entry = this.cursors.get(peerId);
+      // Key cursors by the SENDING VIEW (so two windows of the same
+      // user render as two distinct ghosts) but resolve the profile
+      // by the user id baked into the cursor payload.
+      const ghostKey = payload.from;
+      const userId = c.userId || payload.from;
+      let entry = this.cursors.get(ghostKey);
       if (!entry) {
         const el = h('div', { class: 'wbv-cursor' });
         el.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M5 3l6.5 16 2-6.5 6.5-2z"/></svg>';
         const label = h('span', { class: 'wbv-cursor-label', text: '…' });
         el.appendChild(label);
-        const hue = hashHue(peerId);
+        const hue = hashHue(userId);
         const color = `oklch(0.7 0.16 ${hue})`;
         el.style.color = color;
         label.style.background = color;
         this.worldLayer.appendChild(el);
         entry = { el, label, lastSeen: Date.now() };
-        this.cursors.set(peerId, entry);
+        this.cursors.set(ghostKey, entry);
         // Resolve name (best-effort).
         try {
-          const p = await this.huddle.getProfile(peerId);
+          const p = await this.huddle.getProfile(userId);
           if (!this._destroyed) label.textContent = (p?.name || 'Guest').split(/\s+/)[0];
         } catch {}
       }
