@@ -1040,6 +1040,16 @@
       chip.appendChild(del);
       el.appendChild(chip);
 
+      // 8 resize handles (4 corners + 4 edges). Drag a corner to scale
+      // both dimensions, an edge to scale one. The frame body itself
+      // stays click-through (pointer-events:none in CSS) so drawing
+      // inside a frame still works — only the chip + handles capture.
+      const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+      for (const dir of HANDLES) {
+        const handle = h('span', { class: `wbv-frame-handle is-${dir}`, attrs: { 'data-handle': dir, 'aria-hidden': 'true' } });
+        el.appendChild(handle);
+      }
+
       this.worldLayer.insertBefore(el, this.worldLayer.firstChild); // behind notes
       const entry = { data: { ...frame }, el, titleEl, chipEl: chip };
       this.frames.set(frame.id, entry);
@@ -1065,6 +1075,7 @@
 
     _wireFrameHandlers(entry) {
       const { el, titleEl, chipEl, data } = entry;
+      const MIN_W = 80, MIN_H = 60; // world units
 
       // Drag the title chip to move the whole frame.
       chipEl.addEventListener('pointerdown', (e) => {
@@ -1092,6 +1103,63 @@
         chipEl.addEventListener('pointermove', onMove);
         chipEl.addEventListener('pointerup', onUp);
         chipEl.addEventListener('pointercancel', onUp);
+      });
+
+      // Resize via the 8 edge / corner handles. Each handle's `data-handle`
+      // attribute encodes which sides (n/s/e/w) it mutates. Anchoring
+      // the OPPOSITE corner means dragging "ne" moves top + right while
+      // keeping bottom-left fixed; "s" moves only the bottom edge; etc.
+      el.querySelectorAll('.wbv-frame-handle').forEach((handle) => {
+        handle.addEventListener('pointerdown', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const dir = handle.dataset.handle; // 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+          const vp = this.canvas?.getViewport() || { scale: 1 };
+          const start = {
+            clientX: e.clientX, clientY: e.clientY, scale: vp.scale,
+            x: data.x, y: data.y, w: data.w, h: data.h,
+          };
+          handle.setPointerCapture?.(e.pointerId);
+          const onMove = (ev) => {
+            const dx = (ev.clientX - start.clientX) / start.scale;
+            const dy = (ev.clientY - start.clientY) / start.scale;
+            let { x, y, w, h } = start;
+            // West/east mutate x + w (west keeps the right edge fixed,
+            // so x shifts in by dx and w shrinks by the same; east just
+            // grows w).
+            if (dir.includes('w')) { x = start.x + dx; w = start.w - dx; }
+            if (dir.includes('e')) { w = start.w + dx; }
+            if (dir.includes('n')) { y = start.y + dy; h = start.h - dy; }
+            if (dir.includes('s')) { h = start.h + dy; }
+            // Clamp to a floor so the frame can't collapse below its
+            // chip. When clamped on the "west" / "north" side, the
+            // origin (x or y) has to recompute against the fixed right
+            // / bottom edge so the frame doesn't drift.
+            if (w < MIN_W) {
+              if (dir.includes('w')) x = start.x + (start.w - MIN_W);
+              w = MIN_W;
+            }
+            if (h < MIN_H) {
+              if (dir.includes('n')) y = start.y + (start.h - MIN_H);
+              h = MIN_H;
+            }
+            data.x = x; data.y = y; data.w = w; data.h = h;
+            this._positionFrame(entry);
+            this._scheduleMinimapRender();
+          };
+          const onUp = () => {
+            handle.removeEventListener('pointermove', onMove);
+            handle.removeEventListener('pointerup', onUp);
+            handle.removeEventListener('pointercancel', onUp);
+            const patch = { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h };
+            this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: patch }, this.viewId);
+            this.huddle.updateWhiteboardFrame(data.id, { x: data.x, y: data.y, w: data.w, h: data.h })
+              .catch((err) => console.warn('[wbv] frame resize persist failed', err));
+          };
+          handle.addEventListener('pointermove', onMove);
+          handle.addEventListener('pointerup', onUp);
+          handle.addEventListener('pointercancel', onUp);
+        });
       });
 
       titleEl.addEventListener('dblclick', () => { titleEl.setAttribute('contenteditable', 'true'); titleEl.focus(); });
@@ -1149,30 +1217,44 @@
       if (now - this._cursorLastSentAt < 50) return; // ~20Hz
       this._cursorLastSentAt = now;
       const w = this._clientToWorld(e.clientX, e.clientY);
-      this.huddle.sendWhiteboardCursor(this.whiteboardId, { x: w.x, y: w.y, t: now }, this.viewId);
+      // Include the sender's peerId inside the cursor payload. The
+      // top-level `from` field carries the per-view UUID (so two
+      // windows of the same user self-filter correctly), but the
+      // receiver still needs the auth user id to look up the profile
+      // name + colour. Without this, getProfile got handed a viewId
+      // UUID and the label fell back to "Guest".
+      this.huddle.sendWhiteboardCursor(
+        this.whiteboardId,
+        { x: w.x, y: w.y, t: now, userId: this.huddle.peerId },
+        this.viewId,
+      );
     }
 
     async _onRemoteCursor(payload) {
       if (payload.from === this.viewId) return;
-      const peerId = payload.from;
       const c = payload.cursor;
       if (!c) return;
-      let entry = this.cursors.get(peerId);
+      // Key cursors by the SENDING VIEW (so two windows of the same
+      // user render as two distinct ghosts) but resolve the profile
+      // by the user id baked into the cursor payload.
+      const ghostKey = payload.from;
+      const userId = c.userId || payload.from;
+      let entry = this.cursors.get(ghostKey);
       if (!entry) {
         const el = h('div', { class: 'wbv-cursor' });
         el.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M5 3l6.5 16 2-6.5 6.5-2z"/></svg>';
         const label = h('span', { class: 'wbv-cursor-label', text: '…' });
         el.appendChild(label);
-        const hue = hashHue(peerId);
+        const hue = hashHue(userId);
         const color = `oklch(0.7 0.16 ${hue})`;
         el.style.color = color;
         label.style.background = color;
         this.worldLayer.appendChild(el);
         entry = { el, label, lastSeen: Date.now() };
-        this.cursors.set(peerId, entry);
+        this.cursors.set(ghostKey, entry);
         // Resolve name (best-effort).
         try {
-          const p = await this.huddle.getProfile(peerId);
+          const p = await this.huddle.getProfile(userId);
           if (!this._destroyed) label.textContent = (p?.name || 'Guest').split(/\s+/)[0];
         } catch {}
       }
