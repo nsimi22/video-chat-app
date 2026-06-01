@@ -709,8 +709,16 @@
         }
       });
       const onKeyDown = (e) => {
-        const tag = (document.activeElement?.tagName || '').toLowerCase();
+        const ae = document.activeElement;
+        const tag = (ae?.tagName || '').toLowerCase();
+        // Bail when the user is typing into a form field OR a
+        // contenteditable element. The whiteboard view's sticky notes
+        // and text blocks are contenteditable, so without this branch
+        // Space gets swallowed by the pan-mode intercept (the user
+        // never sees a space character) and Backspace/Delete could
+        // also fire the stroke-delete path while typing.
         if (tag === 'textarea' || tag === 'input') return;
+        if (ae?.isContentEditable) return;
         // Delete / Backspace removes the selected stroke (same path as the
         // object eraser: drop locally + broadcast delete-stroke + DB
         // delete). No _hovered gate — only one canvas ever holds a
