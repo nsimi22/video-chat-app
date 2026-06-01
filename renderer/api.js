@@ -794,14 +794,25 @@
       // the sender sees their own reaction without a round-trip.
       this.dispatchEvent(new CustomEvent('reaction', { detail: { from: this.peerId, emoji } }));
     }
-    sendTranscriptLine(text, ts) {
-      // Broadcast a final SR segment to other call participants. Skipped
-      // when no call is active — captions are call-scoped, so there's
-      // no team-channel fallback. ts lets receivers stitch together
-      // out-of-order arrivals at summary time.
+    sendTranscriptLine(text, ts, fromOverride, fromNameOverride) {
+      // Broadcast a final transcribed segment to other call participants.
+      // Skipped when no call is active — captions are call-scoped, so
+      // there's no team-channel fallback. ts lets receivers stitch
+      // together out-of-order arrivals at summary time.
+      //
+      // The optional from/fromName overrides let the multi-track
+      // captions engine (an "enabler" transcribing every participant's
+      // audio on their own machine) attribute remote-speaker lines to
+      // the right peer, not to the local user. Defaults stay backwards-
+      // compatible: omitting both stamps the line as the local peer's.
       this._callChannel?.send({
         type: 'broadcast', event: 'transcript-line',
-        payload: { from: this.peerId, fromName: this.name, text, ts: ts || Date.now() },
+        payload: {
+          from:     fromOverride     || this.peerId,
+          fromName: fromNameOverride || this.name,
+          text,
+          ts:       ts || Date.now(),
+        },
       });
     }
     sendTyping(channelId, parentId) {

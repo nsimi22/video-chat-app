@@ -1175,6 +1175,7 @@ async function startPopoutCall(channelId) {
     return;
   }
   state.inCallChannelId = channelId;
+  bindCallCaptionsListener();
   // Avatar stack switches to in-call source for popout's main-window
   // header too. Safe no-op when running inside the popout window where
   // the chat header isn't mounted.
@@ -1876,6 +1877,11 @@ async function startCall(channelId) {
     return;
   }
   state.inCallChannelId = channelId;
+  // Captions listener — runs for the whole call so receivers see
+  // lines even without toggling CC themselves. The local engine
+  // (state.cc.manager) is independent; CC button still controls
+  // whether THIS peer transcribes.
+  bindCallCaptionsListener();
   // Avatar stack switches from channel-roster to in-call-participants
   // now that a call is live here. peer-joined hooks keep it in sync
   // as participants arrive; this initial paint covers the bootstrap.
@@ -1928,6 +1934,11 @@ async function leaveCall() {
   state.mesh.disconnect();
   state.mesh = null;
   state.inCallChannelId = null;
+  // Drop the call-wide captions listener — receivers shouldn't keep
+  // rendering lines after the call ends. stopCaptions() (if CC was on)
+  // already nulled state.cc.manager.
+  state.cc.lineSub?.();
+  state.cc.lineSub = null;
   // Repaint the avatar stack now that the in-call source is gone —
   // falls back to channel roster (or DM members), matching the pre-call
   // state.
@@ -1977,15 +1988,11 @@ async function startCaptions() {
       }
       const model = await window.huddle.whisperModel.getStatus();
       if (model?.status !== 'ready') {
-        if (confirm('Live captions need a ~75 MB offline model. Download now?')) {
-          // Open Settings → Integrations so the user sees the progress
-          // bar; download starts there. They can hit CC again once it
-          // finishes.
+        if (confirm('Live captions need a local model. Open Settings to download one?')) {
+          // Open Settings → Integrations so the user picks + downloads
+          // a model from the catalog (tiny / base / small / medium).
           try { openSettings(); } catch {}
           captionsModelUi?.refresh?.();
-          // Kick off download immediately so the user doesn't have to
-          // hunt for the button.
-          document.getElementById('set-captions-download')?.click();
         }
         return;
       }
@@ -1993,44 +2000,56 @@ async function startCaptions() {
       console.warn('captions gate check failed', err);
     }
   }
-  if (!window.HuddleTranscript?.TranscriptManager?.isSupported()) {
-    showCallError("This build's runtime doesn't expose the Web Speech API; live captions aren't available.");
-    return;
-  }
   if (!state.mesh || !state.huddle) return;
   state.cc.on = true;
   state.cc.forChannelId = state.inCallChannelId;
   els.btnCc?.classList.add('active');
   showCaptionsPanel();
 
-  // Receive lines from peers (and from this peer's local SR via the
-  // self: false call channel — those go straight into the buffer
-  // without the network round-trip).
-  state.cc.unsub = bindTranscriptLines();
-
-  const mgr = new window.HuddleTranscript.TranscriptManager();
+  const ManagerCls = window.HuddleWhisperTranscript?.WhisperTranscriptManager
+    || window.HuddleTranscript?.TranscriptManager;
+  if (!ManagerCls) {
+    showCallError("Captions engine missing in this build.");
+    state.cc.on = false;
+    els.btnCc?.classList.remove('active');
+    hideCaptionsPanel();
+    return;
+  }
+  const mgr = new ManagerCls();
   state.cc.manager = mgr;
-  mgr.onFinal((text) => {
-    // SR fires asynchronously, so teardownTeam may have nulled
-    // state.huddle between the time we started capturing and this
-    // callback resolving. Bail rather than crash the renderer
-    // dereferencing peerId / name on null.
+  // onFinal callback signature differs across managers:
+  //   - WhisperTranscriptManager: { text, from, fromName, isLocal }
+  //   - legacy TranscriptManager: text (string)
+  // Normalise to the structured form so the broadcast path always
+  // has attribution available for remote-speaker lines.
+  mgr.onFinal((arg) => {
     const huddle = state.huddle;
     if (!huddle) return;
-    const line = {
-      from: huddle.peerId, fromName: huddle.name,
-      text, ts: Date.now(),
-    };
-    appendCaptionLine(line);
+    const isStr = typeof arg === 'string';
+    const text = isStr ? arg : arg?.text;
+    if (!text) return;
+    const from     = isStr ? huddle.peerId : (arg.from     || huddle.peerId);
+    const fromName = isStr ? huddle.name   : (arg.fromName || huddle.name);
+    const ts = Date.now();
+    appendCaptionLine({ from, fromName, text, ts });
     state.cc.lastInterim = '';
     renderInterim();
-    try { huddle.sendTranscriptLine(text, line.ts); } catch {}
+    try { huddle.sendTranscriptLine(text, ts, from, fromName); } catch {}
   });
   mgr.onInterim((text) => {
     state.cc.lastInterim = text;
     renderInterim();
   });
-  mgr.start();
+  // Hand the LK room + local-peer meta over so the whisper manager can
+  // capture every audio track in the call (not just the local mic).
+  // The legacy SR manager ignores extra arguments — drop-in safe.
+  const startResult = mgr.start(state.mesh?.room || null, {
+    participantId: state.huddle.peerId,
+    fromName:      state.huddle.name,
+  });
+  if (startResult && typeof startResult.then === 'function') {
+    startResult.catch((err) => console.warn('[captions] start failed', err));
+  }
 }
 
 function stopCaptions({ keepBuffer = false } = {}) {
@@ -2038,8 +2057,6 @@ function stopCaptions({ keepBuffer = false } = {}) {
   els.btnCc?.classList.remove('active');
   state.cc.manager?.stop();
   state.cc.manager = null;
-  state.cc.unsub?.();
-  state.cc.unsub = null;
   state.cc.lastInterim = '';
   if (!keepBuffer) {
     state.cc.lines = [];
@@ -2059,18 +2076,56 @@ function stopCaptions({ keepBuffer = false } = {}) {
   }
 }
 
-function bindTranscriptLines() {
-  if (!state.huddle) return () => {};
+// Wire the call-wide transcript-line listener — receivers see
+// captions on their screen whenever ANY enabler in the call is
+// transcribing, without needing to toggle CC themselves. Auto-shows
+// the captions panel on the first received line; the local engine
+// (state.cc.manager) is independent of this listener.
+//
+// Returns an unsubscribe function the caller can stash to detach on
+// leaveCall. Idempotent: a second call without first unsubscribing
+// would stack handlers, so guard via state.cc.lineSub.
+function bindCallCaptionsListener() {
+  if (!state.huddle || state.cc.lineSub) return state.cc.lineSub;
   const handler = (e) => {
     const d = e.detail || {};
     if (!d.text) return;
-    appendCaptionLine({ from: d.from, fromName: d.fromName, text: d.text, ts: d.ts || Date.now() });
+    const line = { from: d.from, fromName: d.fromName, text: d.text, ts: d.ts || Date.now() };
+    // Auto-show the captions panel on the first incoming line so
+    // non-enablers don't have to find the CC button to see what's
+    // being said.
+    if (els.captions?.classList.contains('hidden')) showCaptionsPanel();
+    appendCaptionLine(line);
   };
   state.huddle.addEventListener('transcript-line', handler);
-  return () => state.huddle?.removeEventListener('transcript-line', handler);
+  const unsub = () => {
+    try { state.huddle?.removeEventListener('transcript-line', handler); } catch {}
+    state.cc.lineSub = null;
+  };
+  state.cc.lineSub = unsub;
+  return unsub;
+}
+
+// Dedupe window for caption lines. If two participants both have CC
+// enabled, they're each transcribing every audio track in the call —
+// so a single utterance can arrive from both broadcasters. Skip a
+// line if the same speaker said the same text within
+// CAPTION_DEDUPE_MS. A proper claim/handover protocol (designated
+// transcriber) is queued for Phase 6; this is the cheap interim fix.
+const CAPTION_DEDUPE_MS = 3500;
+function shouldDedupeCaption(line) {
+  const cache = state.cc._dedupe || (state.cc._dedupe = []);
+  const now = line.ts || Date.now();
+  // Drop entries older than the window so the array doesn't grow.
+  while (cache.length && now - cache[0].ts > CAPTION_DEDUPE_MS) cache.shift();
+  const key = `${line.from || ''}::${line.text}`;
+  if (cache.some((e) => e.key === key)) return true;
+  cache.push({ key, ts: now });
+  return false;
 }
 
 function appendCaptionLine(line) {
+  if (shouldDedupeCaption(line)) return;
   state.cc.lines.push(line);
   if (!els.captionsList) return;
   const row = document.createElement('div');
@@ -3972,21 +4027,29 @@ function normalizeIcsUrl(u) {
   catch { return String(u); }
 }
 
-// ── Captions model (whisper.cpp) — Settings → Integrations row ──
+// ── Captions model (whisper.cpp) — Settings → Integrations picker ──
 //
-// Manages the lifecycle UI for the ~75 MB `ggml-tiny.en.bin` model used
-// by the offline-captions sidecar. State is owned by main; this is just
-// a thin reflection layer that refreshes when the modal opens and
-// streams progress while a download is in flight. Wired once on first
-// render; subsequent openSettings() calls just call refresh.
+// Renders a row per whisper.cpp model (tiny / base / small / medium)
+// with status + download / delete / set-active controls. State is
+// owned by main; this is just a reflection layer that refreshes when
+// the Settings modal opens and on each progress event during an
+// in-flight download.
 const captionsModelUi = (() => {
-  let wired = false;
-  let downloading = false;
+  let progressUnsub = null;
+  let downloadingId = null;
+  let lastList = [];
 
-  function fmtMb(bytes) {
-    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  function fmtSize(bytes) {
+    if (bytes >= 1024 * 1024 * 1024) {
+      return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+    }
+    return `${(bytes / 1024 / 1024).toFixed(0)} MB`;
   }
-
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+  }
   function setError(msg) {
     const el = document.getElementById('set-captions-error');
     if (!el) return;
@@ -3995,105 +4058,111 @@ const captionsModelUi = (() => {
     el.textContent = msg;
   }
 
-  function render(state) {
-    const row    = document.getElementById('set-captions-row');
-    if (!row) return;
-    const status = row.querySelector('.set-captions-status');
-    const prog   = row.querySelector('.set-captions-progress');
-    const fill   = row.querySelector('.set-captions-progress-fill');
-    const btnDl  = document.getElementById('set-captions-download');
-    const btnCa  = document.getElementById('set-captions-cancel');
-    const btnRe  = document.getElementById('set-captions-redownload');
-    const btnDe  = document.getElementById('set-captions-delete');
-
-    const s = state.status;
-    status.dataset.status = s;
-    if (s === 'ready') {
-      status.textContent = `Ready — ${fmtMb(state.bytes)}`;
-      prog.classList.add('hidden');
-      btnDl.classList.add('hidden');
-      btnCa.classList.add('hidden');
-      btnRe.classList.remove('hidden');
-      btnDe.classList.remove('hidden');
-    } else if (s === 'downloading') {
-      const pct = state.total ? Math.round((state.bytes / state.total) * 100) : 0;
-      status.textContent = `Downloading ${pct}% — ${fmtMb(state.bytes)} of ${fmtMb(state.total)}`;
-      prog.classList.remove('hidden');
-      fill.style.width = `${pct}%`;
-      btnDl.classList.add('hidden');
-      btnRe.classList.add('hidden');
-      btnDe.classList.add('hidden');
-      btnCa.classList.remove('hidden');
-    } else {
-      status.textContent = `Not downloaded — ${fmtMb(state.total || 75 * 1024 * 1024)} required`;
-      prog.classList.add('hidden');
-      btnDl.classList.remove('hidden');
-      btnCa.classList.add('hidden');
-      btnRe.classList.add('hidden');
-      btnDe.classList.add('hidden');
+  function statusText(m) {
+    if (m.status === 'ready') return `Ready — ${fmtSize(m.bytes)}`;
+    if (m.status === 'downloading') {
+      const pct = m.total ? Math.round((m.bytes / m.total) * 100) : 0;
+      return `Downloading ${pct}% — ${fmtSize(m.bytes)} of ${fmtSize(m.total)}`;
     }
+    return `Not downloaded — ${fmtSize(m.total)}`;
+  }
+
+  function render(list) {
+    lastList = list;
+    const container = document.getElementById('set-captions-list');
+    if (!container) return;
+    container.innerHTML = list.map((m) => {
+      const pct = m.status === 'downloading' && m.total
+        ? Math.round((m.bytes / m.total) * 100)
+        : 0;
+      const showProg = m.status === 'downloading';
+      let actions = '';
+      if (m.status === 'ready') {
+        if (!m.isCurrent) {
+          actions += `<button class="ctrl" data-action="set" data-id="${m.id}" type="button">Make active</button>`;
+        }
+        actions += `<button class="ctrl ghost" data-action="delete" data-id="${m.id}" type="button">Delete</button>`;
+      } else if (m.status === 'downloading') {
+        actions += `<button class="ctrl" data-action="cancel" data-id="${m.id}" type="button">Cancel</button>`;
+      } else {
+        actions += `<button class="ctrl" data-action="download" data-id="${m.id}" type="button">Download</button>`;
+      }
+      return `
+        <div class="set-captions-row${m.isCurrent ? ' is-active' : ''}" data-id="${m.id}">
+          <div class="set-captions-meta">
+            <div class="set-captions-name">
+              ${escapeHtml(m.label)}
+              ${m.isCurrent ? '<span class="set-captions-active-badge">Active</span>' : ''}
+            </div>
+            <div class="set-captions-status" data-status="${m.status}">${escapeHtml(statusText(m))}</div>
+            <div class="set-captions-progress${showProg ? '' : ' hidden'}">
+              <div class="set-captions-progress-fill" style="width: ${pct}%"></div>
+            </div>
+          </div>
+          <div class="set-captions-actions">${actions}</div>
+        </div>
+      `;
+    }).join('');
+    container.querySelectorAll('button[data-action]').forEach((btn) => {
+      btn.onclick = () => handleAction(btn.dataset.action, btn.dataset.id);
+    });
   }
 
   async function refresh() {
     if (!window.huddle?.whisperModel) return;
     try {
-      const st = await window.huddle.whisperModel.getStatus();
-      downloading = st.status === 'downloading';
-      render(st);
+      const list = await window.huddle.whisperModel.list();
+      downloadingId = list.find((m) => m.status === 'downloading')?.id || null;
+      render(list);
     } catch (err) {
-      console.warn('captions status fetch failed', err);
+      console.warn('captions model list failed', err);
     }
   }
 
-  async function download() {
-    if (downloading) return;
+  async function handleAction(action, id) {
     setError(null);
-    downloading = true;
-    render({ status: 'downloading', bytes: 0, total: 77704715 });
     try {
-      const res = await window.huddle.whisperModel.download();
-      if (!res?.ok) {
-        setError(res?.error || 'Download failed');
+      if (action === 'download') {
+        downloadingId = id;
+        // Optimistically reflect the in-flight state so the user
+        // doesn't see a flash of stale "Not downloaded" between the
+        // click and the first progress event.
+        render(lastList.map((m) =>
+          m.id === id ? { ...m, status: 'downloading', bytes: 0 } : m));
+        const res = await window.huddle.whisperModel.download(id);
+        if (!res?.ok) setError(res?.error || 'Download failed');
+      } else if (action === 'cancel') {
+        await window.huddle.whisperModel.cancel();
+      } else if (action === 'delete') {
+        if (!confirm(`Delete this model? You can re-download anytime.`)) return;
+        const res = await window.huddle.whisperModel.deleteFile(id);
+        if (!res?.ok) setError(res?.error || 'Delete failed');
+      } else if (action === 'set') {
+        const res = await window.huddle.whisperModel.setCurrent(id);
+        if (!res?.ok) setError(res?.error || 'Could not set active model');
       }
     } catch (err) {
-      setError(err?.message || 'Download failed');
+      setError(err?.message || `${action} failed`);
     } finally {
-      downloading = false;
-      await refresh();
+      downloadingId = null;
+      refresh();
     }
-  }
-
-  async function cancel() {
-    if (!downloading) return;
-    try { await window.huddle.whisperModel.cancel(); } catch {}
-    // refresh happens via the download promise's finally
-  }
-
-  async function deleteFile() {
-    if (downloading) return;
-    if (!confirm('Delete the offline captions model? You can re-download anytime.')) return;
-    try { await window.huddle.whisperModel.deleteFile(); }
-    catch (err) { setError(err?.message || 'Delete failed'); }
-    refresh();
   }
 
   function wire() {
-    if (wired) return;
-    if (!window.huddle?.whisperModel) return;
-    const btnDl = document.getElementById('set-captions-download');
-    const btnCa = document.getElementById('set-captions-cancel');
-    const btnRe = document.getElementById('set-captions-redownload');
-    const btnDe = document.getElementById('set-captions-delete');
-    if (!btnDl) return; // HTML not in this build
-    btnDl.onclick = download;
-    btnCa.onclick = cancel;
-    btnRe.onclick = download; // same path; the file is overwritten via .partial → rename
-    btnDe.onclick = deleteFile;
-    window.huddle.whisperModel.onProgress((p) => {
-      if (!downloading) downloading = true;
-      render({ status: 'downloading', bytes: p.received, total: p.total });
+    if (progressUnsub) return;
+    if (!window.huddle?.whisperModel?.onProgress) return;
+    progressUnsub = window.huddle.whisperModel.onProgress((p) => {
+      if (!p?.modelId) return;
+      // Patch just the downloading row's progress + re-render — full
+      // list refresh on each progress tick would thrash the DOM at
+      // 10 Hz for nothing.
+      const idx = lastList.findIndex((m) => m.id === p.modelId);
+      if (idx === -1) { refresh(); return; }
+      const next = lastList.slice();
+      next[idx] = { ...next[idx], status: 'downloading', bytes: p.received, total: p.total };
+      render(next);
     });
-    wired = true;
   }
 
   return { refresh, wire };
@@ -6158,40 +6227,5 @@ window.huddleApp = {
     ta.focus();
     try { ta.setSelectionRange(text.length, text.length); } catch (_) {}
     ta.dispatchEvent(new Event('input', { bubbles: true }));
-  },
-  // Summarize the live call transcript NOW (during the call) and
-  // post the recap into the current channel. Mirrors the post-call
-  // path in finalizeCallTranscript but doesn't tear the captions
-  // buffer down.
-  summarizeCallNow: async () => {
-    const lines = (state.cc?.lines || []).slice();
-    const channelId = state.cc?.forChannelId || state.chat?.currentChannel;
-    if (!channelId || lines.length === 0) {
-      alert('Nothing to summarize yet — captions need a few lines first.');
-      return;
-    }
-    const ai = state.ai;
-    if (!ai || !ai.isConfigured?.()) {
-      alert('AI provider not configured. Open Settings to add an API key.');
-      return;
-    }
-    lines.sort((a, b) => (a.ts || 0) - (b.ts || 0));
-    const transcript = lines.map((l) => `${l.fromName || 'someone'}: ${l.text}`).join('\n');
-    const system = "You are summarising a live call transcript captured via the browser's speech-to-text. Produce a concise recap (under 200 words) in markdown: 2-3 bullets of the main points discussed, then a 'Decisions' section if any were made, then 'Action items' (with owners if you can infer them). The transcript is rough — fix obvious recognition errors silently and don't quote raw lines.";
-    let result;
-    try {
-      result = await ai.chat({ system, messages: [{ role: 'user', content: transcript }] });
-    } catch (err) {
-      alert('Summarize failed: ' + (err.message || err));
-      return;
-    }
-    const body = `**Call recap (so far)**\n\n${result.text || '(no recap produced)'}`;
-    try {
-      await state.huddle?.sendAiMessage({
-        channelId, parentId: null, text: body, model: result.model,
-      });
-    } catch (err) {
-      console.warn('failed to post call recap', err);
-    }
   },
 };
