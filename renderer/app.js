@@ -1200,6 +1200,11 @@ async function startPopoutCall(channelId) {
   // header too. Safe no-op when running inside the popout window where
   // the chat header isn't mounted.
   refreshHeaderMembersForCurrent();
+  // Anchor a meeting thread for popout-started calls too — without
+  // this, popout starters would never post a "📞 Call started"
+  // anchor and joiners on the main window would either duplicate the
+  // anchor themselves or sit forever with no thread.
+  setupMeetingThreadAsStarter(channelId);
   // The mic/cam/share controls were disabled in bootCallPopout; flip
   // them on now that mesh.toggle{Mic,Cam}/addScreen have something to act on.
   els.btnMic.disabled = false;
@@ -1782,6 +1787,11 @@ async function joinTeamAndStart(teamId) {
   // gating it here (rather than only while in-call) is fine because
   // state.meeting.threadRootId is null off-call.
   huddle.addEventListener('chat-message', (e) => onIncomingMessageForMeeting(e.detail?.message));
+  // Likewise for edits + deletes — without these, an edited note
+  // renders its pre-edit text and a deleted note stays visible until
+  // the next call's backfill.
+  huddle.addEventListener('chat-update', (e) => onUpdatedMessageForMeeting(e.detail?.message));
+  huddle.addEventListener('chat-message-deleted', (e) => onDeletedMessageForMeeting(e.detail));
 
   // Construct ChatView + assign state BEFORE huddle.start(), because
   // start() dispatches `welcome` synchronously at the end of its
@@ -2169,15 +2179,25 @@ function shouldDedupeCaption(line) {
 // it up via that broadcast or fetchActiveMeetingRoot as a fallback. Once
 // state.meeting.threadRootId is set, the Notes panel mounts replies as a
 // thread off that message and the post-call AI summary lands as a reply.
+// Fetch-then-insert. Replaces the old presence-based starter/joiner
+// detection — that approach raced the Supabase 'presence sync' event
+// (which is what populates _callPeerInfo) and could let two
+// near-simultaneous starters BOTH see callPeerInfo.size === 0 and
+// BOTH post a duplicate "📞 Call started" anchor. Fetching first
+// collapses both paths into one: anyone who finds a recent root uses
+// it; only the first arrival who doesn't find one inserts. There's
+// still a tiny race window between the fetch and the insert (two
+// peers both miss + both insert), but it's bounded by the fetch
+// roundtrip, much narrower than the presence-sync window.
 async function setupMeetingThreadAsStarter(channelId) {
   if (!state.huddle || !channelId) return;
   // Already wired for this channel? No-op (covers reconnect / popout
   // rejoin paths that re-enter startCall).
   if (state.meeting.threadRootId && state.meeting.threadRootChannelId === channelId) return;
 
-  // Listener: pick up the root id if another peer posted it. Wired
-  // unconditionally so the "I joined an existing call" path resolves
-  // even without the fetch fallback firing.
+  // Live-broadcast listener — picks the root up if a peer posts it
+  // while our fetch is in flight, or shortly after. Wired
+  // unconditionally so every call path picks up cross-peer updates.
   if (!state.meeting._unsubRoot) {
     const handler = (e) => {
       const d = e.detail || {};
@@ -2191,22 +2211,37 @@ async function setupMeetingThreadAsStarter(channelId) {
     state.meeting._unsubRoot = () => state.huddle.removeEventListener('meeting-root', handler);
   }
 
-  // Joining an existing call → don't post a duplicate root. Try the
-  // fallback fetch in case we missed the realtime broadcast.
-  const others = state.huddle.callPeerInfo?.size || 0;
-  if (others > 0) {
-    try {
-      const row = await state.huddle.fetchActiveMeetingRoot(channelId);
-      if (row && !state.meeting.threadRootId) {
-        state.meeting.threadRootId = row.id;
-        state.meeting.threadRootChannelId = channelId;
-        onMeetingThreadResolved();
-      }
-    } catch (err) { console.warn('[meeting] fetch active root failed', err); }
-    return;
+  // 1) Probe for a recent root in this channel (5-min window — any
+  //    older row is from a previous call, not this one). If found,
+  //    everyone — first peer or twelfth — anchors on the same row.
+  try {
+    const row = await state.huddle.fetchActiveMeetingRoot(channelId, { withinMs: 5 * 60 * 1000 });
+    // Race guard: the user may have left the call while the fetch
+    // was in flight. Discard the result if so — teardownMeetingThread
+    // already cleared state.meeting.
+    if (state.inCallChannelId !== channelId) return;
+    if (row && !state.meeting.threadRootId) {
+      state.meeting.threadRootId = row.id;
+      state.meeting.threadRootChannelId = channelId;
+      onMeetingThreadResolved();
+      return;
+    }
+    // Listener may have resolved while we awaited — exit cleanly.
+    if (state.meeting.threadRootId) return;
+  } catch (err) {
+    console.warn('[meeting] fetch active root failed', err);
+    // Fall through to the insert path — if the fetch errored on a
+    // missing meta column the insert will surface the migration
+    // problem more clearly.
   }
 
-  // Fresh call — I'm the starter. Post the anchor message + broadcast.
+  // 2) No recent root → I'm the first arrival. Post the anchor +
+  //    broadcast. Two near-simultaneous fetch-missers could both
+  //    reach this branch; the loser's row becomes orphan but
+  //    fetchActiveMeetingRoot's ts-desc sort means future joiners
+  //    converge on whichever landed last. (A DB unique constraint
+  //    on (channel_id, meeting_root within minute) would close this
+  //    fully — filed as follow-up.)
   try {
     const startedAt = new Date().toISOString();
     const body = `📞 Call started — ${formatCallStartedTimestamp(startedAt)}`;
@@ -2214,12 +2249,20 @@ async function setupMeetingThreadAsStarter(channelId) {
       body,
       meta: { meeting_root: true, started_at: startedAt },
     });
+    // Race guard #2: user left the call while the insert was in
+    // flight. Don't re-populate state.meeting — teardownMeetingThread
+    // already cleared it and the next call shouldn't reuse this
+    // anchor.
+    if (state.inCallChannelId !== channelId) return;
     state.meeting.threadRootId = row.id;
     state.meeting.threadRootChannelId = channelId;
     state.huddle.sendCallMeetingRoot(channelId, row.id);
     onMeetingThreadResolved();
   } catch (err) {
     console.warn('[meeting] failed to post call-start anchor', err);
+    // Surface the failure to the user — the Notes composer will sit
+    // disabled with "Setting up meeting thread…" forever otherwise.
+    showToast?.('Meeting notes unavailable for this call');
   }
 }
 
@@ -2248,16 +2291,45 @@ async function onMeetingThreadResolved() {
 }
 
 // Surface incoming thread replies live. Wired once at boot in
-// wireControls; safe to invoke for every chat-message because the
-// filter short-circuits when the message isn't a meeting reply.
+// joinTeamAndStart; safe to invoke for every chat-message because the
+// filter short-circuits when the message isn't a meeting reply. The
+// channelId co-check is defense-in-depth — UUIDs make a parentId
+// collision astronomically unlikely, but a stale state.meeting.threadRootId
+// surviving a race could otherwise let cross-channel replies leak in.
 function onIncomingMessageForMeeting(message) {
   if (!message) return;
   if (!state.meeting.threadRootId) return;
   if (message.parentId !== state.meeting.threadRootId) return;
+  if (state.meeting.threadRootChannelId && message.channelId !== state.meeting.threadRootChannelId) return;
   // Dedupe by id — the originator's own send echoes through here as
   // well as the realtime postgres_changes INSERT.
   if (state.meeting.replies.some((m) => m.id === message.id)) return;
   state.meeting.replies.push(message);
+  renderMeetingNotesPanel();
+}
+
+// Surface edits to meeting-thread replies. UPDATE events arrive
+// through 'chat-update' in api.js's _subscribeToMessages.
+function onUpdatedMessageForMeeting(message) {
+  if (!message) return;
+  if (!state.meeting.threadRootId) return;
+  if (message.parentId !== state.meeting.threadRootId) return;
+  if (state.meeting.threadRootChannelId && message.channelId !== state.meeting.threadRootChannelId) return;
+  const idx = state.meeting.replies.findIndex((m) => m.id === message.id);
+  if (idx === -1) return;
+  state.meeting.replies[idx] = message;
+  renderMeetingNotesPanel();
+}
+
+// Surface deletions of meeting-thread replies. DELETE events arrive
+// through 'chat-message-deleted' as { channelId, messageId } only —
+// no parentId, so we can't pre-filter; do an O(N) scan.
+function onDeletedMessageForMeeting({ channelId, messageId } = {}) {
+  if (!messageId || !state.meeting.threadRootId) return;
+  if (state.meeting.threadRootChannelId && channelId !== state.meeting.threadRootChannelId) return;
+  const idx = state.meeting.replies.findIndex((m) => m.id === messageId);
+  if (idx === -1) return;
+  state.meeting.replies.splice(idx, 1);
   renderMeetingNotesPanel();
 }
 
@@ -2356,7 +2428,10 @@ async function sendMeetingNote() {
   els.meetingNotesInput.disabled = true;
   els.meetingNotesSend.disabled = true;
   try {
-    await state.huddle?.sendMessage({
+    // sendMessageStrict throws on supabase error so the catch below
+    // actually fires (the lenient sendMessage swallows errors). Critical
+    // here: the user's typed note must be restored on failure.
+    await state.huddle?.sendMessageStrict({
       channelId: state.meeting.threadRootChannelId,
       parentId: state.meeting.threadRootId,
       text,
@@ -2369,6 +2444,8 @@ async function sendMeetingNote() {
     console.warn('[meeting] send note failed', err);
     // Restore the text so the user doesn't lose what they typed.
     els.meetingNotesInput.value = text;
+    // Surface the failure so the user knows the send didn't go through.
+    showToast?.('Note failed to send — try again');
   } finally {
     els.meetingNotesInput.disabled = !state.meeting.threadRootId;
     els.meetingNotesSend.disabled = !state.meeting.threadRootId;
@@ -2525,6 +2602,11 @@ async function teardownTeam() {
   // before the next team's subscribe opens.
   try { await state.calendar?.stop(); } catch {}
   state.calendar = null;
+  // Reset meeting-thread state — otherwise threadRootId / channelId
+  // from this team's last call (and the _unsubRoot closure over the
+  // about-to-be-disposed huddle) survive into the next team session
+  // and bind the Notes panel against a dead thread.
+  teardownMeetingThread();
   // Await the huddle teardown so unsubscribes complete before the page
   // can navigate / reload — otherwise channels can leak server-side.
   try { await state.huddle?.stop(); } catch {}
@@ -3079,6 +3161,13 @@ function updateUnreadTitle() {
 function onChatMessage(m) {
   if (!state.huddle) return;
   if (m.authorName === state.myName) return; // ignore our own messages
+  // Meeting-thread anchors ("📞 Call started — …") are system-style
+  // rows authored by the call starter. Skip notification + unread
+  // bumps for them — pinging every team member in a DM/notify-all
+  // channel every time a call starts is net-new noise relative to
+  // pre-meeting-thread behavior. The anchor still renders in the
+  // channel feed (chat.js special-cases it).
+  if (m.meta?.meeting_root) return;
   const channel = state.channelMeta.get(m.channelId);
   const isDm = channel?.type === 'dm';
   // A message "mentions me" if my name is in `m.mentions`, or — in a
@@ -5362,8 +5451,11 @@ function wireControls() {
     sendMeetingNote();
   });
   // Enter sends; Shift+Enter for newline (mirrors the main composer).
+  // e.isComposing / keyCode 229 guards IME composition: CJK and other
+  // composing-input users press Enter to commit a partial composition,
+  // and we mustn't intercept that as a send.
   els.meetingNotesInput && els.meetingNotesInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
       e.preventDefault();
       sendMeetingNote();
     }

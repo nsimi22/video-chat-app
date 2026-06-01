@@ -893,6 +893,22 @@
       if (error) console.warn('sendMessage failed', error);
     }
 
+    // Strict variant — throws on supabase error instead of swallowing.
+    // Use when the caller has a UI-visible action to take on failure
+    // (restore typed text, show a banner, retry). The lenient
+    // sendMessage above stays in place for the main chat composer so a
+    // backgrounded keystroke doesn't surface every transient blip.
+    async sendMessageStrict({ channelId, parentId, text, attachments }) {
+      const knownNames = [...this.peerInfo.values()].map((p) => p.name).concat(this.name);
+      const mentions = extractMentions(text, knownNames);
+      const { error } = await this.supabase.from('messages').insert({
+        team_id: this.team.id, channel_id: channelId, parent_id: parentId || null,
+        author_id: this.peerId, author_name: this.name, author_color: this.color,
+        body: text || '', attachments: attachments || [], reactions: {}, mentions,
+      });
+      if (error) throw error;
+    }
+
     // Same shape as sendMessage but flags the row as AI-generated. The
     // human author still owns the row (RLS-wise) so they can edit/delete;
     // the renderer styles it with a robot avatar + model badge.
@@ -932,12 +948,13 @@
       return data;
     }
 
-    // Look up the most recent meeting-root in the channel (within the
-    // last 12h, as a sanity cutoff). Used by joiners who missed the
-    // realtime broadcast: a brief Postgres roundtrip resolves the root
-    // id so they can mount the Notes panel against the same thread.
-    async fetchActiveMeetingRoot(channelId) {
-      const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+    // Look up the most recent meeting-root in the channel within a
+    // bounded window. The default 12h window is the "any call from
+    // today" sanity cutoff; the meeting-thread setup uses ~5min so a
+    // brand-new call doesn't accidentally adopt a stale prior-call
+    // anchor. Either way: returns null if nothing matches.
+    async fetchActiveMeetingRoot(channelId, { withinMs = 12 * 60 * 60 * 1000 } = {}) {
+      const cutoff = new Date(Date.now() - withinMs).toISOString();
       const { data, error } = await this.supabase
         .from('messages')
         .select('id, ts, body, meta')
@@ -957,7 +974,11 @@
 
     // Fetch the existing thread replies for a meeting root. Used when
     // the user opens the Notes panel mid-call to backfill replies that
-    // landed before the panel was mounted.
+    // landed before the panel was mounted. Capped at 500 rows so a
+    // multi-hour call with active AI-agent posting doesn't fetch
+    // thousands of rows in one shot; matches the BATCH size the main
+    // chat catch-up uses. Older replies are reachable via the channel
+    // feed thread view.
     async fetchThreadReplies(channelId, parentId) {
       if (!parentId) return [];
       const { data, error } = await this.supabase
@@ -966,7 +987,8 @@
         .eq('team_id', this.team.id)
         .eq('channel_id', channelId)
         .eq('parent_id', parentId)
-        .order('ts', { ascending: true });
+        .order('ts', { ascending: true })
+        .limit(500);
       if (error) throw error;
       return (data || []).map((m) => this._marshalMessage(m));
     }

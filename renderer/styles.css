@@ -7843,3 +7843,86 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .wbv-text.is-selected .wbv-resize-edge.is-e::after {
   opacity: 0.55;
 }
+
+/* ------------------------------------------------------------------
+ * Meeting-root message tile.
+ *
+ * Rendered by chat.js _renderMeetingRoot when m.meta.meeting_root is
+ * true. Displayed in the channel feed in place of the default user-
+ * authored chat row, so the "📞 Call started" anchor reads as a
+ * system event and not as the call starter's chatter. Hover toolbar
+ * is intentionally absent — no react / edit / delete on system rows.
+ * ------------------------------------------------------------------ */
+.meeting-root-msg {
+  display: block;
+  padding: 6px 0;
+}
+.meeting-root-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  margin: 4px 0;
+  background: var(--bg-2, rgba(255,255,255,0.04));
+  border: 1px solid var(--line, rgba(255,255,255,0.1));
+  border-left: 3px solid var(--accent, #0a84ff);
+  border-radius: var(--r-md, 10px);
+}
+.meeting-root-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+}
+.meeting-root-icon { font-size: 15px; line-height: 1; }
+.meeting-root-title { font-weight: 700; color: var(--tx-hi, #fff); }
+.meeting-root-author { color: var(--tx-lo, #8a8e96); font-size: 12px; }
+.meeting-root-recap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg-1, #1a1d22);
+  border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--line-soft, rgba(255,255,255,0.06));
+}
+.meeting-root-recap-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent-tx, var(--accent, #0a84ff));
+  text-transform: uppercase;
+}
+.meeting-root-recap-body {
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--tx-mid, #c8ccd0);
+  word-break: break-word;
+}
+.meeting-root-recap-body p { margin: 0 0 6px; }
+.meeting-root-recap-body p:last-child { margin-bottom: 0; }
+.meeting-root-recap-body ul,
+.meeting-root-recap-body ol { margin: 4px 0; padding-left: 18px; }
+.meeting-root-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.meeting-root-count { font-size: 12px; color: var(--tx-lo, #8a8e96); }
+.meeting-root-open {
+  background: transparent;
+  border: 1px solid var(--line, rgba(255,255,255,0.12));
+  color: var(--tx-mid, #c8ccd0);
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+.meeting-root-open:hover {
+  background: var(--accent-dim, rgba(10,132,255,0.16));
+  color: var(--accent-tx, var(--accent, #0a84ff));
+  border-color: var(--accent, #0a84ff);
+}
