@@ -223,6 +223,11 @@ const els = {
   ticketStatus: $('#ticket-status'),
   ticketCancel: $('#ticket-cancel'),
   ticketCreate: $('#ticket-create'),
+  aiTicketModal: $('#ai-ticket-modal'),
+  aiTicketPrompt: $('#ai-ticket-prompt'),
+  aiTicketStatus: $('#ai-ticket-status'),
+  aiTicketCancel: $('#ai-ticket-cancel'),
+  aiTicketDraft: $('#ai-ticket-draft'),
 };
 
 const state = {
@@ -1171,6 +1176,10 @@ async function startPopoutCall(channelId) {
   }
   state.inCallChannelId = channelId;
   bindCallCaptionsListener();
+  // Avatar stack switches to in-call source for popout's main-window
+  // header too. Safe no-op when running inside the popout window where
+  // the chat header isn't mounted.
+  refreshHeaderMembersForCurrent();
   // The mic/cam/share controls were disabled in bootCallPopout; flip
   // them on now that mesh.toggle{Mic,Cam}/addScreen have something to act on.
   els.btnMic.disabled = false;
@@ -1873,6 +1882,10 @@ async function startCall(channelId) {
   // (state.cc.manager) is independent; CC button still controls
   // whether THIS peer transcribes.
   bindCallCaptionsListener();
+  // Avatar stack switches from channel-roster to in-call-participants
+  // now that a call is live here. peer-joined hooks keep it in sync
+  // as participants arrive; this initial paint covers the bootstrap.
+  refreshHeaderMembersForCurrent();
   // Pre-apply the persisted blur preference before setCamera so the
   // very first frame peers receive is already blurred — toggling
   // after the fact briefly publishes a sharp frame.
@@ -1926,6 +1939,10 @@ async function leaveCall() {
   // already nulled state.cc.manager.
   state.cc.lineSub?.();
   state.cc.lineSub = null;
+  // Repaint the avatar stack now that the in-call source is gone —
+  // falls back to channel roster (or DM members), matching the pre-call
+  // state.
+  refreshHeaderMembersForCurrent();
   resetCallEphemera();
   try { await state.huddle?.leaveCall(); } catch {}
   // joinCall dropped the lurker for this channel when we became a
@@ -2412,10 +2429,17 @@ function onCallPeerJoined(peer) {
   if (peer?.id && peer.platform) {
     state.peerPlatforms.set(peer.id, peer.platform);
   }
+  // Avatar stack in the chat header tracks the live participant set
+  // (not the channel roster) while a call is in progress here.
+  refreshHeaderMembersForCurrent();
+  // Call-channel presence has registered this peer; re-label any tile
+  // we stamped 'guest' before their name was known.
+  if (peer?.id) refreshTileLabelForPeer(peer.id);
 }
 
 function onCallPeerLeft(peerId) {
   removePersonFromCall(peerId);
+  refreshHeaderMembersForCurrent();
 }
 
 // LiveKit Room emits 'Disconnected' on a fatal SFU drop (auth expired,
@@ -2927,14 +2951,23 @@ function renderHeaderMembers(channel) {
   if (!wrap) return;
   wrap.innerHTML = '';
   const me = state.huddle?.peerId;
-  // Resolve member ids per channel type:
-  //   DMs always carry channel.memberIds (populated on creation).
-  //   Public channels include everyone — use the full team roster.
-  //   Private channels with no cached memberIds: skip (we don't
-  //   want to leak the team roster as if everyone were a member).
+  // Resolve member ids per channel + call state:
+  //   • Call live in THIS channel → render IN-CALL participants only.
+  //     Channel membership is irrelevant in that state — the stack
+  //     should match the call meta's "N people" count. Previously this
+  //     branch fell through to the channel-membership case below, so
+  //     the stack showed every teammate even when only one person was
+  //     on the call ("stacking of all participants" bug).
+  //   • DMs → channel.memberIds (populated on creation).
+  //   • Public channels → full team roster.
+  //   • Private channels with no cached memberIds → skip; don't leak
+  //     the team roster as if everyone were a member.
   let memberIds = [];
   let memberSnap = null; // index-aligned with memberIds when present
-  if (channel?.memberIds?.length) {
+  const callLiveHere = !!state.inCallChannelId && state.inCallChannelId === channel?.id;
+  if (callLiveHere && state.huddle?.callPeerInfo) {
+    memberIds = Array.from(state.huddle.callPeerInfo.keys());
+  } else if (channel?.memberIds?.length) {
     memberIds = channel.memberIds;
     memberSnap = channel.members;
   } else if (channel?.type === 'public' && state.huddle?.roster?.size) {
@@ -2947,12 +2980,19 @@ function renderHeaderMembers(channel) {
   const visible = ids.slice(0, MAX_HEADER_AVATARS);
   const overflow = ids.length - visible.length;
   for (const id of visible) {
+    // In-call branch prefers callPeerInfo for name/color so the
+    // sticker matches the in-call meta. peerInfo (team-wide presence)
+    // can lag a beat behind LK joins, leaving avatars with stale or
+    // missing names; callPeerInfo is populated by the call-channel
+    // presence sync at the same time _callPeerInfo.size drives the
+    // "N people" count.
+    const callInfo = callLiveHere ? state.huddle?.callPeerInfo?.get(id) : null;
     const peer = state.huddle?.peerInfo?.get(id);
     const rosterEntry = state.huddle?.roster?.get(id);
     const idx = memberIds.indexOf(id);
     const snapName = memberSnap?.[idx >= 0 ? idx : 0];
-    const name = peer?.name || rosterEntry?.name || snapName || '?';
-    const color = peer?.color || rosterEntry?.color || '#666';
+    const name = callInfo?.name || peer?.name || rosterEntry?.name || snapName || '?';
+    const color = callInfo?.color || peer?.color || rosterEntry?.color || '#666';
     const dot = document.createElement('span');
     dot.className = 'huddle-header-avatar';
     dot.style.background = color;
@@ -2967,6 +3007,18 @@ function renderHeaderMembers(channel) {
     more.title = `${overflow} more`;
     wrap.appendChild(more);
   }
+}
+
+// Re-paint the chat-header avatar stack for whatever channel is
+// currently focused. Cheap enough to call from any call-lifecycle
+// event — the function is idempotent and renderHeaderMembers bails
+// when the wrap element isn't mounted (e.g. inside the popout
+// window).
+function refreshHeaderMembersForCurrent() {
+  const channelId = state.chat?.currentChannel;
+  if (!channelId) return;
+  const ch = state.channelMeta.get(channelId);
+  if (ch) renderHeaderMembers(ch);
 }
 
 // 2-avatar stack for group DM sidebar rows (replaces the Users SVG
@@ -3131,6 +3183,9 @@ function onMemberOnline(peer) {
     r.color = peer.color || r.color;
   }
   renderRoster();
+  // Team presence finally landed for this peer — if their LK track
+  // already arrived and we stamped the tile 'guest', re-label it now.
+  refreshTileLabelForPeer(peer.id);
 }
 
 // (onMemberOffline + onCallPeerLeft above replace the old onPeerLeft —
@@ -3139,6 +3194,34 @@ function onMemberOnline(peer) {
 // ---------------------------------------------------------------------------
 // Tiles
 // ---------------------------------------------------------------------------
+
+// Pick the best label for a remote peer's tile given whatever presence
+// caches happen to be populated. Order goes most-specific (call-channel
+// presence sees the peer as they .track) → general team presence →
+// the durable roster snapshot → fallback. Used both at tile creation
+// time and when presence catches up after the LK track already landed.
+function resolveTileLabel(peerId) {
+  if (!peerId) return 'guest';
+  const huddle = state.huddle;
+  return huddle?.callPeerInfo?.get(peerId)?.name
+    || huddle?.peerInfo?.get(peerId)?.name
+    || huddle?.roster?.get(peerId)?.name
+    || 'guest';
+}
+
+// Re-label a peer's camera tile (if it exists) — used when team or call
+// presence resolves a peer's identity after the LK track already landed
+// and the initial tile was stamped 'guest'. Idempotent: a no-op if the
+// tile doesn't exist or the resolved name is still 'guest'.
+function refreshTileLabelForPeer(peerId) {
+  if (!peerId) return;
+  const tile = state.tilesByKey.get(`peer:${peerId}`);
+  if (!tile) return;
+  const lblEl = tile.querySelector('.tile-label');
+  if (!lblEl) return;
+  const next = resolveTileLabel(peerId);
+  if (next && lblEl.textContent !== next) lblEl.textContent = next;
+}
 
 function makeTile({ key, label, kind, userId }) {
   let tile = state.tilesByKey.get(key);
@@ -3586,9 +3669,16 @@ function hashHue(key) {
 function ensureCamOffOverlay(tile, peerId) {
   if (tile.querySelector('.tile-cam-off')) return;
   const isSelf = peerId === state.huddle?.peerId;
+  // Same fallback chain as resolveTileLabel — extend the existing
+  // peerInfo / callPeerInfo lookup with the durable roster snapshot
+  // so a cam-off that fires before team presence syncs still shows
+  // the right name instead of 'guest'.
   const peer = isSelf
     ? { name: state.huddle?.name, color: state.huddle?.color }
-    : state.huddle?.peerInfo?.get(peerId) || state.huddle?.callPeerInfo?.get(peerId) || {};
+    : (state.huddle?.callPeerInfo?.get(peerId)
+       || state.huddle?.peerInfo?.get(peerId)
+       || state.huddle?.roster?.get(peerId)
+       || {});
   const name = peer.name || 'guest';
   const color = peer.color || '#666';
   // Per-user hue (0–360) driving the radial-gradient cam-off
@@ -4706,8 +4796,16 @@ function commitStreamAsCamera(streamId) {
   state.pendingStreams.delete(streamId);
   clearTimeout(pending.timer);
   const key = `peer:${pending.fromId}`;
-  const peer = state.huddle.peerInfo.get(pending.fromId);
-  const tile = makeTile({ key, label: peer ? peer.name : 'guest', kind: 'remote', userId: pending.fromId });
+  // Fall-through name lookup: peerInfo is the team-wide presence cache
+  // and lags slightly behind LK joins; callPeerInfo is the call-channel
+  // presence cache (populated when the peer .tracks the call channel,
+  // which usually beats team presence on a fresh join); roster is the
+  // persistent membership snapshot loaded at signin. When LK delivers a
+  // remote track before any of these have the peer, we used to stamp
+  // the tile "guest" with no recovery path. resolveTileLabel handles
+  // both the initial label here and later refreshes when presence
+  // catches up.
+  const tile = makeTile({ key, label: resolveTileLabel(pending.fromId), kind: 'remote', userId: pending.fromId });
   const video = tile.querySelector('video');
   video.srcObject = pending.stream;
   // Late remote tiles can land in a `paused: true` state under
@@ -5131,9 +5229,16 @@ function wireControls() {
     renderAvatarPreview(null, state.huddle?.color, state.huddle?.name);
   };
 
-  // Jira create-ticket modal
-  els.btnJira.onclick = () => openTicketModal();
+  // Jira create-ticket modal. In-call → AI-drafted ticket modal with
+  // the live transcript pre-filled (user can edit before AI runs).
+  // Out-of-call → the manual create-ticket form as before.
+  els.btnJira.onclick = () => {
+    if (state.inCallChannelId) openAiTicketModal();
+    else openTicketModal();
+  };
   els.ticketCancel.onclick = () => els.ticketModal.classList.add('hidden');
+  els.aiTicketCancel.onclick = () => els.aiTicketModal.classList.add('hidden');
+  els.aiTicketDraft.onclick = () => runAiTicketDraft();
   els.ticketCreate.onclick = submitTicket;
   els.ticketGoSettings.onclick = (e) => {
     e.preventDefault();
@@ -5897,6 +6002,77 @@ async function getGiphyKey() {
 // ---------------------------------------------------------------------------
 // Jira: create-ticket modal
 // ---------------------------------------------------------------------------
+
+// In-call AI ticket flow. Opens a modal pre-filled with the captions
+// transcript context so the user can edit / trim before the AI structures
+// it into a ticket. Defers to ChatView.runAiTicket for the actual
+// AI → Jira create → URL post path.
+function openAiTicketModal() {
+  els.aiTicketStatus.classList.add('hidden');
+  els.aiTicketStatus.textContent = '';
+  els.aiTicketPrompt.value = buildAiTicketPromptFromCall();
+  els.aiTicketModal.classList.remove('hidden');
+  // Focus after the modal becomes visible so the cursor lands in the
+  // textarea ready to edit. Caret position: end, so the user can keep
+  // typing at the tail if they want to add framing context.
+  setTimeout(() => {
+    els.aiTicketPrompt.focus();
+    const v = els.aiTicketPrompt.value;
+    try { els.aiTicketPrompt.setSelectionRange(v.length, v.length); } catch {}
+  }, 0);
+}
+
+// Compose a prompt seed from the captions transcript. Caption lines
+// outside the current call channel are filtered out; otherwise we
+// take the full buffer (capped at ~80 lines to keep the model
+// prompt manageable) formatted as "Speaker: text".
+function buildAiTicketPromptFromCall() {
+  const lines = state.cc?.lines || [];
+  const channelId = state.inCallChannelId;
+  const ch = channelId ? state.channelMeta.get(channelId) : null;
+  const head = ch
+    ? `Call in ${displayLabelFor(ch)}. Recent transcript:\n\n`
+    : 'Recent call transcript:\n\n';
+  if (!lines.length) {
+    return head + '(no captions captured yet — describe the ticket below)\n\n';
+  }
+  const tail = lines.slice(-80).map((l) => {
+    const who = l.fromName || 'someone';
+    const text = (l.text || '').trim();
+    return text ? `${who}: ${text}` : '';
+  }).filter(Boolean).join('\n');
+  return head + tail + '\n\nDraft a Jira ticket that captures the action item or decision discussed above.';
+}
+
+async function runAiTicketDraft() {
+  if (!state.chat || !state.inCallChannelId) {
+    alert('Not in a call.');
+    return;
+  }
+  const prompt = (els.aiTicketPrompt.value || '').trim();
+  if (!prompt) {
+    els.aiTicketStatus.classList.remove('hidden');
+    els.aiTicketStatus.textContent = 'Add some context before drafting.';
+    return;
+  }
+  els.aiTicketStatus.classList.remove('hidden');
+  els.aiTicketStatus.textContent = 'Drafting with AI…';
+  els.aiTicketDraft.disabled = true;
+  let ok;
+  try {
+    ok = await state.chat.runAiTicket(prompt, { channelId: state.inCallChannelId });
+  } finally {
+    els.aiTicketDraft.disabled = false;
+  }
+  if (ok) {
+    els.aiTicketModal.classList.add('hidden');
+    showToast?.('Ticket drafted and posted to channel');
+  } else {
+    // runAiTicket already alerted on the specific failure — clear the
+    // status and let the user retry without re-typing.
+    els.aiTicketStatus.classList.add('hidden');
+  }
+}
 
 async function openTicketModal({ summary = '', description = '' } = {}) {
   els.ticketStatus.classList.add('hidden');
