@@ -357,7 +357,7 @@
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
             </button>
             <div id="react-popover" class="react-popover hidden" role="menu" aria-label="Quick reactions"></div>
-            <button id="btn-jira" class="ctrl icon-only hidden" title="Create a Jira ticket" aria-label="Create a Jira ticket">
+            <button id="btn-jira" class="ctrl icon-only hidden" title="Draft a Jira ticket from this call (AI)" aria-label="Draft a Jira ticket from this call (AI)">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7" cy="7" r="1"/></svg>
             </button>
             <button id="btn-cc" class="ctrl icon-only hidden" title="Live captions + post-call AI summary" aria-label="Toggle captions">
@@ -758,6 +758,24 @@
         <div class="btn-row">
           <button id="ticket-cancel" class="subtle">Cancel</button>
           <button id="ticket-create" class="primary">Create</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI ticket from call modal. Triggered by #btn-jira while in a
+         call: pre-fills with the last ~5min of captions transcript so
+         the user can edit / trim before the AI structures it into a
+         ticket. -->
+    <div id="ai-ticket-modal" class="modal-backdrop hidden">
+      <div class="modal ai-ticket-modal">
+        <h2>Draft ticket from this call</h2>
+        <p class="hint">Edit the prompt below — the live transcript is pre-filled. AI will structure it into a Jira ticket and post the result in the channel.</p>
+        <label>Prompt (editable)</label>
+        <textarea id="ai-ticket-prompt" rows="10" placeholder="Describe what the ticket should cover, or rely on the auto-filled transcript context."></textarea>
+        <div id="ai-ticket-status" class="settings-status hidden"></div>
+        <div class="btn-row">
+          <button id="ai-ticket-cancel" class="subtle">Cancel</button>
+          <button id="ai-ticket-draft" class="primary">Draft with AI</button>
         </div>
       </div>
     </div>

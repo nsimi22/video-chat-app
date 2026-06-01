@@ -2125,34 +2125,53 @@ class ChatView {
     this._refreshTyping();
   }
 
-  // /ai-ticket <description> — let the AI structure a freeform
-  // description into {summary, description, issueType} and create
-  // the Jira ticket directly. Uses the default project from
-  // Settings → Jira → Default project. Posts the resulting issue
-  // URL into chat where the existing /jira unfurl handles the
-  // status card.
+  // /ai-ticket <description> — slash entry. Wipes the composer and
+  // delegates to the public runAiTicket().
   async _runSlashAiTicket(prompt) {
-    const ai = this.hooks.getAi?.();
-    const jira = this.hooks.getJira?.();
-    if (!ai?.isConfigured()) {
-      alert('No AI provider configured. Open Settings → AI assistant.');
-      return true;
-    }
-    if (!jira?.isConfigured()) {
-      alert('Jira is not configured. Open Settings → Jira.');
-      return true;
-    }
-    const projectKey = (this.hooks.getDefaultJiraProject?.() || '').toUpperCase();
-    if (!projectKey) {
-      alert('No default Jira project set. Open Settings → Jira → Default project.');
-      return true;
-    }
     if (!prompt) {
       alert('Usage: /ai-ticket <description>');
       return true;
     }
     this.els.composer.value = '';
     this.els.composer.style.height = 'auto';
+    await this.runAiTicket(prompt);
+    return true;
+  }
+
+  // Public AI-ticket entry. Lets the AI structure a freeform prompt
+  // into {summary, description, issueType} and creates the Jira
+  // ticket. Posts the resulting issue URL into chat where the /jira
+  // unfurl renders the status card. Called from:
+  //   • _runSlashAiTicket (the /ai-ticket slash command)
+  //   • app.js's in-call ticket button (via state.chat.runAiTicket)
+  //
+  // opts:
+  //   channelId — override the destination channel for the URL post.
+  //               Defaults to this.currentChannel. The in-call button
+  //               passes state.inCallChannelId so the ticket URL lands
+  //               in the channel the call belongs to even when the
+  //               user has scrolled to another channel.
+  async runAiTicket(prompt, opts = {}) {
+    const ai = this.hooks.getAi?.();
+    const jira = this.hooks.getJira?.();
+    if (!ai?.isConfigured()) {
+      alert('No AI provider configured. Open Settings → AI assistant.');
+      return false;
+    }
+    if (!jira?.isConfigured()) {
+      alert('Jira is not configured. Open Settings → Jira.');
+      return false;
+    }
+    const projectKey = (this.hooks.getDefaultJiraProject?.() || '').toUpperCase();
+    if (!projectKey) {
+      alert('No default Jira project set. Open Settings → Jira → Default project.');
+      return false;
+    }
+    if (!prompt || !prompt.trim()) {
+      alert('Empty prompt — describe what the ticket should cover.');
+      return false;
+    }
+    const channelId = opts.channelId || this.currentChannel;
     this._beginAiThinking();
     // Attach GitHub tools only when both a repo slug AND a working
     // GitHub client are configured. Either missing falls through to a
@@ -2178,18 +2197,18 @@ class ChatView {
     } catch (err) {
       this._endAiThinking();
       alert('AI request failed: ' + (err?.message || err));
-      return true;
+      return false;
     }
     this._endAiThinking();
     let parsed;
     try { parsed = parseTicketJson(aiResult.text); }
     catch (err) {
       alert('AI returned an unparseable response: ' + err.message);
-      return true;
+      return false;
     }
     if (!parsed.summary) {
       alert('AI did not produce a ticket summary. Try rephrasing the description.');
-      return true;
+      return false;
     }
     // Jira's summary field is hard-capped to 255 chars by the API; the
     // 250 slice is a safety net so an unusually verbose AI summary
@@ -2208,18 +2227,22 @@ class ChatView {
       });
     } catch (err) {
       alert('Could not create Jira ticket: ' + (err?.message || err));
-      return true;
+      return false;
     }
     const url = jira.issueUrl(issue.key);
     // Post the bare URL so the existing Jira unfurl renders the same
     // status card the user gets from `/jira <KEY>`. The AI badge on the
     // message (sendAiMessage sets ai_generated) is the "this was
     // auto-created" signal — a duplicate prefix line just clutters the
-    // card.
+    // card. parentId is intentionally omitted when an alternate
+    // channelId is supplied — the in-call button doesn't have a thread
+    // context.
     try {
+      const postChannelId = channelId;
+      const parentId = postChannelId === this.currentChannel ? this.threadParentId : null;
       await this.mesh.sendAiMessage({
-        channelId: this.currentChannel,
-        parentId: this.threadParentId,
+        channelId: postChannelId,
+        parentId,
         text: url,
         model: aiResult.model,
       });

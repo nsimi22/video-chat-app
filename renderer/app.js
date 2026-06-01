@@ -223,6 +223,11 @@ const els = {
   ticketStatus: $('#ticket-status'),
   ticketCancel: $('#ticket-cancel'),
   ticketCreate: $('#ticket-create'),
+  aiTicketModal: $('#ai-ticket-modal'),
+  aiTicketPrompt: $('#ai-ticket-prompt'),
+  aiTicketStatus: $('#ai-ticket-status'),
+  aiTicketCancel: $('#ai-ticket-cancel'),
+  aiTicketDraft: $('#ai-ticket-draft'),
 };
 
 const state = {
@@ -5131,9 +5136,16 @@ function wireControls() {
     renderAvatarPreview(null, state.huddle?.color, state.huddle?.name);
   };
 
-  // Jira create-ticket modal
-  els.btnJira.onclick = () => openTicketModal();
+  // Jira create-ticket modal. In-call → AI-drafted ticket modal with
+  // the live transcript pre-filled (user can edit before AI runs).
+  // Out-of-call → the manual create-ticket form as before.
+  els.btnJira.onclick = () => {
+    if (state.inCallChannelId) openAiTicketModal();
+    else openTicketModal();
+  };
   els.ticketCancel.onclick = () => els.ticketModal.classList.add('hidden');
+  els.aiTicketCancel.onclick = () => els.aiTicketModal.classList.add('hidden');
+  els.aiTicketDraft.onclick = () => runAiTicketDraft();
   els.ticketCreate.onclick = submitTicket;
   els.ticketGoSettings.onclick = (e) => {
     e.preventDefault();
@@ -5897,6 +5909,77 @@ async function getGiphyKey() {
 // ---------------------------------------------------------------------------
 // Jira: create-ticket modal
 // ---------------------------------------------------------------------------
+
+// In-call AI ticket flow. Opens a modal pre-filled with the captions
+// transcript context so the user can edit / trim before the AI structures
+// it into a ticket. Defers to ChatView.runAiTicket for the actual
+// AI → Jira create → URL post path.
+function openAiTicketModal() {
+  els.aiTicketStatus.classList.add('hidden');
+  els.aiTicketStatus.textContent = '';
+  els.aiTicketPrompt.value = buildAiTicketPromptFromCall();
+  els.aiTicketModal.classList.remove('hidden');
+  // Focus after the modal becomes visible so the cursor lands in the
+  // textarea ready to edit. Caret position: end, so the user can keep
+  // typing at the tail if they want to add framing context.
+  setTimeout(() => {
+    els.aiTicketPrompt.focus();
+    const v = els.aiTicketPrompt.value;
+    try { els.aiTicketPrompt.setSelectionRange(v.length, v.length); } catch {}
+  }, 0);
+}
+
+// Compose a prompt seed from the captions transcript. Caption lines
+// outside the current call channel are filtered out; otherwise we
+// take the full buffer (capped at ~80 lines to keep the model
+// prompt manageable) formatted as "Speaker: text".
+function buildAiTicketPromptFromCall() {
+  const lines = state.cc?.lines || [];
+  const channelId = state.inCallChannelId;
+  const ch = channelId ? state.channelMeta.get(channelId) : null;
+  const head = ch
+    ? `Call in ${displayLabelFor(ch)}. Recent transcript:\n\n`
+    : 'Recent call transcript:\n\n';
+  if (!lines.length) {
+    return head + '(no captions captured yet — describe the ticket below)\n\n';
+  }
+  const tail = lines.slice(-80).map((l) => {
+    const who = l.fromName || 'someone';
+    const text = (l.text || '').trim();
+    return text ? `${who}: ${text}` : '';
+  }).filter(Boolean).join('\n');
+  return head + tail + '\n\nDraft a Jira ticket that captures the action item or decision discussed above.';
+}
+
+async function runAiTicketDraft() {
+  if (!state.chat || !state.inCallChannelId) {
+    alert('Not in a call.');
+    return;
+  }
+  const prompt = (els.aiTicketPrompt.value || '').trim();
+  if (!prompt) {
+    els.aiTicketStatus.classList.remove('hidden');
+    els.aiTicketStatus.textContent = 'Add some context before drafting.';
+    return;
+  }
+  els.aiTicketStatus.classList.remove('hidden');
+  els.aiTicketStatus.textContent = 'Drafting with AI…';
+  els.aiTicketDraft.disabled = true;
+  let ok;
+  try {
+    ok = await state.chat.runAiTicket(prompt, { channelId: state.inCallChannelId });
+  } finally {
+    els.aiTicketDraft.disabled = false;
+  }
+  if (ok) {
+    els.aiTicketModal.classList.add('hidden');
+    showToast?.('Ticket drafted and posted to channel');
+  } else {
+    // runAiTicket already alerted on the specific failure — clear the
+    // status and let the user retry without re-typing.
+    els.aiTicketStatus.classList.add('hidden');
+  }
+}
 
 async function openTicketModal({ summary = '', description = '' } = {}) {
   els.ticketStatus.classList.add('hidden');
