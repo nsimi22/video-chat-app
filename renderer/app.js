@@ -1871,6 +1871,10 @@ async function startCall(channelId) {
     return;
   }
   state.inCallChannelId = channelId;
+  // Avatar stack switches from channel-roster to in-call-participants
+  // now that a call is live here. peer-joined hooks keep it in sync
+  // as participants arrive; this initial paint covers the bootstrap.
+  refreshHeaderMembersForCurrent();
   // Pre-apply the persisted blur preference before setCamera so the
   // very first frame peers receive is already blurred — toggling
   // after the fact briefly publishes a sharp frame.
@@ -2365,10 +2369,14 @@ function onCallPeerJoined(peer) {
   if (peer?.id && peer.platform) {
     state.peerPlatforms.set(peer.id, peer.platform);
   }
+  // Avatar stack in the chat header tracks the live participant set
+  // (not the channel roster) while a call is in progress here.
+  refreshHeaderMembersForCurrent();
 }
 
 function onCallPeerLeft(peerId) {
   removePersonFromCall(peerId);
+  refreshHeaderMembersForCurrent();
 }
 
 // LiveKit Room emits 'Disconnected' on a fatal SFU drop (auth expired,
@@ -2909,12 +2917,19 @@ function renderHeaderMembers(channel) {
   const visible = ids.slice(0, MAX_HEADER_AVATARS);
   const overflow = ids.length - visible.length;
   for (const id of visible) {
+    // In-call branch prefers callPeerInfo for name/color so the
+    // sticker matches the in-call meta. peerInfo (team-wide presence)
+    // can lag a beat behind LK joins, leaving avatars with stale or
+    // missing names; callPeerInfo is populated by the call-channel
+    // presence sync at the same time _callPeerInfo.size drives the
+    // "N people" count.
+    const callInfo = callLiveHere ? state.huddle?.callPeerInfo?.get(id) : null;
     const peer = state.huddle?.peerInfo?.get(id);
     const rosterEntry = state.huddle?.roster?.get(id);
     const idx = memberIds.indexOf(id);
     const snapName = memberSnap?.[idx >= 0 ? idx : 0];
-    const name = peer?.name || rosterEntry?.name || snapName || '?';
-    const color = peer?.color || rosterEntry?.color || '#666';
+    const name = callInfo?.name || peer?.name || rosterEntry?.name || snapName || '?';
+    const color = callInfo?.color || peer?.color || rosterEntry?.color || '#666';
     const dot = document.createElement('span');
     dot.className = 'huddle-header-avatar';
     dot.style.background = color;
@@ -2929,6 +2944,18 @@ function renderHeaderMembers(channel) {
     more.title = `${overflow} more`;
     wrap.appendChild(more);
   }
+}
+
+// Re-paint the chat-header avatar stack for whatever channel is
+// currently focused. Cheap enough to call from any call-lifecycle
+// event — the function is idempotent and renderHeaderMembers bails
+// when the wrap element isn't mounted (e.g. inside the popout
+// window).
+function refreshHeaderMembersForCurrent() {
+  const channelId = state.chat?.currentChannel;
+  if (!channelId) return;
+  const ch = state.channelMeta.get(channelId);
+  if (ch) renderHeaderMembers(ch);
 }
 
 // 2-avatar stack for group DM sidebar rows (replaces the Users SVG
