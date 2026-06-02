@@ -41,19 +41,25 @@ jobs:
       - name: Install dependencies
         run: npm ci || npm install
 
+      # Signing + notarization secrets, injected ONLY on the mac runner.
+      # Done via a gated step (not inline env) so the vars are genuinely
+      # ABSENT on Windows/Linux — an empty CSC_LINK is misread by
+      # electron-builder as a broken Windows signing cert and fails the
+      # build. GitHub masks these values in logs.
+      - name: Configure macOS signing
+        if: matrix.os == 'macos-latest'
+        run: |
+          {
+            echo "CSC_LINK=${{ secrets.CSC_LINK }}"
+            echo "CSC_KEY_PASSWORD=${{ secrets.CSC_KEY_PASSWORD }}"
+            echo "APPLE_ID=${{ secrets.APPLE_ID }}"
+            echo "APPLE_APP_SPECIFIC_PASSWORD=${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}"
+            echo "APPLE_TEAM_ID=${{ secrets.APPLE_TEAM_ID }}"
+          } >> "$GITHUB_ENV"
+
       # electron-builder reads GH_TOKEN to publish to the matching tag's
       # release; if it doesn't exist yet, it creates a draft release.
       - name: Build & publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS-only signing + notarization. Scoped to the mac runner
-          # because CSC_LINK on Windows would be misread as a Windows
-          # code-signing cert. An empty string reads as "unset" to
-          # electron-builder, so unsigned builds still work before the
-          # secrets are populated.
-          CSC_LINK: ${{ matrix.os == 'macos-latest' && secrets.CSC_LINK || '' }}
-          CSC_KEY_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.CSC_KEY_PASSWORD || '' }}
-          APPLE_ID: ${{ matrix.os == 'macos-latest' && secrets.APPLE_ID || '' }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ matrix.os == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
         run: npm run dist -- --publish always
