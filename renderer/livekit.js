@@ -112,6 +112,11 @@
       // must NOT play call audio (the main window already does — a popout
       // attaching its own audio elements would double every voice).
       this._purpose = null;
+      // The single pending "resume audio on next click" listener (set when
+      // playback is autoplay-blocked). Tracked so we never stack duplicates
+      // and so disconnect() can remove it — a window listener would
+      // otherwise outlive the call and fire against a dead room.
+      this._resumeAudioOnClick = null;
 
       this._bound = [];
       const wire = (event, handler) => {
@@ -474,8 +479,13 @@
       // before connect resolved), resume on the next user click anywhere.
       // No prompt UI needed — the user is actively in the call.
       room.on(RE.AudioPlaybackStatusChanged, () => {
-        if (room.canPlaybackAudio) return;
-        const resume = () => { room.startAudio().catch(() => {}); };
+        // Already playing, or a resume click is already armed — don't stack.
+        if (room.canPlaybackAudio || this._resumeAudioOnClick) return;
+        const resume = () => {
+          this._resumeAudioOnClick = null;
+          room.startAudio().catch(() => {});
+        };
+        this._resumeAudioOnClick = resume;
         window.addEventListener('click', resume, { once: true });
       });
       room.on(RE.Disconnected, () => {
@@ -751,6 +761,10 @@
         rec.el.remove();
       }
       this._audioEls.clear();
+      if (this._resumeAudioOnClick) {
+        window.removeEventListener('click', this._resumeAudioOnClick);
+        this._resumeAudioOnClick = null;
+      }
       if (this._blurPipeline) {
         try { this._blurPipeline.stop(); } catch {}
         this._blurPipeline = null;
