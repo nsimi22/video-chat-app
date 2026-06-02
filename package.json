@@ -21,6 +21,7 @@
     "livekit-client": "^2.19.0"
   },
   "devDependencies": {
+    "@electron/notarize": "^3.1.1",
     "electron": "^31.0.0",
     "electron-builder": "^24.13.3"
   },
@@ -50,6 +51,7 @@
     "extraMetadata": {
       "main": "main.js"
     },
+    "afterSign": "build/notarize.js",
     "mac": {
       "category": "public.app-category.productivity",
       "target": [
@@ -69,8 +71,14 @@
         }
       ],
       "artifactName": "Huddle-mac-${arch}.${ext}",
-      "identity": null,
-      "gatekeeperAssess": false
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSCameraUsageDescription": "Huddle uses your camera for video calls.",
+        "NSMicrophoneUsageDescription": "Huddle uses your microphone for calls and voice transcription."
+      }
     },
     "win": {
       "target": [
