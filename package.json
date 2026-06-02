@@ -1,6 +1,6 @@
 {
   "name": "video-chat-app",
-  "version": "0.27.0",
+  "version": "0.28.0",
   "description": "Desktop video + multi-screen-share + Slack-style chat, on Supabase",
   "main": "main.js",
   "scripts": {
@@ -17,9 +17,11 @@
   "dependencies": {
     "@mediapipe/selfie_segmentation": "^0.1.0",
     "@supabase/supabase-js": "^2.45.0",
+    "electron-updater": "^6.8.3",
     "livekit-client": "^2.19.0"
   },
   "devDependencies": {
+    "@electron/notarize": "^3.1.1",
     "electron": "^31.0.0",
     "electron-builder": "^24.13.3"
   },
@@ -49,6 +51,7 @@
     "extraMetadata": {
       "main": "main.js"
     },
+    "afterSign": "build/notarize.js",
     "mac": {
       "category": "public.app-category.productivity",
       "target": [
@@ -68,8 +71,14 @@
         }
       ],
       "artifactName": "Huddle-mac-${arch}.${ext}",
-      "identity": null,
-      "gatekeeperAssess": false
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSCameraUsageDescription": "Huddle uses your camera for video calls.",
+        "NSMicrophoneUsageDescription": "Huddle uses your microphone for calls and voice transcription."
+      }
     },
     "win": {
       "target": [

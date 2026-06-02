@@ -2,7 +2,8 @@
 // server is gone — main.js only opens the BrowserWindow, hands the renderer
 // a Supabase URL + publishable key, and exposes the desktopCapturer for
 // screen sharing.
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell, dialog } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const path = require('path');
 
 // Windows shows toast notifications under an "AppUserModelID"; without an
@@ -802,8 +803,39 @@ ipcMain.handle('fetch-proxy', async (_event, { url, method = 'GET', headers = {}
   }
 });
 
+// Background auto-updates via electron-updater (Squirrel.Mac on macOS,
+// NSIS on Windows). Reads the GitHub Releases feed configured in the
+// `build.publish` block; electron-builder bakes that into app-update.yml
+// at package time. No-op when unpackaged (`electron .`) — there's no
+// signed bundle to update, and Squirrel.Mac requires a valid Developer
+// ID signature to apply anything, so updates only take effect on real
+// signed builds. Failures are logged, never surfaced as a nag.
+function initAutoUpdates() {
+  if (!app.isPackaged) return;
+  autoUpdater.on('update-downloaded', ({ version }) => {
+    dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      buttons: ['Restart now', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Update ready',
+      message: `Huddle ${version} has been downloaded.`,
+      detail: 'Restart to finish installing the update.',
+    }).then(({ response }) => {
+      if (response === 0) autoUpdater.quitAndInstall();
+    });
+  });
+  autoUpdater.on('error', (err) => {
+    console.error('[auto-update]', err == null ? 'unknown error' : (err.stack || err).toString());
+  });
+  autoUpdater.checkForUpdates().catch((err) => {
+    console.error('[auto-update] check failed', err);
+  });
+}
+
 app.whenReady().then(() => {
   createWindow();
+  initAutoUpdates();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
