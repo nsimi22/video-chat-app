@@ -38,6 +38,11 @@
   // reaching back into this module — same shape the deleted webrtc.js used.
   const MAX_CONCURRENT_SCREENS = 3;
 
+  // RemoteTrack.kind is the string 'audio'/'video'; mirror it from the
+  // SDK enum but fall back to the literal so a missing Track.Kind export
+  // can never throw in the hot track-subscribe path.
+  const AUDIO_KIND = LK.Track?.Kind?.Audio || 'audio';
+
   // Per-participant synthesized MediaStream cache. LiveKit gives us
   // individual MediaStreamTracks per `trackSubscribed`; the renderer's
   // onTrack handler in app.js keys tiles off stream.id, so we keep one
@@ -98,6 +103,20 @@
       // Value carries the participant identity so we can clean up all
       // of a leaving participant's screens at once.
       this._remoteScreens = new Map(); // trackSid -> { stream, fromId }
+      // Remote audio is played through dedicated LiveKit-managed <audio>
+      // elements (track.attach) rather than the per-participant video
+      // tile — see _onTrackSubscribed for why. Keyed by track sid so
+      // trackUnsubscribed / participantDisconnected can detach + remove.
+      this._audioEls = new Map(); // trackSid -> { el, track, fromId }
+      // Set by connect(); 'screen-popout' clients are subscribe-only and
+      // must NOT play call audio (the main window already does — a popout
+      // attaching its own audio elements would double every voice).
+      this._purpose = null;
+      // The single pending "resume audio on next click" listener (set when
+      // playback is autoplay-blocked). Tracked so we never stack duplicates
+      // and so disconnect() can remove it — a window listener would
+      // otherwise outlive the call and fire against a dead room.
+      this._resumeAudioOnClick = null;
 
       this._bound = [];
       const wire = (event, handler) => {
@@ -390,6 +409,7 @@
       // on identity collision) and strips publish grants. The popout
       // also short-circuits camera/mic enable below.
       const purpose = opts.purpose || null;
+      this._purpose = purpose;
       const { data, error } = await this.huddle.supabase.functions.invoke('livekit-token', {
         body: { team_id: team.id, channel_id: channelId, ...(purpose ? { purpose } : {}) },
       });
@@ -416,6 +436,11 @@
       }
 
       if (purpose !== 'screen-popout') {
+        // Resume audio playback inside the join click's user-activation
+        // window so remote voices aren't autoplay-blocked. If the gesture
+        // has already lapsed, AudioPlaybackStatusChanged (wired below)
+        // retries on the next click.
+        room.startAudio().catch(() => {});
         await room.localParticipant.setMicrophoneEnabled(true);
         await room.localParticipant.setCameraEnabled(true);
         this._refreshLocalCameraStream();
@@ -449,6 +474,19 @@
         this.dispatchEvent(new CustomEvent('active-speaker', {
           detail: { peerId: top ? top.identity : null },
         }));
+      });
+      // Autoplay recovery: if the browser blocks audio (gesture lapsed
+      // before connect resolved), resume on the next user click anywhere.
+      // No prompt UI needed — the user is actively in the call.
+      room.on(RE.AudioPlaybackStatusChanged, () => {
+        // Already playing, or a resume click is already armed — don't stack.
+        if (room.canPlaybackAudio || this._resumeAudioOnClick) return;
+        const resume = () => {
+          this._resumeAudioOnClick = null;
+          room.startAudio().catch(() => {});
+        };
+        this._resumeAudioOnClick = resume;
+        window.addEventListener('click', resume, { once: true });
       });
       room.on(RE.Disconnected, () => {
         // Disconnected fires both when WE call room.disconnect() (graceful
@@ -519,6 +557,16 @@
           this._dropRemoteScreen(trackSid);
         }
       }
+      // Same race guard as screens: LK should fire TrackUnsubscribed per
+      // publication first, but the order isn't guaranteed — sweep this
+      // participant's audio elements so none linger playing after they go.
+      for (const [sid, rec] of [...this._audioEls.entries()]) {
+        if (rec.fromId === p.identity) {
+          try { rec.track.detach(); } catch {}
+          rec.el.remove();
+          this._audioEls.delete(sid);
+        }
+      }
       this._streams.drop(p.identity);
       this.dispatchEvent(new CustomEvent('peer-left', { detail: p.identity }));
     }
@@ -578,10 +626,26 @@
         }));
         return;
       }
-      // Camera (default) — share one MediaStream per participant so
-      // audio + video subscribed separately land in the same tile.
+      // Camera / microphone (default). One MediaStream per participant
+      // backs the tile; the 'track' dispatch creates/keeps that tile for
+      // both video and audio-only (camera-off) peers.
       const stream = this._streams.get(participant.identity);
-      if (!stream.getTracks().includes(mediaStreamTrack)) {
+      if (track.kind === AUDIO_KIND) {
+        // Play remote audio through a LiveKit-managed <audio> element
+        // (track.attach) rather than adding it to the tile's MediaStream.
+        // Chromium does not reliably start an audio track added to a
+        // <video> whose srcObject is already attached — which is the
+        // "late joiner is seen but not heard in 3+ person calls" bug.
+        // The dedicated element also participates in room.startAudio()
+        // autoplay recovery. Popout windows are subscribe-only mirrors;
+        // attaching audio there would double every voice, so skip them.
+        if (this._purpose !== 'screen-popout' && !this._audioEls.has(pub.trackSid)) {
+          const el = track.attach();
+          el.style.display = 'none';
+          document.body.appendChild(el);
+          this._audioEls.set(pub.trackSid, { el, track, fromId: participant.identity });
+        }
+      } else if (!stream.getTracks().includes(mediaStreamTrack)) {
         stream.addTrack(mediaStreamTrack);
       }
       this.dispatchEvent(new CustomEvent('track', {
@@ -592,6 +656,16 @@
     _onTrackUnsubscribed(track, pub, participant) {
       if (track.source === LK.Track.Source.ScreenShare) {
         if (pub.trackSid) this._dropRemoteScreen(pub.trackSid);
+        return;
+      }
+      // Microphone — detach + remove the managed <audio> element.
+      if (track.kind === AUDIO_KIND) {
+        const rec = this._audioEls.get(pub.trackSid);
+        if (rec) {
+          try { track.detach(); } catch {}
+          rec.el.remove();
+          this._audioEls.delete(pub.trackSid);
+        }
         return;
       }
       // Camera — leave the per-participant MediaStream in place and let
@@ -682,6 +756,15 @@
       }
       this._screenStreams.clear();
       this._remoteScreens.clear();
+      for (const rec of this._audioEls.values()) {
+        try { rec.track.detach(); } catch {}
+        rec.el.remove();
+      }
+      this._audioEls.clear();
+      if (this._resumeAudioOnClick) {
+        window.removeEventListener('click', this._resumeAudioOnClick);
+        this._resumeAudioOnClick = null;
+      }
       if (this._blurPipeline) {
         try { this._blurPipeline.stop(); } catch {}
         this._blurPipeline = null;
