@@ -21,7 +21,9 @@ create table public.team_jira_board (
   -- Optional pinned column mapping/order. Empty array = derive columns
   -- from the issues' live statuses (the current renderer behavior). Stored
   -- as JSONB so a team can pin columns later without another migration.
-  columns jsonb not null default '[]'::jsonb,
+  columns jsonb not null default '[]'::jsonb check (jsonb_typeof(columns) = 'array'),
+  -- Stamped server-side by the trigger below from auth.uid(); clients
+  -- don't need to send it.
   updated_by uuid references auth.users(id) on delete set null,
   updated_at timestamptz not null default now()
 );
@@ -32,23 +34,36 @@ alter table public.team_jira_board enable row level security;
 create policy team_jira_board_read on public.team_jira_board
   for select to authenticated using (public.is_team_member(team_id));
 
--- Any team member may set / replace it; updated_by must be the caller so
--- the "last edited by" attribution can't be spoofed.
+-- Any team member may set / replace it. Attribution (updated_by) is stamped
+-- server-side by the trigger below from auth.uid(), so it's deliberately
+-- kept out of WITH CHECK: enforcing `updated_by = auth.uid()` here would
+-- reject an UPDATE that doesn't re-send the column (the row would keep the
+-- previous writer's id and fail the check). Keeping the check to just
+-- membership also makes it independent of trigger ordering.
 create policy team_jira_board_insert on public.team_jira_board
   for insert to authenticated
-  with check (public.is_team_member(team_id) and updated_by = auth.uid());
+  with check (public.is_team_member(team_id));
 create policy team_jira_board_update on public.team_jira_board
   for update to authenticated
   using (public.is_team_member(team_id))
-  with check (public.is_team_member(team_id) and updated_by = auth.uid());
+  with check (public.is_team_member(team_id));
 create policy team_jira_board_delete on public.team_jira_board
   for delete to authenticated using (public.is_team_member(team_id));
 
--- Keep updated_at fresh on every write (mirrors touch_user_integrations).
+-- Stamp updated_at and the writer's id on every write. Sourcing updated_by
+-- from auth.uid() server-side keeps attribution accurate and unspoofable
+-- without the client having to send it. auth.uid() is null under the
+-- service role / server contexts — leave any supplied value untouched there.
 create or replace function public.touch_team_jira_board()
 returns trigger language plpgsql as $$
-begin new.updated_at = now(); return new; end;
+begin
+  new.updated_at = now();
+  if auth.uid() is not null then
+    new.updated_by = auth.uid();
+  end if;
+  return new;
+end;
 $$;
 create trigger team_jira_board_touch
-before update on public.team_jira_board
+before insert or update on public.team_jira_board
 for each row execute function public.touch_team_jira_board();
