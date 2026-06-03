@@ -68,7 +68,7 @@
     searchIssues(jql, max = 20, { full = false } = {}) {
       const fields = full ? ISSUE_FIELDS_FULL : ISSUE_FIELDS_BRIEF;
       const q = `jql=${encodeURIComponent(jql)}&maxResults=${max}&fields=${encodeURIComponent(fields)}`;
-      return this._request(`/rest/api/3/search?${q}`);
+      return this._request(`/rest/api/3/search/jql?${q}`);
     }
     listProjects() {
       return this._request(`/rest/api/3/project/search?maxResults=100`).then((r) => r.values || []);
