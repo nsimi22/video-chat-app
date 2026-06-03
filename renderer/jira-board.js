@@ -24,7 +24,17 @@
     getSettings: () => ({}),        // () -> settings object
     openSettings: () => {},         // open the Settings modal
     onConfigChange: async () => {},  // (jiraPatch) -> persist + rebuild
+    getTeamBoard: () => null,       // () -> team_jira_board row | null
+    refreshTeamBoard: async () => null, // re-fetch the team row
+    saveTeamBoard: async () => {},  // ({projectKey, site}) -> persist team row
   };
+
+  // The board's active project: the shared team selection wins, falling
+  // back to the per-user settings.jira.defaultProject. One helper so the
+  // drawer, the in-call overlay, and the toolbar all agree.
+  function activeProject() {
+    return ctx.getTeamBoard?.()?.project_key || ctx.getSettings()?.jira?.defaultProject || '';
+  }
 
   /* ───────────────────────── tiny DOM helper ───────────────────────── */
   // h('div.cls', { style:{...}, onclick, dataset, html, title }, ...kids)
@@ -251,8 +261,9 @@
 
   async function renderInCall() {
     if (!inCall) buildInCall();
+    await ctx.refreshTeamBoard?.();
     const client = ctx.getClient();
-    const project = ctx.getSettings()?.jira?.defaultProject || '';
+    const project = activeProject();
     inCall.root.innerHTML = '';
 
     if (!client || !client.isConfigured()) {
@@ -677,7 +688,11 @@
       ].filter(Boolean), board.filter, (v) => { board.filter = v; rerenderToolbar(); renderColumns(); }),
       search,
       h('div', { style: { flex: '1' } }),
-      h('span.mono.jb-toolbar-meta', null, `${s.defaultProject || ''} · ${jiraSite()}`),
+      h('span.mono.jb-toolbar-meta', {
+        title: 'Shared team board — click to change the project for everyone',
+        style: { cursor: 'pointer' },
+        onclick: () => { board._pickProject = true; renderDrawer(); },
+      }, `${activeProject()} · ${jiraSite()}`),
       iconBtn('refresh', 17, 'Refresh', () => loadBoard(true), board.loading),
     );
   }
@@ -737,7 +752,14 @@
       }
       projects.forEach((p) => {
         listEl.append(h('button.jb-firstrun-item', {
-          onclick: async () => { await ctx.onConfigChange({ defaultProject: p.key }); renderDrawer(); },
+          onclick: async () => {
+            board._pickProject = false;
+            // Always re-render, even if the save fails (network/RLS) — a
+            // rejected await must not leave the picker stuck with no feedback.
+            try { await ctx.saveTeamBoard({ projectKey: p.key, site: jiraSite() }); }
+            catch (err) { console.warn('team board save failed', err); }
+            renderDrawer();
+          },
         },
           h('span.jb-firstrun-item-ic', null, icon('kanban', 19)),
           h('div', { style: { flex: '1' } },
@@ -794,7 +816,7 @@
     if (!drawer) buildDrawer();
     drawer.panel.innerHTML = '';
     const client = ctx.getClient();
-    const project = ctx.getSettings()?.jira?.defaultProject || '';
+    const project = activeProject();
 
     const head = h('div.jb-drawer-head',
       null,
@@ -811,7 +833,7 @@
       drawer.panel.append(notConfigured(false));
       return;
     }
-    if (!project) {
+    if (!project || board._pickProject) {
       drawer.panel.append(firstRun());
       return;
     }
@@ -822,7 +844,7 @@
 
   function openBoardInJira() {
     const client = ctx.getClient();
-    const project = ctx.getSettings()?.jira?.defaultProject || '';
+    const project = activeProject();
     // Route through the shared client's /browse/<key> URL — portable
     // across Jira Cloud and Server/DC — rather than the Cloud-only
     // next-gen board path (which 404s on self-hosted instances).
@@ -831,7 +853,7 @@
 
   async function loadBoard(isRefresh) {
     const client = ctx.getClient();
-    const project = ctx.getSettings()?.jira?.defaultProject || '';
+    const project = activeProject();
     if (!client?.isConfigured() || !project) return;
     board._descCache.clear(); // descriptions may have changed since last load
     board.loading = true;
@@ -864,12 +886,15 @@
     renderColumns();
   }
 
-  function openDrawer(focusKey) {
+  async function openDrawer(focusKey) {
     if (!drawer) buildDrawer();
     board.detailKey = null;
+    board._pickProject = false;
     board.query = ''; board.filter = 'all';
     drawer.root.classList.remove('hidden');
     drawer.panel.classList.remove('jb-slide'); void drawer.panel.offsetWidth; drawer.panel.classList.add('jb-slide');
+    // Pull the shared team selection before deciding first-run vs. board.
+    await ctx.refreshTeamBoard?.();
     renderDrawer();
     if (focusKey) openDetail(focusKey);
   }
