@@ -826,7 +826,7 @@
     { label: 'Make concise', instr: 'Make it concise — cut redundancy while keeping the key points and structure.' },
     { label: 'Add acceptance criteria', instr: 'Keep the description and add an "Acceptance Criteria" bulleted checklist, plus an "Out of Scope" section if appropriate.' },
     { label: 'Fix grammar & tone', instr: 'Fix grammar, spelling, and tone. Keep the meaning and structure unchanged.' },
-    { label: 'Summarize', instr: 'Summarize into a short Summary paragraph plus a few bullets of the key points.' },
+    { label: 'Tighten', instr: 'Tighten every section to its essentials — shorter, punchier prose. Keep the same section headings and order.' },
   ];
   const ewaStore = {};
   function ewaState(key) { return ewaStore[key] || (ewaStore[key] = { phase: 'idle', draft: '', label: '', view: 'diff', prevDesc: null }); }
