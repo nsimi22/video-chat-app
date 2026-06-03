@@ -26,6 +26,7 @@
     getTeamBoard: () => null,       // () -> team_jira_board row | null
     refreshTeamBoard: async () => null, // re-fetch the team row
     saveTeamBoard: async () => {},  // ({projectKey, site}) -> persist team row
+    aiRewrite: async (text) => text, // (current, instruction) -> rewritten text
   };
 
   // The board's active project: the shared team selection wins, falling
@@ -574,7 +575,6 @@
       h('button.solid.jb-open-jira', { onclick: () => openInJira(t.key) }, icon('external', 14), h('span', null, 'Open in Jira')),
       iconBtn('x', 17, 'Close', close),
     );
-    const descBox = h('p.jb-detail-desc', null, 'Loading…');
     const grid = h('div.jb-detail-grid',
       null,
       detailLabel('Status'), statusEditor(t, col),
@@ -583,22 +583,15 @@
       detailLabel('Type'), h('div.jb-detail-val', null, t.type),
       detailLabel('Labels'), labelsEditor(t),
     );
-    // Description stays read-only here — rich text is ADF; "Edit with AI"
-    // hands the change to the assistant, which calls jira_update_issue.
-    const descHead = h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
-      detailLabel('Description'),
-      h('div', { style: { flex: '1' } }),
-      h('button.jb-link', {
-        title: 'Edit the description with Huddle AI',
-        onclick: () => window.HuddleAIPanel?.open?.(`Update the description of ${t.key} to: `),
-      }, icon('sparkles', 13), h('span', null, 'Edit with AI')),
-    );
+    // Description region hosts the inline "Edit with AI" flow (compose →
+    // diff review → apply); mountDescriptionEditor manages its own phases and
+    // reads the loaded text from board._descCache, filled just below.
+    const descRegion = h('div');
     const body = h('div.jb-detail-body',
       null,
       titleEditor(t),
       grid,
-      descHead,
-      descBox,
+      descRegion,
     );
     const foot = h('div.jb-detail-foot',
       null,
@@ -609,12 +602,12 @@
     const detail = h('div.jb-detail', null, head, body, foot);
     drawer.panel.append(detail);
 
+    const ewaRerender = mountDescriptionEditor(descRegion, t);
+
     // Lazy-load the full description (ADF → text), cached per key so
-    // reopening a ticket (or a re-render while the detail is open)
-    // doesn't re-hit the network. Cache is dropped on board reload.
-    if (board._descCache.has(t.key)) {
-      descBox.textContent = board._descCache.get(t.key);
-    } else {
+    // reopening a ticket (or a re-render while the detail is open) doesn't
+    // re-hit the network. The editor shows "Loading…" until the cache fills.
+    if (!board._descCache.has(t.key)) {
       try {
         const full = await client.getIssue(t.key, { full: true });
         // Sync labels from the authoritative per-ticket fetch in case they
@@ -622,12 +615,11 @@
         // next render. (Board load already includes labels via BOARD_FIELDS.)
         if (Array.isArray(full?.fields?.labels)) t.labels = full.fields.labels;
         const text = window.jiraAdfToText ? window.jiraAdfToText(full?.fields?.description) : '';
-        const out = (text || '').trim() || 'No description.';
-        board._descCache.set(t.key, out);
-        descBox.textContent = out;
+        board._descCache.set(t.key, (text || '').trim());
       } catch {
-        descBox.textContent = 'Could not load the description.';
+        board._descCache.set(t.key, '');
       }
+      ewaRerender();
     }
   }
   function detailLabel(text) { return h('span.jb-detail-lbl', null, text); }
@@ -822,6 +814,176 @@
       input.addEventListener('blur', commit);
     });
     return titleEl;
+  }
+
+  /* ───────────── Edit with AI — inline description rewrite ─────────────
+     idle → compose → generating → review (diff / clean) → done (undo).
+     Anchored to the Description field (never a takeover). The rewrite comes
+     from the app bridge (ctx.aiRewrite); Accept persists the new text via
+     updateIssue({ description }) (plain text → ADF in JiraClient). */
+  const EWA_QUICK = [
+    { label: 'Improve writing', instr: 'Improve the writing — clearer, tighter prose. Keep all facts and the section structure.' },
+    { label: 'Make concise', instr: 'Make it concise — cut redundancy while keeping the key points and structure.' },
+    { label: 'Add acceptance criteria', instr: 'Keep the description and add an "Acceptance Criteria" bulleted checklist, plus an "Out of Scope" section if appropriate.' },
+    { label: 'Fix grammar & tone', instr: 'Fix grammar, spelling, and tone. Keep the meaning and structure unchanged.' },
+    { label: 'Summarize', instr: 'Summarize into a short Summary paragraph plus a few bullets of the key points.' },
+  ];
+  const ewaStore = {};
+  function ewaState(key) { return ewaStore[key] || (ewaStore[key] = { phase: 'idle', draft: '', label: '', view: 'diff', prevDesc: null }); }
+
+  // LCS line diff → [{type:'equal'|'add'|'remove', line}].
+  function ewaDiffLines(oldText, newText) {
+    const a = String(oldText).split('\n'), b = String(newText).split('\n');
+    const n = a.length, m = b.length;
+    const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    const ops = []; let i = 0, j = 0;
+    while (i < n && j < m) {
+      if (a[i] === b[j]) { ops.push({ type: 'equal', line: a[i] }); i++; j++; }
+      else if (dp[i + 1][j] >= dp[i][j + 1]) { ops.push({ type: 'remove', line: a[i] }); i++; }
+      else { ops.push({ type: 'add', line: b[j] }); j++; }
+    }
+    while (i < n) ops.push({ type: 'remove', line: a[i++] });
+    while (j < m) ops.push({ type: 'add', line: b[j++] });
+    return ops;
+  }
+  function ewaStats(ops) { let add = 0, rem = 0; ops.forEach((o) => { if (o.line.trim()) { if (o.type === 'add') add++; else if (o.type === 'remove') rem++; } }); return { add, rem }; }
+
+  // Markdown line → DOM: **Heading** lines, -/• bullets, **bold** inline.
+  function ewaInline(parent, text) {
+    String(text).split('**').forEach((p, k) => {
+      if (k % 2 === 1) parent.append(h('strong', { style: { color: 'var(--text)', fontWeight: '700' } }, p));
+      else if (p) parent.append(document.createTextNode(p));
+    });
+  }
+  function ewaLine(line, color) {
+    const s = line.trim();
+    if (s === '') return h('div', { style: { height: '9px' } });
+    if (/^\*\*[^*]+\*\*$/.test(s)) return h('div', { style: { fontSize: '13.5px', fontWeight: '700', color: 'var(--text)', margin: '13px 0 2px' } }, s.replace(/^\*\*|\*\*$/g, ''));
+    if (/^[-•]\s/.test(s)) {
+      const row = h('div', { style: { display: 'flex', gap: '9px', fontSize: '13.8px', lineHeight: '1.6', color, margin: '3px 0' } }, h('span', { style: { color: 'var(--text-faint)', flexShrink: '0' } }, '•'));
+      const sp = h('span'); ewaInline(sp, s.replace(/^[-•]\s/, '')); row.append(sp); return row;
+    }
+    const d = h('div', { style: { fontSize: '13.8px', lineHeight: '1.62', color, margin: '2px 0' } }); ewaInline(d, line); return d;
+  }
+  function ewaDescBody(text, color) { const w = h('div'); String(text).split('\n').forEach((l) => w.append(ewaLine(l, color || 'var(--text-dim)'))); return w; }
+  function ewaDiffView(oldText, newText) {
+    const chunks = [];
+    ewaDiffLines(oldText, newText).forEach((o) => { const last = chunks[chunks.length - 1]; if (last && last.type === o.type) last.lines.push(o.line); else chunks.push({ type: o.type, lines: [o.line] }); });
+    const wrap = h('div');
+    chunks.forEach((c) => {
+      let lines = c.lines;
+      if (c.type !== 'equal') { let s = 0, e = lines.length; while (s < e && lines[s].trim() === '') s++; while (e > s && lines[e - 1].trim() === '') e--; lines = lines.slice(s, e); }
+      if (!lines.length) return;
+      if (c.type === 'equal') { const box = h('div', { style: { padding: '0 2px' } }); lines.forEach((l) => box.append(ewaLine(l, 'var(--text-dim)'))); wrap.append(box); return; }
+      const add = c.type === 'add';
+      const box = h('div', { style: { background: `color-mix(in srgb, var(--${add ? 'good' : 'bad'}) 13%, transparent)`, borderLeft: `2px solid var(--${add ? 'good' : 'bad'})`, borderRadius: '0 7px 7px 0', padding: '5px 12px 6px', margin: '5px 0', textDecoration: add ? 'none' : 'line-through' } });
+      lines.forEach((l) => box.append(ewaLine(l, add ? 'var(--text)' : 'var(--text-faint)'))); wrap.append(box);
+    });
+    return wrap;
+  }
+  function ewaAiMark(size = 22) {
+    return h('span', { style: { width: size + 'px', height: size + 'px', borderRadius: '7px', flexShrink: '0', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'var(--accent-dim)', color: 'var(--accent-tx)' } }, icon('sparkles', Math.round(size * 0.6)));
+  }
+  function ewaBtn(label, { primary, ghost, icon: ic, onClick, title } = {}) {
+    const b = h('button', { title: title || '', onclick: onClick, style: { height: '30px', padding: label ? '0 11px' : '0', width: label ? 'auto' : '30px', borderRadius: '8px', fontSize: '12.5px', fontWeight: '600', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '7px', whiteSpace: 'nowrap', cursor: 'pointer', border: primary || ghost ? 'none' : '1px solid var(--border)', background: primary ? 'var(--accent)' : ghost ? 'transparent' : 'var(--bg-2)', color: primary ? '#0b1020' : ghost ? 'var(--text-dim)' : 'var(--text)' } });
+    if (ic) b.append(icon(ic, 14));
+    if (label) b.append(h('span', null, label));
+    return b;
+  }
+
+  // Mount the phase-driven description editor into `container`; returns a
+  // rerender fn the caller invokes once the description text has loaded.
+  function mountDescriptionEditor(container, t) {
+    const st = ewaState(t.key);
+    const loaded = () => board._descCache.has(t.key);
+    const desc = () => board._descCache.get(t.key) || '';
+    function rerender() { container.innerHTML = ''; container.append(build()); }
+    function pickInstr() { const q = EWA_QUICK.find((x) => x.label === st.label); return q ? q.instr : st.label; }
+
+    async function run(instr, label) {
+      st.phase = 'generating'; st.label = label; rerender();
+      try {
+        const out = ((await ctx.aiRewrite(desc(), instr)) || '').trim();
+        if (!out) throw new Error('The assistant returned an empty rewrite.');
+        st.draft = out; st.phase = 'review'; rerender();
+      } catch (err) { st.phase = 'compose'; rerender(); toast('error', `${err?.message || err}`.slice(0, 160)); }
+    }
+    async function accept() {
+      const prev = desc();
+      try {
+        await ctx.getClient().updateIssue({ key: t.key, description: st.draft });
+        st.prevDesc = prev; board._descCache.set(t.key, st.draft); st.draft = ''; st.phase = 'done'; rerender();
+        toast('success', `${t.key} description updated.`);
+      } catch (err) { toast('error', `${err?.message || err}`.slice(0, 160)); }
+    }
+    async function undo() {
+      if (st.prevDesc == null) { st.phase = 'idle'; rerender(); return; }
+      const restore = st.prevDesc;
+      try {
+        await ctx.getClient().updateIssue({ key: t.key, description: restore });
+        board._descCache.set(t.key, restore); st.prevDesc = null; st.phase = 'idle'; rerender();
+        toast('success', `${t.key} description restored.`);
+      } catch (err) { toast('error', `${err?.message || err}`.slice(0, 160)); }
+    }
+
+    function composeBar() {
+      const input = h('input', { type: 'text', placeholder: 'Tell Huddle AI how to rewrite this…', style: { flex: '1', border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: '13.5px' } });
+      const go = () => { const v = input.value.trim(); if (v) run(v, v); };
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); else if (e.key === 'Escape') { st.phase = 'idle'; rerender(); } });
+      const chips = h('div', { style: { display: 'flex', gap: '7px', marginTop: '11px', flexWrap: 'wrap' } });
+      EWA_QUICK.forEach((q) => chips.append(h('button', { onclick: () => run(q.instr, q.label), style: { fontSize: '12px', fontWeight: '500', color: 'var(--text-dim)', padding: '6px 11px', borderRadius: '8px', border: '1px solid var(--border)', background: 'var(--bg-2)', whiteSpace: 'nowrap', cursor: 'pointer' } }, q.label)));
+      const box = h('div', { style: { marginTop: '10px', marginBottom: '12px', background: 'var(--bg-2)', border: '1px solid var(--accent-dim)', borderRadius: '11px', padding: '12px', boxShadow: '0 0 0 3px var(--accent-dim)' } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '11px' } }, ewaAiMark(22), h('span', { style: { fontSize: '13px', fontWeight: '700' } }, 'Edit description with AI'), h('div', { style: { flex: '1' } }), h('span.mono', { style: { border: '1px solid var(--border)', borderRadius: '5px', padding: '1px 5px', fontSize: '10.5px', color: 'var(--text-faint)' } }, 'esc')),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: '10px', padding: '9px 10px 9px 12px' } }, icon('sparkles', 16), input, ewaBtn('Rewrite', { primary: true, icon: 'send', onClick: go })),
+        chips);
+      setTimeout(() => input.focus(), 20);
+      return box;
+    }
+    function generatingCard() {
+      return h('div', { style: { marginTop: '10px', background: 'var(--bg-2)', border: '1px solid var(--accent-dim)', borderRadius: '11px', padding: '13px' } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '9px' } }, ewaAiMark(22), h('span', { style: { fontSize: '13px', fontWeight: '700' } }, 'Huddle AI is rewriting…'),
+          st.label && h('span', { style: { fontSize: '11.5px', color: 'var(--accent-tx)', background: 'var(--accent-dim)', padding: '3px 9px', borderRadius: '7px', maxWidth: '170px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, st.label)));
+    }
+    function reviewCard() {
+      const d = desc(); const stats = ewaStats(ewaDiffLines(d, st.draft));
+      const seg = h('div', { style: { display: 'flex', gap: '2px', padding: '2px', background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: '8px' } });
+      const segBtn = (k, lbl) => h('button', { onclick: () => { st.view = k; rerender(); }, style: { fontSize: '11.5px', fontWeight: '600', padding: '4px 10px', borderRadius: '6px', cursor: 'pointer', border: 'none', color: st.view === k ? 'var(--text)' : 'var(--text-faint)', background: st.view === k ? 'var(--bg-3)' : 'transparent' } }, lbl);
+      seg.append(segBtn('diff', 'Diff'), segBtn('clean', 'New'));
+      const refineInput = h('input', { type: 'text', placeholder: 'Refine — e.g. "shorter, add a metrics section"', style: { flex: '1', border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: '13px' } });
+      const refineGo = () => { const v = refineInput.value.trim(); if (v) run(v, v); };
+      refineInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') refineGo(); });
+      return h('div', { style: { marginTop: '10px', background: 'var(--bg-2)', border: '1px solid var(--accent-dim)', borderRadius: '11px', boxShadow: '0 0 0 3px var(--accent-dim)', overflow: 'hidden' } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', padding: '11px 12px', borderBottom: '1px solid var(--border)' } }, ewaAiMark(22), h('span', { style: { fontSize: '13px', fontWeight: '700' } }, 'Suggested rewrite'), h('div', { style: { flex: '1' } }), h('span.mono', { style: { fontSize: '11px', color: 'var(--good)' } }, `+${stats.add}`), h('span.mono', { style: { fontSize: '11px', color: 'var(--bad)' } }, `−${stats.rem}`), seg),
+        h('div', { style: { padding: '10px 13px', maxHeight: '320px', overflowY: 'auto' } }, st.view === 'diff' ? ewaDiffView(d, st.draft) : ewaDescBody(st.draft)),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderTop: '1px solid var(--border)' } }, ewaBtn('Accept', { primary: true, icon: 'check', onClick: accept }), ewaBtn('Discard', { ghost: true, onClick: () => { st.phase = 'idle'; rerender(); } }), h('div', { style: { flex: '1' } }), ewaBtn('Try again', { ghost: true, icon: 'refresh', onClick: () => run(pickInstr(), st.label) })),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', padding: '0 12px 12px' } }, h('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', flex: '1', background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: '9px', padding: '8px 9px 8px 11px' } }, icon('pen', 14), refineInput, ewaBtn('', { icon: 'arrowRight', onClick: refineGo }))));
+    }
+
+    function build() {
+      const wrap = h('div');
+      const headRow = h('div', { style: { display: 'flex', alignItems: 'center', minHeight: '28px', marginBottom: '2px' } }, detailLabel('Description'), h('div', { style: { flex: '1' } }));
+      if (st.phase === 'idle') headRow.append(h('button', { onclick: () => { st.phase = 'compose'; rerender(); }, style: { display: 'inline-flex', alignItems: 'center', gap: '6px', height: '28px', padding: '0 11px', borderRadius: '8px', fontSize: '12.5px', fontWeight: '600', color: 'var(--accent-tx)', background: 'transparent', border: '1px solid var(--accent-dim)', cursor: 'pointer' } }, icon('sparkles', 14), h('span', null, 'Edit with AI')));
+      else if (st.phase === 'done') headRow.append(h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '9px', fontSize: '12px', color: 'var(--accent-tx)' } }, icon('sparkles', 13), h('span', null, 'Edited with AI'), h('span', { style: { color: 'var(--text-faint)' } }, '·'), h('button', { onclick: undo, style: { display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: '600', color: 'var(--text-dim)', cursor: 'pointer', background: 'none', border: 'none' } }, icon('undo', 12), h('span', null, 'Undo'))));
+      wrap.append(headRow);
+      if (st.phase === 'compose') wrap.append(composeBar());
+      else if (st.phase === 'generating') wrap.append(generatingCard());
+      else if (st.phase === 'review') wrap.append(reviewCard());
+      if (st.phase === 'idle' || st.phase === 'done' || st.phase === 'compose') {
+        const dimmed = st.phase === 'compose';
+        const box = h('div', { style: { marginTop: dimmed ? '4px' : '9px', padding: dimmed ? '10px 12px' : '0', borderRadius: '11px', border: dimmed ? '1px dashed var(--border)' : 'none', opacity: dimmed ? '0.6' : '1' } });
+        if (dimmed) box.append(h('div', { style: { fontSize: '10.5px', fontWeight: '700', letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--text-faint)', marginBottom: '7px' } }, 'Current'));
+        if (!loaded()) box.append(h('p', { style: { color: 'var(--text-faint)' } }, 'Loading…'));
+        else if (!desc()) box.append(h('p', { style: { color: 'var(--text-faint)' } }, 'No description.'));
+        else box.append(ewaDescBody(desc()));
+        wrap.append(box);
+      }
+      return wrap;
+    }
+
+    rerender();
+    return rerender;
   }
 
   function jiraSite() { return (ctx.getSettings()?.jira?.host || '').replace(/^https?:\/\//, ''); }
