@@ -264,7 +264,7 @@
         h('span.jb-empty-ic', { style: { width: '44px', height: '44px' } }, icon('kanban', 22)),
         h('div.jb-empty-title', null, 'No board picked yet'),
         h('p.jb-empty-sub', null, 'Open the full board to choose a project to track.'),
-        h('button.primary', { onclick: openDrawer }, h('span', null, 'Open full board')),
+        h('button.primary', { onclick: () => openDrawer() }, h('span', null, 'Open full board')),
       ));
       inCall.root.append(panel);
       return;
@@ -604,8 +604,8 @@
   }
   function copyLink(key) {
     const client = ctx.getClient();
-    if (client?.isConfigured()) {
-      navigator.clipboard?.writeText(client.issueUrl(key)).then(() => toast('success', 'Link copied to clipboard.'));
+    if (client?.isConfigured() && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(client.issueUrl(key)).then(() => toast('success', 'Link copied to clipboard.'));
     }
   }
 
@@ -675,7 +675,10 @@
   }
 
   // ── first-run picker ──
-  async function firstRun() {
+  // Synchronous: return the hero + a "Loading projects…" placeholder
+  // immediately so the drawer shows the loading state, then fill the
+  // list once listProjects() resolves (async in the background).
+  function firstRun() {
     const client = ctx.getClient();
     const body = h('div.jb-firstrun');
     const inner = h('div.jb-firstrun-inner',
@@ -691,11 +694,11 @@
     inner.append(listEl);
     body.append(inner);
 
-    try {
-      const projects = await client.listProjects();
+    Promise.resolve(client?.listProjects()).then((projects) => {
       listEl.innerHTML = '';
-      if (!projects.length) {
+      if (!projects || !projects.length) {
         listEl.append(h('div.jb-col-empty', null, h('span', null, 'No projects found for this account.')));
+        return;
       }
       projects.forEach((p) => {
         listEl.append(h('button.jb-firstrun-item', {
@@ -709,10 +712,10 @@
           icon('chevronRight', 17, 'var(--text-faint)'),
         ));
       });
-    } catch (err) {
+    }).catch((err) => {
       listEl.innerHTML = '';
       listEl.append(h('div.jb-col-empty', null, icon('block', 20), h('span', null, String(err?.message || err).slice(0, 120))));
-    }
+    });
     return body;
   }
 
@@ -752,7 +755,7 @@
     return col;
   }
 
-  async function renderDrawer() {
+  function renderDrawer() {
     if (!drawer) buildDrawer();
     drawer.panel.innerHTML = '';
     const client = ctx.getClient();
@@ -774,7 +777,7 @@
       return;
     }
     if (!project) {
-      drawer.panel.append(await firstRun());
+      drawer.panel.append(firstRun());
       return;
     }
     drawer.panel.append(toolbar());
@@ -802,6 +805,7 @@
       board.columns = deriveColumns(board.issues);
     } catch (err) {
       board.loading = false;
+      if (isRefresh) rerenderToolbar();
       const board$ = drawer.panel.querySelector('.jb-board');
       if (board$) {
         board$.innerHTML = '';
@@ -825,7 +829,8 @@
     board.query = ''; board.filter = 'all';
     drawer.root.classList.remove('hidden');
     drawer.panel.classList.remove('jb-slide'); void drawer.panel.offsetWidth; drawer.panel.classList.add('jb-slide');
-    renderDrawer().then(() => { if (focusKey) openDetail(focusKey); });
+    renderDrawer();
+    if (focusKey) openDetail(focusKey);
   }
   function closeDrawer() {
     if (!drawer) return;
