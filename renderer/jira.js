@@ -65,9 +65,12 @@
       const fields = full ? ISSUE_FIELDS_FULL : ISSUE_FIELDS_BRIEF;
       return this._request(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=${encodeURIComponent(fields)}`);
     }
-    searchIssues(jql, max = 20, { full = false } = {}) {
-      const fields = full ? ISSUE_FIELDS_FULL : ISSUE_FIELDS_BRIEF;
-      const q = `jql=${encodeURIComponent(jql)}&maxResults=${max}&fields=${encodeURIComponent(fields)}`;
+    // `fields` overrides the brief/full preset with an explicit comma-
+    // separated field list — used by the board, which needs `labels`
+    // (absent from BRIEF) but not the heavy `description` (in FULL).
+    searchIssues(jql, max = 20, { full = false, fields = null } = {}) {
+      const fieldList = fields || (full ? ISSUE_FIELDS_FULL : ISSUE_FIELDS_BRIEF);
+      const q = `jql=${encodeURIComponent(jql)}&maxResults=${max}&fields=${encodeURIComponent(fieldList)}`;
       return this._request(`/rest/api/3/search/jql?${q}`);
     }
     // The /search/jql endpoint dropped the `total` field; this is the
