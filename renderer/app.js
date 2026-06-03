@@ -1783,12 +1783,17 @@ async function joinTeamAndStart(teamId) {
   huddle.addEventListener('saved-message-added', (e) => onSavedMessageChange('add', e.detail.save));
   huddle.addEventListener('saved-message-updated', (e) => onSavedMessageChange('update', e.detail.save));
   huddle.addEventListener('saved-message-removed', (e) => onSavedMessageChange('remove', { messageId: e.detail.messageId }));
-  // A teammate changed the shared Jira board project — update the cache and
-  // re-render any open board surface so it switches live.
+  // A teammate changed the shared Jira board row — update the cache, and
+  // re-render open board surfaces ONLY when the active project actually
+  // changed. A board_name/site-only edit (or the echo of our own save)
+  // shouldn't wipe a ticket detail the user is reading or refetch the board.
   huddle.addEventListener('team-board-changed', (e) => {
+    const prevProject = state.teamBoard?.project_key || null;
     state.teamBoard = e.detail.row || null;
-    window.HuddleJiraBoard?.reloadDrawer?.();
-    window.HuddleJiraBoard?.refreshInCall?.();
+    if ((state.teamBoard?.project_key || null) !== prevProject) {
+      window.HuddleJiraBoard?.reloadDrawer?.();
+      window.HuddleJiraBoard?.refreshInCall?.();
+    }
   });
   // Surface incoming messages to the meeting Notes panel. The handler
   // filters by parent_id so non-meeting-thread messages are no-ops;
