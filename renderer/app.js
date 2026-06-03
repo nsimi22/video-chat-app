@@ -6224,6 +6224,8 @@ function initJiraBoard() {
     // Open the board in its own window (reuses the popout system; the child
     // boots into a board-only layout — see bootBoardPopout).
     popOut: () => window.huddle?.openPopout?.({ target: 'board:', teamId: state.huddle?.team?.id || '', title: 'Board' }),
+    // Robust clipboard copy (navigator.clipboard + execCommand fallback).
+    copyText: (text) => copyToClipboard(text),
   });
   window.HuddleJiraBoard.refreshInCall();
 }
@@ -6657,6 +6659,24 @@ async function openSourcePicker() {
     showCallError(`Only ${window.MAX_CONCURRENT_SCREENS} screens can be shared at once. Ask someone to stop sharing first.`);
     return;
   }
+  // macOS drops Screen Recording permission after some app updates; without it
+  // desktopCapturer hands back BLACK frames with no error. Catch that here and
+  // send the user to System Settings instead of sharing a blank screen.
+  // ('not-determined' is the genuine first-run — let it through so macOS shows
+  // its own prompt and registers Huddle in the Screen Recording list.)
+  try {
+    const access = await window.huddle.getScreenAccess?.();
+    if (access === 'denied' || access === 'restricted') {
+      const ok = confirm(
+        'Huddle needs Screen Recording permission to share your screen.\n\n'
+        + 'macOS sometimes turns this off after an app update. Open System Settings → '
+        + 'Privacy & Security → Screen Recording, enable Huddle, then quit and reopen Huddle.\n\n'
+        + 'Open System Settings now?'
+      );
+      if (ok) window.huddle.openScreenSettings?.();
+      return;
+    }
+  } catch { /* permission check unavailable (older build / non-mac) — proceed */ }
   const sources = await window.huddle.getScreenSources();
   els.sourceGrid.replaceChildren();
   for (const s of sources) {
