@@ -107,6 +107,16 @@
     star: `<svg ${A}><path d="M12 3l2.7 5.6L21 9.5l-4.5 4.4 1 6.1L12 17.2 6.5 20l1-6.1L3 9.5l6.3-.9z"/></svg>`,
     stickyNote: `<svg ${A}><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9l7-7V5a2 2 0 0 0-2-2z"/><path d="M14 21v-5a2 2 0 0 1 2-2h5"/></svg>`,
     frame: `<svg ${A}><rect x="3" y="6" width="18" height="14" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><circle cx="6.5" cy="8" r="0.5"/></svg>`,
+    // ── Jira board feature ──────────────────────────────────────
+    kanban: `<svg ${A}><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/><line x1="3" y1="9" x2="9" y2="9"/><line x1="15" y1="13" x2="21" y2="13"/></svg>`,
+    bug: `<svg ${A}><rect x="8" y="6" width="8" height="12" rx="4"/><path d="M19 7l-3 2M5 7l3 2M19 13h-3M5 13h3M19 19l-3-2M5 19l3-2M12 4V2"/></svg>`,
+    block: `<svg ${A}><circle cx="12" cy="12" r="9"/><line x1="5.6" y1="5.6" x2="18.4" y2="18.4"/></svg>`,
+    filter: `<svg ${A}><polygon points="22 3 2 3 10 12.5 10 19 14 21 14 12.5 22 3"/></svg>`,
+    chevronUp: `<svg ${A}><polyline points="6 15 12 9 18 15"/></svg>`,
+    chevronsUp: `<svg ${A}><polyline points="6 14 12 8 18 14"/><polyline points="6 19 12 13 18 19"/></svg>`,
+    chevronsDown: `<svg ${A}><polyline points="6 10 12 16 18 10"/><polyline points="6 5 12 11 18 5"/></svg>`,
+    equal: `<svg ${A}><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/></svg>`,
+    external: `<svg ${A}><path d="M14 3h7v7"/><path d="M10 14L21 3"/><path d="M21 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h6"/></svg>`,
   };
 
   // Merge: V2 design icons land alongside legacy icons. Legacy keys

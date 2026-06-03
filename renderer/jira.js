@@ -141,6 +141,10 @@
       return { key, transitionId };
     }
     issueUrl(key) { return `${this._baseUrl()}/browse/${key}`; }
+    // Portable project landing URL. `/browse/<PROJECTKEY>` redirects to
+    // the project on both Jira Cloud and Server/DC, unlike the Cloud-only
+    // `/jira/software/projects/<KEY>/boards` next-gen path.
+    projectUrl(projectKey) { return `${this._baseUrl()}/browse/${projectKey}`; }
   }
 
   function safeParseError(body) {

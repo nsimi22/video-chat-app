@@ -116,6 +116,7 @@ const els = {
   openCalendar: $('#open-calendar'),
   calendarCount: $('#calendar-count'),
   calendarDrawer: $('#calendar-drawer'),
+  openBoard: $('#open-board'),
   calendarClose: $('#calendar-close'),
   calendarList: $('#calendar-list'),
   calendarSchedule: $('#calendar-schedule'),
@@ -229,6 +230,7 @@ const els = {
   aiTicketCancel: $('#ai-ticket-cancel'),
   aiTicketDraft: $('#ai-ticket-draft'),
   btnNotes: $('#btn-notes'),
+  btnBoard: $('#btn-board'),
   meetingNotes: $('#meeting-notes'),
   meetingNotesClose: $('#meeting-notes-close'),
   meetingNotesList: $('#meeting-notes-list'),
@@ -2759,6 +2761,7 @@ function renderCallHeader() {
   const ccSupported = !!window.HuddleTranscript?.TranscriptManager?.isSupported();
   els.btnCc?.classList.toggle('hidden', !inCallHere || !ccSupported);
   els.btnNotes?.classList.toggle('hidden', !inCallHere);
+  els.btnBoard?.classList.toggle('hidden', !inCallHere);
   els.btnPopoutCall.classList.toggle('hidden', !inCallHere);
   els.btnFullscreen?.classList.toggle('hidden', !inCallHere);
   // Layout switcher visibility is driven by refreshLayoutSwitcherUi
@@ -4933,6 +4936,9 @@ function resetCallEphemera() {
   state.raisedHands.clear();
   state.peerPlatforms.clear();
   if (els.btnHand) els.btnHand.classList.remove('active');
+  // Drop the in-call team board overlay — it's only relevant mid-call.
+  window.HuddleJiraBoard?.hideInCall();
+  if (els.btnBoard) els.btnBoard.classList.remove('active');
   clearAllReactions();
   syncTilesVisibility();
 }
@@ -5437,6 +5443,14 @@ function wireControls() {
   const toggleCaptions = () => (state.cc.on ? stopCaptions() : startCaptions());
   els.btnCc && (els.btnCc.onclick = toggleCaptions);
   els.captionsClose && (els.captionsClose.onclick = () => stopCaptions());
+
+  // Jira board: in-call "what we're working on" overlay (call header)
+  // and the full Kanban drawer (left-nav quick link).
+  els.btnBoard && (els.btnBoard.onclick = () => {
+    window.HuddleJiraBoard?.toggleInCall();
+    els.btnBoard.classList.toggle('active', !!window.HuddleJiraBoard?.isInCallOpen?.());
+  });
+  els.openBoard && (els.openBoard.onclick = () => window.HuddleJiraBoard?.openDrawer());
 
   // Meeting notes — right-side dock. Toggle from the call dock's
   // Notes button; the panel itself hosts a tiny composer that posts
@@ -6062,6 +6076,7 @@ async function refreshSettings() {
   rebuildJiraClient();
   rebuildAiClient();
   rebuildGitHubClient();
+  initJiraBoard();
   // Apply persisted appearance preferences (density + accent hue) on
   // every load. Stored under state.settings.appearance and written
   // to :root as CSS custom properties so existing v2 tokens pick up
@@ -6129,6 +6144,32 @@ function rebuildJiraClient() {
   state.jira = new window.JiraClient(j);
   const enabled = state.jira.isConfigured();
   els.btnJira?.classList.toggle('disabled', !enabled);
+}
+
+// Wire the Jira board feature to live app state. Idempotent — the
+// module merges the bridge, so calling on every settings refresh just
+// keeps the accessors pointing at the current client/settings.
+function initJiraBoard() {
+  if (!window.HuddleJiraBoard) return;
+  window.HuddleJiraBoard.init({
+    getClient: () => state.jira,
+    getSettings: () => state.settings || {},
+    openSettings: () => { try { openSettings(); } catch {} },
+    // Persist a partial Jira-settings patch (e.g. the board's chosen
+    // project) into the user's private integrations row, then rebuild
+    // the client so the new config takes effect immediately.
+    onConfigChange: async (jiraPatch) => {
+      state.settings = {
+        ...state.settings,
+        jira: { ...(state.settings?.jira || {}), ...jiraPatch },
+      };
+      try { await window.huddleApi.saveSettings(state.settings); }
+      catch (err) { console.warn('board config save failed', err); }
+      rebuildJiraClient();
+      els.setJiraProject && (els.setJiraProject.value = state.settings.jira.defaultProject || '');
+    },
+  });
+  window.HuddleJiraBoard.refreshInCall();
 }
 
 function rebuildAiClient() {
