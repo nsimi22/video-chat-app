@@ -6153,6 +6153,24 @@ function initJiraBoard() {
     getClient: () => state.jira,
     getSettings: () => state.settings || {},
     openSettings: () => { try { openSettings(); } catch {} },
+    // Shared team-wide board selection (public.team_jira_board). The board
+    // prefers this over the per-user settings.jira.defaultProject fallback.
+    getTeamBoard: () => state.teamBoard || null,
+    // Re-fetch the team row lazily — called by the board right before it
+    // reads the active project, so a change another teammate made shows up
+    // on the next open without a realtime subscription. Guarded: state.huddle
+    // may be absent very early in boot / after teardown.
+    refreshTeamBoard: async () => {
+      try { state.teamBoard = (await state.huddle?.loadTeamJiraBoard?.()) || null; }
+      catch (err) { console.warn('team board load failed', err); }
+      return state.teamBoard || null;
+    },
+    // Persist the team's shared project selection, then refresh the cache.
+    saveTeamBoard: async (payload) => {
+      await state.huddle?.saveTeamJiraBoard(payload);
+      try { state.teamBoard = (await state.huddle?.loadTeamJiraBoard?.()) || null; }
+      catch (err) { console.warn('team board reload failed', err); }
+    },
     // Persist a partial Jira-settings patch (e.g. the board's chosen
     // project) into the user's private integrations row, then rebuild
     // the client so the new config takes effect immediately.

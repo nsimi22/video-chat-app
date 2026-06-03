@@ -947,6 +947,29 @@
       if (error) throw error;
     }
 
+    // ----- Shared team Jira board config --------------------------------
+    //
+    // One row per team in public.team_jira_board naming the Jira project
+    // the whole team's board tracks. Per-user Jira *credentials* stay in
+    // the RLS-locked user_integrations; this holds only the shared
+    // *selection*. updated_by / updated_at are stamped server-side by the
+    // touch trigger, so callers don't send them.
+    async loadTeamJiraBoard() {
+      const { data, error } = await this.supabase
+        .from('team_jira_board').select('*').eq('team_id', this.team.id).maybeSingle();
+      if (error) { console.warn('loadTeamJiraBoard failed', error); return null; }
+      return data || null;
+    }
+    async saveTeamJiraBoard({ projectKey, site, boardName, columns }) {
+      const row = { team_id: this.team.id, project_key: projectKey };
+      if (site !== undefined) row.site = site || null;
+      if (boardName !== undefined) row.board_name = boardName || null;
+      if (columns !== undefined) row.columns = columns;
+      const { error } = await this.supabase
+        .from('team_jira_board').upsert(row, { onConflict: 'team_id' });
+      if (error) throw error;
+    }
+
     // ----- Meeting threads ----------------------------------------------
     //
     // A "meeting thread" is anchored by a normal messages row whose
