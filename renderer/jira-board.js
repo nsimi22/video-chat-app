@@ -376,7 +376,8 @@
     issues: [], columns: [], loading: false, dragKey: null, overCol: null,
     confirming: null, detailKey: null, filter: 'all', query: '', focusKey: null,
     _cols: [], // [{ id, accent, listEl }] rebuilt each renderColumns()
-    _descCache: new Map(), // issue key -> loaded description text
+    _descCache: new Map(), // issue key -> loaded description text (success only)
+    _descErr: new Set(),   // issue keys whose description fetch FAILED (≠ empty)
   };
   let filterTimer = null; // debounces the board search input
 
@@ -555,6 +556,9 @@
   // ── card detail ──
   async function openDetail(key) {
     board.detailKey = key;
+    // Fresh open starts the Edit-with-AI flow clean — never resurrect a
+    // stale 'review'/'done' phase (or a stale Undo target) from a prior open.
+    delete ewaStore[key];
     renderDetail();
   }
   async function renderDetail() {
@@ -608,6 +612,7 @@
     // reopening a ticket (or a re-render while the detail is open) doesn't
     // re-hit the network. The editor shows "Loading…" until the cache fills.
     if (!board._descCache.has(t.key)) {
+      board._descErr.delete(t.key);
       try {
         const full = await client.getIssue(t.key, { full: true });
         // Sync labels from the authoritative per-ticket fetch in case they
@@ -617,7 +622,9 @@
         const text = window.jiraAdfToText ? window.jiraAdfToText(full?.fields?.description) : '';
         board._descCache.set(t.key, (text || '').trim());
       } catch {
-        board._descCache.set(t.key, '');
+        // Do NOT cache '' — a failed load must not look like an empty
+        // description, or Edit-with-AI could overwrite real unloaded content.
+        board._descErr.add(t.key);
       }
       ewaRerender();
     }
@@ -630,12 +637,13 @@
   // Optimistic edit: apply() mutates the local issue, persist() calls Jira.
   // On failure revert() restores. Re-renders the detail + board card both
   // ways so the two stay in sync. Mirrors the drag-to-transition onDrop path.
-  async function commitEdit({ apply, revert, persist, okMsg }) {
+  async function commitEdit({ apply, revert, persist, okMsg, after }) {
     apply();
     renderDetail(); renderColumns();
     try {
       await persist();
       toast('success', okMsg);
+      if (after) after();
     } catch (err) {
       revert();
       renderDetail(); renderColumns();
@@ -702,6 +710,9 @@
       revert: () => { t.status = prevStatus; t.cat = prevCat; },
       persist: () => ctx.getClient().transitionIssue({ key: t.key, transitionId }),
       okMsg: `${t.key} → ${toName}.`,
+      // If the new status has no column yet, reload so columns re-derive and
+      // the card doesn't vanish into a non-existent column.
+      after: () => { if (!toCol) loadBoard(true); },
     });
   }
   function changeAssignee(t, accountId, name) {
@@ -757,14 +768,21 @@
       (query) => Promise.resolve(client.listAssignableUsers(activeProject(), query || '')).then((us) => [
         // Pin "Unassign" only on the unfiltered list — keep search results clean.
         ...(query ? [] : [{ value: null, label: 'Unassign', icon: 'x' }]),
-        ...(us || []).map((u) => ({ value: u.accountId, label: u.displayName, user: { id: u.accountId, name: u.displayName, email: u.emailAddress || '' } })),
+        // Skip users Jira returns without an accountId (GDPR-stripped / app
+        // users) — assigning them would send no field and error on save.
+        ...(us || []).filter((u) => u.accountId).map((u) => ({ value: u.accountId, label: u.displayName, user: { id: u.accountId, name: u.displayName, email: u.emailAddress || '' } })),
       ]),
       (accountId, o) => changeAssignee(t, accountId, o?.label),
       { searchable: true, placeholder: 'Search people…' });
   }
   function priorityEditor(t) {
+    const client = ctx.getClient();
     return lazyDropdown([priorityIcon(t.priority, 16), h('span', { style: { marginLeft: '6px' } }, prioMeta(t.priority).label)],
-      () => Promise.resolve(PRIORITIES.map((p) => ({ value: p, label: p }))),
+      // Pull the project's real priority scheme (custom schemes use different
+      // names); fall back to the standard set if the call fails or is empty.
+      () => Promise.resolve(client.listPriorities()).then(
+        (ps) => (ps && ps.length ? ps.map((p) => ({ value: p.name, label: p.name })) : PRIORITIES.map((p) => ({ value: p, label: p }))),
+        () => PRIORITIES.map((p) => ({ value: p, label: p }))),
       (name) => changePriority(t, name));
   }
   function labelsEditor(t) {
@@ -901,6 +919,7 @@
   function mountDescriptionEditor(container, t) {
     const st = ewaState(t.key);
     const loaded = () => board._descCache.has(t.key);
+    const errored = () => board._descErr.has(t.key);
     const desc = () => board._descCache.get(t.key) || '';
     function rerender() { container.innerHTML = ''; container.append(build()); }
     function pickInstr() { const q = EWA_QUICK.find((x) => x.label === st.label); return q ? q.instr : st.label; }
@@ -967,7 +986,9 @@
     function build() {
       const wrap = h('div');
       const headRow = h('div', { style: { display: 'flex', alignItems: 'center', minHeight: '28px', marginBottom: '2px' } }, detailLabel('Description'), h('div', { style: { flex: '1' } }));
-      if (st.phase === 'idle') headRow.append(h('button', { onclick: () => { st.phase = 'compose'; rerender(); }, style: { display: 'inline-flex', alignItems: 'center', gap: '6px', height: '28px', padding: '0 11px', borderRadius: '8px', fontSize: '12.5px', fontWeight: '600', color: 'var(--accent-tx)', background: 'transparent', border: '1px solid var(--accent-dim)', cursor: 'pointer' } }, icon('sparkles', 14), h('span', null, 'Edit with AI')));
+      // Only offer Edit-with-AI once the real description has loaded — never
+      // over a failed/unloaded fetch (which would risk overwriting content).
+      if (st.phase === 'idle' && loaded()) headRow.append(h('button', { onclick: () => { st.phase = 'compose'; rerender(); }, style: { display: 'inline-flex', alignItems: 'center', gap: '6px', height: '28px', padding: '0 11px', borderRadius: '8px', fontSize: '12.5px', fontWeight: '600', color: 'var(--accent-tx)', background: 'transparent', border: '1px solid var(--accent-dim)', cursor: 'pointer' } }, icon('sparkles', 14), h('span', null, 'Edit with AI')));
       else if (st.phase === 'done') headRow.append(h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '9px', fontSize: '12px', color: 'var(--accent-tx)' } }, icon('sparkles', 13), h('span', null, 'Edited with AI'), h('span', { style: { color: 'var(--text-faint)' } }, '·'), h('button', { onclick: undo, style: { display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: '600', color: 'var(--text-dim)', cursor: 'pointer', background: 'none', border: 'none' } }, icon('undo', 12), h('span', null, 'Undo'))));
       wrap.append(headRow);
       if (st.phase === 'compose') wrap.append(composeBar());
@@ -977,7 +998,8 @@
         const dimmed = st.phase === 'compose';
         const box = h('div', { style: { marginTop: dimmed ? '4px' : '9px', padding: dimmed ? '10px 12px' : '0', borderRadius: '11px', border: dimmed ? '1px dashed var(--border)' : 'none', opacity: dimmed ? '0.6' : '1' } });
         if (dimmed) box.append(h('div', { style: { fontSize: '10.5px', fontWeight: '700', letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--text-faint)', marginBottom: '7px' } }, 'Current'));
-        if (!loaded()) box.append(h('p', { style: { color: 'var(--text-faint)' } }, 'Loading…'));
+        if (errored()) box.append(h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px' } }, h('span', { style: { color: 'var(--bad)' } }, "Couldn't load the description."), ewaBtn('Retry', { onClick: () => { board._descErr.delete(t.key); openDetail(t.key); } })));
+        else if (!loaded()) box.append(h('p', { style: { color: 'var(--text-faint)' } }, 'Loading…'));
         else if (!desc()) box.append(h('p', { style: { color: 'var(--text-faint)' } }, 'No description.'));
         else box.append(ewaDescBody(desc()));
         wrap.append(box);
@@ -1208,6 +1230,8 @@
     const project = activeProject();
     if (!client?.isConfigured() || !project) return;
     board._descCache.clear(); // descriptions may have changed since last load
+    board._descErr.clear();
+    for (const k in ewaStore) delete ewaStore[k]; // drop stale Edit-with-AI phases
     board.loading = true;
     if (isRefresh) rerenderToolbar();
     renderColumns();
