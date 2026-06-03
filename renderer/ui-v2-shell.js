@@ -16,6 +16,7 @@
     calls: 'video',
     whiteboard: 'board',
     calendar: 'calendar',
+    board: 'kanban',
     ai: 'sparkles',
     settings: 'settings',
   };
@@ -41,6 +42,7 @@
         document.getElementById('open-calendar')?.click();
       }
     },
+    board: () => window.HuddleJiraBoard?.openDrawer(),
   };
 
   function paintIcons(rail) {
@@ -71,6 +73,7 @@
       // stacking on top of each other.
       if (key !== 'ai') window.HuddleAIPanel?.close?.();
       if (key !== 'calendar') window.HuddleCalendarGrid?.close?.();
+      if (key !== 'board') window.HuddleJiraBoard?.closeDrawer?.();
 
       const legacyId = LEGACY_BRIDGE[key];
       if (legacyId) {
