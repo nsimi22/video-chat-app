@@ -752,7 +752,14 @@
       }
       projects.forEach((p) => {
         listEl.append(h('button.jb-firstrun-item', {
-          onclick: async () => { board._pickProject = false; await ctx.saveTeamBoard({ projectKey: p.key, site: jiraSite() }); renderDrawer(); },
+          onclick: async () => {
+            board._pickProject = false;
+            // Always re-render, even if the save fails (network/RLS) — a
+            // rejected await must not leave the picker stuck with no feedback.
+            try { await ctx.saveTeamBoard({ projectKey: p.key, site: jiraSite() }); }
+            catch (err) { console.warn('team board save failed', err); }
+            renderDrawer();
+          },
         },
           h('span.jb-firstrun-item-ic', null, icon('kanban', 19)),
           h('div', { style: { flex: '1' } },
