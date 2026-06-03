@@ -27,6 +27,7 @@
     refreshTeamBoard: async () => null, // re-fetch the team row
     saveTeamBoard: async () => {},  // ({projectKey, site}) -> persist team row
     aiRewrite: async (text) => text, // (current, instruction) -> rewritten text
+    popOut: () => {},               // open the board in its own window
   };
 
   // The board's active project: the shared team selection wins, falling
@@ -1192,6 +1193,7 @@
     const client = ctx.getClient();
     const project = activeProject();
 
+    const inPopout = document.body.classList.contains('popout-board');
     const head = h('div.jb-drawer-head',
       null,
       icon('kanban', 20, 'var(--accent-2)'),
@@ -1199,7 +1201,9 @@
       project && client?.isConfigured() && h('span.mono.jb-drawer-chip', null, project),
       h('div', { style: { flex: '1' } }),
       project && client?.isConfigured() && h('button.solid.jb-open-jira', { onclick: () => openBoardInJira() }, icon('external', 14), h('span', null, 'Open in Jira')),
-      iconBtn('x', 18, 'Close board', closeDrawer),
+      // Pop the board into its own window (not shown when already in one).
+      !inPopout && iconBtn('popout', 18, 'Open board in its own window', () => ctx.popOut?.()),
+      iconBtn('x', 18, inPopout ? 'Close window' : 'Close board', inPopout ? () => window.close() : closeDrawer),
     );
     drawer.panel.append(head);
 

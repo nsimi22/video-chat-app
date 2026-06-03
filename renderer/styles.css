@@ -8046,6 +8046,11 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .jb-slide { animation: jb-slide-in 0.22s cubic-bezier(0.32, 0.72, 0, 1); }
 @keyframes jb-slide-in { from { transform: translateY(10px); } to { transform: none; } }
 
+/* Board popped out to its own window: the drawer fills the window and the
+   backdrop is dropped (there's nothing behind it to dim). */
+.popout-board .jb-drawer-backdrop { display: none; }
+.popout-board .jb-drawer { inset: 0; border: none; border-radius: 0; box-shadow: none; }
+
 .jb-drawer-head {
   display: flex; align-items: center; gap: 11px; padding: 0 18px; height: 56px;
   border-bottom: 1px solid var(--line); flex: 0 0 auto;
