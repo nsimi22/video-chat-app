@@ -23,7 +23,6 @@
     getClient: () => null,          // () -> JiraClient | null
     getSettings: () => ({}),        // () -> settings object
     openSettings: () => {},         // open the Settings modal
-    onConfigChange: async () => {},  // (jiraPatch) -> persist + rebuild
     getTeamBoard: () => null,       // () -> team_jira_board row | null
     refreshTeamBoard: async () => null, // re-fetch the team row
     saveTeamBoard: async () => {},  // ({projectKey, site}) -> persist team row
@@ -893,6 +892,9 @@
     board.query = ''; board.filter = 'all';
     drawer.root.classList.remove('hidden');
     drawer.panel.classList.remove('jb-slide'); void drawer.panel.offsetWidth; drawer.panel.classList.add('jb-slide');
+    // Clear stale content up front so the panel isn't showing the previous
+    // open's board during the (brief) team-row fetch below.
+    drawer.panel.innerHTML = '';
     // Pull the shared team selection before deciding first-run vs. board.
     await ctx.refreshTeamBoard?.();
     renderDrawer();
@@ -927,5 +929,8 @@
     toggleInCall, hideInCall, isInCallOpen,
     // exposed for app.js to refresh the in-call panel when settings change
     refreshInCall: () => { if (inCall?.open) renderInCall(); },
+    // Re-render the drawer if it's open (e.g. a teammate changed the shared
+    // board project via realtime) — picks up the new active project.
+    reloadDrawer: () => { if (drawer && !drawer.root.classList.contains('hidden')) renderDrawer(); },
   };
 })();
