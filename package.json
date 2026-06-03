@@ -1,6 +1,6 @@
 {
   "name": "video-chat-app",
-  "version": "0.28.0",
+  "version": "0.28.1",
   "description": "Desktop video + multi-screen-share + Slack-style chat, on Supabase",
   "main": "main.js",
   "scripts": {
