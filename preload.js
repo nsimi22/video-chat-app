@@ -47,6 +47,11 @@ contextBridge.exposeInMainWorld('huddle', {
   // aspect ratio so the popout isn't padded with empty chrome.
   resizeWindowToContent: (w, h) => ipcRenderer.invoke('resize-window-to-content', { width: w, height: h }),
   getScreenSources: () => ipcRenderer.invoke('get-screen-sources'),
+  // macOS Screen Recording permission status ('granted'|'denied'|'restricted'|
+  // 'not-determined'|'unknown'; always 'granted' off macOS) + a deep link to
+  // the System Settings pane to re-enable it.
+  getScreenAccess: () => ipcRenderer.invoke('get-screen-access'),
+  openScreenSettings: () => ipcRenderer.invoke('open-screen-settings'),
   getSupabaseConfig: () => ipcRenderer.invoke('get-supabase-config'),
   // Captions engine — whisper.cpp sidecar. Returns
   // `{ available: false, path: null }` on platforms where no binary

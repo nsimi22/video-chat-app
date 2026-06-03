@@ -2,7 +2,7 @@
 // server is gone — main.js only opens the BrowserWindow, hands the renderer
 // a Supabase URL + publishable key, and exposes the desktopCapturer for
 // screen sharing.
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell, dialog, systemPreferences } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 
@@ -298,6 +298,24 @@ ipcMain.handle('get-screen-sources', async () => {
     thumbnail: s.thumbnail.toDataURL(),
     display_id: s.display_id,
   }));
+});
+
+// macOS Screen Recording permission (TCC). desktopCapturer silently returns
+// black frames when it's missing — and macOS often drops it after an app
+// update — so the renderer checks this before sharing. Non-macOS has no such
+// gate, so report 'granted'.
+ipcMain.handle('get-screen-access', () => {
+  if (process.platform !== 'darwin') return 'granted';
+  try { return systemPreferences.getMediaAccessStatus('screen'); }
+  catch { return 'unknown'; }
+});
+// Deep-link to System Settings → Privacy & Security → Screen Recording so the
+// user can re-enable Huddle (there is no programmatic grant for screen capture).
+ipcMain.handle('open-screen-settings', () => {
+  if (process.platform === 'darwin') {
+    shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+  }
+  return true;
 });
 
 ipcMain.handle('get-supabase-config', () => ({ url: SUPABASE_URL, anonKey: SUPABASE_KEY }));
