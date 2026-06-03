@@ -66,7 +66,6 @@
     if (n.includes('highest') || n === 'urgent' || n.includes('critical') || n.includes('blocker'))
       return { label: 'Urgent', icon: 'chevronsUp', color: 'var(--bad)' };
     if (n.includes('high')) return { label: 'High', icon: 'chevronUp', color: 'var(--warn)' };
-    if (n.includes('low') && n.includes('lowest')) return { label: 'Lowest', icon: 'chevronsDown', color: 'var(--text-faint)' };
     if (n.includes('lowest')) return { label: 'Lowest', icon: 'chevronsDown', color: 'var(--text-faint)' };
     if (n.includes('low')) return { label: 'Low', icon: 'chevronsDown', color: 'var(--text-faint)' };
     return { label: name || 'Medium', icon: 'equal', color: 'var(--accent-2)' };
@@ -362,7 +361,9 @@
     issues: [], columns: [], loading: false, dragKey: null, overCol: null,
     confirming: null, detailKey: null, filter: 'all', query: '', focusKey: null,
     _cols: [], // [{ id, accent, listEl }] rebuilt each renderColumns()
+    _descCache: new Map(), // issue key -> loaded description text
   };
+  let filterTimer = null; // debounces the board search input
 
   function buildDrawer() {
     const root = h('div.jb-drawer-root.hidden');
@@ -586,13 +587,21 @@
     const detail = h('div.jb-detail', null, head, body, foot);
     drawer.panel.append(detail);
 
-    // Lazy-load the full description (ADF → text).
-    try {
-      const full = await client.getIssue(t.key, { full: true });
-      const text = window.jiraAdfToText ? window.jiraAdfToText(full?.fields?.description) : '';
-      descBox.textContent = (text || '').trim() || 'No description.';
-    } catch {
-      descBox.textContent = 'Could not load the description.';
+    // Lazy-load the full description (ADF → text), cached per key so
+    // reopening a ticket (or a re-render while the detail is open)
+    // doesn't re-hit the network. Cache is dropped on board reload.
+    if (board._descCache.has(t.key)) {
+      descBox.textContent = board._descCache.get(t.key);
+    } else {
+      try {
+        const full = await client.getIssue(t.key, { full: true });
+        const text = window.jiraAdfToText ? window.jiraAdfToText(full?.fields?.description) : '';
+        const out = (text || '').trim() || 'No description.';
+        board._descCache.set(t.key, out);
+        descBox.textContent = out;
+      } catch {
+        descBox.textContent = 'Could not load the description.';
+      }
     }
   }
   function detailLabel(text) { return h('span.jb-detail-lbl', null, text); }
@@ -624,7 +633,13 @@
       icon('search', 15, 'var(--text-faint)'),
       h('input.jb-search-input', {
         type: 'text', placeholder: 'Search this board…', value: board.query,
-        oninput: (e) => { board.query = e.target.value; renderColumns(); reflectClear(); },
+        // Debounce the (full column rebuild) filter so typing on a large
+        // board doesn't churn the DOM + re-attach handlers per keystroke.
+        oninput: (e) => {
+          board.query = e.target.value; reflectClear();
+          clearTimeout(filterTimer);
+          filterTimer = setTimeout(renderColumns, 140);
+        },
       }),
     );
     const clearBtn = h('button.jb-search-clear' + (board.query ? '' : '.hidden'), {
@@ -786,15 +801,19 @@
   }
 
   function openBoardInJira() {
-    const host = jiraSite();
+    const client = ctx.getClient();
     const project = ctx.getSettings()?.jira?.defaultProject || '';
-    if (host && project) window.open(`https://${host}/jira/software/projects/${project}/boards`, '_blank', 'noopener');
+    // Route through the shared client's /browse/<key> URL — portable
+    // across Jira Cloud and Server/DC — rather than the Cloud-only
+    // next-gen board path (which 404s on self-hosted instances).
+    if (client?.isConfigured() && project) window.open(client.projectUrl(project), '_blank', 'noopener');
   }
 
   async function loadBoard(isRefresh) {
     const client = ctx.getClient();
     const project = ctx.getSettings()?.jira?.defaultProject || '';
     if (!client?.isConfigured() || !project) return;
+    board._descCache.clear(); // descriptions may have changed since last load
     board.loading = true;
     if (isRefresh) rerenderToolbar();
     renderColumns();
