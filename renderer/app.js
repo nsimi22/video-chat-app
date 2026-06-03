@@ -882,10 +882,38 @@ async function bootPopout(cfg) {
     await bootScreenPopout(cfg);
     return;
   }
+  if (cfg.kind === 'board') {
+    document.body.classList.add('popout-board');
+    await bootBoardPopout(cfg);
+    return;
+  }
   document.body.innerHTML =
     `<div style="padding:32px;color:#fff;font:14px system-ui">`
     + `Unknown popout target: ${cfg.target}`
     + `</div>`;
+}
+
+// Board in its own window. Reuses the persisted session; loads the same
+// per-user settings + Jira/AI clients as the main window, builds a bare
+// HuddleClient for team context (team_jira_board), then opens the board —
+// which fills the window via the .popout-board CSS overrides.
+async function bootBoardPopout(cfg) {
+  if (!cfg.teamId) {
+    document.body.innerHTML =
+      '<div style="padding:32px;color:#fff;font:14px system-ui">'
+      + 'Popout missing team context. Close + reopen from the main window.'
+      + '</div>';
+    return;
+  }
+  try { state.settings = await window.huddleApi.loadSettings(); }
+  catch (err) { console.warn('popout settings load failed', err); state.settings = {}; }
+  // Bare client (no .start()) for team-scoped reads — mirrors the whiteboard
+  // popout so the popout doesn't clobber the main window's presence.
+  state.huddle = await window.huddleApi.startHuddle({ id: cfg.teamId, name: cfg.title || cfg.teamId });
+  rebuildJiraClient();
+  rebuildAiClient();
+  initJiraBoard();
+  window.HuddleJiraBoard?.openDrawer();
 }
 
 async function bootWhiteboardPopout(cfg) {
@@ -6193,6 +6221,9 @@ function initJiraBoard() {
       const res = await ai.chat({ system, messages: [{ role: 'user', content: `Instruction: ${instruction}\n\nCurrent description:\n${currentText || '(empty)'}` }] });
       return (res?.text || '').trim();
     },
+    // Open the board in its own window (reuses the popout system; the child
+    // boots into a board-only layout — see bootBoardPopout).
+    popOut: () => window.huddle?.openPopout?.({ target: 'board:', teamId: state.huddle?.team?.id || '', title: 'Board' }),
   });
   window.HuddleJiraBoard.refreshInCall();
 }

@@ -12,7 +12,10 @@
     "dist:win": "electron-builder --win",
     "dist:linux": "electron-builder --linux"
   },
-  "author": "",
+  "author": {
+    "name": "SunPower AI Team",
+    "email": "nick.simi@sunpower.com"
+  },
   "license": "MIT",
   "dependencies": {
     "@mediapipe/selfie_segmentation": "^0.1.0",
@@ -98,6 +101,7 @@
     },
     "linux": {
       "category": "Network",
+      "maintainer": "SunPower AI Team <nick.simi@sunpower.com>",
       "target": [
         {
           "target": "AppImage",
