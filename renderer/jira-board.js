@@ -26,6 +26,7 @@
     getTeamBoard: () => null,       // () -> team_jira_board row | null
     refreshTeamBoard: async () => null, // re-fetch the team row
     saveTeamBoard: async () => {},  // ({projectKey, site}) -> persist team row
+    aiRewrite: async (text) => text, // (current, instruction) -> rewritten text
   };
 
   // The board's active project: the shared team selection wins, falling
@@ -375,7 +376,8 @@
     issues: [], columns: [], loading: false, dragKey: null, overCol: null,
     confirming: null, detailKey: null, filter: 'all', query: '', focusKey: null,
     _cols: [], // [{ id, accent, listEl }] rebuilt each renderColumns()
-    _descCache: new Map(), // issue key -> loaded description text
+    _descCache: new Map(), // issue key -> loaded description text (success only)
+    _descErr: new Set(),   // issue keys whose description fetch FAILED (≠ empty)
   };
   let filterTimer = null; // debounces the board search input
 
@@ -554,6 +556,9 @@
   // ── card detail ──
   async function openDetail(key) {
     board.detailKey = key;
+    // Fresh open starts the Edit-with-AI flow clean — never resurrect a
+    // stale 'review'/'done' phase (or a stale Undo target) from a prior open.
+    delete ewaStore[key];
     renderDetail();
   }
   async function renderDetail() {
@@ -574,25 +579,23 @@
       h('button.solid.jb-open-jira', { onclick: () => openInJira(t.key) }, icon('external', 14), h('span', null, 'Open in Jira')),
       iconBtn('x', 17, 'Close', close),
     );
-    const descBox = h('p.jb-detail-desc', null, 'Loading…');
-    const labelsCell = h('div.jb-card-labels');
-    fillLabels(labelsCell, t.labels);
     const grid = h('div.jb-detail-grid',
       null,
-      detailLabel('Status'), h('div', null, statusPill(col)),
-      detailLabel('Assignee'), h('div.jb-detail-assignees', null,
-        ...(t.assignees.length ? t.assignees : [null]).map((u) =>
-          h('span.jb-detail-assignee', null, avatar(u, 24), h('span', null, u?.name || 'Unassigned')))),
-      detailLabel('Priority'), h('div.jb-detail-prio', null, priorityIcon(t.priority, 16), h('span', null, prioMeta(t.priority).label)),
+      detailLabel('Status'), statusEditor(t, col),
+      detailLabel('Assignee'), assigneeEditor(t),
+      detailLabel('Priority'), priorityEditor(t),
       detailLabel('Type'), h('div.jb-detail-val', null, t.type),
-      detailLabel('Labels'), labelsCell,
+      detailLabel('Labels'), labelsEditor(t),
     );
+    // Description region hosts the inline "Edit with AI" flow (compose →
+    // diff review → apply); mountDescriptionEditor manages its own phases and
+    // reads the loaded text from board._descCache, filled just below.
+    const descRegion = h('div');
     const body = h('div.jb-detail-body',
       null,
-      h('h2.jb-detail-title', null, t.summary),
+      titleEditor(t),
       grid,
-      detailLabel('Description'),
-      descBox,
+      descRegion,
     );
     const foot = h('div.jb-detail-foot',
       null,
@@ -603,37 +606,409 @@
     const detail = h('div.jb-detail', null, head, body, foot);
     drawer.panel.append(detail);
 
+    const ewaRerender = mountDescriptionEditor(descRegion, t);
+
     // Lazy-load the full description (ADF → text), cached per key so
-    // reopening a ticket (or a re-render while the detail is open)
-    // doesn't re-hit the network. Cache is dropped on board reload.
-    if (board._descCache.has(t.key)) {
-      descBox.textContent = board._descCache.get(t.key);
-    } else {
+    // reopening a ticket (or a re-render while the detail is open) doesn't
+    // re-hit the network. The editor shows "Loading…" until the cache fills.
+    if (!board._descCache.has(t.key)) {
+      board._descErr.delete(t.key);
       try {
         const full = await client.getIssue(t.key, { full: true });
-        // The per-ticket fetch is authoritative for labels — refresh the
-        // detail cell and update the cached issue so any later board
-        // re-render (filter / drag / refresh) reflects the fresh set.
-        if (Array.isArray(full?.fields?.labels)) {
-          t.labels = full.fields.labels;
-          fillLabels(labelsCell, t.labels);
-        }
+        // Sync labels from the authoritative per-ticket fetch in case they
+        // changed since board load; the labels editor reads t.labels on the
+        // next render. (Board load already includes labels via BOARD_FIELDS.)
+        if (Array.isArray(full?.fields?.labels)) t.labels = full.fields.labels;
         const text = window.jiraAdfToText ? window.jiraAdfToText(full?.fields?.description) : '';
-        const out = (text || '').trim() || 'No description.';
-        board._descCache.set(t.key, out);
-        descBox.textContent = out;
+        board._descCache.set(t.key, (text || '').trim());
       } catch {
-        descBox.textContent = 'Could not load the description.';
+        // Do NOT cache '' — a failed load must not look like an empty
+        // description, or Edit-with-AI could overwrite real unloaded content.
+        board._descErr.add(t.key);
       }
+      ewaRerender();
     }
   }
   function detailLabel(text) { return h('span.jb-detail-lbl', null, text); }
-  // Render the label chips (or a muted "None") into a detail cell. Kept
-  // separate so the cell can be refreshed once the full fetch returns.
-  function fillLabels(cell, labels) {
-    cell.innerHTML = '';
-    if (Array.isArray(labels) && labels.length) labels.forEach((l) => cell.append(label(l)));
-    else cell.append(h('span.jb-detail-none', null, 'None'));
+
+  /* ─────────────── inline field editors (write via Jira API) ─────────────── */
+  const PRIORITIES = ['Highest', 'High', 'Medium', 'Low', 'Lowest'];
+
+  // Optimistic edit: apply() mutates the local issue, persist() calls Jira.
+  // On failure revert() restores. Re-renders the detail + board card both
+  // ways so the two stay in sync. Mirrors the drag-to-transition onDrop path.
+  async function commitEdit({ apply, revert, persist, okMsg, after }) {
+    apply();
+    renderDetail(); renderColumns();
+    try {
+      await persist();
+      toast('success', okMsg);
+      if (after) after();
+    } catch (err) {
+      revert();
+      renderDetail(); renderColumns();
+      toast('error', `${err?.message || err}`.slice(0, 160));
+    }
+  }
+
+  // A .jb-dd dropdown whose options are produced by loadOptions(query) on
+  // open (sync or async) — reuses the toolbar dropdown's markup/CSS. With
+  // { searchable }, a pinned search box re-runs loadOptions(query) (debounced)
+  // so long lists (assignee) can type-ahead instead of scrolling; loadOptions
+  // ignores the query arg for the non-searchable callers (status/priority).
+  function lazyDropdown(triggerKids, loadOptions, onSelect, { searchable = false, placeholder = 'Search…' } = {}) {
+    const wrap = h('div.jb-dd');
+    const btn = h('button.jb-dd-btn', null, ...triggerKids, icon('chevronDown', 14, 'var(--text-faint)'));
+    let menu = null, listWrap = null, timer = null;
+    function close() { if (menu) { menu.remove(); menu = null; } clearTimeout(timer); document.removeEventListener('mousedown', outside); }
+    function outside(e) { if (!wrap.contains(e.target)) close(); }
+    function paintRows(options) {
+      listWrap.innerHTML = '';
+      (options || []).forEach((o) => listWrap.append(h('button.jb-dd-item', { onclick: () => { close(); onSelect(o.value, o); } },
+        o.user ? avatar(o.user, 20) : o.icon ? icon(o.icon, 15, 'var(--text-faint)') : h('span', { style: { width: '20px' } }),
+        h('span', { style: { flex: '1' } }, o.label))));
+      if (!options || !options.length) listWrap.append(h('div.jb-dd-item', { style: { opacity: '.6', cursor: 'default' } }, h('span', { style: { flex: '1' } }, 'No matches')));
+    }
+    async function runLoad(query) {
+      let options;
+      try { options = await loadOptions(query); }
+      catch (err) { toast('error', `${err?.message || err}`.slice(0, 160)); return; }
+      if (menu) paintRows(options);
+    }
+    async function openMenu() {
+      menu = h('div.jb-dd-menu');
+      if (searchable) {
+        // Pin the search box; scroll only the list below it.
+        menu.style.overflow = 'visible'; menu.style.maxHeight = 'none';
+        const search = h('input.jb-dd-search', {
+          type: 'text', placeholder,
+          style: { width: '100%', boxSizing: 'border-box', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--text)', font: 'inherit', fontSize: '13px', padding: '6px 8px', marginBottom: '4px' },
+        });
+        search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => runLoad(search.value.trim()), 200); });
+        menu.append(search);
+        listWrap = h('div.jb-dd-list', { style: { maxHeight: '240px', overflowY: 'auto' } });
+        menu.append(listWrap);
+        setTimeout(() => search.focus(), 20);
+      } else {
+        listWrap = menu;
+      }
+      listWrap.append(h('div.jb-dd-item', { style: { opacity: '.6', cursor: 'default' } }, h('span', { style: { flex: '1' } }, 'Loading…')));
+      wrap.append(menu);
+      document.addEventListener('mousedown', outside);
+      await runLoad('');
+    }
+    btn.addEventListener('click', () => (menu ? close() : openMenu()));
+    wrap.append(btn);
+    return wrap;
+  }
+
+  function changeStatus(t, transitionId, toName) {
+    const prevStatus = t.status, prevCat = t.cat;
+    const toCol = board.columns.find((c) => (c.name || '').toLowerCase() === (toName || '').toLowerCase());
+    commitEdit({
+      apply: () => { if (toName) { t.status = toName; t.cat = toCol?.cat || t.cat; } },
+      revert: () => { t.status = prevStatus; t.cat = prevCat; },
+      persist: () => ctx.getClient().transitionIssue({ key: t.key, transitionId }),
+      okMsg: `${t.key} → ${toName}.`,
+      // If the new status has no column yet, reload so columns re-derive and
+      // the card doesn't vanish into a non-existent column.
+      after: () => { if (!toCol) loadBoard(true); },
+    });
+  }
+  function changeAssignee(t, accountId, name) {
+    const prev = t.assignees;
+    commitEdit({
+      apply: () => { t.assignees = accountId ? [{ id: accountId, name: name || 'Assignee', email: '' }] : []; },
+      revert: () => { t.assignees = prev; },
+      persist: () => ctx.getClient().updateIssue({ key: t.key, assigneeAccountId: accountId }),
+      okMsg: accountId ? `${t.key} assigned to ${name}.` : `${t.key} unassigned.`,
+    });
+  }
+  function changePriority(t, name) {
+    const prev = t.priority;
+    if (name === prev) return;
+    commitEdit({
+      apply: () => { t.priority = name; },
+      revert: () => { t.priority = prev; },
+      persist: () => ctx.getClient().updateIssue({ key: t.key, priorityName: name }),
+      okMsg: `${t.key} priority → ${name}.`,
+    });
+  }
+  function setLabels(t, labels) {
+    const prev = t.labels;
+    commitEdit({
+      apply: () => { t.labels = labels; },
+      revert: () => { t.labels = prev; },
+      persist: () => ctx.getClient().updateIssue({ key: t.key, labels }),
+      okMsg: `${t.key} labels updated.`,
+    });
+  }
+  function setSummary(t, summary) {
+    const prev = t.summary;
+    commitEdit({
+      apply: () => { t.summary = summary; },
+      revert: () => { t.summary = prev; },
+      persist: () => ctx.getClient().updateIssue({ key: t.key, summary }),
+      okMsg: `${t.key} summary updated.`,
+    });
+  }
+
+  // ── editable cell builders (read live values off the mapped issue `t`) ──
+  function statusEditor(t, col) {
+    const client = ctx.getClient();
+    return lazyDropdown([statusPill(col)],
+      () => Promise.resolve(client.listTransitions(t.key)).then((trs) =>
+        (trs || []).map((tr) => ({ value: tr.id, label: tr.to?.name || tr.name, to: tr.to?.name || tr.name, icon: 'flag' }))),
+      (id, o) => changeStatus(t, id, o?.to));
+  }
+  function assigneeEditor(t) {
+    const client = ctx.getClient();
+    const cur = t.assignees[0] || null;
+    return lazyDropdown([avatar(cur, 22), h('span', { style: { marginLeft: '6px' } }, cur?.name || 'Unassigned')],
+      (query) => Promise.resolve(client.listAssignableUsers(activeProject(), query || '')).then((us) => [
+        // Pin "Unassign" only on the unfiltered list — keep search results clean.
+        ...(query ? [] : [{ value: null, label: 'Unassign', icon: 'x' }]),
+        // Skip users Jira returns without an accountId (GDPR-stripped / app
+        // users) — assigning them would send no field and error on save.
+        ...(us || []).filter((u) => u.accountId).map((u) => ({ value: u.accountId, label: u.displayName, user: { id: u.accountId, name: u.displayName, email: u.emailAddress || '' } })),
+      ]),
+      (accountId, o) => changeAssignee(t, accountId, o?.label),
+      { searchable: true, placeholder: 'Search people…' });
+  }
+  function priorityEditor(t) {
+    const client = ctx.getClient();
+    return lazyDropdown([priorityIcon(t.priority, 16), h('span', { style: { marginLeft: '6px' } }, prioMeta(t.priority).label)],
+      // Pull the project's real priority scheme (custom schemes use different
+      // names); fall back to the standard set if the call fails or is empty.
+      () => Promise.resolve(client.listPriorities()).then(
+        (ps) => (ps && ps.length ? ps.map((p) => ({ value: p.name, label: p.name })) : PRIORITIES.map((p) => ({ value: p, label: p }))),
+        () => PRIORITIES.map((p) => ({ value: p, label: p }))),
+      (name) => changePriority(t, name));
+  }
+  function labelsEditor(t) {
+    const cell = h('div.jb-card-labels');
+    (t.labels || []).forEach((l) => {
+      const chip = label(l);
+      chip.append(h('button', {
+        title: 'Remove label',
+        style: { marginLeft: '5px', cursor: 'pointer', background: 'none', border: 'none', color: 'inherit', padding: '0', lineHeight: '1', verticalAlign: 'middle' },
+        onclick: () => setLabels(t, t.labels.filter((y) => y !== l)),
+      }, icon('x', 10)));
+      cell.append(chip);
+    });
+    const input = h('input', {
+      type: 'text', placeholder: '+ label',
+      style: { background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--text)', font: 'inherit', fontSize: '12px', padding: '2px 6px', width: '84px' },
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      const v = input.value.trim();
+      if (v && !(t.labels || []).includes(v)) setLabels(t, [...(t.labels || []), v]);
+    });
+    cell.append(input);
+    return cell;
+  }
+  function titleEditor(t) {
+    const titleEl = h('h2.jb-detail-title', { title: 'Click to edit', style: { cursor: 'text' } }, t.summary);
+    titleEl.addEventListener('click', () => {
+      const input = h('input', {
+        type: 'text', value: t.summary,
+        // Match .jb-detail-title's box (margin 0 0 16px, 19px/700) so the
+        // editor occupies the same space and doesn't overlap the grid below.
+        style: { display: 'block', width: '100%', margin: '0 0 16px', font: 'inherit', fontSize: '19px', fontWeight: '700', lineHeight: '1.3', background: 'var(--bg-2)', border: '1px solid var(--accent-2)', borderRadius: '8px', color: 'var(--text)', padding: '6px 10px', boxSizing: 'border-box' },
+      });
+      titleEl.replaceWith(input);
+      input.focus(); input.select();
+      let done = false;
+      const commit = () => {
+        if (done) return; done = true;
+        const v = input.value.trim();
+        if (v && v !== t.summary) setSummary(t, v); else renderDetail();
+      };
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); commit(); }
+        else if (e.key === 'Escape') { done = true; renderDetail(); }
+      });
+      input.addEventListener('blur', commit);
+    });
+    return titleEl;
+  }
+
+  /* ───────────── Edit with AI — inline description rewrite ─────────────
+     idle → compose → generating → review (diff / clean) → done (undo).
+     Anchored to the Description field (never a takeover). The rewrite comes
+     from the app bridge (ctx.aiRewrite); Accept persists the new text via
+     updateIssue({ description }) (plain text → ADF in JiraClient). */
+  const EWA_QUICK = [
+    { label: 'Improve writing', instr: 'Improve the writing — clearer, tighter prose. Keep all facts and the section structure.' },
+    { label: 'Make concise', instr: 'Make it concise — cut redundancy while keeping the key points and structure.' },
+    { label: 'Add acceptance criteria', instr: 'Keep the description and add an "Acceptance Criteria" bulleted checklist, plus an "Out of Scope" section if appropriate.' },
+    { label: 'Fix grammar & tone', instr: 'Fix grammar, spelling, and tone. Keep the meaning and structure unchanged.' },
+    { label: 'Tighten', instr: 'Tighten every section to its essentials — shorter, punchier prose. Keep the same section headings and order.' },
+  ];
+  const ewaStore = {};
+  function ewaState(key) { return ewaStore[key] || (ewaStore[key] = { phase: 'idle', draft: '', label: '', view: 'diff', prevDesc: null }); }
+
+  // LCS line diff → [{type:'equal'|'add'|'remove', line}].
+  function ewaDiffLines(oldText, newText) {
+    const a = String(oldText).split('\n'), b = String(newText).split('\n');
+    const n = a.length, m = b.length;
+    const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    const ops = []; let i = 0, j = 0;
+    while (i < n && j < m) {
+      if (a[i] === b[j]) { ops.push({ type: 'equal', line: a[i] }); i++; j++; }
+      else if (dp[i + 1][j] >= dp[i][j + 1]) { ops.push({ type: 'remove', line: a[i] }); i++; }
+      else { ops.push({ type: 'add', line: b[j] }); j++; }
+    }
+    while (i < n) ops.push({ type: 'remove', line: a[i++] });
+    while (j < m) ops.push({ type: 'add', line: b[j++] });
+    return ops;
+  }
+  function ewaStats(ops) { let add = 0, rem = 0; ops.forEach((o) => { if (o.line.trim()) { if (o.type === 'add') add++; else if (o.type === 'remove') rem++; } }); return { add, rem }; }
+
+  // Markdown line → DOM: **Heading** lines, -/• bullets, **bold** inline.
+  function ewaInline(parent, text) {
+    String(text).split('**').forEach((p, k) => {
+      if (k % 2 === 1) parent.append(h('strong', { style: { color: 'var(--text)', fontWeight: '700' } }, p));
+      else if (p) parent.append(document.createTextNode(p));
+    });
+  }
+  function ewaLine(line, color) {
+    const s = line.trim();
+    if (s === '') return h('div', { style: { height: '9px' } });
+    const hStyle = { fontSize: '13.5px', fontWeight: '700', color: 'var(--text)', margin: '13px 0 2px' };
+    const atx = /^(#{1,6})\s+(.+?)\s*#*$/.exec(s);          // ## Heading
+    if (atx) return h('div', { style: hStyle }, atx[2]);
+    if (/^\*\*[^*]+\*\*$/.test(s)) return h('div', { style: hStyle }, s.replace(/^\*\*|\*\*$/g, ''));  // **Heading** (legacy)
+    if (/^[-•]\s/.test(s)) {
+      const row = h('div', { style: { display: 'flex', gap: '9px', fontSize: '13.8px', lineHeight: '1.6', color, margin: '3px 0' } }, h('span', { style: { color: 'var(--text-faint)', flexShrink: '0' } }, '•'));
+      const sp = h('span'); ewaInline(sp, s.replace(/^[-•]\s/, '')); row.append(sp); return row;
+    }
+    const d = h('div', { style: { fontSize: '13.8px', lineHeight: '1.62', color, margin: '2px 0' } }); ewaInline(d, line); return d;
+  }
+  function ewaDescBody(text, color) { const w = h('div'); String(text).split('\n').forEach((l) => w.append(ewaLine(l, color || 'var(--text-dim)'))); return w; }
+  function ewaDiffView(oldText, newText) {
+    const chunks = [];
+    ewaDiffLines(oldText, newText).forEach((o) => { const last = chunks[chunks.length - 1]; if (last && last.type === o.type) last.lines.push(o.line); else chunks.push({ type: o.type, lines: [o.line] }); });
+    const wrap = h('div');
+    chunks.forEach((c) => {
+      let lines = c.lines;
+      if (c.type !== 'equal') { let s = 0, e = lines.length; while (s < e && lines[s].trim() === '') s++; while (e > s && lines[e - 1].trim() === '') e--; lines = lines.slice(s, e); }
+      if (!lines.length) return;
+      if (c.type === 'equal') { const box = h('div', { style: { padding: '0 2px' } }); lines.forEach((l) => box.append(ewaLine(l, 'var(--text-dim)'))); wrap.append(box); return; }
+      const add = c.type === 'add';
+      const box = h('div', { style: { background: `color-mix(in srgb, var(--${add ? 'good' : 'bad'}) 13%, transparent)`, borderLeft: `2px solid var(--${add ? 'good' : 'bad'})`, borderRadius: '0 7px 7px 0', padding: '5px 12px 6px', margin: '5px 0', textDecoration: add ? 'none' : 'line-through' } });
+      lines.forEach((l) => box.append(ewaLine(l, add ? 'var(--text)' : 'var(--text-faint)'))); wrap.append(box);
+    });
+    return wrap;
+  }
+  function ewaAiMark(size = 22) {
+    return h('span', { style: { width: size + 'px', height: size + 'px', borderRadius: '7px', flexShrink: '0', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'var(--accent-dim)', color: 'var(--accent-tx)' } }, icon('sparkles', Math.round(size * 0.6)));
+  }
+  function ewaBtn(label, { primary, ghost, icon: ic, onClick, title } = {}) {
+    const b = h('button', { title: title || '', onclick: onClick, style: { height: '30px', padding: label ? '0 11px' : '0', width: label ? 'auto' : '30px', borderRadius: '8px', fontSize: '12.5px', fontWeight: '600', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '7px', whiteSpace: 'nowrap', cursor: 'pointer', border: primary || ghost ? 'none' : '1px solid var(--border)', background: primary ? 'var(--accent)' : ghost ? 'transparent' : 'var(--bg-2)', color: primary ? '#0b1020' : ghost ? 'var(--text-dim)' : 'var(--text)' } });
+    if (ic) b.append(icon(ic, 14));
+    if (label) b.append(h('span', null, label));
+    return b;
+  }
+
+  // Mount the phase-driven description editor into `container`; returns a
+  // rerender fn the caller invokes once the description text has loaded.
+  function mountDescriptionEditor(container, t) {
+    const st = ewaState(t.key);
+    const loaded = () => board._descCache.has(t.key);
+    const errored = () => board._descErr.has(t.key);
+    const desc = () => board._descCache.get(t.key) || '';
+    function rerender() { container.innerHTML = ''; container.append(build()); }
+    function pickInstr() { const q = EWA_QUICK.find((x) => x.label === st.label); return q ? q.instr : st.label; }
+
+    async function run(instr, label) {
+      st.phase = 'generating'; st.label = label; rerender();
+      try {
+        const out = ((await ctx.aiRewrite(desc(), instr)) || '').trim();
+        if (!out) throw new Error('The assistant returned an empty rewrite.');
+        st.draft = out; st.phase = 'review'; rerender();
+      } catch (err) { st.phase = 'compose'; rerender(); toast('error', `${err?.message || err}`.slice(0, 160)); }
+    }
+    async function accept() {
+      const prev = desc();
+      try {
+        await ctx.getClient().updateIssue({ key: t.key, description: st.draft });
+        st.prevDesc = prev; board._descCache.set(t.key, st.draft); st.draft = ''; st.phase = 'done'; rerender();
+        toast('success', `${t.key} description updated.`);
+      } catch (err) { toast('error', `${err?.message || err}`.slice(0, 160)); }
+    }
+    async function undo() {
+      if (st.prevDesc == null) { st.phase = 'idle'; rerender(); return; }
+      const restore = st.prevDesc;
+      try {
+        await ctx.getClient().updateIssue({ key: t.key, description: restore });
+        board._descCache.set(t.key, restore); st.prevDesc = null; st.phase = 'idle'; rerender();
+        toast('success', `${t.key} description restored.`);
+      } catch (err) { toast('error', `${err?.message || err}`.slice(0, 160)); }
+    }
+
+    function composeBar() {
+      const input = h('input', { type: 'text', placeholder: 'Tell Huddle AI how to rewrite this…', style: { flex: '1', border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: '13.5px' } });
+      const go = () => { const v = input.value.trim(); if (v) run(v, v); };
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); else if (e.key === 'Escape') { st.phase = 'idle'; rerender(); } });
+      const chips = h('div', { style: { display: 'flex', gap: '7px', marginTop: '11px', flexWrap: 'wrap' } });
+      EWA_QUICK.forEach((q) => chips.append(h('button', { onclick: () => run(q.instr, q.label), style: { fontSize: '12px', fontWeight: '500', color: 'var(--text-dim)', padding: '6px 11px', borderRadius: '8px', border: '1px solid var(--border)', background: 'var(--bg-2)', whiteSpace: 'nowrap', cursor: 'pointer' } }, q.label)));
+      const box = h('div', { style: { marginTop: '10px', marginBottom: '12px', background: 'var(--bg-2)', border: '1px solid var(--accent-dim)', borderRadius: '11px', padding: '12px', boxShadow: '0 0 0 3px var(--accent-dim)' } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '11px' } }, ewaAiMark(22), h('span', { style: { fontSize: '13px', fontWeight: '700' } }, 'Edit description with AI'), h('div', { style: { flex: '1' } }), h('span.mono', { style: { border: '1px solid var(--border)', borderRadius: '5px', padding: '1px 5px', fontSize: '10.5px', color: 'var(--text-faint)' } }, 'esc')),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: '10px', padding: '9px 10px 9px 12px' } }, icon('sparkles', 16), input, ewaBtn('Rewrite', { primary: true, icon: 'send', onClick: go })),
+        chips);
+      setTimeout(() => input.focus(), 20);
+      return box;
+    }
+    function generatingCard() {
+      return h('div', { style: { marginTop: '10px', background: 'var(--bg-2)', border: '1px solid var(--accent-dim)', borderRadius: '11px', padding: '13px' } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '9px' } }, ewaAiMark(22), h('span', { style: { fontSize: '13px', fontWeight: '700' } }, 'Huddle AI is rewriting…'),
+          st.label && h('span', { style: { fontSize: '11.5px', color: 'var(--accent-tx)', background: 'var(--accent-dim)', padding: '3px 9px', borderRadius: '7px', maxWidth: '170px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, st.label)));
+    }
+    function reviewCard() {
+      const d = desc(); const stats = ewaStats(ewaDiffLines(d, st.draft));
+      const seg = h('div', { style: { display: 'flex', gap: '2px', padding: '2px', background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: '8px' } });
+      const segBtn = (k, lbl) => h('button', { onclick: () => { st.view = k; rerender(); }, style: { fontSize: '11.5px', fontWeight: '600', padding: '4px 10px', borderRadius: '6px', cursor: 'pointer', border: 'none', color: st.view === k ? 'var(--text)' : 'var(--text-faint)', background: st.view === k ? 'var(--bg-3)' : 'transparent' } }, lbl);
+      seg.append(segBtn('diff', 'Diff'), segBtn('clean', 'New'));
+      const refineInput = h('input', { type: 'text', placeholder: 'Refine — e.g. "shorter, add a metrics section"', style: { flex: '1', border: 'none', outline: 'none', background: 'transparent', color: 'var(--text)', fontSize: '13px' } });
+      const refineGo = () => { const v = refineInput.value.trim(); if (v) run(v, v); };
+      refineInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') refineGo(); });
+      return h('div', { style: { marginTop: '10px', background: 'var(--bg-2)', border: '1px solid var(--accent-dim)', borderRadius: '11px', boxShadow: '0 0 0 3px var(--accent-dim)', overflow: 'hidden' } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', padding: '11px 12px', borderBottom: '1px solid var(--border)' } }, ewaAiMark(22), h('span', { style: { fontSize: '13px', fontWeight: '700' } }, 'Suggested rewrite'), h('div', { style: { flex: '1' } }), h('span.mono', { style: { fontSize: '11px', color: 'var(--good)' } }, `+${stats.add}`), h('span.mono', { style: { fontSize: '11px', color: 'var(--bad)' } }, `−${stats.rem}`), seg),
+        h('div', { style: { padding: '10px 13px', maxHeight: '320px', overflowY: 'auto' } }, st.view === 'diff' ? ewaDiffView(d, st.draft) : ewaDescBody(st.draft)),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderTop: '1px solid var(--border)' } }, ewaBtn('Accept', { primary: true, icon: 'check', onClick: accept }), ewaBtn('Discard', { ghost: true, onClick: () => { st.phase = 'idle'; rerender(); } }), h('div', { style: { flex: '1' } }), ewaBtn('Try again', { ghost: true, icon: 'refresh', onClick: () => run(pickInstr(), st.label) })),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', padding: '0 12px 12px' } }, h('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', flex: '1', background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: '9px', padding: '8px 9px 8px 11px' } }, icon('pen', 14), refineInput, ewaBtn('', { icon: 'arrowRight', onClick: refineGo }))));
+    }
+
+    function build() {
+      const wrap = h('div');
+      const headRow = h('div', { style: { display: 'flex', alignItems: 'center', minHeight: '28px', marginBottom: '2px' } }, detailLabel('Description'), h('div', { style: { flex: '1' } }));
+      // Only offer Edit-with-AI once the real description has loaded — never
+      // over a failed/unloaded fetch (which would risk overwriting content).
+      if (st.phase === 'idle' && loaded()) headRow.append(h('button', { onclick: () => { st.phase = 'compose'; rerender(); }, style: { display: 'inline-flex', alignItems: 'center', gap: '6px', height: '28px', padding: '0 11px', borderRadius: '8px', fontSize: '12.5px', fontWeight: '600', color: 'var(--accent-tx)', background: 'transparent', border: '1px solid var(--accent-dim)', cursor: 'pointer' } }, icon('sparkles', 14), h('span', null, 'Edit with AI')));
+      else if (st.phase === 'done') headRow.append(h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '9px', fontSize: '12px', color: 'var(--accent-tx)' } }, icon('sparkles', 13), h('span', null, 'Edited with AI'), h('span', { style: { color: 'var(--text-faint)' } }, '·'), h('button', { onclick: undo, style: { display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: '600', color: 'var(--text-dim)', cursor: 'pointer', background: 'none', border: 'none' } }, icon('undo', 12), h('span', null, 'Undo'))));
+      wrap.append(headRow);
+      if (st.phase === 'compose') wrap.append(composeBar());
+      else if (st.phase === 'generating') wrap.append(generatingCard());
+      else if (st.phase === 'review') wrap.append(reviewCard());
+      if (st.phase === 'idle' || st.phase === 'done' || st.phase === 'compose') {
+        const dimmed = st.phase === 'compose';
+        const box = h('div', { style: { marginTop: dimmed ? '4px' : '9px', padding: dimmed ? '10px 12px' : '0', borderRadius: '11px', border: dimmed ? '1px dashed var(--border)' : 'none', opacity: dimmed ? '0.6' : '1' } });
+        if (dimmed) box.append(h('div', { style: { fontSize: '10.5px', fontWeight: '700', letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--text-faint)', marginBottom: '7px' } }, 'Current'));
+        if (errored()) box.append(h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px' } }, h('span', { style: { color: 'var(--bad)' } }, "Couldn't load the description."), ewaBtn('Retry', { onClick: () => { board._descErr.delete(t.key); openDetail(t.key); } })));
+        else if (!loaded()) box.append(h('p', { style: { color: 'var(--text-faint)' } }, 'Loading…'));
+        else if (!desc()) box.append(h('p', { style: { color: 'var(--text-faint)' } }, 'No description.'));
+        else box.append(ewaDescBody(desc()));
+        wrap.append(box);
+      }
+      return wrap;
+    }
+
+    rerender();
+    return rerender;
   }
 
   function jiraSite() { return (ctx.getSettings()?.jira?.host || '').replace(/^https?:\/\//, ''); }
@@ -855,6 +1230,8 @@
     const project = activeProject();
     if (!client?.isConfigured() || !project) return;
     board._descCache.clear(); // descriptions may have changed since last load
+    board._descErr.clear();
+    for (const k in ewaStore) delete ewaStore[k]; // drop stale Edit-with-AI phases
     board.loading = true;
     if (isRefresh) rerenderToolbar();
     renderColumns();

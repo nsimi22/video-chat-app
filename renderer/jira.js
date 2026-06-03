@@ -86,6 +86,18 @@
       // Cheap-and-cheerful: pull the project's `issueTypes` directly.
       return this._request(`/rest/api/3/project/${encodeURIComponent(projectKey)}`).then((p) => p.issueTypes || []);
     }
+    // Users assignable to issues in a project, for the board's assignee
+    // picker. `query` type-ahead filters by name/email; empty lists the
+    // first page. Returns [{ accountId, displayName, avatarUrls, emailAddress }].
+    listAssignableUsers(projectKey, query = '') {
+      const q = `project=${encodeURIComponent(projectKey)}&query=${encodeURIComponent(query)}&maxResults=50`;
+      return this._request(`/rest/api/3/user/assignable/search?${q}`).then((r) => Array.isArray(r) ? r : []);
+    }
+    // Global priority scheme (e.g. Highest/High/Medium/Low/Lowest) for the
+    // board's priority picker. Returns [{ id, name, iconUrl }].
+    listPriorities() {
+      return this._request(`/rest/api/3/priority`).then((r) => Array.isArray(r) ? r : []);
+    }
     async createIssue({ projectKey, summary, description, issueType, assigneeAccountId }) {
       const body = {
         fields: {
@@ -165,11 +177,12 @@
     } catch { return body.slice(0, 200); }
   }
 
-  // Walk an Atlassian Document Format tree and concatenate the text
-  // nodes. The AI tools surface descriptions/comments as plain text;
-  // this is intentionally lossy (we drop bullet markers, link href,
-  // mention metadata, etc.) — the model only needs the prose. Always
-  // returns a string, even for `null`/non-doc input.
+  // Walk an Atlassian Document Format tree to plain-text Markdown: headings
+  // become '## …', list items '- …', and paragraphs/code/quotes keep their
+  // line breaks. Link href and mention metadata are still dropped (lossy);
+  // nested lists flatten to a single level. Consumers (the board description
+  // view, AI tools) render or read this as light Markdown, and toAdf parses
+  // the same '## '/'- ' back into ADF nodes. Always returns a string.
   function adfToText(node) {
     if (!node) return '';
     if (typeof node === 'string') return node;
@@ -177,9 +190,21 @@
     if (node.type === 'text' && typeof node.text === 'string') return node.text;
     if (node.type === 'hardBreak' || node.type === 'rule') return '\n';
     const children = adfToText(node.content || []);
-    // paragraph / heading / list-item all close with a newline so
-    // collapsing the doc back to text reads roughly like the original.
-    if (['paragraph', 'heading', 'listItem', 'codeBlock', 'blockquote', 'taskItem'].includes(node.type)) {
+    // Preserve structure as ATX markdown so the board renders headings /
+    // bullets, and toAdf round-trips them back to real ADF nodes on save.
+    if (node.type === 'heading') {
+      const txt = children.trim();
+      if (!txt) return '';
+      const lvl = Math.min(6, Math.max(1, node.attrs?.level || 2));
+      return '#'.repeat(lvl) + ' ' + txt + '\n';
+    }
+    if (node.type === 'listItem') {
+      const txt = children.trim();
+      return txt ? '- ' + txt + '\n' : '';
+    }
+    // paragraph / code / quote / task all close with a newline so the doc
+    // collapses back to text that reads roughly like the original.
+    if (['paragraph', 'codeBlock', 'blockquote', 'taskItem'].includes(node.type)) {
       return children + '\n';
     }
     return children;

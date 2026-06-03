@@ -6183,6 +6183,16 @@ function initJiraBoard() {
       const row = await state.huddle?.saveTeamJiraBoard(payload);
       if (row) state.teamBoard = row;
     },
+    // Rewrite a ticket description with the configured AI provider, for the
+    // board's inline "Edit with AI". Returns plain text (simple markdown);
+    // JiraClient.updateIssue converts it to ADF on save.
+    aiRewrite: async (currentText, instruction) => {
+      const ai = state.ai;
+      if (!ai || !ai.isConfigured()) throw new Error('Connect an AI provider in Settings to use Edit with AI.');
+      const system = "You are editing a Jira ticket description. Rewrite it to satisfy the user's instruction, but ALWAYS preserve the ticket's general structure: keep the existing section headings (e.g. ## Summary, ## Business Context, ## Acceptance Criteria) in the same order, and keep every section that is present — revise the content within each section rather than removing, merging, or reordering them. Add a new section only if the instruction explicitly asks for one. Return ONLY the new description as plain-text Markdown — '## Heading' on its own line for section titles and '- ' for bullets. No preamble, no commentary, no code fences.";
+      const res = await ai.chat({ system, messages: [{ role: 'user', content: `Instruction: ${instruction}\n\nCurrent description:\n${currentText || '(empty)'}` }] });
+      return (res?.text || '').trim();
+    },
   });
   window.HuddleJiraBoard.refreshInCall();
 }
