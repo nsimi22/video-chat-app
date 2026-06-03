@@ -89,6 +89,10 @@
     return 'var(--warn)'; // indeterminate / in progress
   }
   const CAT_ORDER = { new: 0, indeterminate: 1, done: 2 };
+  // Fields the board list needs. Mirrors what a card/detail render (type,
+  // summary, status, priority, assignee) plus `labels` — deliberately
+  // without `description`, which is fetched lazily per ticket on open.
+  const BOARD_FIELDS = 'summary,status,assignee,issuetype,priority,labels';
 
   // Normalize a raw Jira issue into the shape the views consume.
   function mapIssue(issue) {
@@ -561,6 +565,8 @@
       iconBtn('x', 17, 'Close', close),
     );
     const descBox = h('p.jb-detail-desc', null, 'Loading…');
+    const labelsCell = h('div.jb-card-labels');
+    fillLabels(labelsCell, t.labels);
     const grid = h('div.jb-detail-grid',
       null,
       detailLabel('Status'), h('div', null, statusPill(col)),
@@ -569,7 +575,7 @@
           h('span.jb-detail-assignee', null, avatar(u, 24), h('span', null, u?.name || 'Unassigned')))),
       detailLabel('Priority'), h('div.jb-detail-prio', null, priorityIcon(t.priority, 16), h('span', null, prioMeta(t.priority).label)),
       detailLabel('Type'), h('div.jb-detail-val', null, t.type),
-      detailLabel('Labels'), h('div.jb-card-labels', null, ...(t.labels.length ? t.labels.map(label) : [h('span.jb-detail-none', null, 'None')])),
+      detailLabel('Labels'), labelsCell,
     );
     const body = h('div.jb-detail-body',
       null,
@@ -595,6 +601,12 @@
     } else {
       try {
         const full = await client.getIssue(t.key, { full: true });
+        // The per-ticket fetch is authoritative for labels too — sync them
+        // (and the underlying board card) in case they changed since load.
+        if (Array.isArray(full?.fields?.labels)) {
+          t.labels = full.fields.labels;
+          fillLabels(labelsCell, t.labels);
+        }
         const text = window.jiraAdfToText ? window.jiraAdfToText(full?.fields?.description) : '';
         const out = (text || '').trim() || 'No description.';
         board._descCache.set(t.key, out);
@@ -605,6 +617,13 @@
     }
   }
   function detailLabel(text) { return h('span.jb-detail-lbl', null, text); }
+  // Render the label chips (or a muted "None") into a detail cell. Kept
+  // separate so the cell can be refreshed once the full fetch returns.
+  function fillLabels(cell, labels) {
+    cell.innerHTML = '';
+    if (labels.length) labels.forEach((l) => cell.append(label(l)));
+    else cell.append(h('span.jb-detail-none', null, 'None'));
+  }
 
   function jiraSite() { return (ctx.getSettings()?.jira?.host || '').replace(/^https?:\/\//, ''); }
   function openInJira(key) {
@@ -819,7 +838,9 @@
     renderColumns();
     try {
       const jql = `project = "${project}" ORDER BY status ASC, updated DESC`;
-      const res = await client.searchIssues(jql, 100);
+      // Explicit field list = the card/detail fields PLUS `labels` (which
+      // BRIEF omits), minus `description` (too heavy across 100 issues).
+      const res = await client.searchIssues(jql, 100, { fields: BOARD_FIELDS });
       board.issues = (res?.issues || []).map(mapIssue);
       board.columns = deriveColumns(board.issues);
     } catch (err) {
