@@ -601,8 +601,9 @@
     } else {
       try {
         const full = await client.getIssue(t.key, { full: true });
-        // The per-ticket fetch is authoritative for labels too — sync them
-        // (and the underlying board card) in case they changed since load.
+        // The per-ticket fetch is authoritative for labels — refresh the
+        // detail cell and update the cached issue so any later board
+        // re-render (filter / drag / refresh) reflects the fresh set.
         if (Array.isArray(full?.fields?.labels)) {
           t.labels = full.fields.labels;
           fillLabels(labelsCell, t.labels);
@@ -621,7 +622,7 @@
   // separate so the cell can be refreshed once the full fetch returns.
   function fillLabels(cell, labels) {
     cell.innerHTML = '';
-    if (labels.length) labels.forEach((l) => cell.append(label(l)));
+    if (Array.isArray(labels) && labels.length) labels.forEach((l) => cell.append(label(l)));
     else cell.append(h('span.jb-detail-none', null, 'None'));
   }
 
