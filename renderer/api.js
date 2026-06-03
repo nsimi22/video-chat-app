@@ -590,6 +590,10 @@
         onMessageRow('chat-update'));
       ch.on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages', filter: teamFilter },
         (p) => this.dispatchEvent(new CustomEvent('chat-message-deleted', { detail: { channelId: p.old.channel_id, messageId: p.old.id } })));
+      // Shared Jira-board selection: push a teammate's project change to
+      // everyone live (read RLS already scopes rows to team members).
+      ch.on('postgres_changes', { event: '*', schema: 'public', table: 'team_jira_board', filter: teamFilter },
+        (p) => this.dispatchEvent(new CustomEvent('team-board-changed', { detail: { row: p.new || null } })));
       ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'channels', filter: teamFilter },
         (p) => this.dispatchEvent(new CustomEvent('chat-channel-added', { detail: { channel: this._marshalChannel(p.new) } })));
       ch.on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'channels', filter: teamFilter },
@@ -965,9 +969,10 @@
       if (site !== undefined) row.site = site || null;
       if (boardName !== undefined) row.board_name = boardName || null;
       if (columns !== undefined) row.columns = columns;
-      const { error } = await this.supabase
-        .from('team_jira_board').upsert(row, { onConflict: 'team_id' });
+      const { data, error } = await this.supabase
+        .from('team_jira_board').upsert(row, { onConflict: 'team_id' }).select().maybeSingle();
       if (error) throw error;
+      return data || null;
     }
 
     // ----- Meeting threads ----------------------------------------------

@@ -1783,6 +1783,13 @@ async function joinTeamAndStart(teamId) {
   huddle.addEventListener('saved-message-added', (e) => onSavedMessageChange('add', e.detail.save));
   huddle.addEventListener('saved-message-updated', (e) => onSavedMessageChange('update', e.detail.save));
   huddle.addEventListener('saved-message-removed', (e) => onSavedMessageChange('remove', { messageId: e.detail.messageId }));
+  // A teammate changed the shared Jira board project — update the cache and
+  // re-render any open board surface so it switches live.
+  huddle.addEventListener('team-board-changed', (e) => {
+    state.teamBoard = e.detail.row || null;
+    window.HuddleJiraBoard?.reloadDrawer?.();
+    window.HuddleJiraBoard?.refreshInCall?.();
+  });
   // Surface incoming messages to the meeting Notes panel. The handler
   // filters by parent_id so non-meeting-thread messages are no-ops;
   // gating it here (rather than only while in-call) is fine because
@@ -6165,24 +6172,11 @@ function initJiraBoard() {
       catch (err) { console.warn('team board load failed', err); }
       return state.teamBoard || null;
     },
-    // Persist the team's shared project selection, then refresh the cache.
+    // Persist the team's shared project selection. upsert(...).select()
+    // returns the saved row, so we update the cache without a second query.
     saveTeamBoard: async (payload) => {
-      await state.huddle?.saveTeamJiraBoard(payload);
-      try { state.teamBoard = (await state.huddle?.loadTeamJiraBoard?.()) || null; }
-      catch (err) { console.warn('team board reload failed', err); }
-    },
-    // Persist a partial Jira-settings patch (e.g. the board's chosen
-    // project) into the user's private integrations row, then rebuild
-    // the client so the new config takes effect immediately.
-    onConfigChange: async (jiraPatch) => {
-      state.settings = {
-        ...state.settings,
-        jira: { ...(state.settings?.jira || {}), ...jiraPatch },
-      };
-      try { await window.huddleApi.saveSettings(state.settings); }
-      catch (err) { console.warn('board config save failed', err); }
-      rebuildJiraClient();
-      els.setJiraProject && (els.setJiraProject.value = state.settings.jira.defaultProject || '');
+      const row = await state.huddle?.saveTeamJiraBoard(payload);
+      if (row) state.teamBoard = row;
     },
   });
   window.HuddleJiraBoard.refreshInCall();
