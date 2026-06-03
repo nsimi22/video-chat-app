@@ -651,26 +651,51 @@
     }
   }
 
-  // A .jb-dd dropdown whose options are produced by loadOptions() on first
-  // open (sync or async) — reuses the toolbar dropdown's markup/CSS.
-  function lazyDropdown(triggerKids, loadOptions, onSelect) {
+  // A .jb-dd dropdown whose options are produced by loadOptions(query) on
+  // open (sync or async) — reuses the toolbar dropdown's markup/CSS. With
+  // { searchable }, a pinned search box re-runs loadOptions(query) (debounced)
+  // so long lists (assignee) can type-ahead instead of scrolling; loadOptions
+  // ignores the query arg for the non-searchable callers (status/priority).
+  function lazyDropdown(triggerKids, loadOptions, onSelect, { searchable = false, placeholder = 'Search…' } = {}) {
     const wrap = h('div.jb-dd');
     const btn = h('button.jb-dd-btn', null, ...triggerKids, icon('chevronDown', 14, 'var(--text-faint)'));
-    let menu = null;
-    function close() { if (menu) { menu.remove(); menu = null; } document.removeEventListener('mousedown', outside); }
+    let menu = null, listWrap = null, timer = null;
+    function close() { if (menu) { menu.remove(); menu = null; } clearTimeout(timer); document.removeEventListener('mousedown', outside); }
     function outside(e) { if (!wrap.contains(e.target)) close(); }
-    async function openMenu() {
-      btn.disabled = true;
-      let options;
-      try { options = await loadOptions(); }
-      catch (err) { toast('error', `${err?.message || err}`.slice(0, 160)); btn.disabled = false; return; }
-      btn.disabled = false;
-      menu = h('div.jb-dd-menu');
-      (options || []).forEach((o) => menu.append(h('button.jb-dd-item', { onclick: () => { close(); onSelect(o.value, o); } },
+    function paintRows(options) {
+      listWrap.innerHTML = '';
+      (options || []).forEach((o) => listWrap.append(h('button.jb-dd-item', { onclick: () => { close(); onSelect(o.value, o); } },
         o.user ? avatar(o.user, 20) : o.icon ? icon(o.icon, 15, 'var(--text-faint)') : h('span', { style: { width: '20px' } }),
         h('span', { style: { flex: '1' } }, o.label))));
+      if (!options || !options.length) listWrap.append(h('div.jb-dd-item', { style: { opacity: '.6', cursor: 'default' } }, h('span', { style: { flex: '1' } }, 'No matches')));
+    }
+    async function runLoad(query) {
+      let options;
+      try { options = await loadOptions(query); }
+      catch (err) { toast('error', `${err?.message || err}`.slice(0, 160)); return; }
+      if (menu) paintRows(options);
+    }
+    async function openMenu() {
+      menu = h('div.jb-dd-menu');
+      if (searchable) {
+        // Pin the search box; scroll only the list below it.
+        menu.style.overflow = 'visible'; menu.style.maxHeight = 'none';
+        const search = h('input.jb-dd-search', {
+          type: 'text', placeholder,
+          style: { width: '100%', boxSizing: 'border-box', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--text)', font: 'inherit', fontSize: '13px', padding: '6px 8px', marginBottom: '4px' },
+        });
+        search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => runLoad(search.value.trim()), 200); });
+        menu.append(search);
+        listWrap = h('div.jb-dd-list', { style: { maxHeight: '240px', overflowY: 'auto' } });
+        menu.append(listWrap);
+        setTimeout(() => search.focus(), 20);
+      } else {
+        listWrap = menu;
+      }
+      listWrap.append(h('div.jb-dd-item', { style: { opacity: '.6', cursor: 'default' } }, h('span', { style: { flex: '1' } }, 'Loading…')));
       wrap.append(menu);
       document.addEventListener('mousedown', outside);
+      await runLoad('');
     }
     btn.addEventListener('click', () => (menu ? close() : openMenu()));
     wrap.append(btn);
@@ -737,11 +762,13 @@
     const client = ctx.getClient();
     const cur = t.assignees[0] || null;
     return lazyDropdown([avatar(cur, 22), h('span', { style: { marginLeft: '6px' } }, cur?.name || 'Unassigned')],
-      () => Promise.resolve(client.listAssignableUsers(activeProject())).then((us) => [
-        { value: null, label: 'Unassign', icon: 'x' },
+      (query) => Promise.resolve(client.listAssignableUsers(activeProject(), query || '')).then((us) => [
+        // Pin "Unassign" only on the unfiltered list — keep search results clean.
+        ...(query ? [] : [{ value: null, label: 'Unassign', icon: 'x' }]),
         ...(us || []).map((u) => ({ value: u.accountId, label: u.displayName, user: { id: u.accountId, name: u.displayName, email: u.emailAddress || '' } })),
       ]),
-      (accountId, o) => changeAssignee(t, accountId, o?.label));
+      (accountId, o) => changeAssignee(t, accountId, o?.label),
+      { searchable: true, placeholder: 'Search people…' });
   }
   function priorityEditor(t) {
     return lazyDropdown([priorityIcon(t.priority, 16), h('span', { style: { marginLeft: '6px' } }, prioMeta(t.priority).label)],
@@ -776,7 +803,9 @@
     titleEl.addEventListener('click', () => {
       const input = h('input', {
         type: 'text', value: t.summary,
-        style: { width: '100%', font: 'inherit', fontWeight: '600', background: 'var(--bg-2)', border: '1px solid var(--accent-2)', borderRadius: '8px', color: 'var(--text)', padding: '6px 10px', boxSizing: 'border-box' },
+        // Match .jb-detail-title's box (margin 0 0 16px, 19px/700) so the
+        // editor occupies the same space and doesn't overlap the grid below.
+        style: { display: 'block', width: '100%', margin: '0 0 16px', font: 'inherit', fontSize: '19px', fontWeight: '700', lineHeight: '1.3', background: 'var(--bg-2)', border: '1px solid var(--accent-2)', borderRadius: '8px', color: 'var(--text)', padding: '6px 10px', boxSizing: 'border-box' },
       });
       titleEl.replaceWith(input);
       input.focus(); input.select();
