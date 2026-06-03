@@ -116,7 +116,6 @@ const els = {
   openCalendar: $('#open-calendar'),
   calendarCount: $('#calendar-count'),
   calendarDrawer: $('#calendar-drawer'),
-  openBoard: $('#open-board'),
   calendarClose: $('#calendar-close'),
   calendarList: $('#calendar-list'),
   calendarSchedule: $('#calendar-schedule'),
@@ -5445,12 +5444,11 @@ function wireControls() {
   els.captionsClose && (els.captionsClose.onclick = () => stopCaptions());
 
   // Jira board: in-call "what we're working on" overlay (call header)
-  // and the full Kanban drawer (left-nav quick link).
+  // and the full Kanban drawer (opened from the v2 nav rail).
   els.btnBoard && (els.btnBoard.onclick = () => {
     window.HuddleJiraBoard?.toggleInCall();
     els.btnBoard.classList.toggle('active', !!window.HuddleJiraBoard?.isInCallOpen?.());
   });
-  els.openBoard && (els.openBoard.onclick = () => window.HuddleJiraBoard?.openDrawer());
 
   // Meeting notes — right-side dock. Toggle from the call dock's
   // Notes button; the panel itself hosts a tiny composer that posts

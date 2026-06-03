@@ -73,7 +73,11 @@
         async run({ jql, max }) {
           const r = await jira.searchIssues(jql, Math.min(Number(max) || 10, 25), { full: true });
           const issues = (r?.issues || []).map((i) => marshalIssue(i, jira.host));
-          return { total: r?.total ?? issues.length, issues };
+          // /search/jql no longer returns `total`; fetch the real match
+          // count separately so the model isn't told the capped page size
+          // is the whole result set. Fall back to the page size on error.
+          const total = await jira.approximateCount(jql).catch(() => null);
+          return { total: total ?? issues.length, issues };
         },
       },
       {

@@ -71,7 +71,13 @@
     searchIssues(jql, max = 20, { full = false, fields = null } = {}) {
       const fieldList = fields || (full ? ISSUE_FIELDS_FULL : ISSUE_FIELDS_BRIEF);
       const q = `jql=${encodeURIComponent(jql)}&maxResults=${max}&fields=${encodeURIComponent(fieldList)}`;
-      return this._request(`/rest/api/3/search?${q}`);
+      return this._request(`/rest/api/3/search/jql?${q}`);
+    }
+    // The /search/jql endpoint dropped the `total` field; this is the
+    // sanctioned way to get a match count for a JQL query.
+    approximateCount(jql) {
+      return this._request(`/rest/api/3/search/approximate-count`, { method: 'POST', body: { jql } })
+        .then((r) => (typeof r?.count === 'number' ? r.count : null));
     }
     listProjects() {
       return this._request(`/rest/api/3/project/search?maxResults=100`).then((r) => r.values || []);

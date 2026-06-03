@@ -560,7 +560,25 @@
       // visibility regain, fetch anything newer and re-emit it. chat.js
       // already dedupes by id, so an overlap with live realtime is a
       // no-op.
-      this._lastMessageTs = new Date().toISOString();
+      // Seed the catch-up cursor in the SERVER time domain, not the
+      // client clock. The old `new Date().toISOString()` seed meant that
+      // under even small clock skew (client ahead of server) the
+      // `_catchUpMessages` gap-fill query (`ts > _lastMessageTs`) would
+      // exclude the very rows a reconnect dropped — a permanent inbound
+      // gap. Anchor on the newest message ts the DB currently holds; on
+      // lookup failure fall back to the client clock (no worse than before).
+      let seedTs = null;
+      try {
+        const { data } = await this.supabase
+          .from('messages')
+          .select('ts')
+          .eq('team_id', this.team.id)
+          .order('ts', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        seedTs = data?.ts || null;
+      } catch { /* fall through to clock seed */ }
+      this._lastMessageTs = seedTs || new Date().toISOString();
       this._firstDbSubscribe = true;
       const onMessageRow = (eventName) => (p) => {
         if (p.new.ts && p.new.ts > this._lastMessageTs) this._lastMessageTs = p.new.ts;
@@ -630,10 +648,12 @@
             if (this._firstDbSubscribe) {
               this._firstDbSubscribe = false;
               resolve();
-            } else {
-              // Reconnect after a transient drop — fill any gap.
-              this._catchUpMessages().catch((e) => console.warn('chat catch-up failed', e));
             }
+            // Fill any gap between the seed snapshot and the live
+            // subscription becoming active — on the first SUBSCRIBED as
+            // well as on every reconnect after a transient drop. Dedup by
+            // id in chat.js makes an overlap with live realtime a no-op.
+            this._catchUpMessages().catch((e) => console.warn('chat catch-up failed', e));
           } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
             if (this._firstDbSubscribe) reject(err || new Error('db channel ' + status));
             // Post-boot drops aren't fatal — Realtime auto-reconnects and
