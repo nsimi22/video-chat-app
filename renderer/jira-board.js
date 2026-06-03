@@ -860,7 +860,10 @@
   function ewaLine(line, color) {
     const s = line.trim();
     if (s === '') return h('div', { style: { height: '9px' } });
-    if (/^\*\*[^*]+\*\*$/.test(s)) return h('div', { style: { fontSize: '13.5px', fontWeight: '700', color: 'var(--text)', margin: '13px 0 2px' } }, s.replace(/^\*\*|\*\*$/g, ''));
+    const hStyle = { fontSize: '13.5px', fontWeight: '700', color: 'var(--text)', margin: '13px 0 2px' };
+    const atx = /^(#{1,6})\s+(.+?)\s*#*$/.exec(s);          // ## Heading
+    if (atx) return h('div', { style: hStyle }, atx[2]);
+    if (/^\*\*[^*]+\*\*$/.test(s)) return h('div', { style: hStyle }, s.replace(/^\*\*|\*\*$/g, ''));  // **Heading** (legacy)
     if (/^[-•]\s/.test(s)) {
       const row = h('div', { style: { display: 'flex', gap: '9px', fontSize: '13.8px', lineHeight: '1.6', color, margin: '3px 0' } }, h('span', { style: { color: 'var(--text-faint)', flexShrink: '0' } }, '•'));
       const sp = h('span'); ewaInline(sp, s.replace(/^[-•]\s/, '')); row.append(sp); return row;

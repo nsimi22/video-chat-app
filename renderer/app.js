@@ -6189,7 +6189,7 @@ function initJiraBoard() {
     aiRewrite: async (currentText, instruction) => {
       const ai = state.ai;
       if (!ai || !ai.isConfigured()) throw new Error('Connect an AI provider in Settings to use Edit with AI.');
-      const system = "You are editing a Jira ticket description. Rewrite it to satisfy the user's instruction, but ALWAYS preserve the ticket's general structure: keep the existing section headings (e.g. **Summary**, **Business Context**, **Acceptance Criteria**) in the same order, and keep every section that is present — revise the content within each section rather than removing, merging, or reordering them. Add a new section only if the instruction explicitly asks for one. Return ONLY the new description as plain text with light markdown — '**Heading**' on its own line for section titles and '- ' for bullets. No preamble, no commentary, no code fences.";
+      const system = "You are editing a Jira ticket description. Rewrite it to satisfy the user's instruction, but ALWAYS preserve the ticket's general structure: keep the existing section headings (e.g. ## Summary, ## Business Context, ## Acceptance Criteria) in the same order, and keep every section that is present — revise the content within each section rather than removing, merging, or reordering them. Add a new section only if the instruction explicitly asks for one. Return ONLY the new description as plain-text Markdown — '## Heading' on its own line for section titles and '- ' for bullets. No preamble, no commentary, no code fences.";
       const res = await ai.chat({ system, messages: [{ role: 'user', content: `Instruction: ${instruction}\n\nCurrent description:\n${currentText || '(empty)'}` }] });
       return (res?.text || '').trim();
     },

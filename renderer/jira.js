@@ -189,9 +189,21 @@
     if (node.type === 'text' && typeof node.text === 'string') return node.text;
     if (node.type === 'hardBreak' || node.type === 'rule') return '\n';
     const children = adfToText(node.content || []);
-    // paragraph / heading / list-item all close with a newline so
-    // collapsing the doc back to text reads roughly like the original.
-    if (['paragraph', 'heading', 'listItem', 'codeBlock', 'blockquote', 'taskItem'].includes(node.type)) {
+    // Preserve structure as ATX markdown so the board renders headings /
+    // bullets, and toAdf round-trips them back to real ADF nodes on save.
+    if (node.type === 'heading') {
+      const txt = children.trim();
+      if (!txt) return '';
+      const lvl = Math.min(6, Math.max(1, node.attrs?.level || 2));
+      return '#'.repeat(lvl) + ' ' + txt + '\n';
+    }
+    if (node.type === 'listItem') {
+      const txt = children.trim();
+      return txt ? '- ' + txt + '\n' : '';
+    }
+    // paragraph / code / quote / task all close with a newline so the doc
+    // collapses back to text that reads roughly like the original.
+    if (['paragraph', 'codeBlock', 'blockquote', 'taskItem'].includes(node.type)) {
       return children + '\n';
     }
     return children;
