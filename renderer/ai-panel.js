@@ -290,13 +290,16 @@
     }
   }
 
-  function open() {
+  // `prefill` seeds the composer (e.g. the board's "Edit with AI" on a
+  // ticket description opens the panel with "Update FOO-123 …" ready to go).
+  function open(prefill) {
     if (!root) buildDom();
     renderSuggestions();
     renderModelBadge();
     root.classList.remove('hidden');
     root.setAttribute('aria-hidden', 'false');
-    setTimeout(() => composer.focus(), 30);
+    if (typeof prefill === 'string' && prefill) composer.value = prefill;
+    setTimeout(() => { composer.focus(); composer.selectionStart = composer.selectionEnd = composer.value.length; }, 30);
   }
 
   function close() {

@@ -575,23 +575,29 @@
       iconBtn('x', 17, 'Close', close),
     );
     const descBox = h('p.jb-detail-desc', null, 'Loading…');
-    const labelsCell = h('div.jb-card-labels');
-    fillLabels(labelsCell, t.labels);
     const grid = h('div.jb-detail-grid',
       null,
-      detailLabel('Status'), h('div', null, statusPill(col)),
-      detailLabel('Assignee'), h('div.jb-detail-assignees', null,
-        ...(t.assignees.length ? t.assignees : [null]).map((u) =>
-          h('span.jb-detail-assignee', null, avatar(u, 24), h('span', null, u?.name || 'Unassigned')))),
-      detailLabel('Priority'), h('div.jb-detail-prio', null, priorityIcon(t.priority, 16), h('span', null, prioMeta(t.priority).label)),
+      detailLabel('Status'), statusEditor(t, col),
+      detailLabel('Assignee'), assigneeEditor(t),
+      detailLabel('Priority'), priorityEditor(t),
       detailLabel('Type'), h('div.jb-detail-val', null, t.type),
-      detailLabel('Labels'), labelsCell,
+      detailLabel('Labels'), labelsEditor(t),
+    );
+    // Description stays read-only here — rich text is ADF; "Edit with AI"
+    // hands the change to the assistant, which calls jira_update_issue.
+    const descHead = h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+      detailLabel('Description'),
+      h('div', { style: { flex: '1' } }),
+      h('button.jb-link', {
+        title: 'Edit the description with Huddle AI',
+        onclick: () => window.HuddleAIPanel?.open?.(`Update the description of ${t.key} to: `),
+      }, icon('sparkles', 13), h('span', null, 'Edit with AI')),
     );
     const body = h('div.jb-detail-body',
       null,
-      h('h2.jb-detail-title', null, t.summary),
+      titleEditor(t),
       grid,
-      detailLabel('Description'),
+      descHead,
       descBox,
     );
     const foot = h('div.jb-detail-foot',
@@ -611,13 +617,10 @@
     } else {
       try {
         const full = await client.getIssue(t.key, { full: true });
-        // The per-ticket fetch is authoritative for labels — refresh the
-        // detail cell and update the cached issue so any later board
-        // re-render (filter / drag / refresh) reflects the fresh set.
-        if (Array.isArray(full?.fields?.labels)) {
-          t.labels = full.fields.labels;
-          fillLabels(labelsCell, t.labels);
-        }
+        // Sync labels from the authoritative per-ticket fetch in case they
+        // changed since board load; the labels editor reads t.labels on the
+        // next render. (Board load already includes labels via BOARD_FIELDS.)
+        if (Array.isArray(full?.fields?.labels)) t.labels = full.fields.labels;
         const text = window.jiraAdfToText ? window.jiraAdfToText(full?.fields?.description) : '';
         const out = (text || '').trim() || 'No description.';
         board._descCache.set(t.key, out);
@@ -628,12 +631,168 @@
     }
   }
   function detailLabel(text) { return h('span.jb-detail-lbl', null, text); }
-  // Render the label chips (or a muted "None") into a detail cell. Kept
-  // separate so the cell can be refreshed once the full fetch returns.
-  function fillLabels(cell, labels) {
-    cell.innerHTML = '';
-    if (Array.isArray(labels) && labels.length) labels.forEach((l) => cell.append(label(l)));
-    else cell.append(h('span.jb-detail-none', null, 'None'));
+
+  /* ─────────────── inline field editors (write via Jira API) ─────────────── */
+  const PRIORITIES = ['Highest', 'High', 'Medium', 'Low', 'Lowest'];
+
+  // Optimistic edit: apply() mutates the local issue, persist() calls Jira.
+  // On failure revert() restores. Re-renders the detail + board card both
+  // ways so the two stay in sync. Mirrors the drag-to-transition onDrop path.
+  async function commitEdit({ apply, revert, persist, okMsg }) {
+    apply();
+    renderDetail(); renderColumns();
+    try {
+      await persist();
+      toast('success', okMsg);
+    } catch (err) {
+      revert();
+      renderDetail(); renderColumns();
+      toast('error', `${err?.message || err}`.slice(0, 160));
+    }
+  }
+
+  // A .jb-dd dropdown whose options are produced by loadOptions() on first
+  // open (sync or async) — reuses the toolbar dropdown's markup/CSS.
+  function lazyDropdown(triggerKids, loadOptions, onSelect) {
+    const wrap = h('div.jb-dd');
+    const btn = h('button.jb-dd-btn', null, ...triggerKids, icon('chevronDown', 14, 'var(--text-faint)'));
+    let menu = null;
+    function close() { if (menu) { menu.remove(); menu = null; } document.removeEventListener('mousedown', outside); }
+    function outside(e) { if (!wrap.contains(e.target)) close(); }
+    async function openMenu() {
+      btn.disabled = true;
+      let options;
+      try { options = await loadOptions(); }
+      catch (err) { toast('error', `${err?.message || err}`.slice(0, 160)); btn.disabled = false; return; }
+      btn.disabled = false;
+      menu = h('div.jb-dd-menu');
+      (options || []).forEach((o) => menu.append(h('button.jb-dd-item', { onclick: () => { close(); onSelect(o.value, o); } },
+        o.user ? avatar(o.user, 20) : o.icon ? icon(o.icon, 15, 'var(--text-faint)') : h('span', { style: { width: '20px' } }),
+        h('span', { style: { flex: '1' } }, o.label))));
+      wrap.append(menu);
+      document.addEventListener('mousedown', outside);
+    }
+    btn.addEventListener('click', () => (menu ? close() : openMenu()));
+    wrap.append(btn);
+    return wrap;
+  }
+
+  function changeStatus(t, transitionId, toName) {
+    const prevStatus = t.status, prevCat = t.cat;
+    const toCol = board.columns.find((c) => (c.name || '').toLowerCase() === (toName || '').toLowerCase());
+    commitEdit({
+      apply: () => { if (toName) { t.status = toName; t.cat = toCol?.cat || t.cat; } },
+      revert: () => { t.status = prevStatus; t.cat = prevCat; },
+      persist: () => ctx.getClient().transitionIssue({ key: t.key, transitionId }),
+      okMsg: `${t.key} → ${toName}.`,
+    });
+  }
+  function changeAssignee(t, accountId, name) {
+    const prev = t.assignees;
+    commitEdit({
+      apply: () => { t.assignees = accountId ? [{ id: accountId, name: name || 'Assignee', email: '' }] : []; },
+      revert: () => { t.assignees = prev; },
+      persist: () => ctx.getClient().updateIssue({ key: t.key, assigneeAccountId: accountId }),
+      okMsg: accountId ? `${t.key} assigned to ${name}.` : `${t.key} unassigned.`,
+    });
+  }
+  function changePriority(t, name) {
+    const prev = t.priority;
+    if (name === prev) return;
+    commitEdit({
+      apply: () => { t.priority = name; },
+      revert: () => { t.priority = prev; },
+      persist: () => ctx.getClient().updateIssue({ key: t.key, priorityName: name }),
+      okMsg: `${t.key} priority → ${name}.`,
+    });
+  }
+  function setLabels(t, labels) {
+    const prev = t.labels;
+    commitEdit({
+      apply: () => { t.labels = labels; },
+      revert: () => { t.labels = prev; },
+      persist: () => ctx.getClient().updateIssue({ key: t.key, labels }),
+      okMsg: `${t.key} labels updated.`,
+    });
+  }
+  function setSummary(t, summary) {
+    const prev = t.summary;
+    commitEdit({
+      apply: () => { t.summary = summary; },
+      revert: () => { t.summary = prev; },
+      persist: () => ctx.getClient().updateIssue({ key: t.key, summary }),
+      okMsg: `${t.key} summary updated.`,
+    });
+  }
+
+  // ── editable cell builders (read live values off the mapped issue `t`) ──
+  function statusEditor(t, col) {
+    const client = ctx.getClient();
+    return lazyDropdown([statusPill(col)],
+      () => Promise.resolve(client.listTransitions(t.key)).then((trs) =>
+        (trs || []).map((tr) => ({ value: tr.id, label: tr.to?.name || tr.name, to: tr.to?.name || tr.name, icon: 'flag' }))),
+      (id, o) => changeStatus(t, id, o?.to));
+  }
+  function assigneeEditor(t) {
+    const client = ctx.getClient();
+    const cur = t.assignees[0] || null;
+    return lazyDropdown([avatar(cur, 22), h('span', { style: { marginLeft: '6px' } }, cur?.name || 'Unassigned')],
+      () => Promise.resolve(client.listAssignableUsers(activeProject())).then((us) => [
+        { value: null, label: 'Unassign', icon: 'x' },
+        ...(us || []).map((u) => ({ value: u.accountId, label: u.displayName, user: { id: u.accountId, name: u.displayName, email: u.emailAddress || '' } })),
+      ]),
+      (accountId, o) => changeAssignee(t, accountId, o?.label));
+  }
+  function priorityEditor(t) {
+    return lazyDropdown([priorityIcon(t.priority, 16), h('span', { style: { marginLeft: '6px' } }, prioMeta(t.priority).label)],
+      () => Promise.resolve(PRIORITIES.map((p) => ({ value: p, label: p }))),
+      (name) => changePriority(t, name));
+  }
+  function labelsEditor(t) {
+    const cell = h('div.jb-card-labels');
+    (t.labels || []).forEach((l) => {
+      const chip = label(l);
+      chip.append(h('button', {
+        title: 'Remove label',
+        style: { marginLeft: '5px', cursor: 'pointer', background: 'none', border: 'none', color: 'inherit', padding: '0', lineHeight: '1', verticalAlign: 'middle' },
+        onclick: () => setLabels(t, t.labels.filter((y) => y !== l)),
+      }, icon('x', 10)));
+      cell.append(chip);
+    });
+    const input = h('input', {
+      type: 'text', placeholder: '+ label',
+      style: { background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--text)', font: 'inherit', fontSize: '12px', padding: '2px 6px', width: '84px' },
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      const v = input.value.trim();
+      if (v && !(t.labels || []).includes(v)) setLabels(t, [...(t.labels || []), v]);
+    });
+    cell.append(input);
+    return cell;
+  }
+  function titleEditor(t) {
+    const titleEl = h('h2.jb-detail-title', { title: 'Click to edit', style: { cursor: 'text' } }, t.summary);
+    titleEl.addEventListener('click', () => {
+      const input = h('input', {
+        type: 'text', value: t.summary,
+        style: { width: '100%', font: 'inherit', fontWeight: '600', background: 'var(--bg-2)', border: '1px solid var(--accent-2)', borderRadius: '8px', color: 'var(--text)', padding: '6px 10px', boxSizing: 'border-box' },
+      });
+      titleEl.replaceWith(input);
+      input.focus(); input.select();
+      let done = false;
+      const commit = () => {
+        if (done) return; done = true;
+        const v = input.value.trim();
+        if (v && v !== t.summary) setSummary(t, v); else renderDetail();
+      };
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); commit(); }
+        else if (e.key === 'Escape') { done = true; renderDetail(); }
+      });
+      input.addEventListener('blur', commit);
+    });
+    return titleEl;
   }
 
   function jiraSite() { return (ctx.getSettings()?.jira?.host || '').replace(/^https?:\/\//, ''); }

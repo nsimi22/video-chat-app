@@ -86,6 +86,18 @@
       // Cheap-and-cheerful: pull the project's `issueTypes` directly.
       return this._request(`/rest/api/3/project/${encodeURIComponent(projectKey)}`).then((p) => p.issueTypes || []);
     }
+    // Users assignable to issues in a project, for the board's assignee
+    // picker. `query` type-ahead filters by name/email; empty lists the
+    // first page. Returns [{ accountId, displayName, avatarUrls, emailAddress }].
+    listAssignableUsers(projectKey, query = '') {
+      const q = `project=${encodeURIComponent(projectKey)}&query=${encodeURIComponent(query)}&maxResults=50`;
+      return this._request(`/rest/api/3/user/assignable/search?${q}`).then((r) => Array.isArray(r) ? r : []);
+    }
+    // Global priority scheme (e.g. Highest/High/Medium/Low/Lowest) for the
+    // board's priority picker. Returns [{ id, name, iconUrl }].
+    listPriorities() {
+      return this._request(`/rest/api/3/priority`).then((r) => Array.isArray(r) ? r : []);
+    }
     async createIssue({ projectKey, summary, description, issueType, assigneeAccountId }) {
       const body = {
         fields: {
