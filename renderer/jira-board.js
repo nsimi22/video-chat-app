@@ -28,6 +28,7 @@
     saveTeamBoard: async () => {},  // ({projectKey, site}) -> persist team row
     aiRewrite: async (text) => text, // (current, instruction) -> rewritten text
     popOut: () => {},               // open the board in its own window
+    copyText: async () => false,    // (text) -> robust copy-to-clipboard, returns ok
   };
 
   // The board's active project: the shared team selection wins, falling
@@ -1017,11 +1018,18 @@
     const client = ctx.getClient();
     if (client?.isConfigured()) window.open(client.issueUrl(key), '_blank', 'noopener');
   }
-  function copyLink(key) {
+  async function copyLink(key) {
     const client = ctx.getClient();
-    if (client?.isConfigured() && navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(client.issueUrl(key)).then(() => toast('success', 'Link copied to clipboard.'));
-    }
+    if (!client?.isConfigured()) return;
+    const url = client.issueUrl(key);
+    // Route through the app's robust copyToClipboard (navigator.clipboard with
+    // an execCommand fallback). The bare navigator.clipboard.writeText used
+    // before silently no-op'd when the renderer had no clipboard binding or
+    // the write rejected (unfocused / permission), so nothing was copied.
+    let ok = false;
+    try { ok = await ctx.copyText(url); }
+    catch { ok = false; }
+    toast(ok ? 'success' : 'error', ok ? 'Link copied to clipboard.' : `Couldn't copy — ${url}`);
   }
 
   // ── toolbar ──

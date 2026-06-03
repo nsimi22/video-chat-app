@@ -6224,6 +6224,8 @@ function initJiraBoard() {
     // Open the board in its own window (reuses the popout system; the child
     // boots into a board-only layout — see bootBoardPopout).
     popOut: () => window.huddle?.openPopout?.({ target: 'board:', teamId: state.huddle?.team?.id || '', title: 'Board' }),
+    // Robust clipboard copy (navigator.clipboard + execCommand fallback).
+    copyText: (text) => copyToClipboard(text),
   });
   window.HuddleJiraBoard.refreshInCall();
 }
