@@ -3005,8 +3005,11 @@ function isFavorite(channelId) {
 
 // Star/unstar a channel or DM. Persisted per-user in
 // user_integrations.settings.favorites so favorites follow the user
-// across machines (unlike the localStorage mute keys).
-async function toggleFavorite(channelId) {
+// across machines (unlike the localStorage mute keys). Writes are
+// chained: rapid toggles would otherwise race concurrent whole-blob
+// upserts and a stale favorites array could land last.
+let favoritesSave = Promise.resolve();
+function toggleFavorite(channelId) {
   const ids = favoriteIds();
   const next = ids.includes(channelId)
     ? ids.filter((id) => id !== channelId)
@@ -3014,8 +3017,15 @@ async function toggleFavorite(channelId) {
   state.settings.favorites = { ...state.settings.favorites, channelIds: next };
   renderFavoritesSidebar();
   refreshStarButtons(channelId);
-  try { await window.huddleApi.saveSettings(state.settings); }
-  catch (err) { console.warn('favorites save failed', err); }
+  favoritesSave = favoritesSave
+    .then(() => window.huddleApi.saveSettings(state.settings))
+    .catch((err) => console.warn('favorites save failed', err));
+}
+
+function setStarState(star, fav) {
+  star.classList.toggle('is-favorite', fav);
+  star.title = fav ? 'Remove from favorites' : 'Add to favorites';
+  star.setAttribute('aria-label', star.title);
 }
 
 // Sync the star fill + tooltip on every row of a channel after a toggle.
@@ -3025,10 +3035,7 @@ function refreshStarButtons(channelId) {
   const fav = isFavorite(channelId);
   for (const li of sidebarRowsFor(channelId)) {
     const star = li.querySelector('.ch-star');
-    if (!star) continue;
-    star.classList.toggle('is-favorite', fav);
-    star.title = fav ? 'Remove from favorites' : 'Add to favorites';
-    star.setAttribute('aria-label', star.title);
+    if (star) setStarState(star, fav);
   }
 }
 
@@ -3041,7 +3048,9 @@ function renderFavoritesSidebar() {
   els.favorites.replaceChildren();
   const activeId = state.chat?.currentChannel;
   for (const id of ids) {
-    const li = buildChannelRow(state.channelMeta.get(id));
+    // Star-only rows: destructive delete/leave/add actions stay on the
+    // home row so a mis-click in the shortcut section can't leave a group.
+    const li = buildChannelRow(state.channelMeta.get(id), { actions: false });
     if (id === activeId) li.classList.add('active');
     els.favorites.appendChild(li);
     updateUnreadBadge(id);
@@ -3074,8 +3083,9 @@ function appendChannelToSidebar(channel, makeActive) {
 
 // Build one sidebar row for a channel/DM. Shared by the home lists
 // (appendChannelToSidebar) and the Favorites section
-// (renderFavoritesSidebar) so both copies get identical affordances.
-function buildChannelRow(channel) {
+// (renderFavoritesSidebar). Favorites copies pass actions:false to
+// skip the destructive delete/leave/add buttons (star-only rows).
+function buildChannelRow(channel, { actions = true } = {}) {
   const isDm = channel.type === 'dm';
   const li = document.createElement('li');
   li.dataset.id = channel.id;
@@ -3112,17 +3122,15 @@ function buildChannelRow(channel) {
   // Favorite star — hover-revealed, filled when starred.
   const star = document.createElement('button');
   star.className = 'ch-star';
-  if (isFavorite(channel.id)) star.classList.add('is-favorite');
-  star.title = isFavorite(channel.id) ? 'Remove from favorites' : 'Add to favorites';
-  star.setAttribute('aria-label', star.title);
   star.innerHTML = window.HuddleIcons.star;
+  setStarState(star, isFavorite(channel.id));
   star.onclick = (e) => {
     e.stopPropagation();
     toggleFavorite(channel.id);
   };
   li.appendChild(star);
 
-  if (isGroupDm(channel)) {
+  if (actions && isGroupDm(channel)) {
     // Group DMs get "add people" + "leave" rather than a delete-for-everyone.
     const add = document.createElement('button');
     add.className = 'ch-delete';
@@ -3151,7 +3159,7 @@ function buildChannelRow(channel) {
       }
     };
     li.appendChild(leave);
-  } else if (canDelete(channel)) {
+  } else if (actions && canDelete(channel)) {
     const del = document.createElement('button');
     del.className = 'ch-delete';
     del.title = isDm ? 'Close DM' : 'Delete channel';
