@@ -6738,45 +6738,19 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='2.5' y='4' width='19' height='13' rx='2.5'/><line x1='8' y1='21' x2='16' y2='21'/><line x1='12' y1='17' x2='12' y2='21'/></svg>") center / contain no-repeat;
           mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='2.5' y='4' width='19' height='13' rx='2.5'/><line x1='8' y1='21' x2='16' y2='21'/><line x1='12' y1='17' x2='12' y2='21'/></svg>") center / contain no-repeat;
 }
-/* Screen-share side-strip layout per design: when a remote/local
-   screen tile exists in the grid (and spotlight isn't already
-   producing its own side-rail), arrange as stage-left + 184px
-   right column of camera tiles. Mirrors the existing
-   .tiles.has-spotlight pattern but narrower per design and gated
-   by :has() rather than the spotlight click. Whiteboard tiles
-   carry `.screen` for sizing (see makeTile) so explicitly exclude
-   them — whiteboards stay wide-span. */
-/* Filmstrip side-strip is a MAIN-WINDOW layout. Popout windows
-   (body.popout) want the single shared tile to fill the entire
-   popout — the body:not(.popout) gate keeps these rules off the
-   popout's .popout-tiles, where they were sizing the screen tile
-   to 1fr/70vh and reserving a 184px phantom filmstrip column. */
-[data-ui="v2"] body:not(.popout) .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) {
-  grid-template-columns: minmax(0, 1fr) 184px;
-  grid-auto-rows: auto;
-  grid-auto-flow: row dense;
-  max-height: 70vh;
-}
-[data-ui="v2"] body:not(.popout) .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) .tile {
-  grid-column: 2;
-  min-height: 0;
-  /* 16:10 camera aspect per design (3.4). At 184px wide the tile
-     resolves to ~115px tall — locked rather than min-height-driven
-     so the strip reads as a uniform filmstrip instead of stretching
-     when more peers join. */
-  aspect-ratio: 16 / 10;
-}
-[data-ui="v2"] body:not(.popout) .tiles:has(.tile.screen:not(.whiteboard)):not(.has-spotlight) .tile.screen:not(.whiteboard) {
-  grid-column: 1;
-  grid-row: 1 / span 99;
-  min-height: 360px;
-  max-height: 70vh;
-}
+/* Stage layout has exactly ONE mechanism: spotlight (.tiles.has-spotlight,
+   rules below). The old :has(.tile.screen) side-strip that used to live here
+   was a SECOND, competing stage layout — it pinned EVERY screen tile to
+   column 1 (overlapping with 2+ simultaneous shares) and collided with the
+   spotlight rules' specificity (the "spotlight made everyone disappear" bug).
+   Removed: a share with nothing focused now renders as a normal grid tile;
+   remote shares auto-stage via setSpotlight (renderRemoteScreen), ending a
+   staged share promotes the next one (removeTile), and the per-tile Focus
+   button switches the stage. */
 
-/* Auto-spotlight (renderRemoteScreen) already widens the screen
-   to the left + a right rail; retune the rail to 184px under v2
-   so the spotlighted layout matches the side-strip layout above
-   regardless of which trigger fired first. */
+/* The single stage layout: focused (spotlighted) tile fills the left
+   stage, every other tile — cameras AND any other live shares — stacks
+   in a 184px right filmstrip per the v2 design. */
 [data-ui="v2"] .tiles.has-spotlight {
   grid-template-columns: minmax(0, 1fr) 184px;
   /* 115px row slots in the filmstrip column so each non-spotlighted

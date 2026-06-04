@@ -1341,8 +1341,9 @@ async function bootScreenPopout(cfg) {
     attachDrawingLayer(tile, targetShareId, /*owner*/ false);
     // The popout starts in spotlight mode (it IS the focus) so the
     // zoom controls are immediately visible and behave the same as on
-    // the main window's spotlighted tile.
-    toggleSpotlight(key);
+    // the main window's spotlighted tile. setSpotlight (idempotent) so a
+    // re-fired track event can never toggle the focus back OFF.
+    setSpotlight(key);
   };
 
   mesh.addEventListener('track', (e) => {
@@ -3705,7 +3706,9 @@ function makeTile({ key, label, kind, userId }) {
     }
     const spotlight = document.createElement('button');
     spotlight.className = 'tile-action-spotlight';
-    spotlight.innerHTML = `${window.HuddleIcons.spotlight}<span>Spotlight</span>`;
+    // "Focus" per the v2 design language — promotes this share to the stage
+    // (or un-stages it when it's already focused).
+    spotlight.innerHTML = `${window.HuddleIcons.spotlight}<span>Focus</span>`;
     spotlight.onclick = () => toggleSpotlight(key);
     actions.appendChild(spotlight);
     if (kind === 'screen') {
@@ -3744,15 +3747,34 @@ function removeTile(key) {
   if (tile) tile.remove();
   state.tilesByKey.delete(key);
   state.zoomByKey.delete(key);
-  if (state.spotlightKey === key) clearSpotlight();
+  if (state.spotlightKey === key) {
+    clearSpotlight();
+    // Promote the next live screen share to the stage — ending one share
+    // shouldn't dump viewers back to the grid while another is still
+    // showing. Respect an explicit grid choice.
+    if (!state.forceGridLayout) {
+      const next = els.tiles?.querySelector('.tile.screen:not(.whiteboard)');
+      if (next?.dataset.key) setSpotlight(next.dataset.key);
+    }
+  }
   if (state.fullscreenKey === key) clearFullscreen();
   syncTilesVisibility();
   if (wasScreen) refreshLayoutSwitcherUi?.();
 }
 
-// Spotlight: stage one screen/whiteboard tile in the main column with the
-// rest stacked in a side rail. Local UI state only — no broadcast, since
-// each viewer chooses their own focus.
+// Spotlight ("Focus"): stage one screen/whiteboard tile in the main column
+// with the rest stacked in a side rail. Local UI state only — no broadcast,
+// since each viewer chooses their own focus. This is the ONLY stage layout
+// mechanism — the old :has(.tile.screen) CSS side-strip was removed.
+
+// Idempotent stage-setter for automatic paths (remote share arrival,
+// next-share promotion, popout boot). Unlike toggleSpotlight it never
+// UN-stages when called with the already-focused key.
+function setSpotlight(key) {
+  if (state.spotlightKey === key) return;
+  toggleSpotlight(key);
+}
+
 function toggleSpotlight(key) {
   if (state.spotlightKey === key) { clearSpotlight(); return; }
   if (state.spotlightKey) {
@@ -5274,7 +5296,7 @@ function renderRemoteScreen(stream, screen) {
   // When the 2.2 layout switcher is on (state.forceGridLayout), the
   // user has explicitly asked for equal-size grid — skip the
   // auto-spotlight that'd otherwise pull them into stage layout.
-  if (!state.spotlightKey && !state.forceGridLayout) toggleSpotlight(key);
+  if (!state.spotlightKey && !state.forceGridLayout) setSpotlight(key);
 }
 
 function onScreenAnnounce(detail) {
