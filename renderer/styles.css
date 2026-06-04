@@ -6792,8 +6792,13 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   grid-row: 1 / -1;
 }
 /* Same 16:10 lock for the spotlight rail's filmstrip tiles
-   (excluding the spotlighted tile itself, which fills the stage). */
+   (excluding the spotlighted tile itself, which fills the stage).
+   grid-column MUST be restated: this v2 rule outranks the legacy
+   `.tiles.has-spotlight .tile { grid-column: 2 }`, and without it the
+   filmstrip tiles fall into column 1 BEHIND the spotlighted stage —
+   the "spotlight makes everyone disappear" bug. */
 [data-ui="v2"] .tiles.has-spotlight .tile:not(.spotlighted) {
+  grid-column: 2;
   min-height: 0;
   aspect-ratio: 16 / 10;
 }

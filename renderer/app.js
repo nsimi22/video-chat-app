@@ -6708,6 +6708,11 @@ window.huddleApp = {
   getMe: () => state.me,
   getCalendar: () => state.calendar,
   getActiveChannelId: () => state.chat?.currentChannel,
+  // True in-call participant count straight from the LiveKit room
+  // (remote participants + self). The DOM-tile census the v2 header used
+  // misses mic-only peers and screen-share states — the "1 person with
+  // four people talking" bug. Returns 0 when not in a call.
+  getCallPeerCount: () => (state.mesh?.room ? state.mesh.room.remoteParticipants.size + 1 : 0),
   // Channel-name lookup, used by calendar-grid.js to derive event
   // categories from channel naming. Returns null for unknown ids
   // (e.g. an event in a channel the user isn't a member of yet).
