@@ -2616,8 +2616,12 @@ body.popout-call .popout-stage > .draw-toolbar {
   gap: 0;
   max-height: none;
 }
-.popout-screen .popout-tiles.has-spotlight {
-  /* Cancel the rail layout — the rail would be empty in a popout. */
+.popout-screen .popout-tiles.has-spotlight,
+.popout-call .tiles.has-spotlight {
+  /* Cancel the rail layout — the rail would be empty (or near-empty) in a
+     popout window, which wants the focused tile edge-to-edge. Covers BOTH
+     popout kinds: the screen popout's auto-spotlight and the call popout's
+     auto-stage / next-share promotion paths. */
   grid-template-columns: 1fr;
   max-height: none;
   grid-auto-rows: 1fr;
@@ -6349,6 +6353,14 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)) .tiles:not(.has-spotlight),
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#meeting-notes:not(.hidden)) .tiles:not(.has-spotlight) {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+/* In those squeezed grids the base `.tile.screen { grid-column: span 2 }`
+   can exceed the resolved column count — a span past the explicit tracks
+   creates an implicit `auto` column and the tile overflows under the dock
+   panel. Full-row instead: never overflows, reads as a mini-stage. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)) .tiles:not(.has-spotlight) .tile.screen,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#meeting-notes:not(.hidden)) .tiles:not(.has-spotlight) .tile.screen {
+  grid-column: 1 / -1;
 }
 
 /* Meeting-notes panel — mirrors the captions dock so they read as

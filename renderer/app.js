@@ -3798,6 +3798,12 @@ function toggleForceGridLayout() {
   state.forceGridLayout = !state.forceGridLayout;
   if (state.forceGridLayout) {
     clearSpotlight();
+  } else {
+    // Flipping back to stage layout: re-stage the first live share so the
+    // toggle round-trips (grid → stage) without hunting for the per-tile
+    // Focus button. The :has() side-strip used to restore this implicitly.
+    const next = els.tiles?.querySelector('.tile.screen:not(.whiteboard)');
+    if (next?.dataset.key) setSpotlight(next.dataset.key);
   }
   refreshLayoutSwitcherUi();
 }
@@ -5207,6 +5213,12 @@ function addLocalScreenTile(stream, label) {
   // as the same so there's no divergence in that codepath.
   stopBtn.onclick = () => state.mesh.removeScreen(stream.id);
   tile.querySelector('.tile-actions').appendChild(stopBtn);
+  // Auto-stage the local share like a remote one (same guard): the sharer
+  // gets the stage + filmstrip — their share as a confidence monitor and
+  // EVERY participant visible in the rail. The deleted :has() side-strip
+  // used to provide this implicitly; without staging, the span-2 share
+  // tile also overflows the dock-squeezed grids.
+  if (!state.spotlightKey && !state.forceGridLayout) setSpotlight(key);
 }
 
 function onTrack({ stream, track, fromId }) {
