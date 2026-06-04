@@ -4802,38 +4802,12 @@ body.popout-call .popout-stage > .draw-toolbar {
    side panel (296px), not a footer banner. The tile grid gets a
    right margin so it doesn't slide under. Hide chat composer +
    message stream is already handled by other in-call rules. */
-[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .captions:not(.hidden) {
-  position: absolute;
-  top: 60px;       /* below the stage-header */
-  right: 14px;
-  bottom: 100px;   /* above the bottom dock */
-  width: 296px;
-  max-height: none;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  z-index: 25;
-}
-[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .captions-list {
-  flex: 1;
-  overflow-y: auto;
-}
-/* Make room on the right of the tile grid for the captions dock
-   when it's visible. Uses :has() so the rule only fires when a
-   non-hidden #captions exists.
-   ---
-   The base .tiles grid uses minmax(320px, 1fr), which means a single
-   320px tile is the minimum before the grid collapses to one column.
-   With the 310px reservation here plus the rail (~68px) and sidebar
-   (~256px) eaten out of the stage, a default-width window can easily
-   fall below the 2×320 threshold and stack every tile into a single
-   narrow column — leaving a huge dead zone between the column and the
-   captions panel. Drop the minmax threshold when captions is on so
-   tiles can pack 2-3 per row in the squeezed area. */
-[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)) .tiles {
-  margin-right: 310px;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-}
+/* (Removed) An earlier generation of in-call captions positioning +
+   `.tiles { margin-right: 310px }` lived here. It silently STACKED with
+   the later padding-right reservations near the #meeting-notes rules —
+   with both panels open the grid reserved margin AND padding (~1010px
+   for 668px of panels) and collapsed to a sliver. The single composable
+   reservation now lives with the in-call .tiles rule (--dock-* vars). */
 
 /* CC toggle active state — match the design's "captions on" affordance.
    The CC button is .ctrl.icon-only so it picks up Phase 3.1 chrome;
@@ -6341,6 +6315,10 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   flex: 1 1 auto;
   max-height: none;
   padding-bottom: 96px; /* leave room for the dock */
+  /* The ONE right-side reservation. Each dock (captions / meeting notes)
+     contributes its width via a --dock-* var set on .stage below; any
+     combination composes by summation — no stacked margin+padding rules. */
+  padding-right: calc(var(--dock-captions, 0px) + var(--dock-notes, 0px));
 }
 
 /* Captions panel docks to the right side during a call. Uses
@@ -6358,15 +6336,19 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   margin: 0;
   z-index: 20;
 }
-/* When captions panel is visible (not .hidden), reserve right
-   space on the tile grid so tiles don't sit underneath the
-   panel. :has() is supported in Chromium-based Electron.
-   The extra 16px buffer (on top of 296 panel + 16 right edge)
-   creates a visible gap between the rightmost tile and the
-   panel — without it tiles butt directly against the panel
-   border. */
-[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)) .tiles {
-  padding-right: 328px; /* 296 panel + 16 right edge + 16 buffer */
+/* Dock width contributions (consumed by the .tiles padding-right calc).
+   16px buffer on top of panel + edge gap keeps the rightmost tile off
+   the panel border. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)) {
+  --dock-captions: 328px; /* 296 panel + 16 right edge + 16 buffer */
+}
+/* With any dock open the stage loses width — loosen the 320px tile
+   minimum so the grid packs rows instead of collapsing to one column.
+   :not(.has-spotlight) — these are MORE specific than the spotlight
+   stage template and must never clobber its 1fr/184px columns. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)) .tiles:not(.has-spotlight),
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#meeting-notes:not(.hidden)) .tiles:not(.has-spotlight) {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
 /* Meeting-notes panel — mirrors the captions dock so they read as
@@ -6395,19 +6377,14 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)) #meeting-notes:not(.hidden) {
   right: calc(296px + 16px + 16px);
 }
-/* Reserve tile-grid space the same way captions does, with the
- * matching 16px buffer so the rightmost tile gets breathing room
- * from the panel border. */
-[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#meeting-notes:not(.hidden)) .tiles {
-  padding-right: 372px; /* 340 panel + 16 right edge + 16 buffer */
+/* Meeting-notes dock contribution — composes with --dock-captions via
+ * the .tiles padding-right calc; no standalone padding rules. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#meeting-notes:not(.hidden)) {
+  --dock-notes: 372px; /* 340 panel + 16 right edge + 16 buffer */
 }
-[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)):has(#meeting-notes:not(.hidden)) .tiles {
-  padding-right: calc(296px + 16px + 16px + 340px + 16px + 16px); /* both panels + edge gaps + buffer */
-}
-/* When both panels are open the tile area is squeezed hard.
- * Drop the minmax threshold further so tiles can still pack 2
- * per row at default window widths instead of collapsing. */
-[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)):has(#meeting-notes:not(.hidden)) .tiles {
+/* When BOTH docks are open the tile area is squeezed hard — drop the
+ * minimum further so tiles still pack rows at default window widths. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .stage:has(#captions:not(.hidden)):has(#meeting-notes:not(.hidden)) .tiles:not(.has-spotlight) {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
