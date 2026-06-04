@@ -2046,6 +2046,11 @@ async function leaveCall() {
     try { await state.huddle.watchCallPresence(ch); } catch {}
   }
   renderCallHeader();
+  // The leave teardown is the highest realtime-churn moment in the app —
+  // any postgres_changes dropped during it (a teammate's message mid-call,
+  // the AI recap's echo) would otherwise stay invisible until the next
+  // reconnect or restart. Backfill explicitly now that teardown is done.
+  state.huddle?.resyncMessages?.();
 }
 
 // ---------------------------------------------------------------------------
@@ -2557,8 +2562,8 @@ function finalizeCallTranscript() {
   // the AI returns) would spawn parallel recaps and would also
   // clear cc.lines AFTER the await — wiping the next call's
   // freshly-accumulating buffer.
-  if (state.cc._finalizing) return;
-  if (!state.cc.on && state.cc.lines.length === 0) return;
+  if (state.cc._finalizing) { console.warn('[recap] skip: finalize already in flight'); return; }
+  if (!state.cc.on && state.cc.lines.length === 0) { console.warn('[recap] skip: captions off and no buffered lines'); return; }
   state.cc._finalizing = true;
 
   // Snapshot + reset shared state synchronously so a follow-up
@@ -2578,14 +2583,17 @@ function finalizeCallTranscript() {
   stopCaptions({ keepBuffer: true });
 
   if (!channelId || lines.length === 0) {
+    console.warn('[recap] skip: no channel or empty transcript', { channelId, lines: lines.length });
     state.cc._finalizing = false;
     return;
   }
   const ai = state.ai;
   if (!ai || !ai.isConfigured()) {
+    console.warn('[recap] skip: AI provider not configured');
     state.cc._finalizing = false;
     return;
   }
+  console.warn('[recap] generating', { lines: lines.length, channelId, meetingThreadId });
 
   // Background path: don't block the leaveCall teardown on the AI
   // round-trip. The team realtime channel survives mesh.disconnect
@@ -2600,7 +2608,7 @@ function finalizeCallTranscript() {
     try {
       result = await ai.chat({ system, messages: [{ role: 'user', content: transcript }] });
     } catch (err) {
-      console.warn('call summary failed', err);
+      console.warn('[recap] AI chat FAILED:', err);
       return;
     }
     const body = `**📞 Call recap**\n\n${result.text || '(no recap produced)'}`;
@@ -2615,7 +2623,7 @@ function finalizeCallTranscript() {
         model: result.model,
       });
     } catch (err) {
-      console.warn('failed to post call recap', err);
+      console.warn('[recap] failed to POST recap message:', err);
     }
   })().finally(() => { state.cc._finalizing = false; });
 }
