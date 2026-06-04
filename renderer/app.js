@@ -2562,8 +2562,8 @@ function finalizeCallTranscript() {
   // the AI returns) would spawn parallel recaps and would also
   // clear cc.lines AFTER the await — wiping the next call's
   // freshly-accumulating buffer.
-  if (state.cc._finalizing) { console.warn('[recap] skip: finalize already in flight'); return; }
-  if (!state.cc.on && state.cc.lines.length === 0) { console.warn('[recap] skip: captions off and no buffered lines'); return; }
+  if (state.cc._finalizing) { console.log('[recap] skip: finalize already in flight'); return; }
+  if (!state.cc.on && state.cc.lines.length === 0) { console.log('[recap] skip: captions off and no buffered lines'); return; }
   state.cc._finalizing = true;
 
   // Snapshot + reset shared state synchronously so a follow-up
@@ -2583,17 +2583,17 @@ function finalizeCallTranscript() {
   stopCaptions({ keepBuffer: true });
 
   if (!channelId || lines.length === 0) {
-    console.warn('[recap] skip: no channel or empty transcript', { channelId, lines: lines.length });
+    console.log('[recap] skip: no channel or empty transcript', { channelId, lines: lines.length });
     state.cc._finalizing = false;
     return;
   }
   const ai = state.ai;
   if (!ai || !ai.isConfigured()) {
-    console.warn('[recap] skip: AI provider not configured');
+    console.log('[recap] skip: AI provider not configured');
     state.cc._finalizing = false;
     return;
   }
-  console.warn('[recap] generating', { lines: lines.length, channelId, meetingThreadId });
+  console.log('[recap] generating', { lines: lines.length, channelId, meetingThreadId });
 
   // Background path: don't block the leaveCall teardown on the AI
   // round-trip. The team realtime channel survives mesh.disconnect
