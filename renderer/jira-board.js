@@ -127,8 +127,11 @@
   // Does this column hold the given status? Every column carries
   // `statuses` (the Jira board can group several statuses per column).
   function colHasStatus(col, status) {
-    const want = String(status || '').toLowerCase();
-    return (col.statuses || [col.id]).some((s) => String(s).toLowerCase() === want);
+    // Memoize the lowercase status set per column — this runs per ticket per
+    // column on every renderColumns, including drag-over repaints.
+    const set = col._statusSet
+      || (col._statusSet = new Set((col.statuses || [col.id]).map((s) => String(s).toLowerCase())));
+    return set.has(String(status || '').toLowerCase());
   }
 
   // Build ordered column descriptors. When the project's real Agile-board
@@ -140,8 +143,10 @@
   // To Do → In Progress → Done.
   function deriveColumns(issues, boardCols) {
     if (boardCols && boardCols.length) {
-      const cols = boardCols.map((c) => ({
-        id: c.name,
+      // id carries the index — Jira permits two columns with the same display
+      // name, and a duplicate id would make find()/highlight hit the wrong one.
+      const cols = boardCols.map((c, i) => ({
+        id: `${i}:${c.name}`,
         name: c.name,
         statuses: c.statuses.map((s) => s.name),
         // Accent the column by its last status's category — for grouped
@@ -149,11 +154,17 @@
         cat: c.statuses[c.statuses.length - 1]?.cat || 'new',
       }));
       const covered = new Set(cols.flatMap((c) => c.statuses.map((s) => s.toLowerCase())));
+      // Statuses in play that the board config doesn't cover get their own
+      // trailing columns, kept in category order so e.g. an unmapped
+      // new-category status doesn't render to the right of Done.
+      const extras = [];
       for (const t of issues) {
         if (covered.has(t.status.toLowerCase())) continue;
         covered.add(t.status.toLowerCase());
-        cols.push({ id: t.status, name: t.status, statuses: [t.status], cat: t.cat });
+        extras.push({ id: t.status, name: t.status, statuses: [t.status], cat: t.cat });
       }
+      extras.sort((a, b) => (CAT_ORDER[a.cat] ?? 1) - (CAT_ORDER[b.cat] ?? 1));
+      cols.push(...extras);
       for (const c of cols) c.accent = statusColor(c.cat, c.name);
       return cols;
     }
@@ -558,7 +569,8 @@
     renderColumns();
 
     transitionToColumn(key, toCol).then((landed) => {
-      t.status = landed; // the status the workflow actually accepted
+      t.status = landed.name; // the status the workflow actually accepted
+      if (landed.cat) t.cat = landed.cat; // …and its true category, not the column's
       board.confirming = null;
       renderColumns();
       toast('success', `${key} moved to ${toCol.name}.`);
@@ -572,9 +584,10 @@
 
   // A Jira board column can group several statuses; resolve the drop by
   // trying the column's statuses in order against the issue's available
-  // workflow transitions and applying the first match. Returns the status
-  // name actually landed on; throws if the workflow allows none of them so
-  // the caller can revert + surface a rejection toast.
+  // workflow transitions and applying the first match. Returns the landed
+  // status as { name, cat } (cat from the transition target, so the card
+  // tints by its true category); throws if the workflow allows none of them
+  // so the caller can revert + surface a rejection toast.
   async function transitionToColumn(key, col) {
     const client = ctx.getClient();
     const transitions = await client.listTransitions(key);
@@ -584,7 +597,7 @@
         || transitions.find((tr) => (tr.name || '').toLowerCase() === want);
       if (match) {
         await client.transitionIssue({ key, transitionId: match.id });
-        return match.to?.name || target;
+        return { name: match.to?.name || target, cat: match.to?.statusCategory?.key || null };
       }
     }
     throw new Error(`No workflow transition from this status into "${col.name}".`);
@@ -1282,15 +1295,19 @@
     let cols = null;
     try { cols = await ctx.getClient().getBoardConfig(project); } catch { cols = null; }
     if (cols) {
-      // Persist for resilience — but only when a team row already exists, so
-      // we never create a shared pin as a side effect of a per-user fallback.
+      // Persist for resilience — but ONLY when a team row exists AND it
+      // already pins this exact project. This read path must never create a
+      // shared pin from a per-user fallback, and never rewrite the team's
+      // project_key as a side effect (a read becoming a shared write).
       const row = ctx.getTeamBoard?.();
-      if (row && JSON.stringify(row.columns || null) !== JSON.stringify(cols)) {
-        Promise.resolve(ctx.saveTeamBoard?.({ projectKey: project, columns: cols })).catch(() => {});
+      if (row && row.project_key === project && JSON.stringify(row.columns || null) !== JSON.stringify(cols)) {
+        Promise.resolve(ctx.saveTeamBoard?.({ projectKey: row.project_key, columns: cols })).catch(() => {});
       }
     } else {
-      const cached = ctx.getTeamBoard?.()?.columns;
-      if (Array.isArray(cached) && cached.length) cols = cached;
+      // Cached columns describe the TEAM-pinned project — only valid as a
+      // fallback when that's the project we're actually rendering.
+      const row = ctx.getTeamBoard?.();
+      if (row?.project_key === project && Array.isArray(row.columns) && row.columns.length) cols = row.columns;
     }
     board._cfgCache = { project, cols };
     return cols;
