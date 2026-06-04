@@ -59,6 +59,8 @@ const els = {
   app: $('#app'),
   channels: $('#channels'),
   dms: $('#dms'),
+  favorites: $('#favorites'),
+  favoritesHeader: $('#favorites-header'),
   addChannel: $('#add-channel'),
   markAllRead: $('#mark-all-read'),
   addDm: $('#add-dm'),
@@ -738,10 +740,8 @@ function cycleCurrentChannelNotify() {
   const next = NOTIFY_CYCLE[getChannelNotifyMode(channelId)];
   setChannelNotifyMode(channelId, next);
   refreshNotifyButton();
-  // Re-render the sidebar row so the muted / notify-all suffix tracks.
-  const sel = `[data-id="${cssEscape(channelId)}"]`;
-  const li = els.channels.querySelector(sel) || els.dms.querySelector(sel);
-  if (li) {
+  // Re-render the sidebar row(s) so the muted / notify-all suffix tracks.
+  for (const li of sidebarRowsFor(channelId)) {
     li.classList.toggle('muted', next === 'muted');
     li.classList.toggle('notify-all', next === 'all');
   }
@@ -2916,6 +2916,7 @@ function onWelcome({ peers, channels }) {
   els.dms.replaceChildren();
   state.channelMeta.clear();
   for (const c of channels) appendChannelToSidebar(c, false);
+  renderFavoritesSidebar();
   // Roster was loaded synchronously inside huddle.start before the
   // welcome dispatched, so render the full list here. Online status
   // is overlaid from peerInfo (which `peers` is the snapshot of).
@@ -2984,6 +2985,78 @@ function consumePendingInviteHop() {
   return true;
 }
 
+// All sidebar rows for a channel — its home list (channels/dms) plus the
+// Favorites copy when starred. Callers mutating row state (active, muted,
+// badge, label) should hit every copy, not just the home row.
+function sidebarRowsFor(channelId) {
+  const sel = `[data-id="${cssEscape(channelId)}"]`;
+  return [els.favorites, els.channels, els.dms]
+    .map((list) => list.querySelector(sel))
+    .filter(Boolean);
+}
+
+function favoriteIds() {
+  return state.settings?.favorites?.channelIds || [];
+}
+
+function isFavorite(channelId) {
+  return favoriteIds().includes(channelId);
+}
+
+// Star/unstar a channel or DM. Persisted per-user in
+// user_integrations.settings.favorites so favorites follow the user
+// across machines (unlike the localStorage mute keys). Writes are
+// chained: rapid toggles would otherwise race concurrent whole-blob
+// upserts and a stale favorites array could land last.
+let favoritesSave = Promise.resolve();
+function toggleFavorite(channelId) {
+  const ids = favoriteIds();
+  const next = ids.includes(channelId)
+    ? ids.filter((id) => id !== channelId)
+    : [...ids, channelId];
+  state.settings.favorites = { ...state.settings.favorites, channelIds: next };
+  renderFavoritesSidebar();
+  refreshStarButtons(channelId);
+  favoritesSave = favoritesSave
+    .then(() => window.huddleApi.saveSettings(state.settings))
+    .catch((err) => console.warn('favorites save failed', err));
+}
+
+function setStarState(star, fav) {
+  star.classList.toggle('is-favorite', fav);
+  star.title = fav ? 'Remove from favorites' : 'Add to favorites';
+  star.setAttribute('aria-label', star.title);
+}
+
+// Sync the star fill + tooltip on every row of a channel after a toggle.
+// The Favorites copies were just rebuilt by renderFavoritesSidebar; this
+// mainly catches the home row, which is never rebuilt.
+function refreshStarButtons(channelId) {
+  const fav = isFavorite(channelId);
+  for (const li of sidebarRowsFor(channelId)) {
+    const star = li.querySelector('.ch-star');
+    if (star) setStarState(star, fav);
+  }
+}
+
+// Rebuild the Favorites section from settings. Stale ids (deleted
+// channels, closed DMs) are filtered at render time rather than pruned
+// from settings — a closed DM can come back with the same id.
+function renderFavoritesSidebar() {
+  const ids = favoriteIds().filter((id) => state.channelMeta.has(id));
+  els.favoritesHeader.hidden = ids.length === 0;
+  els.favorites.replaceChildren();
+  const activeId = state.chat?.currentChannel;
+  for (const id of ids) {
+    // Star-only rows: destructive delete/leave/add actions stay on the
+    // home row so a mis-click in the shortcut section can't leave a group.
+    const li = buildChannelRow(state.channelMeta.get(id), { actions: false });
+    if (id === activeId) li.classList.add('active');
+    els.favorites.appendChild(li);
+    updateUnreadBadge(id);
+  }
+}
+
 function appendChannelToSidebar(channel, makeActive) {
   // Preserve membership info we may already have: a realtime `channels` INSERT
   // echo doesn't carry memberIds/members, so blindly overwriting would clobber
@@ -3003,6 +3076,17 @@ function appendChannelToSidebar(channel, makeActive) {
   // channel you actually join; leaveCall() puts it back.
   state.huddle?.watchCallPresence(channel.id).catch(() => {});
 
+  const li = buildChannelRow(channel);
+  if (makeActive) li.classList.add('active');
+  list.appendChild(li);
+}
+
+// Build one sidebar row for a channel/DM. Shared by the home lists
+// (appendChannelToSidebar) and the Favorites section
+// (renderFavoritesSidebar). Favorites copies pass actions:false to
+// skip the destructive delete/leave/add buttons (star-only rows).
+function buildChannelRow(channel, { actions = true } = {}) {
+  const isDm = channel.type === 'dm';
   const li = document.createElement('li');
   li.dataset.id = channel.id;
   // Sidebar muted-channel styling: dimmer text + a small bell-slash
@@ -3035,7 +3119,18 @@ function appendChannelToSidebar(channel, makeActive) {
   badge.style.display = 'none';
   li.appendChild(badge);
 
-  if (isGroupDm(channel)) {
+  // Favorite star — hover-revealed, filled when starred.
+  const star = document.createElement('button');
+  star.className = 'ch-star';
+  star.innerHTML = window.HuddleIcons.star;
+  setStarState(star, isFavorite(channel.id));
+  star.onclick = (e) => {
+    e.stopPropagation();
+    toggleFavorite(channel.id);
+  };
+  li.appendChild(star);
+
+  if (actions && isGroupDm(channel)) {
     // Group DMs get "add people" + "leave" rather than a delete-for-everyone.
     const add = document.createElement('button');
     add.className = 'ch-delete';
@@ -3064,7 +3159,7 @@ function appendChannelToSidebar(channel, makeActive) {
       }
     };
     li.appendChild(leave);
-  } else if (canDelete(channel)) {
+  } else if (actions && canDelete(channel)) {
     const del = document.createElement('button');
     del.className = 'ch-delete';
     del.title = isDm ? 'Close DM' : 'Delete channel';
@@ -3088,19 +3183,17 @@ function appendChannelToSidebar(channel, makeActive) {
     li.appendChild(del);
   }
 
-  if (makeActive) li.classList.add('active');
   li.onclick = () => focusChannel(channel.id);
-  list.appendChild(li);
+  return li;
 }
 
 function focusChannel(channelId) {
   const channel = state.channelMeta.get(channelId);
   if (!channel) return;
+  for (const x of els.favorites.children) x.classList.remove('active');
   for (const x of els.channels.children) x.classList.remove('active');
   for (const x of els.dms.children) x.classList.remove('active');
-  const list = channel.type === 'dm' ? els.dms : els.channels;
-  const li = list.querySelector(`[data-id="${cssEscape(channel.id)}"]`);
-  if (li) li.classList.add('active');
+  for (const li of sidebarRowsFor(channel.id)) li.classList.add('active');
   // Stage-mode whiteboard is bound to a channel — switching channels
   // implicitly closes any open stage board so the new channel's chat
   // is visible. Tile-mode boards live alongside a call and stay open
@@ -3155,29 +3248,30 @@ function bumpUnread(channelId, mentionsMe) {
 }
 
 function updateUnreadBadge(channelId) {
-  const sel = `[data-id="${cssEscape(channelId)}"]`;
-  const li = els.channels.querySelector(sel) || els.dms.querySelector(sel);
-  if (!li) return;
-  const badge = li.querySelector('.ch-badge');
-  if (!badge) return;
+  const rows = sidebarRowsFor(channelId);
+  if (!rows.length) return;
   const u = state.unread.get(channelId);
-  if (!u || u.count === 0) {
-    badge.style.display = 'none';
-    badge.textContent = '';
-    badge.classList.remove('muted');
-    return;
-  }
-  badge.style.display = 'inline-block';
-  badge.textContent = String(u.count);
   // Mentions / DMs render as the loud red badge; plain channel
   // chatter is muted. Per-channel mute also forces the muted
   // styling regardless of mention status — the user explicitly
   // asked for this channel to stop being loud.
   const channel = state.channelMeta.get(channelId);
   const channelMuted = isChannelMuted(channelId);
-  const loud = !channelMuted && (u.mentions > 0 || channel?.type === 'dm');
-  badge.classList.toggle('muted', !loud);
-  updateUnreadTitle();
+  const loud = !channelMuted && ((u?.mentions || 0) > 0 || channel?.type === 'dm');
+  for (const li of rows) {
+    const badge = li.querySelector('.ch-badge');
+    if (!badge) continue;
+    if (!u || u.count === 0) {
+      badge.style.display = 'none';
+      badge.textContent = '';
+      badge.classList.remove('muted');
+      continue;
+    }
+    badge.style.display = 'inline-block';
+    badge.textContent = String(u.count);
+    badge.classList.toggle('muted', !loud);
+  }
+  if (u && u.count > 0) updateUnreadTitle();
 }
 
 // Sum the "loud" unreads (mentions + DMs) across every channel and
@@ -3269,13 +3363,17 @@ function sendDesktopNotification(m, channel) {
 
 function onChannelAdded(channel) {
   appendChannelToSidebar(channel, false);
+  // A favorited channel coming (back) into view — e.g. a re-opened DM —
+  // should reappear in the Favorites section too.
+  if (isFavorite(channel.id)) renderFavoritesSidebar();
 }
 
 function onChannelRemoved(channelId) {
   state.channelMeta.delete(channelId);
-  const sel = `[data-id="${cssEscape(channelId)}"]`;
-  const li = els.channels.querySelector(sel) || els.dms.querySelector(sel);
-  if (li) li.remove();
+  for (const li of sidebarRowsFor(channelId)) li.remove();
+  // Rebuild Favorites so the section header hides when this was the
+  // last starred channel (meta is gone, so the id filters out).
+  if (isFavorite(channelId)) renderFavoritesSidebar();
   // If we were viewing it, fall back to general.
   if (state.chat && state.chat.currentChannel === channelId) {
     state.chat.byChannel.delete(channelId);
@@ -3291,10 +3389,10 @@ function onChannelUpdated({ channelId, memberIds, members } = {}) {
   if (!ch) return;
   if (memberIds) ch.memberIds = memberIds;
   if (members) ch.members = members;
-  const sel = `[data-id="${cssEscape(channelId)}"]`;
-  const li = els.dms.querySelector(sel) || els.channels.querySelector(sel);
-  const lbl = li?.querySelector('.ch-name');
-  if (lbl) lbl.textContent = displayLabelFor(ch);
+  for (const li of sidebarRowsFor(channelId)) {
+    const lbl = li.querySelector('.ch-name');
+    if (lbl) lbl.textContent = displayLabelFor(ch);
+  }
   state.chat?.setLabel(channelId, displayLabelFor(ch), ch.type);
 }
 
