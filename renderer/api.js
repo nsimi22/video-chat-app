@@ -1280,6 +1280,42 @@
       if (error) console.warn('toggleReaction failed', error);
     }
 
+    // ----- Polls ---------------------------------------------------------
+    //
+    // A poll is a normal messages row with meta.poll = { question, multi,
+    // options: [{id, text}], votes: {optionId: [userId,...]}, closed_at }.
+    // Votes route through a security-definer RPC for the same RLS reason
+    // as reactions; the UPDATE rides the existing messages realtime
+    // subscription. See migration 20260604220000_huddle_polls.
+
+    async sendPollMessage({ channelId, question, options, multi }) {
+      await this._insertMessage({
+        channelId,
+        text: `📊 Poll: ${question}`,
+        extra: {
+          meta: {
+            poll: {
+              question,
+              multi: !!multi,
+              options: options.map((text, i) => ({ id: `o${i + 1}`, text })),
+              votes: {},
+              closed_at: null,
+            },
+          },
+        },
+      });
+    }
+
+    async togglePollVote(messageId, optionId) {
+      const { error } = await this.supabase.rpc('toggle_poll_vote', { p_message_id: messageId, p_option_id: optionId });
+      if (error) console.warn('togglePollVote failed', error);
+    }
+
+    async closePoll(messageId) {
+      const { error } = await this.supabase.rpc('close_poll', { p_message_id: messageId });
+      if (error) console.warn('closePoll failed', error);
+    }
+
     async createChannel({ name, topic, isPrivate, memberNames }) {
       const id = slugifyChannelName(name);
       if (!id) throw new Error('invalid channel name');

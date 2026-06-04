@@ -493,6 +493,9 @@
           </button>
           <input id="file-input" type="file" multiple class="hidden" />
           <button id="gif-btn" title="GIF">GIF</button>
+          <button id="poll-btn" class="icon-only" title="Create a poll" aria-label="Create a poll">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          </button>
           <button id="emoji-btn" class="icon-only" title="Emoji" aria-label="Emoji">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
           </button>
@@ -514,6 +517,23 @@
           </div>
           <div id="gif-grid" class="gif-grid"></div>
           <div id="gif-attribution" class="gif-attribution hidden">Powered by GIPHY</div>
+        </div>
+
+        <!-- Poll composer -->
+        <div id="poll-composer" class="poll-composer hidden">
+          <div class="poll-composer-head">
+            <span>Create a poll</span>
+            <button id="poll-close" class="icon-only ghost" title="Close" aria-label="Close">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <input id="poll-question" type="text" placeholder="Ask a question…" maxlength="300" />
+          <div id="poll-options"></div>
+          <div class="poll-composer-foot">
+            <button id="poll-add-option" class="ghost" type="button">+ Add option</button>
+            <label class="poll-multi-label"><input id="poll-multi" type="checkbox" /> Multiple answers</label>
+            <button id="poll-create" class="primary" type="button">Create poll</button>
+          </div>
         </div>
 
         <!-- Whiteboard stage mount (full-fill, replaces the chat content
