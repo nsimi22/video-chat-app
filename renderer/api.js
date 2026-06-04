@@ -691,6 +691,13 @@
     // user can still hard-reload to fully reconcile). The dominant
     // failure mode is "I sent a message and the other side didn't see
     // it", and INSERTs are exactly what this handles.
+    // Public gap-fill trigger for known realtime-churn moments (e.g. right
+    // after a call's teardown) — same dedup-safe backfill the reconnect and
+    // visibility handlers use.
+    resyncMessages() {
+      return this._catchUpMessages().catch((e) => console.warn('chat catch-up failed', e));
+    }
+
     async _catchUpMessages() {
       if (!this._lastMessageTs) return;
       // Re-SUBSCRIBED and visibilitychange can both fire on the same
@@ -906,15 +913,38 @@
       return { messages, hasMore };
     }
 
-    async sendMessage({ channelId, parentId, text, attachments }) {
+    // Surface a row we just inserted to the renderer immediately. Without
+    // this, our own messages only appear via the postgres_changes echo,
+    // which is at-most-once and can drop — most visibly the AI call recap
+    // posted during the leave-call teardown churn ("recap only shows after
+    // a restart"). chat.js dedupes by id, so the echo arriving later is a
+    // no-op; advancing _lastMessageTs keeps the catch-up cursor honest.
+    _emitLocalMessage(row) {
+      if (!row) return;
+      if (row.ts && row.ts > this._lastMessageTs) this._lastMessageTs = row.ts;
+      this.dispatchEvent(new CustomEvent('chat-message', { detail: { message: this._marshalMessage(row) } }));
+    }
+
+    // Shared insert for all message sends: builds the row, inserts with
+    // .select().single() (RLS-safe: insert and read share can_see_channel),
+    // and locally surfaces the returned row. Throws on failure — callers
+    // pick lenient vs strict handling.
+    async _insertMessage({ channelId, parentId, text, attachments, extra = {} }) {
       const knownNames = [...this.peerInfo.values()].map((p) => p.name).concat(this.name);
       const mentions = extractMentions(text, knownNames);
-      const { error } = await this.supabase.from('messages').insert({
+      const { data, error } = await this.supabase.from('messages').insert({
         team_id: this.team.id, channel_id: channelId, parent_id: parentId || null,
         author_id: this.peerId, author_name: this.name, author_color: this.color,
         body: text || '', attachments: attachments || [], reactions: {}, mentions,
-      });
-      if (error) console.warn('sendMessage failed', error);
+        ...extra,
+      }).select().single();
+      if (error) throw error;
+      this._emitLocalMessage(data);
+    }
+
+    async sendMessage(args) {
+      try { await this._insertMessage(args); }
+      catch (error) { console.warn('sendMessage failed', error); }
     }
 
     // Strict variant — throws on supabase error instead of swallowing.
@@ -922,33 +952,16 @@
     // (restore typed text, show a banner, retry). The lenient
     // sendMessage above stays in place for the main chat composer so a
     // backgrounded keystroke doesn't surface every transient blip.
-    async sendMessageStrict({ channelId, parentId, text, attachments }) {
-      const knownNames = [...this.peerInfo.values()].map((p) => p.name).concat(this.name);
-      const mentions = extractMentions(text, knownNames);
-      const { error } = await this.supabase.from('messages').insert({
-        team_id: this.team.id, channel_id: channelId, parent_id: parentId || null,
-        author_id: this.peerId, author_name: this.name, author_color: this.color,
-        body: text || '', attachments: attachments || [], reactions: {}, mentions,
-      });
-      if (error) throw error;
+    async sendMessageStrict(args) {
+      await this._insertMessage(args);
     }
 
     // Same shape as sendMessage but flags the row as AI-generated. The
     // human author still owns the row (RLS-wise) so they can edit/delete;
-    // the renderer styles it with a robot avatar + model badge.
+    // the renderer styles it with a robot avatar + model badge. Throws on
+    // failure so callers (notably /ai-ticket) can surface the problem.
     async sendAiMessage({ channelId, parentId, text, model, attachments }) {
-      const knownNames = [...this.peerInfo.values()].map((p) => p.name).concat(this.name);
-      const mentions = extractMentions(text, knownNames);
-      const { error } = await this.supabase.from('messages').insert({
-        team_id: this.team.id, channel_id: channelId, parent_id: parentId || null,
-        author_id: this.peerId, author_name: this.name, author_color: this.color,
-        body: text || '', attachments: attachments || [], reactions: {}, mentions,
-        ai_generated: true, ai_model: model || null,
-      });
-      // Throw on failure so callers (notably /ai-ticket) can surface the
-      // problem to the user — silently warning here meant a successful
-      // Jira ticket would never appear in chat with no visible error.
-      if (error) throw error;
+      await this._insertMessage({ channelId, parentId, text, attachments, extra: { ai_generated: true, ai_model: model || null } });
     }
 
     // ----- Shared team Jira board config --------------------------------
