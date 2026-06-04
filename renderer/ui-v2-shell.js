@@ -260,11 +260,14 @@
     };
 
     const peerCount = () => {
+      // Prefer the truth from the LiveKit room (remote participants + self)
+      // — the DOM-tile census below misses mic-only peers and screen-share
+      // states (the "1 person" header with four people talking).
+      const live = window.huddleApp?.getCallPeerCount?.();
+      if (live > 0) return live;
       if (!tilesEl) return 0;
-      // Count camera tiles (own self + remote cams); exclude
-      // screen-share + whiteboard tiles. Some peers may not have
-      // a camera tile (mic-only); for them we'd need state from
-      // the mesh — accepted limitation.
+      // Fallback: count camera tiles (own self + remote cams); excludes
+      // screen-share + whiteboard tiles and mic-only peers.
       const seen = new Set();
       tilesEl.querySelectorAll('.tile').forEach((t) => {
         const kind = t.dataset.kind;
