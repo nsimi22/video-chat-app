@@ -417,6 +417,18 @@ input:focus, textarea:focus {
 }
 .channel-list li:hover .ch-delete { display: inline-block; }
 .channel-list li .ch-delete:hover { opacity: 1; color: var(--bad); background: transparent; }
+/* Favorite star — hover-revealed like .ch-delete; the glyph fills in
+   when the channel is starred so the toggle state reads at a glance. */
+.channel-list li .ch-star {
+  display: none; background: transparent; border: none; color: inherit;
+  padding: 0 4px; cursor: pointer; opacity: .6;
+  box-shadow: none;
+  min-height: auto;
+}
+.channel-list li .ch-star svg { width: 13px; height: 13px; display: block; }
+.channel-list li:hover .ch-star { display: inline-block; }
+.channel-list li .ch-star.is-favorite svg { fill: currentColor; }
+.channel-list li .ch-star:hover { opacity: 1; background: transparent; }
 .dot {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--text-faint); flex: none;
