@@ -98,6 +98,26 @@
     listPriorities() {
       return this._request(`/rest/api/3/priority`).then((r) => Array.isArray(r) ? r : []);
     }
+    // The project's real Agile-board column layout, so the kanban can mirror
+    // Jira exactly (columns persist even when empty — e.g. an unused
+    // "Ready for Release"). Returns [{ name, statuses: [{ name, cat }] }] in
+    // Jira's column order, or null when the project has no board the user
+    // can see (caller falls back to deriving columns from live statuses).
+    async getBoardConfig(projectKey) {
+      const boards = await this._request(`/rest/agile/1.0/board?projectKeyOrId=${encodeURIComponent(projectKey)}&maxResults=1`);
+      const boardId = boards?.values?.[0]?.id;
+      if (!boardId) return null;
+      const [cfg, statuses] = await Promise.all([
+        this._request(`/rest/agile/1.0/board/${boardId}/configuration`),
+        this._request(`/rest/api/3/status`), // id -> name/category map
+      ]);
+      const byId = new Map((Array.isArray(statuses) ? statuses : [])
+        .map((s) => [String(s.id), { name: s.name, cat: s.statusCategory?.key || 'new' }]));
+      const cols = (cfg?.columnConfig?.columns || [])
+        .map((c) => ({ name: c.name, statuses: (c.statuses || []).map((s) => byId.get(String(s.id))).filter(Boolean) }))
+        .filter((c) => c.statuses.length); // a column with no mapped statuses can't hold or receive cards
+      return cols.length ? cols : null;
+    }
     async createIssue({ projectKey, summary, description, issueType, assigneeAccountId }) {
       const body = {
         fields: {

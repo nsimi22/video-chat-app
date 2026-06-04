@@ -124,13 +124,42 @@
     };
   }
 
-  // Build ordered column descriptors from the statuses present in the
-  // returned issues. Real Jira boards have arbitrary status names; we
-  // surface exactly the ones in play, ordered To Do → In Progress → Done.
-  function deriveColumns(issues) {
+  // Does this column hold the given status? Every column carries
+  // `statuses` (the Jira board can group several statuses per column).
+  function colHasStatus(col, status) {
+    const want = String(status || '').toLowerCase();
+    return (col.statuses || [col.id]).some((s) => String(s).toLowerCase() === want);
+  }
+
+  // Build ordered column descriptors. When the project's real Agile-board
+  // config is available (boardCols), mirror it exactly: Jira's columns, in
+  // Jira's order, INCLUDING empty ones (so e.g. "Ready for Release" persists
+  // as a drop target), with Jira's status→column grouping. Statuses in play
+  // that the config doesn't cover are appended so no card is orphaned.
+  // Without a config, fall back to one column per status in play, ordered
+  // To Do → In Progress → Done.
+  function deriveColumns(issues, boardCols) {
+    if (boardCols && boardCols.length) {
+      const cols = boardCols.map((c) => ({
+        id: c.name,
+        name: c.name,
+        statuses: c.statuses.map((s) => s.name),
+        // Accent the column by its last status's category — for grouped
+        // columns that's the "most done" state, matching Jira's tinting.
+        cat: c.statuses[c.statuses.length - 1]?.cat || 'new',
+      }));
+      const covered = new Set(cols.flatMap((c) => c.statuses.map((s) => s.toLowerCase())));
+      for (const t of issues) {
+        if (covered.has(t.status.toLowerCase())) continue;
+        covered.add(t.status.toLowerCase());
+        cols.push({ id: t.status, name: t.status, statuses: [t.status], cat: t.cat });
+      }
+      for (const c of cols) c.accent = statusColor(c.cat, c.name);
+      return cols;
+    }
     const seen = new Map();
     for (const t of issues) {
-      if (!seen.has(t.status)) seen.set(t.status, { id: t.status, name: t.status, cat: t.cat });
+      if (!seen.has(t.status)) seen.set(t.status, { id: t.status, name: t.status, statuses: [t.status], cat: t.cat });
     }
     const cols = [...seen.values()];
     cols.sort((a, b) => (CAT_ORDER[a.cat] ?? 1) - (CAT_ORDER[b.cat] ?? 1));
@@ -139,9 +168,9 @@
     // always have somewhere to be dragged.
     if (!cols.length) {
       return [
-        { id: 'To Do', name: 'To Do', cat: 'new', accent: statusColor('new') },
-        { id: 'In Progress', name: 'In Progress', cat: 'indeterminate', accent: statusColor('indeterminate') },
-        { id: 'Done', name: 'Done', cat: 'done', accent: statusColor('done') },
+        { id: 'To Do', name: 'To Do', statuses: ['To Do'], cat: 'new', accent: statusColor('new') },
+        { id: 'In Progress', name: 'In Progress', statuses: ['In Progress'], cat: 'indeterminate', accent: statusColor('indeterminate') },
+        { id: 'Done', name: 'Done', statuses: ['Done'], cat: 'done', accent: statusColor('done') },
       ];
     }
     return cols;
@@ -482,7 +511,7 @@
     });
     colEl.addEventListener('drop', (e) => { e.preventDefault(); onDrop(col.id); });
 
-    const tickets = board.issues.filter((t) => t.status === col.id && matches(t));
+    const tickets = board.issues.filter((t) => colHasStatus(col, t.status) && matches(t));
     const dot = h('span.jb-col-dot'); dot.style.background = col.accent;
     colEl.append(h('div.jb-col-head',
       null,
@@ -515,44 +544,50 @@
     }
   }
 
-  function onDrop(toStatus) {
+  function onDrop(colId) {
     const key = board.dragKey;
     board.dragKey = null; board.overCol = null;
     if (!key) return;
     const t = board.issues.find((x) => x.key === key);
-    if (!t || t.status === toStatus) { renderColumns(); return; }
-    const fromCol = board.columns.find((c) => c.id === t.status);
-    const toCol = board.columns.find((c) => c.id === toStatus);
+    const toCol = board.columns.find((c) => c.id === colId);
+    if (!t || !toCol || colHasStatus(toCol, t.status)) { renderColumns(); return; }
     const fromStatus = t.status, fromCat = t.cat;
 
-    board.confirming = { key, col: toStatus };
-    t.status = toStatus; t.cat = toCol?.cat || t.cat; // optimistic
+    board.confirming = { key, col: colId };
+    t.status = toCol.statuses[0]; t.cat = toCol.cat; // optimistic; real status resolved below
     renderColumns();
 
-    transition(key, toStatus).then(() => {
+    transitionToColumn(key, toCol).then((landed) => {
+      t.status = landed; // the status the workflow actually accepted
       board.confirming = null;
       renderColumns();
-      toast('success', `${key} moved to ${toCol?.name || toStatus}.`);
+      toast('success', `${key} moved to ${toCol.name}.`);
     }).catch((err) => {
       board.confirming = null;
       t.status = fromStatus; t.cat = fromCat; // revert
       renderColumns();
-      toast('error', `${err?.message || err}`.slice(0, 160), () => { board.dragKey = key; onDrop(toStatus); });
+      toast('error', `${err?.message || err}`.slice(0, 160), () => { board.dragKey = key; onDrop(colId); });
     });
   }
 
-  // Resolve the target status name to one of the issue's available
-  // workflow transitions, then execute it. Throws if no transition leads
-  // to the requested status (e.g. blocked / wrong workflow) so the caller
-  // can revert + surface a rejection toast.
-  async function transition(key, toStatus) {
+  // A Jira board column can group several statuses; resolve the drop by
+  // trying the column's statuses in order against the issue's available
+  // workflow transitions and applying the first match. Returns the status
+  // name actually landed on; throws if the workflow allows none of them so
+  // the caller can revert + surface a rejection toast.
+  async function transitionToColumn(key, col) {
     const client = ctx.getClient();
     const transitions = await client.listTransitions(key);
-    const want = String(toStatus).toLowerCase();
-    const match = transitions.find((tr) => (tr.to?.name || '').toLowerCase() === want)
-      || transitions.find((tr) => (tr.name || '').toLowerCase() === want);
-    if (!match) throw new Error(`No workflow transition from this status to "${toStatus}".`);
-    await client.transitionIssue({ key, transitionId: match.id });
+    for (const target of (col.statuses || [col.name])) {
+      const want = String(target).toLowerCase();
+      const match = transitions.find((tr) => (tr.to?.name || '').toLowerCase() === want)
+        || transitions.find((tr) => (tr.name || '').toLowerCase() === want);
+      if (match) {
+        await client.transitionIssue({ key, transitionId: match.id });
+        return match.to?.name || target;
+      }
+    }
+    throw new Error(`No workflow transition from this status into "${col.name}".`);
   }
 
   // ── card detail ──
@@ -570,7 +605,9 @@
     const t = board.issues.find((x) => x.key === board.detailKey);
     if (!t) return;
     const client = ctx.getClient();
-    const col = board.columns.find((c) => c.id === t.status) || { name: t.status, cat: t.cat };
+    // The detail pill always shows the issue's TRUE status (a board column
+    // may group several statuses, so the column name isn't specific enough).
+    const col = { name: t.status, cat: t.cat };
 
     const close = () => { board.detailKey = null; renderDetail(); };
     const head = h('div.jb-detail-head',
@@ -706,7 +743,7 @@
 
   function changeStatus(t, transitionId, toName) {
     const prevStatus = t.status, prevCat = t.cat;
-    const toCol = board.columns.find((c) => (c.name || '').toLowerCase() === (toName || '').toLowerCase());
+    const toCol = board.columns.find((c) => colHasStatus(c, toName));
     commitEdit({
       apply: () => { if (toName) { t.status = toName; t.cat = toCol?.cat || t.cat; } },
       revert: () => { t.status = prevStatus; t.cat = prevCat; },
@@ -1237,6 +1274,28 @@
     if (client?.isConfigured() && project) window.open(client.projectUrl(project), '_blank', 'noopener');
   }
 
+  // The project's Agile-board column config, cached per project for the
+  // session. Resilience chain: live Agile API → columns cached on the team
+  // row → null (deriveColumns falls back to live statuses).
+  async function getBoardCols(project) {
+    if (board._cfgCache?.project === project) return board._cfgCache.cols;
+    let cols = null;
+    try { cols = await ctx.getClient().getBoardConfig(project); } catch { cols = null; }
+    if (cols) {
+      // Persist for resilience — but only when a team row already exists, so
+      // we never create a shared pin as a side effect of a per-user fallback.
+      const row = ctx.getTeamBoard?.();
+      if (row && JSON.stringify(row.columns || null) !== JSON.stringify(cols)) {
+        Promise.resolve(ctx.saveTeamBoard?.({ projectKey: project, columns: cols })).catch(() => {});
+      }
+    } else {
+      const cached = ctx.getTeamBoard?.()?.columns;
+      if (Array.isArray(cached) && cached.length) cols = cached;
+    }
+    board._cfgCache = { project, cols };
+    return cols;
+  }
+
   async function loadBoard(isRefresh) {
     const client = ctx.getClient();
     const project = activeProject();
@@ -1245,15 +1304,16 @@
     board._descErr.clear();
     for (const k in ewaStore) delete ewaStore[k]; // drop stale Edit-with-AI phases
     board.loading = true;
-    if (isRefresh) rerenderToolbar();
+    if (isRefresh) { rerenderToolbar(); board._cfgCache = null; } // re-pull column config on explicit refresh
     renderColumns();
     try {
+      const cfgPromise = getBoardCols(project); // in parallel with the search
       const jql = `project = "${project}" ORDER BY status ASC, updated DESC`;
       // Explicit field list = the card/detail fields PLUS `labels` (which
       // BRIEF omits), minus `description` (too heavy across 100 issues).
       const res = await client.searchIssues(jql, 100, { fields: BOARD_FIELDS });
       board.issues = (res?.issues || []).map(mapIssue);
-      board.columns = deriveColumns(board.issues);
+      board.columns = deriveColumns(board.issues, await cfgPromise);
     } catch (err) {
       board.loading = false;
       if (isRefresh) rerenderToolbar();
