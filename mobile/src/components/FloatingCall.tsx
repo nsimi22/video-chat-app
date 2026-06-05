@@ -164,33 +164,37 @@ export function FloatingCall() {
           accessibilityRole="button"
           style={{ flex: 1 }}
         >
-          {floaterTrack ? (
-            <VideoTrack
-              // When local + backgrounded, drop to undefined so the
-              // native PIPController sees a nil video track and swaps
-              // to the fallbackView (an "Audio only" panel) instead
-              // of freezing on the last frame iOS gave us.
-              trackRef={videoTrackForPip}
-              // Mirror the local cam preview so it matches the
-              // full-screen view's self-tile.
-              style={
-                floaterTrack.participant.isLocal
-                  ? { flex: 1, transform: [{ scaleX: -1 }] }
-                  : { flex: 1 }
-              }
-              // Native iOS Picture-in-Picture: when the user
-              // backgrounds the whole app (home button / app switcher),
-              // iOS will pop the floater out into a system-level PiP
-              // window overlaying the home screen / other apps.
-              iosPIP={{
-                enabled: true,
-                startAutomatically: true,
-                preferredSize: floaterTrack.publication.dimensions ?? PIP_WINDOW_FALLBACK,
-                fallbackView: <PipFallbackView name={activeCall.name} />,
-              }}
-            />
-          ) : (
-            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          {/* The VideoTrack stays MOUNTED while the floater shows and is
+              driven via trackRef — unmounting a PiP-registered video view
+              (e.g. the pip track going null when a camera mutes) trips
+              Fabric's recycle assertion and aborts the app. Same fix as
+              the full call view's tiles. */}
+          <VideoTrack
+            // When local + backgrounded (or no eligible track at all),
+            // drop to undefined so the native PIPController sees a nil
+            // video track and swaps to the fallbackView (an "Audio only"
+            // panel) instead of freezing on the last frame iOS gave us.
+            trackRef={videoTrackForPip}
+            // Mirror the local cam preview so it matches the
+            // full-screen view's self-tile.
+            style={
+              floaterTrack?.participant.isLocal
+                ? { flex: 1, transform: [{ scaleX: -1 }] }
+                : { flex: 1 }
+            }
+            // Native iOS Picture-in-Picture: when the user
+            // backgrounds the whole app (home button / app switcher),
+            // iOS will pop the floater out into a system-level PiP
+            // window overlaying the home screen / other apps.
+            iosPIP={{
+              enabled: true,
+              startAutomatically: true,
+              preferredSize: floaterTrack?.publication.dimensions ?? PIP_WINDOW_FALLBACK,
+              fallbackView: <PipFallbackView name={activeCall.name} />,
+            }}
+          />
+          {!floaterTrack && (
+            <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' }}>
               <Avatar name={activeCall.name} size={44} />
             </View>
           )}
