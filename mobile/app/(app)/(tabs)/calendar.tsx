@@ -280,6 +280,7 @@ export default function CalendarScreen() {
           anchorMonth={selectedDay}
           selectedDay={selectedDay}
           events={events}
+          icsEvents={icsEvents}
           channels={channels}
           onSelectDay={setSelectedDay}
           onTapEvent={onTapEvent}
