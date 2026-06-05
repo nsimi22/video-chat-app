@@ -6,10 +6,12 @@
 // Recurrence support (kept in lockstep with renderer/ics.js — if you fix a
 // bug here, check the desktop file too):
 //   - Expanded: FREQ=DAILY|WEEKLY|MONTHLY|YEARLY with INTERVAL, COUNT,
-//     UNTIL, BYDAY (weekly), BYMONTHDAY (monthly), and EXDATE.
-//   - Not expanded: BYSETPOS, BYWEEKNO, BYYEARDAY, BYHOUR, RECURRENCE-ID
-//     overrides, the numeric BYDAY prefix like "1MO". Events with
-//     unsupported rules emit a single DTSTART so they remain visible.
+//     UNTIL, BYDAY (weekly), BYMONTHDAY (monthly), EXDATE, and
+//     RECURRENCE-ID overrides (a moved occurrence replaces the generated
+//     one instead of appearing twice).
+//   - Not expanded: BYSETPOS, BYWEEKNO, BYYEARDAY, BYHOUR, the numeric
+//     BYDAY prefix like "1MO". Events with unsupported rules emit a
+//     single DTSTART so they remain visible.
 //
 // Mobile-specific note: no buildEvent yet — mobile doesn't auto-post an
 // .ics attachment to the channel on schedule (deferred for v1). Add it
@@ -46,11 +48,18 @@ export function parseIcs(text: string, opts?: ParseIcsOptions): { events: IcsEve
   const lines = unfoldLines(text);
   let inEvent = false;
   let cur: IcsEvent | null = null;
+  // RECURRENCE-ID of the VEVENT being parsed (null = master/standalone).
+  // Overrides are deferred so they can replace generated occurrences no
+  // matter where they appear in the feed relative to their master.
+  let curRecurMs: number | null = null;
+  const masters: IcsEvent[] = [];
+  const overrides: { ev: IcsEvent; recurMs: number }[] = [];
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     if (trimmed === 'BEGIN:VEVENT') {
       inEvent = true;
+      curRecurMs = null;
       cur = {
         uid: '', title: '', description: '', location: '', url: '',
         start: null, end: null, allDay: false, rrule: '', exdate: [], raw: {},
@@ -59,11 +68,8 @@ export function parseIcs(text: string, opts?: ParseIcsOptions): { events: IcsEve
     }
     if (trimmed === 'END:VEVENT') {
       if (cur && cur.start) {
-        if (cur.rrule) {
-          for (const occ of expandSeries(cur, expandUntil)) out.events.push(occ);
-        } else {
-          out.events.push(cur);
-        }
+        if (curRecurMs !== null) overrides.push({ ev: cur, recurMs: curRecurMs });
+        else masters.push(cur);
       }
       inEvent = false;
       cur = null;
@@ -80,6 +86,11 @@ export function parseIcs(text: string, opts?: ParseIcsOptions): { events: IcsEve
       case 'LOCATION': cur.location = unescapeText(cl.value); break;
       case 'URL': cur.url = cl.value; break;
       case 'RRULE': cur.rrule = cl.value; break;
+      case 'RECURRENCE-ID': {
+        const p = parseDate(cl.value, cl.params);
+        if (p) curRecurMs = p.date.getTime();
+        break;
+      }
       case 'EXDATE': {
         // EXDATE may carry comma-separated values AND may appear multiple
         // times in one VEVENT — accumulate into the array. raw[] would
@@ -100,6 +111,38 @@ export function parseIcs(text: string, opts?: ParseIcsOptions): { events: IcsEve
         if (p) cur.end = p.date;
         break;
       }
+    }
+  }
+  for (const m of masters) {
+    if (m.rrule) {
+      for (const occ of expandSeries(m, expandUntil)) out.events.push(occ);
+    } else {
+      out.events.push(m);
+    }
+  }
+  if (overrides.length) {
+    // A RECURRENCE-ID override replaces the generated occurrence it names
+    // (RFC 5545 §3.8.4.4) — drop the original so a moved meeting doesn't
+    // render twice. Match on the master's UID (kept in raw.UID across
+    // expansion) + the named occurrence's start instant.
+    const ovByUid = new Map<string, Set<number>>();
+    for (const o of overrides) {
+      const uid = o.ev.uid;
+      if (!ovByUid.has(uid)) ovByUid.set(uid, new Set());
+      ovByUid.get(uid)!.add(o.recurMs);
+    }
+    out.events = out.events.filter((e) => {
+      const set = ovByUid.get(e.raw?.UID || e.uid);
+      return !(set && e.start && set.has(e.start.getTime()));
+    });
+    for (const o of overrides) {
+      // Suffix like recurring instances so list keys stay unique even
+      // though the override shares the master's bare UID.
+      out.events.push({
+        ...o.ev,
+        uid: `${o.ev.uid}/${new Date(o.recurMs).toISOString()}`,
+        _recurringInstance: true,
+      });
     }
   }
   return out;
@@ -390,6 +433,67 @@ function findUnquotedColon(line: string): number {
   return -1;
 }
 
+// Outlook/Exchange feeds emit WINDOWS timezone names in TZID (e.g.
+// "Mountain Standard Time"), which Intl can't resolve. Map the common ones
+// to IANA before resolution — without this, every Outlook event falls back
+// to floating and renders at the author's wall-clock hour, not the
+// viewer's. Subset of CLDR's windowsZones.xml covering the zones a feed is
+// realistically authored in. Kept in lockstep with renderer/ics.js.
+const WINDOWS_TZ: Record<string, string> = {
+  'Hawaiian Standard Time': 'Pacific/Honolulu',
+  'Alaskan Standard Time': 'America/Anchorage',
+  'Pacific Standard Time': 'America/Los_Angeles',
+  'Pacific Standard Time (Mexico)': 'America/Tijuana',
+  'US Mountain Standard Time': 'America/Phoenix',
+  'Mountain Standard Time': 'America/Denver',
+  'Mountain Standard Time (Mexico)': 'America/Chihuahua',
+  'Central Standard Time': 'America/Chicago',
+  'Central Standard Time (Mexico)': 'America/Mexico_City',
+  'Canada Central Standard Time': 'America/Regina',
+  'Eastern Standard Time': 'America/New_York',
+  'US Eastern Standard Time': 'America/Indiana/Indianapolis',
+  'Atlantic Standard Time': 'America/Halifax',
+  'Newfoundland Standard Time': 'America/St_Johns',
+  'SA Pacific Standard Time': 'America/Bogota',
+  'Venezuela Standard Time': 'America/Caracas',
+  'Argentina Standard Time': 'America/Argentina/Buenos_Aires',
+  'E. South America Standard Time': 'America/Sao_Paulo',
+  'UTC': 'UTC',
+  'Greenwich Standard Time': 'Atlantic/Reykjavik',
+  'GMT Standard Time': 'Europe/London',
+  'W. Europe Standard Time': 'Europe/Berlin',
+  'Romance Standard Time': 'Europe/Paris',
+  'Central Europe Standard Time': 'Europe/Budapest',
+  'Central European Standard Time': 'Europe/Warsaw',
+  'GTB Standard Time': 'Europe/Bucharest',
+  'FLE Standard Time': 'Europe/Kiev',
+  'E. Europe Standard Time': 'Europe/Chisinau',
+  'Turkey Standard Time': 'Europe/Istanbul',
+  'Russian Standard Time': 'Europe/Moscow',
+  'South Africa Standard Time': 'Africa/Johannesburg',
+  'Egypt Standard Time': 'Africa/Cairo',
+  'Israel Standard Time': 'Asia/Jerusalem',
+  'Arab Standard Time': 'Asia/Riyadh',
+  'Arabian Standard Time': 'Asia/Dubai',
+  'Iran Standard Time': 'Asia/Tehran',
+  'Pakistan Standard Time': 'Asia/Karachi',
+  'India Standard Time': 'Asia/Kolkata',
+  'Sri Lanka Standard Time': 'Asia/Colombo',
+  'Nepal Standard Time': 'Asia/Kathmandu',
+  'Bangladesh Standard Time': 'Asia/Dhaka',
+  'SE Asia Standard Time': 'Asia/Bangkok',
+  'China Standard Time': 'Asia/Shanghai',
+  'Taipei Standard Time': 'Asia/Taipei',
+  'Singapore Standard Time': 'Asia/Singapore',
+  'Tokyo Standard Time': 'Asia/Tokyo',
+  'Korea Standard Time': 'Asia/Seoul',
+  'W. Australia Standard Time': 'Australia/Perth',
+  'Cen. Australia Standard Time': 'Australia/Adelaide',
+  'AUS Eastern Standard Time': 'Australia/Sydney',
+  'E. Australia Standard Time': 'Australia/Brisbane',
+  'New Zealand Standard Time': 'Pacific/Auckland',
+};
+
 // Convert a wall-clock time in an IANA timezone to an absolute instant.
 // Two-pass offset estimation via Intl (the second pass nails times near a
 // DST transition). Returns null when the runtime can't resolve the zone —
@@ -399,10 +503,11 @@ function zonedToUtc(
   y: number, mo: number, dd: number, hh: number, mm: number, ss: number,
   timeZone: string,
 ): Date | null {
+  const zone = WINDOWS_TZ[timeZone] ?? timeZone;
   let dtf: Intl.DateTimeFormat;
   try {
     dtf = new Intl.DateTimeFormat('en-US', {
-      timeZone,
+      timeZone: zone,
       year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit', second: '2-digit',
       hourCycle: 'h23',
