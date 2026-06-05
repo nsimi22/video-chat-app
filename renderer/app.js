@@ -3674,21 +3674,42 @@ function presenceStatusLabel(s) {
 
 function renderMeStatus() {
   const s = state.huddle?.presenceStatus || 'active';
+  const title = `Status: ${presenceStatusLabel(s)} — click to change`;
   els.me.dataset.status = s;
-  els.me.title = `Status: ${presenceStatusLabel(s)} — click to change`;
+  els.me.title = title;
+  // v2 nav-rail avatar (bottom-left) carries the same state — its dot is
+  // a CSS ::after keyed off data-status, immune to the shell's initial
+  // repaints (which rewrite textContent).
+  const railMe = document.getElementById('huddle-rail-me');
+  if (railMe) {
+    railMe.dataset.status = s;
+    railMe.title = title;
+  }
 }
 
 function initMeStatus(huddle) {
   renderMeStatus();
   // Status flips re-render the me-row dot and the roster (self row).
   huddle.addEventListener('presence-status', () => { renderMeStatus(); renderRoster(); });
-  // start() can run again after a team switch — wire the click once.
-  if (els.me.dataset.statusWired) return;
-  els.me.dataset.statusWired = '1';
-  els.me.addEventListener('click', toggleStatusMenu);
+  // start() can run again after a team switch — wire the clicks once.
+  if (!els.me.dataset.statusWired) {
+    els.me.dataset.statusWired = '1';
+    els.me.addEventListener('click', () => toggleStatusMenu(els.me, false));
+  }
+  const railMe = document.getElementById('huddle-rail-me');
+  if (railMe && !railMe.dataset.statusWired) {
+    railMe.dataset.statusWired = '1';
+    railMe.style.cursor = 'pointer';
+    railMe.setAttribute('role', 'button');
+    railMe.removeAttribute('aria-hidden');
+    railMe.setAttribute('aria-label', 'Set your status');
+    railMe.addEventListener('click', () => toggleStatusMenu(railMe, true));
+  }
 }
 
-function toggleStatusMenu() {
+// `side` anchors the menu beside the trigger (the v2 nav rail is too
+// narrow to host a dropdown); otherwise it pops above the me-row.
+function toggleStatusMenu(trigger, side) {
   const existing = document.querySelector('.status-menu');
   if (existing) { existing.remove(); return; }
   const menu = document.createElement('div');
@@ -3706,9 +3727,21 @@ function toggleStatusMenu() {
     };
     menu.appendChild(item);
   }
-  els.me.parentElement.appendChild(menu);
+  if (side) {
+    // Fixed positioning from the trigger's rect — the rail clips
+    // absolutely-positioned children, and fixed also dodges z-index
+    // stacking against the sidebar.
+    const r = trigger.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.left = `${Math.round(r.right + 10)}px`;
+    menu.style.bottom = `${Math.round(window.innerHeight - r.bottom)}px`;
+    menu.style.top = 'auto';
+    document.body.appendChild(menu);
+  } else {
+    trigger.parentElement.appendChild(menu);
+  }
   const outside = (e) => {
-    if (!menu.contains(e.target) && !els.me.contains(e.target)) {
+    if (!menu.contains(e.target) && !trigger.contains(e.target)) {
       menu.remove();
       document.removeEventListener('mousedown', outside);
     }

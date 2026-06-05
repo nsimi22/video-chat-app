@@ -238,7 +238,7 @@ input:focus, textarea:focus {
 .sidebar .dot.status-brb { box-shadow: 0 0 0 2px var(--bg-sidebar), 0 0 8px rgba(255, 159, 10, 0.5); }
 .sidebar .dot.status-unavailable { box-shadow: 0 0 0 2px var(--bg-sidebar), 0 0 8px rgba(255, 91, 91, 0.5); }
 .status-menu {
-  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 40;
+  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 1000;
   min-width: 150px;
   background: var(--bg-elev); border: 1px solid var(--line-strong);
   border-radius: 10px; padding: 4px;
@@ -3051,7 +3051,25 @@ body.popout-call .popout-stage > .draw-toolbar {
   align-items: center;
   justify-content: center;
   user-select: none;
+  position: relative; /* anchors the presence dot */
 }
+/* Presence dot on the rail avatar — the v2 status trigger. ::after (not a
+   DOM child) so paintMeBadge's textContent rewrites can't wipe it. */
+[data-ui="v2"] .huddle-rail-me::after {
+  content: '';
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--good);
+  border: 2px solid var(--bg-0);
+}
+[data-ui="v2"] .huddle-rail-me[data-status='away']::after { background: #ffd60a; }
+[data-ui="v2"] .huddle-rail-me[data-status='brb']::after { background: var(--warn); }
+[data-ui="v2"] .huddle-rail-me[data-status='unavailable']::after { background: #ff5b5b; }
+[data-ui="v2"] .huddle-rail-me:hover { filter: brightness(1.12); }
 
 /* Existing sidebar reads as the design's "contextual panel" under
    v2 — slimmer, warm-charcoal, soft hairline. Headers / rows /
