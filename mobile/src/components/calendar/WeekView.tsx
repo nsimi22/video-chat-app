@@ -19,6 +19,7 @@ import {
   fmtHourLabel,
   fmtTime,
   hourOf,
+  icsAllDayOnDay,
   sameDay,
   startOfDay,
 } from './tokens';
@@ -76,13 +77,21 @@ export function WeekView({
       const ch = channelById.get(e.channelId);
       all.push({ date: e.startsAt, color: channelColorForChannel(e.channelId, ch?.type) });
     }
-    for (const e of icsEvents) {
-      if (e.start) all.push({ date: e.start, color: C.text2 });
-    }
     for (const day of days) {
       const colors: string[] = [];
       const seen = new Set<string>();
+      // All-day ICS events can span several days — count them on every
+      // covered day, not just DTSTART's.
+      for (const e of icsEvents) {
+        if (!e.start) continue;
+        const hit = e.allDay ? icsAllDayOnDay(e, day) : sameDay(e.start, day);
+        if (hit && !seen.has(C.text2)) {
+          seen.add(C.text2);
+          colors.push(C.text2);
+        }
+      }
       for (const item of all) {
+        if (colors.length === 3) break;
         if (!sameDay(item.date, day)) continue;
         if (seen.has(item.color)) continue;
         seen.add(item.color);
@@ -132,6 +141,13 @@ export function WeekView({
     out.sort((a, b) => a.startHour - b.startHour);
     return out;
   }, [events, icsEvents, selectedDay, channelById]);
+
+  // All-day ICS events covering the selected day — rendered as a banner
+  // strip pinned above the timeline (they have no meaningful hour).
+  const allDayItems = useMemo(
+    () => icsEvents.filter((e) => icsAllDayOnDay(e, selectedDay)),
+    [icsEvents, selectedDay],
+  );
 
   const isToday = sameDay(selectedDay, new Date());
   const nowHour = hourOf(new Date());
@@ -189,6 +205,33 @@ export function WeekView({
           })}
         </View>
       </View>
+
+      {/* all-day banner strip */}
+      {allDayItems.length > 0 && (
+        <View style={{ borderBottomWidth: 0.5, borderBottomColor: C.hair, paddingVertical: 6, paddingLeft: 56, paddingRight: 12, gap: 4 }}>
+          {allDayItems.map((e) => (
+            <View
+              key={'ad:' + (e.uid || `${e.title}:${e.start?.toISOString()}`)}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                backgroundColor: C.surface2,
+                borderLeftWidth: 3,
+                borderLeftColor: C.text2,
+                borderRadius: 6,
+                paddingHorizontal: 10,
+                paddingVertical: 6,
+              }}
+            >
+              <Text numberOfLines={1} style={{ fontSize: 13, fontWeight: '600', color: '#fff', flex: 1 }}>
+                {e.title || '(untitled)'}
+              </Text>
+              <Text style={{ fontSize: 11, fontWeight: '500', color: C.text2 }}>All day</Text>
+            </View>
+          ))}
+        </View>
+      )}
 
       {/* timeline */}
       <ScrollView

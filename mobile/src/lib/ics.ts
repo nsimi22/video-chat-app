@@ -390,9 +390,46 @@ function findUnquotedColon(line: string): number {
   return -1;
 }
 
+// Convert a wall-clock time in an IANA timezone to an absolute instant.
+// Two-pass offset estimation via Intl (the second pass nails times near a
+// DST transition). Returns null when the runtime can't resolve the zone —
+// the caller falls back to treating the time as floating-local, which is
+// the old behavior.
+function zonedToUtc(
+  y: number, mo: number, dd: number, hh: number, mm: number, ss: number,
+  timeZone: string,
+): Date | null {
+  let dtf: Intl.DateTimeFormat;
+  try {
+    dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hourCycle: 'h23',
+    });
+  } catch {
+    return null; // unknown TZID or no Intl timezone data on this runtime
+  }
+  const wallUtc = Date.UTC(y, mo - 1, dd, hh, mm, ss);
+  const offsetAt = (utcMs: number): number => {
+    const parts: Record<string, string> = {};
+    for (const p of dtf.formatToParts(new Date(utcMs))) parts[p.type] = p.value;
+    const asUtc = Date.UTC(
+      parseInt(parts.year, 10), parseInt(parts.month, 10) - 1, parseInt(parts.day, 10),
+      parseInt(parts.hour, 10) % 24, parseInt(parts.minute, 10), parseInt(parts.second, 10),
+    );
+    return asUtc - utcMs;
+  };
+  let utc = wallUtc - offsetAt(wallUtc);
+  utc = wallUtc - offsetAt(utc);
+  return new Date(utc);
+}
+
 // §3.3.4/3.3.5: YYYYMMDD (all-day) or YYYYMMDDTHHMMSS[Z]. TZID-qualified
-// local times are treated as floating. Round-trip-check the calendar
-// fields to refuse silent JS Date overflow (e.g. Feb 30 → Mar 2).
+// times are converted from their zone to the device's local time (falling
+// back to floating when the zone can't be resolved), so events authored in
+// other timezones land at the right local hour. Round-trip-check the
+// calendar fields to refuse silent JS Date overflow (e.g. Feb 30 → Mar 2).
 function parseDate(
   value: string,
   params?: Record<string, string>,
@@ -441,6 +478,13 @@ function parseDate(
       d.getMinutes() !== mm ||
       d.getSeconds() !== ss
     ) return null;
+    // The wall-clock fields are valid; if a TZID names the zone they're
+    // in, convert to the real instant so the event renders at the right
+    // local hour for this user.
+    if (params?.TZID) {
+      const zoned = zonedToUtc(y, mo, dd, hh, mm, ss, params.TZID);
+      if (zoned) d = zoned;
+    }
   }
   return { date: d, allDay: false };
 }

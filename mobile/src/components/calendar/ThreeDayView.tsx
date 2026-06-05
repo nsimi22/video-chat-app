@@ -18,6 +18,7 @@ import {
   fmtHourLabel,
   fmtTime,
   hourOf,
+  icsAllDayOnDay,
   sameDay,
 } from './tokens';
 import { HuddleMiniMark } from './atoms';
@@ -90,6 +91,16 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
     return out;
   }, [days, events, icsEvents, channelById]);
 
+  // All-day ICS events per column — banner chips above the hour grid.
+  const allDayByDay = useMemo(() => {
+    const out = new Map<string, IcsEvent[]>();
+    for (const d of days) {
+      out.set(d.toDateString(), icsEvents.filter((e) => icsAllDayOnDay(e, d)));
+    }
+    return out;
+  }, [days, icsEvents]);
+  const hasAllDay = days.some((d) => (allDayByDay.get(d.toDateString()) ?? []).length > 0);
+
   const now = new Date();
   const nowHour = hourOf(now);
 
@@ -142,6 +153,45 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
           );
         })}
       </View>
+
+      {/* all-day banner row — one cell per column, sharing the hour gutter */}
+      {hasAllDay && (
+        <View style={{ flexDirection: 'row', paddingLeft: 44, paddingVertical: 4, borderBottomWidth: 0.5, borderBottomColor: C.hair }}>
+          {days.map((day, idx) => {
+            const items = allDayByDay.get(day.toDateString()) ?? [];
+            return (
+              <View
+                key={day.toISOString()}
+                style={{
+                  flex: 1,
+                  gap: 3,
+                  paddingHorizontal: 2,
+                  borderRightWidth: idx < days.length - 1 ? 0.5 : 0,
+                  borderRightColor: C.hair,
+                }}
+              >
+                {items.map((e) => (
+                  <View
+                    key={'ad:' + (e.uid || `${e.title}:${e.start?.toISOString()}`)}
+                    style={{
+                      backgroundColor: C.surface2,
+                      borderLeftWidth: 2.5,
+                      borderLeftColor: C.text2,
+                      borderRadius: 4,
+                      paddingHorizontal: 5,
+                      paddingVertical: 3,
+                    }}
+                  >
+                    <Text numberOfLines={1} style={{ fontSize: 10, fontWeight: '600', color: '#fff' }}>
+                      {e.title || '(untitled)'}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            );
+          })}
+        </View>
+      )}
 
       <ScrollView ref={scrollRef} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 32 }}>
         <Grid days={days} blocksByDay={blocksByDay} nowHour={nowHour} onTapBlock={onTapEvent} />

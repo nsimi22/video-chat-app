@@ -11,10 +11,11 @@
 //     visible — same behaviour as the pre-RRULE-expansion parser.
 //
 // Other deliberate omissions:
-//   - VTIMEZONE / TZID is not resolved — DTSTART/DTEND with TZID are
-//     treated as floating local time. UTC ("Z" suffix) and full
-//     date-time forms work correctly. All-day VEVENTs (VALUE=DATE) are
-//     surfaced with `allDay: true`.
+//   - VTIMEZONE blocks are not parsed; TZID params are resolved through
+//     the runtime's Intl timezone data instead (zonedToUtc below), with
+//     floating-local as the fallback for unresolvable zones. UTC ("Z"
+//     suffix) and full date-time forms work correctly. All-day VEVENTs
+//     (VALUE=DATE) are surfaced with `allDay: true`.
 //   - VTODO / VJOURNAL / alarms are skipped — only VEVENT is parsed.
 //
 // A fully RFC 5545 compliant parser is a few thousand lines; the
@@ -97,11 +98,44 @@
     return -1;
   }
 
+  // Convert a wall-clock time in an IANA timezone to an absolute instant.
+  // Two-pass offset estimation via Intl (the second pass nails times near
+  // a DST transition). Returns null when the zone can't be resolved — the
+  // caller falls back to floating-local, the old behavior. Kept in
+  // lockstep with mobile/src/lib/ics.ts zonedToUtc.
+  function zonedToUtc(y, mo, dd, hh, mm, ss, timeZone) {
+    let dtf;
+    try {
+      dtf = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hourCycle: 'h23',
+      });
+    } catch {
+      return null; // unknown TZID
+    }
+    const wallUtc = Date.UTC(y, mo - 1, dd, hh, mm, ss);
+    const offsetAt = (utcMs) => {
+      const parts = {};
+      for (const p of dtf.formatToParts(new Date(utcMs))) parts[p.type] = p.value;
+      const asUtc = Date.UTC(
+        parseInt(parts.year, 10), parseInt(parts.month, 10) - 1, parseInt(parts.day, 10),
+        parseInt(parts.hour, 10) % 24, parseInt(parts.minute, 10), parseInt(parts.second, 10),
+      );
+      return asUtc - utcMs;
+    };
+    let utc = wallUtc - offsetAt(wallUtc);
+    utc = wallUtc - offsetAt(utc);
+    return new Date(utc);
+  }
+
   // RFC 5545 §3.3.4/3.3.5: dates are either YYYYMMDD (date-only) or
-  // YYYYMMDDTHHMMSS optionally suffixed with Z for UTC. Anything else
-  // (including TZID-qualified local times) is treated as floating —
-  // we hand back a Date constructed in the local zone, which matches
-  // what most users expect for events without an explicit zone.
+  // YYYYMMDDTHHMMSS optionally suffixed with Z for UTC. TZID-qualified
+  // times are converted from their zone to the viewer's local time via
+  // zonedToUtc above (falling back to floating when the zone is
+  // unresolvable), so events authored in other timezones land at the
+  // right local hour.
   //
   // External feeds can be careless: e.g. 20260230 (Feb 30), or a feed
   // with the year/month transposed. The regex catches gross structural
@@ -149,6 +183,12 @@
           || d.getHours() !== hh
           || d.getMinutes() !== mm
           || d.getSeconds() !== ss) return null;
+      // Fields are valid; if a TZID names the zone they're in, convert
+      // to the real instant for this viewer.
+      if (params?.TZID) {
+        const zoned = zonedToUtc(y, mo, dd, hh, mm, ss, params.TZID);
+        if (zoned) d = zoned;
+      }
     }
     return { date: d, allDay: false };
   }
