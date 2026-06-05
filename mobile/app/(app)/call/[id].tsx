@@ -266,15 +266,20 @@ function CallView({
                 backgroundColor: colors.surfaceAlt,
               }}
             >
-              {showVideo ? (
+              {/* The VideoTrack stays MOUNTED for the tile's lifetime and is
+                  driven via trackRef — unmounting it (the old ternary swap to
+                  the placeholder) while AVKit's PiP controller still held the
+                  native view tripped Fabric's recycle assertion and
+                  SIGABRT'd the app the moment a camera toggled off. Passing
+                  trackRef={undefined} to a mounted view is the already-proven
+                  pattern from the frozen-fallback path below. */}
+              {!isPlaceholder && (
                 <VideoTrack
-                  // On the pipTile only: clear trackRef while iOS has
-                  // suspended local capture so the PIPController swaps
-                  // to its fallbackView instead of freezing on the last
-                  // frame. The in-app frame shows black for a moment
-                  // until foreground returns — fine because by then
-                  // the user isn't looking at the call screen anyway.
-                  trackRef={isPipTile && showFrozenFallback ? undefined : item}
+                  // Clear trackRef when there's no video to draw: camera
+                  // muted, or (pipTile only) iOS suspended local capture in
+                  // the background — the PIPController then swaps to its
+                  // fallbackView instead of freezing on the last frame.
+                  trackRef={showVideo && !(isPipTile && showFrozenFallback) ? item : undefined}
                   style={isLocal ? { flex: 1, transform: [{ scaleX: -1 }] } : { flex: 1 }}
                   // Only the chosen pipTrack tile registers iosPIP, so
                   // we don't fight the floater's iosPIP for iOS's
@@ -293,8 +298,9 @@ function CallView({
                       : undefined
                   }
                 />
-              ) : (
-                <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: space(3) }}>
+              )}
+              {!showVideo && (
+                <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', padding: space(3), backgroundColor: colors.surfaceAlt }}>
                   <Avatar name={displayName} size={96} />
                   <Text style={{ color: colors.textDim, textAlign: 'center', marginTop: space(3) }}>
                     {showSimHint
