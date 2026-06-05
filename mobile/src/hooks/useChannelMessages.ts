@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { supabase } from '@/lib/supabase';
-import { fetchMessages, fetchMessagesSince, type Message } from '@/lib/api';
+import { fetchMessages, fetchMessagesSince, fetchReplyCounts, type Message } from '@/lib/api';
 
 // Loads paginated message history for a channel and keeps it live via a
 // postgres_changes subscription on public.messages. Channel `id` is only unique
@@ -18,6 +18,12 @@ import { fetchMessages, fetchMessagesSince, type Message } from '@/lib/api';
 // catch-up response leaves the array out of chronological order.
 export function useChannelMessages(teamId: string, channelId: string) {
   const [messages, setMessages] = useState<Message[]>([]);
+  // parent message id -> reply count, for the thread chips. Seeded with one
+  // channel-wide query; incremented live when a reply INSERT arrives. Reply
+  // DELETEs can't be attributed (the payload only carries the PK), so the
+  // count can briefly overstate until the next channel open — same
+  // tolerance as desktop's in-memory tally.
+  const [replyCounts, setReplyCounts] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(true);
   const oldestTs = useRef<string | null>(null);
@@ -26,6 +32,7 @@ export function useChannelMessages(teamId: string, channelId: string) {
   useEffect(() => {
     let active = true;
     setMessages([]);
+    setReplyCounts(new Map());
     setLoading(true);
     setHasMore(true);
     oldestTs.current = null;
@@ -51,6 +58,10 @@ export function useChannelMessages(teamId: string, channelId: string) {
         setHasMore(false);
         setLoading(false);
       });
+
+    fetchReplyCounts(teamId, channelId)
+      .then((counts) => { if (active) setReplyCounts(counts); })
+      .catch((e) => console.warn('fetchReplyCounts failed', e));
 
     const BATCH = 500;
     const catchUp = async () => {
@@ -95,7 +106,17 @@ export function useChannelMessages(teamId: string, channelId: string) {
           if (!active) return;
           if (payload.eventType === 'INSERT') {
             const m = payload.new as Message;
-            if (m.channel_id !== channelId || m.parent_id) return; // other channel / thread reply
+            if (m.channel_id !== channelId) return;
+            if (m.parent_id) {
+              // Thread reply — bump the parent's chip instead of the list.
+              const pid = m.parent_id;
+              setReplyCounts((prev) => {
+                const next = new Map(prev);
+                next.set(pid, (next.get(pid) ?? 0) + 1);
+                return next;
+              });
+              return;
+            }
             if (m.ts && m.ts > (latestTs.current ?? '')) latestTs.current = m.ts;
             setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
           } else if (payload.eventType === 'UPDATE') {
@@ -146,5 +167,5 @@ export function useChannelMessages(teamId: string, channelId: string) {
     if (older.length < 50) setHasMore(false);
   }, [teamId, channelId, hasMore]);
 
-  return { messages, loading, hasMore, loadOlder };
+  return { messages, replyCounts, loading, hasMore, loadOlder };
 }

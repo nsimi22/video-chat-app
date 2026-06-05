@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, RefreshControl, Text, TouchableOpacity, View, ActivityIndicator, SectionList } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, RefreshControl, Text, TextInput, TouchableOpacity, View, ActivityIndicator, SectionList } from 'react-native';
 import ReanimatedSwipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { router, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { BellOff, Lock, Plus, Trash2, Users } from 'lucide-react-native';
-import { deleteChannel, leaveDmChannel, listChannels, listTeamProfiles, type Channel, type Profile } from '@/lib/api';
+import { BellOff, Lock, Plus, Search, Star, Trash2, Users } from 'lucide-react-native';
+import { deleteChannel, leaveDmChannel, listChannels, listTeamProfiles, openDm, type Channel, type Profile } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { useMutedChannels } from '@/context/MutedChannelsContext';
+import { useFavorites } from '@/context/FavoritesContext';
+import { usePresence } from '@/context/PresenceContext';
 import { supabase } from '@/lib/supabase';
 import { Avatar, Logo } from '@/components/ui';
 import { NewChannelSheet } from '@/components/NewChannelSheet';
@@ -48,13 +50,22 @@ function canDelete(c: Channel, userId: string): boolean {
   return !!c.created_by && c.created_by === userId;
 }
 
+// SectionList rows: channels/DMs in the top sections, team-roster people
+// in the trailing Team section (the design folds the old People tab in
+// here, matching the desktop sidebar).
+type Item = { kind: 'channel'; channel: Channel } | { kind: 'person'; profile: Profile };
+type Section = { title: 'Favorites' | 'Channels' | 'Direct Messages' | 'Team'; data: Item[] };
+
 export default function ChannelsScreen() {
   const { activeTeam, userId } = useAuth();
   const { isMuted, toggle: toggleMute } = useMutedChannels();
+  const { favorites, isFavorite, toggleFavorite } = useFavorites();
+  const { statuses } = usePresence();
   const [channels, setChannels] = useState<Channel[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [query, setQuery] = useState('');
   const [newChannelOpen, setNewChannelOpen] = useState(false);
   const [newDmOpen, setNewDmOpen] = useState(false);
 
@@ -111,29 +122,54 @@ export default function ChannelsScreen() {
     return () => { supabase.removeChannel(sub); };
   }, [activeTeam, load]);
 
+  function openChannel(id: string, name: string) {
+    router.push({ pathname: '/(app)/channel/[id]', params: { id, name } });
+  }
+
+  const openPersonDm = useCallback(async (p: Profile) => {
+    if (!userId || !activeTeam) return;
+    try {
+      const ch = await openDm(activeTeam.id, userId, p.user_id, p.name);
+      router.push({ pathname: '/(app)/channel/[id]', params: { id: ch.id, name: p.name } });
+    } catch (e: any) {
+      Alert.alert('Could not open DM', e?.message ?? String(e));
+    }
+  }, [userId, activeTeam]);
+
+  const sections = useMemo<Section[]>(() => {
+    const q = query.trim().toLowerCase();
+    const matches = (label: string) => !q || label.toLowerCase().includes(q);
+    const favSet = new Set(favorites);
+    const favItems: Item[] = favorites
+      .map((id) => channels.find((c) => c.id === id))
+      .filter((c): c is Channel => !!c && matches(channelLabel(c, profiles, userId)))
+      .map((channel) => ({ kind: 'channel', channel }));
+    const channelItems: Item[] = channels
+      .filter((c) => c.type !== 'dm' && !favSet.has(c.id) && matches(c.name))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((channel) => ({ kind: 'channel', channel }));
+    const dmItems: Item[] = channels
+      .filter((c) => c.type === 'dm' && !favSet.has(c.id) && matches(channelLabel(c, profiles, userId)))
+      .sort((a, b) => channelLabel(a, profiles, userId).localeCompare(channelLabel(b, profiles, userId)))
+      .map((channel) => ({ kind: 'channel', channel }));
+    const teamItems: Item[] = profiles
+      .filter((p) => p.user_id !== userId && matches(p.name || ''))
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+      .map((profile) => ({ kind: 'person', profile }));
+    const out: Section[] = [];
+    if (favItems.length) out.push({ title: 'Favorites', data: favItems });
+    out.push({ title: 'Channels', data: channelItems });
+    out.push({ title: 'Direct Messages', data: dmItems });
+    out.push({ title: 'Team', data: teamItems });
+    return out;
+  }, [channels, profiles, favorites, query, userId]);
+
   if (loading) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}>
         <ActivityIndicator color={colors.accent} />
       </View>
     );
-  }
-
-  const channelList = channels.filter((c) => c.type !== 'dm').sort((a, b) => a.name.localeCompare(b.name));
-  const dmList = channels.filter((c) => c.type === 'dm').sort((a, b) => channelLabel(a, profiles, userId).localeCompare(channelLabel(b, profiles, userId)));
-
-  // Always render both sections — the + button on the header is the entry
-  // point for create-channel / new-DM, so it has to be visible even when
-  // there are no rows yet. SectionList renders the header before any data,
-  // so an empty `data` is the right shape.
-  type Section = { title: 'Channels' | 'Direct Messages'; data: Channel[] };
-  const sections: Section[] = [
-    { title: 'Channels', data: channelList },
-    { title: 'Direct Messages', data: dmList },
-  ];
-
-  function openChannel(id: string, name: string) {
-    router.push({ pathname: '/(app)/channel/[id]', params: { id, name } });
   }
 
   // Swipe-left on a row exposes a red trash button (see ChannelRow); tapping
@@ -197,7 +233,7 @@ export default function ChannelsScreen() {
       {/* Brand header. Sits above the SectionList so the workspace name
           is always visible — the tabs layout hides the navigation
           header for this screen. */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: space(4), paddingTop: space(2), paddingBottom: space(3) }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: space(4), paddingTop: space(2), paddingBottom: space(2.5) }}>
         <Logo size={32} />
         <View style={{ marginLeft: space(3), flex: 1 }}>
           <Text style={{ color: colors.textDim, fontSize: 12, marginBottom: 2 }}>Workspace</Text>
@@ -206,15 +242,45 @@ export default function ChannelsScreen() {
           </Text>
         </View>
       </View>
+      {/* Search / jump-to filter (design prototype's search pill). */}
+      <View style={{ paddingHorizontal: space(4), paddingBottom: space(1.5) }}>
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: space(2),
+            backgroundColor: colors.surface,
+            borderWidth: 1,
+            borderColor: colors.border,
+            borderRadius: 12,
+            paddingHorizontal: space(3),
+          }}
+        >
+          <Search size={16} color={colors.textDim} />
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search or jump to…"
+            placeholderTextColor={colors.textFaint}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={{ flex: 1, color: colors.text, fontSize: 14.5, paddingVertical: space(2.25) }}
+          />
+        </View>
+      </View>
       <SectionList
         sections={sections}
-        keyExtractor={(c) => `${c.team_id}/${c.id}`}
+        keyExtractor={(item, index) =>
+          item.kind === 'channel' ? `${item.channel.team_id}/${item.channel.id}/${index}` : `person/${item.profile.user_id}`
+        }
         refreshControl={<RefreshControl tintColor={colors.accent} refreshing={refreshing} onRefresh={onPullRefresh} />}
         stickySectionHeadersEnabled={false}
         renderSectionHeader={({ section }) => {
           // Mirror desktop's section-header-row: title + ghost "+" button.
           const isChannels = section.title === 'Channels';
-          const onAdd = isChannels ? () => setNewChannelOpen(true) : () => setNewDmOpen(true);
+          const isDms = section.title === 'Direct Messages';
+          const isFavs = section.title === 'Favorites';
+          const onAdd = isChannels ? () => setNewChannelOpen(true) : isDms ? () => setNewDmOpen(true) : null;
           const a11y = isChannels ? 'Create a channel' : 'New direct message';
           return (
             <View
@@ -227,25 +293,30 @@ export default function ChannelsScreen() {
                 paddingBottom: space(2),
               }}
             >
-              <Text
-                style={{
-                  color: colors.textDim,
-                  fontSize: 12,
-                  fontWeight: '600',
-                  letterSpacing: 0.5,
-                  textTransform: 'uppercase',
-                }}
-              >
-                {section.title}
-              </Text>
-              <TouchableOpacity onPress={onAdd} hitSlop={10} accessibilityLabel={a11y}>
-                <Plus size={16} color={colors.textDim} strokeWidth={2.4} />
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                {isFavs && <Star size={13} color={colors.away} fill={colors.away} />}
+                <Text
+                  style={{
+                    color: colors.textFaint,
+                    fontSize: 12,
+                    fontWeight: '700',
+                    letterSpacing: 0.8,
+                    textTransform: 'uppercase',
+                  }}
+                >
+                  {section.title}
+                </Text>
+              </View>
+              {onAdd && (
+                <TouchableOpacity onPress={onAdd} hitSlop={10} accessibilityLabel={a11y}>
+                  <Plus size={16} color={colors.textDim} strokeWidth={2.4} />
+                </TouchableOpacity>
+              )}
             </View>
           );
         }}
         renderSectionFooter={({ section }) =>
-          section.data.length === 0 ? (
+          section.data.length === 0 && (section.title === 'Channels' || section.title === 'Direct Messages') ? (
             <Text
               style={{
                 color: colors.textDim,
@@ -259,20 +330,48 @@ export default function ChannelsScreen() {
           ) : null
         }
         renderItem={({ item }) => {
-          const label = channelLabel(item, profiles, userId);
-          const deletable = !!userId && canDelete(item, userId);
-          const muted = isMuted(item.id);
+          if (item.kind === 'person') {
+            const p = item.profile;
+            return (
+              <TouchableOpacity
+                onPress={() => openPersonDm(p)}
+                activeOpacity={0.7}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  paddingHorizontal: space(4),
+                  paddingVertical: space(3),
+                  borderBottomWidth: 1,
+                  borderBottomColor: colors.borderSoft,
+                }}
+              >
+                <Avatar name={p.name} color={p.color} size={32} uri={p.avatar_url} status={statuses[p.user_id] ?? 'offline'} />
+                <View style={{ marginLeft: space(3), flex: 1, minWidth: 0 }}>
+                  <Text style={{ color: colors.text, fontSize: 16, fontWeight: '500' }} numberOfLines={1}>{p.name}</Text>
+                  {p.bio ? <Text style={{ color: colors.textDim, fontSize: 13, marginTop: 1 }} numberOfLines={1}>{p.bio}</Text> : null}
+                </View>
+              </TouchableOpacity>
+            );
+          }
+          const channel = item.channel;
+          const label = channelLabel(channel, profiles, userId);
+          const deletable = !!userId && canDelete(channel, userId);
+          const muted = isMuted(channel.id);
+          const peer = dmPeerId(channel.id, userId);
           return (
             <ChannelRow
-              item={item}
+              item={channel}
               label={label}
               profiles={profiles}
               meId={userId}
               deletable={deletable}
               muted={muted}
-              onOpen={() => openChannel(item.id, label)}
-              onRequestDelete={(close) => confirmDelete(item, label, close)}
-              onLongPress={() => onLongPressRow(item, label, muted)}
+              peerStatus={peer ? statuses[peer] ?? 'offline' : null}
+              fav={isFavorite(channel.id)}
+              onToggleFav={() => toggleFavorite(channel.id)}
+              onOpen={() => openChannel(channel.id, label)}
+              onRequestDelete={(close) => confirmDelete(channel, label, close)}
+              onLongPress={() => onLongPressRow(channel, label, muted)}
             />
           );
         }}
@@ -319,6 +418,9 @@ function ChannelRow({
   meId,
   deletable,
   muted,
+  peerStatus,
+  fav,
+  onToggleFav,
   onOpen,
   onRequestDelete,
   onLongPress,
@@ -329,6 +431,9 @@ function ChannelRow({
   meId: string | null;
   deletable: boolean;
   muted: boolean;
+  peerStatus: string | null;
+  fav: boolean;
+  onToggleFav: () => void;
   onOpen: () => void;
   onRequestDelete: (close: () => void) => void;
   onLongPress: () => void;
@@ -355,11 +460,11 @@ function ChannelRow({
         paddingHorizontal: space(4),
         paddingVertical: space(3.5),
         borderBottomWidth: 1,
-        borderBottomColor: colors.border,
+        borderBottomColor: colors.borderSoft,
       }}
     >
       {dm && otherProfile ? (
-        <Avatar name={otherProfile.name} color={otherProfile.color} size={30} uri={otherProfile.avatar_url} />
+        <Avatar name={otherProfile.name} color={otherProfile.color} size={30} uri={otherProfile.avatar_url} status={peerStatus} />
       ) : (
         <View style={{ width: 30, height: 30, alignItems: 'center', justifyContent: 'center' }}>
           {groupDm ? (
@@ -367,7 +472,7 @@ function ChannelRow({
           ) : item.type === 'private' ? (
             <Lock size={16} color={colors.textDim} strokeWidth={2} />
           ) : (
-            <Text style={{ color: colors.textDim, fontSize: 18 }}>#</Text>
+            <Text style={{ color: colors.textFaint, fontSize: 18 }}>#</Text>
           )}
         </View>
       )}
@@ -396,6 +501,15 @@ function ChannelRow({
         />
       )}
       <UnreadBadge channelId={item.id} />
+      {/* Star toggle — favorite/unfavorite without opening the row. */}
+      <TouchableOpacity
+        onPress={onToggleFav}
+        hitSlop={8}
+        accessibilityLabel={fav ? `Remove ${label} from favorites` : `Add ${label} to favorites`}
+        style={{ paddingLeft: space(2.5), paddingVertical: 4 }}
+      >
+        <Star size={18} color={fav ? colors.away : colors.textFaint} fill={fav ? colors.away : 'transparent'} />
+      </TouchableOpacity>
     </TouchableOpacity>
   );
 

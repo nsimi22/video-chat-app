@@ -106,6 +106,248 @@ export async function createJiraIssue(
   return { key: json.key, url: jiraIssueUrl(host, json.key) };
 }
 
+// --- Board read path ---------------------------------------------------------
+// Mobile port of the desktop board's data layer (renderer/jira.js
+// searchIssues / getBoardConfig) over native fetch.
+
+function authHeaders(s: Required<JiraSettings>): Record<string, string> {
+  return { Authorization: `Basic ${b64(`${s.email}:${s.token}`)}`, Accept: 'application/json' };
+}
+
+// Fields the board list needs — type, summary, status, priority, assignee,
+// labels. Deliberately without `description` (fetched lazily on card open).
+export const BOARD_FIELDS = 'summary,status,assignee,issuetype,priority,labels';
+
+export type JiraSearchResult = { issues?: JiraBoardIssue[] };
+export type JiraBoardIssue = {
+  key: string;
+  fields: {
+    summary?: string;
+    status?: { name?: string; statusCategory?: { key?: string } };
+    assignee?: { accountId?: string; displayName?: string } | null;
+    issuetype?: { name?: string };
+    priority?: { name?: string };
+    labels?: string[];
+    description?: unknown;
+  };
+};
+
+export async function searchJiraIssues(
+  s: JiraSettings,
+  jql: string,
+  max = 100,
+  fields = BOARD_FIELDS,
+): Promise<JiraBoardIssue[]> {
+  if (!jiraIsConfigured(s)) throw new Error('Jira is not configured.');
+  const host = normHost(s.host);
+  const q = `jql=${encodeURIComponent(jql)}&maxResults=${max}&fields=${encodeURIComponent(fields)}`;
+  const res = await fetch(`https://${host}/rest/api/3/search/jql?${q}`, { headers: authHeaders(s) });
+  if (!res.ok) throw new Error(`Jira search failed (${res.status})`);
+  const json = (await res.json()) as JiraSearchResult;
+  return json.issues ?? [];
+}
+
+export type BoardColumnConfig = { name: string; statuses: { name: string; cat: string }[] };
+
+// The project's real Agile-board column layout, so the mobile board can
+// mirror Jira exactly (columns persist even when empty). Returns null when
+// the project has no board the user can see — caller falls back to deriving
+// columns from live statuses.
+export async function getJiraBoardConfig(s: JiraSettings, projectKey: string): Promise<BoardColumnConfig[] | null> {
+  if (!jiraIsConfigured(s)) return null;
+  const host = normHost(s.host);
+  const headers = authHeaders(s);
+  try {
+    const boardsRes = await fetch(
+      `https://${host}/rest/agile/1.0/board?projectKeyOrId=${encodeURIComponent(projectKey)}&maxResults=1`,
+      { headers },
+    );
+    if (!boardsRes.ok) return null;
+    const boards = await boardsRes.json();
+    const boardId = boards?.values?.[0]?.id;
+    if (!boardId) return null;
+    const [cfgRes, statusesRes] = await Promise.all([
+      fetch(`https://${host}/rest/agile/1.0/board/${boardId}/configuration`, { headers }),
+      fetch(`https://${host}/rest/api/3/status`, { headers }), // id -> name/category map
+    ]);
+    if (!cfgRes.ok || !statusesRes.ok) return null;
+    const cfg = await cfgRes.json();
+    const statuses = await statusesRes.json();
+    const byId = new Map(
+      (Array.isArray(statuses) ? statuses : []).map((st: any) => [
+        String(st.id),
+        { name: st.name as string, cat: (st.statusCategory?.key as string) || 'new' },
+      ]),
+    );
+    const cols: BoardColumnConfig[] = (cfg?.columnConfig?.columns || [])
+      .map((c: any) => ({
+        name: c.name as string,
+        statuses: ((c.statuses || []) as { id: string }[]).map((st) => byId.get(String(st.id))).filter(Boolean) as { name: string; cat: string }[],
+      }))
+      .filter((c: BoardColumnConfig) => c.statuses.length); // a column with no mapped statuses can't hold cards
+    return cols.length ? cols : null;
+  } catch {
+    return null;
+  }
+}
+
+// Lazy description fetch for the card detail sheet. Jira v3 returns ADF;
+// convert to a flat block list (headings / paragraphs / list items / code /
+// quote) so the UI can call out headers and space blocks properly. Inline
+// marks (bold, links) are dropped — text content only.
+export type AdfBlock =
+  | { type: 'heading'; level: number; text: string }
+  | { type: 'p'; text: string }
+  | { type: 'li'; ordered: boolean; index: number; depth: number; text: string }
+  | { type: 'code'; text: string }
+  | { type: 'quote'; text: string };
+
+export async function fetchJiraDescriptionBlocks(s: JiraSettings, key: string): Promise<AdfBlock[] | null> {
+  if (!jiraIsConfigured(s)) return null;
+  const host = normHost(s.host);
+  try {
+    const res = await fetch(
+      `https://${host}/rest/api/3/issue/${encodeURIComponent(key)}?fields=description`,
+      { headers: authHeaders(s) },
+    );
+    if (!res.ok) return null;
+    const json = await res.json();
+    const blocks = adfToBlocks(json?.fields?.description);
+    return blocks.length ? blocks : null;
+  } catch {
+    return null;
+  }
+}
+
+function adfInlineText(node: any): string {
+  if (!node) return '';
+  if (typeof node.text === 'string') return node.text;
+  if (node.type === 'hardBreak') return '\n';
+  return Array.isArray(node.content) ? node.content.map(adfInlineText).join('') : '';
+}
+
+function adfToBlocks(doc: any): AdfBlock[] {
+  const out: AdfBlock[] = [];
+  const walk = (node: any, listCtx: { ordered: boolean; depth: number; index: number } | null) => {
+    if (!node || typeof node !== 'object') return;
+    switch (node.type) {
+      case 'heading': {
+        const text = adfInlineText(node).trim();
+        if (text) out.push({ type: 'heading', level: node.attrs?.level ?? 2, text });
+        return;
+      }
+      case 'paragraph': {
+        const text = adfInlineText(node).trim();
+        if (!text) return;
+        if (listCtx) out.push({ type: 'li', ordered: listCtx.ordered, index: listCtx.index, depth: listCtx.depth, text });
+        else out.push({ type: 'p', text });
+        return;
+      }
+      case 'codeBlock': {
+        const text = adfInlineText(node);
+        if (text.trim()) out.push({ type: 'code', text });
+        return;
+      }
+      case 'blockquote': {
+        const text = adfInlineText(node).trim();
+        if (text) out.push({ type: 'quote', text });
+        return;
+      }
+      case 'bulletList':
+      case 'orderedList': {
+        const ordered = node.type === 'orderedList';
+        const depth = (listCtx?.depth ?? -1) + 1;
+        (node.content ?? []).forEach((li: any, i: number) => {
+          // listItem children are paragraphs / nested lists.
+          (li?.content ?? []).forEach((child: any) => walk(child, { ordered, depth, index: i + 1 }));
+        });
+        return;
+      }
+      default:
+        (node.content ?? []).forEach((child: any) => walk(child, listCtx));
+    }
+  };
+  walk(doc, null);
+  return out;
+}
+
+// --- Board edit path ----------------------------------------------------------
+// Mirrors desktop renderer/jira.js: listTransitions / transitionIssue /
+// updateIssue (assignee + priority subset) / listAssignableUsers /
+// listPriorities.
+
+export type JiraTransition = { id: string; name: string; to?: { name?: string; statusCategory?: { key?: string } } };
+export type JiraUser = { accountId: string; displayName: string };
+export type JiraPriority = { id: string; name: string };
+
+async function jsonOrThrow(res: Response, what: string) {
+  if (res.ok) return res.status === 204 ? null : res.json().catch(() => null);
+  const text = await res.text().catch(() => '');
+  let detail = text;
+  try {
+    const j = JSON.parse(text);
+    detail = j.errorMessages?.join('; ') || Object.values(j.errors || {}).join('; ') || text;
+  } catch {}
+  throw new Error(`${what} failed (${res.status}): ${detail.slice(0, 200)}`);
+}
+
+export async function listJiraTransitions(s: JiraSettings, key: string): Promise<JiraTransition[]> {
+  if (!jiraIsConfigured(s)) throw new Error('Jira is not configured.');
+  const host = normHost(s.host);
+  const res = await fetch(`https://${host}/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, { headers: authHeaders(s) });
+  const json = await jsonOrThrow(res, 'List transitions');
+  return json?.transitions ?? [];
+}
+
+export async function transitionJiraIssue(s: JiraSettings, key: string, transitionId: string): Promise<void> {
+  if (!jiraIsConfigured(s)) throw new Error('Jira is not configured.');
+  const host = normHost(s.host);
+  const res = await fetch(`https://${host}/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, {
+    method: 'POST',
+    headers: { ...authHeaders(s), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ transition: { id: String(transitionId) } }),
+  });
+  await jsonOrThrow(res, 'Transition');
+}
+
+// Assignee + priority subset of desktop's updateIssue. `assigneeAccountId:
+// null` clears the assignee; undefined skips the field.
+export async function updateJiraIssue(
+  s: JiraSettings,
+  key: string,
+  patch: { assigneeAccountId?: string | null; priorityName?: string },
+): Promise<void> {
+  if (!jiraIsConfigured(s)) throw new Error('Jira is not configured.');
+  const fields: Record<string, unknown> = {};
+  if (patch.assigneeAccountId !== undefined) fields.assignee = { accountId: patch.assigneeAccountId };
+  if (patch.priorityName) fields.priority = { name: patch.priorityName };
+  if (!Object.keys(fields).length) return;
+  const host = normHost(s.host);
+  const res = await fetch(`https://${host}/rest/api/3/issue/${encodeURIComponent(key)}`, {
+    method: 'PUT',
+    headers: { ...authHeaders(s), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields }),
+  });
+  await jsonOrThrow(res, 'Update issue');
+}
+
+export async function listJiraAssignableUsers(s: JiraSettings, projectKey: string): Promise<JiraUser[]> {
+  if (!jiraIsConfigured(s)) throw new Error('Jira is not configured.');
+  const host = normHost(s.host);
+  const q = `project=${encodeURIComponent(projectKey)}&maxResults=50`;
+  const res = await fetch(`https://${host}/rest/api/3/user/assignable/search?${q}`, { headers: authHeaders(s) });
+  const json = await jsonOrThrow(res, 'List assignees');
+  return Array.isArray(json) ? json.map((u: any) => ({ accountId: u.accountId, displayName: u.displayName })) : [];
+}
+
+export async function listJiraPriorities(s: JiraSettings): Promise<JiraPriority[]> {
+  if (!jiraIsConfigured(s)) throw new Error('Jira is not configured.');
+  const host = normHost(s.host);
+  const res = await fetch(`https://${host}/rest/api/3/priority`, { headers: authHeaders(s) });
+  const json = await jsonOrThrow(res, 'List priorities');
+  return Array.isArray(json) ? json.map((p: any) => ({ id: String(p.id), name: p.name })) : [];
+}
+
 export async function fetchJiraIssue(s: JiraSettings, key: string, hostOverride?: string): Promise<JiraIssue | null> {
   if (!jiraIsConfigured(s)) return null;
   const host = normHost(hostOverride || s.host);

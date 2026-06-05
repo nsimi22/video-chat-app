@@ -6,6 +6,8 @@ import { useAuth } from '@/context/AuthContext';
 import { CallProvider, useCall } from '@/context/CallContext';
 import { UnreadProvider } from '@/context/UnreadContext';
 import { MutedChannelsProvider } from '@/context/MutedChannelsContext';
+import { FavoritesProvider } from '@/context/FavoritesContext';
+import { PresenceProvider } from '@/context/PresenceContext';
 import { FloatingCall } from '@/components/FloatingCall';
 import { registerForPush } from '@/lib/push';
 import { colors } from '@/theme';
@@ -44,6 +46,8 @@ export default function AppLayout() {
     <CallProvider>
       <MutedChannelsProvider>
         <UnreadProvider>
+          <FavoritesProvider>
+          <PresenceProvider>
           <CallRoomShell>
         <View style={{ flex: 1, backgroundColor: colors.bg }}>
           <Stack
@@ -74,10 +78,13 @@ export default function AppLayout() {
               }}
             />
             <Stack.Screen name="event/[id]" options={{ headerShown: false }} />
+            <Stack.Screen name="thread/[id]" options={{ title: 'Thread' }} />
           </Stack>
           <FloatingCallOverlay />
         </View>
       </CallRoomShell>
+          </PresenceProvider>
+          </FavoritesProvider>
         </UnreadProvider>
       </MutedChannelsProvider>
     </CallProvider>

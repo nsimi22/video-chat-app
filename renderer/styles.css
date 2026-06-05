@@ -204,13 +204,19 @@ input:focus, textarea:focus {
   display: flex; align-items: center; justify-content: space-between;
   margin-top: 6px;
   gap: 8px;
+  position: relative; /* anchors the .status-menu popup */
 }
 .me {
   font-size: 12px; color: var(--text-dim);
   display: flex; align-items: center; gap: 6px;
   flex: 1; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer;
+  border-radius: 5px;
+  padding: 2px 4px; margin-left: -4px;
+  transition: background var(--t-fast), color var(--t-fast);
 }
+.me:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
 .me::before {
   content: '';
   width: 7px; height: 7px;
@@ -219,6 +225,40 @@ input:focus, textarea:focus {
   flex: none;
   box-shadow: 0 0 8px rgba(48, 209, 88, 0.6);
 }
+/* Presence states — green Available, yellow Away, orange BRB, red
+   Unavailable. The dot follows the `status` carried in the team presence
+   meta; same ramp as the mobile client. */
+.me[data-status='away']::before { background: #ffd60a; box-shadow: 0 0 8px rgba(255, 214, 10, 0.6); }
+.me[data-status='brb']::before { background: var(--warn); box-shadow: 0 0 8px rgba(255, 159, 10, 0.6); }
+.me[data-status='unavailable']::before { background: #ff5b5b; box-shadow: 0 0 8px rgba(255, 91, 91, 0.6); }
+.dot.status-away { background: #ffd60a; }
+.dot.status-brb { background: var(--warn); }
+.dot.status-unavailable { background: #ff5b5b; }
+.sidebar .dot.status-away { box-shadow: 0 0 0 2px var(--bg-sidebar), 0 0 8px rgba(255, 214, 10, 0.5); }
+.sidebar .dot.status-brb { box-shadow: 0 0 0 2px var(--bg-sidebar), 0 0 8px rgba(255, 159, 10, 0.5); }
+.sidebar .dot.status-unavailable { box-shadow: 0 0 0 2px var(--bg-sidebar), 0 0 8px rgba(255, 91, 91, 0.5); }
+.status-menu {
+  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 40;
+  min-width: 150px;
+  background: var(--bg-elev); border: 1px solid var(--line-strong);
+  border-radius: 10px; padding: 4px;
+  box-shadow: var(--shadow-2);
+  backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.status-menu-item {
+  display: flex; align-items: center; gap: 8px;
+  background: transparent; border: none; color: var(--text);
+  font: inherit; font-size: 13px; text-align: left;
+  padding: 7px 9px; border-radius: 7px; cursor: pointer;
+}
+.status-menu-item:hover { background: rgba(255, 255, 255, 0.07); }
+.status-menu-item.selected { color: var(--accent-2); font-weight: 600; }
+.status-menu-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.status-menu-dot.status-active { background: var(--good); }
+.status-menu-dot.status-away { background: #ffd60a; }
+.status-menu-dot.status-brb { background: var(--warn); }
+.status-menu-dot.status-unavailable { background: #ff5b5b; }
 .me-row .ghost {
   background: transparent; border: none; color: var(--text-dim);
   cursor: pointer; padding: 2px 6px; font-size: 14px;

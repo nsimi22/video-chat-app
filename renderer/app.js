@@ -1855,6 +1855,7 @@ async function joinTeamAndStart(teamId) {
   els.login.classList.add('hidden');
   els.app.classList.remove('hidden');
   els.me.textContent = huddle.name;
+  initMeStatus(huddle);
   if (huddle.team?.name) els.workspaceName.textContent = huddle.team.name;
 
   state.profileCard = new window.ProfileCard({
@@ -3642,6 +3643,7 @@ function resolveMemberDisplay(member) {
       online: true,
       name: state.huddle.name || member.name,
       color: state.huddle.color || member.color || '',
+      status: state.huddle.presenceStatus || 'active',
     };
   }
   const online = state.huddle.peerInfo.has(member.id);
@@ -3650,7 +3652,68 @@ function resolveMemberDisplay(member) {
     online,
     name: live?.name || member.name,
     color: online ? (live?.color || member.color || '') : '',
+    status: online ? (live?.status || 'active') : null,
   };
+}
+
+// ── Presence status (Available / Away / BRB / Unavailable) ──────────
+// Carried as `status` in the team presence meta; mobile sets and renders
+// the same field (PresenceContext). The selector lives on the sidebar
+// me-row — clicking your own name opens the status menu. Color ramp:
+// green → yellow → orange → red.
+const PRESENCE_STATES = [
+  { id: 'active', label: 'Available' },
+  { id: 'away', label: 'Away' },
+  { id: 'brb', label: 'BRB' },
+  { id: 'unavailable', label: 'Unavailable' },
+];
+
+function presenceStatusLabel(s) {
+  return (PRESENCE_STATES.find((x) => x.id === s) || PRESENCE_STATES[0]).label;
+}
+
+function renderMeStatus() {
+  const s = state.huddle?.presenceStatus || 'active';
+  els.me.dataset.status = s;
+  els.me.title = `Status: ${presenceStatusLabel(s)} — click to change`;
+}
+
+function initMeStatus(huddle) {
+  renderMeStatus();
+  // Status flips re-render the me-row dot and the roster (self row).
+  huddle.addEventListener('presence-status', () => { renderMeStatus(); renderRoster(); });
+  // start() can run again after a team switch — wire the click once.
+  if (els.me.dataset.statusWired) return;
+  els.me.dataset.statusWired = '1';
+  els.me.addEventListener('click', toggleStatusMenu);
+}
+
+function toggleStatusMenu() {
+  const existing = document.querySelector('.status-menu');
+  if (existing) { existing.remove(); return; }
+  const menu = document.createElement('div');
+  menu.className = 'status-menu';
+  for (const st of PRESENCE_STATES) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'status-menu-item' + ((state.huddle?.presenceStatus || 'active') === st.id ? ' selected' : '');
+    const dot = document.createElement('span');
+    dot.className = `status-menu-dot status-${st.id}`;
+    item.append(dot, document.createTextNode(st.label));
+    item.onclick = () => {
+      menu.remove();
+      state.huddle?.setPresenceStatus(st.id);
+    };
+    menu.appendChild(item);
+  }
+  els.me.parentElement.appendChild(menu);
+  const outside = (e) => {
+    if (!menu.contains(e.target) && !els.me.contains(e.target)) {
+      menu.remove();
+      document.removeEventListener('mousedown', outside);
+    }
+  };
+  document.addEventListener('mousedown', outside);
 }
 
 // Render the People sidebar from the full team roster. Online
@@ -3663,18 +3726,25 @@ function renderRoster() {
 }
 
 function renderRosterRow(member) {
-  const { online, name, color } = resolveMemberDisplay(member);
+  const { online, name, color, status } = resolveMemberDisplay(member);
   const li = document.createElement('li');
   li.dataset.id = member.id;
   li.dataset.name = name;
   const dot = document.createElement('span');
   dot.className = online ? 'dot online' : 'dot';
   dot.style.background = color;
+  // Away / BRB override the avatar-color dot with the status color —
+  // clear the inline background so the status class wins.
+  if (online && status && status !== 'active') {
+    dot.classList.add(`status-${status}`);
+    dot.style.background = '';
+  }
   li.append(dot, document.createTextNode(name));
   attachProfileTrigger(li, member.id);
+  const statusNote = online && status && status !== 'active' ? ` (${presenceStatusLabel(status)})` : '';
   li.title = member.id === state.huddle.peerId
-    ? 'You'
-    : `View ${name}'s profile${online ? '' : ' (offline)'}`;
+    ? `You${statusNote}`
+    : `View ${name}'s profile${online ? statusNote : ' (offline)'}`;
   if (!online) li.classList.add('offline');
   els.people.appendChild(li);
 }
@@ -5958,13 +6028,17 @@ function renderMemberPicker(container) {
     return;
   }
   for (const m of members) {
-    const { online, name, color } = resolveMemberDisplay(m);
+    const { online, name, color, status } = resolveMemberDisplay(m);
     const row = document.createElement('div');
     row.className = 'row' + (online ? '' : ' offline');
     row.dataset.name = name;
     const dot = document.createElement('span');
     dot.className = online ? 'dot online' : 'dot';
     dot.style.background = color;
+    if (online && status && status !== 'active') {
+      dot.classList.add(`status-${status}`);
+      dot.style.background = '';
+    }
     const check = document.createElement('span');
     check.className = 'check';
     const lbl = document.createElement('span');
@@ -6006,7 +6080,7 @@ function openDmPicker(opts = {}) {
     els.dmPeople.appendChild(empty);
   } else {
     for (const m of members) {
-      const { online, name, color } = resolveMemberDisplay(m);
+      const { online, name, color, status } = resolveMemberDisplay(m);
       const row = document.createElement('div');
       row.className = 'row' + (online ? '' : ' offline');
       row.dataset.userId = m.id;
@@ -6014,6 +6088,10 @@ function openDmPicker(opts = {}) {
       const dot = document.createElement('span');
       dot.className = online ? 'dot online' : 'dot';
       dot.style.background = color;
+      if (online && status && status !== 'active') {
+        dot.classList.add(`status-${status}`);
+        dot.style.background = '';
+      }
       const lbl = document.createElement('span');
       lbl.textContent = name;
       const check = document.createElement('span');

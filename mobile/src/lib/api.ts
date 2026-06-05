@@ -24,6 +24,16 @@ export type Profile = { user_id: string; name: string; color: string | null; bio
 // writes `contentType`, mobile originally wrote `type`. We read either and
 // write both so attachments render bidirectionally.
 export type Attachment = { url: string; name: string; size?: number; type?: string; contentType?: string };
+// Poll payload stored at messages.meta.poll (huddle_polls migration).
+// Shape matches renderer/api.js sendPollMessage exactly so the two
+// clients render each other's polls.
+export type Poll = {
+  question: string;
+  multi: boolean;
+  options: { id: string; text: string }[];
+  votes: Record<string, string[]>;
+  closed_at: string | null;
+};
 export type Message = {
   id: string;
   team_id: string;
@@ -42,6 +52,9 @@ export type Message = {
   // the human who invoked the AI — these just let the UI render it distinctly.
   ai_generated?: boolean | null;
   ai_model?: string | null;
+  // Generic JSONB metadata (huddle_message_meta migration). meta.poll is
+  // the first consumer mobile renders.
+  meta?: { poll?: Poll } | null;
 };
 
 export async function listTeams(): Promise<Team[]> {
@@ -485,6 +498,92 @@ export async function toggleReaction(messageId: string, emoji: string, _userId: 
 export async function setPin(messageId: string, pinned: boolean): Promise<void> {
   const { error } = await supabase.rpc('set_message_pin', { p_message_id: messageId, p_pin: pinned });
   if (error) throw error;
+}
+
+// --- Polls (huddle_polls migration) ----------------------------------------
+// Mirrors renderer/api.js sendPollMessage: the body text is a fallback for
+// surfaces that don't render the card (notifications, search), the real
+// payload lives in meta.poll.
+export async function sendPollMessage(args: {
+  teamId: string;
+  channelId: string;
+  authorId: string;
+  parentId?: string | null;
+  question: string;
+  options: string[];
+  multi?: boolean;
+}): Promise<void> {
+  const { error } = await supabase.from('messages').insert({
+    team_id: args.teamId,
+    channel_id: args.channelId,
+    parent_id: args.parentId ?? null,
+    author_id: args.authorId,
+    body: `📊 Poll: ${args.question}`,
+    attachments: [],
+    mentions: [],
+    reactions: {},
+    meta: {
+      poll: {
+        question: args.question,
+        multi: !!args.multi,
+        options: args.options.map((text, i) => ({ id: `o${i + 1}`, text })),
+        votes: {},
+        closed_at: null,
+      },
+    },
+  });
+  if (error) throw error;
+}
+
+// Voting routes through a security-definer RPC (same reason as reactions:
+// messages_update_own RLS blocks direct UPDATEs on someone else's row).
+export async function togglePollVote(messageId: string, optionId: string): Promise<void> {
+  const { error } = await supabase.rpc('toggle_poll_vote', { p_message_id: messageId, p_option_id: optionId });
+  if (error) throw error;
+}
+
+export async function closePoll(messageId: string): Promise<void> {
+  const { error } = await supabase.rpc('close_poll', { p_message_id: messageId });
+  if (error) throw error;
+}
+
+// --- Threads ----------------------------------------------------------------
+// Reply tallies for the thread chips in the channel view. One query for the
+// whole channel (just the parent_id column), counted client-side — the same
+// data desktop derives from its in-memory `all` array.
+export async function fetchReplyCounts(teamId: string, channelId: string): Promise<Map<string, number>> {
+  const { data, error } = await supabase
+    .from('messages')
+    .select('parent_id')
+    .eq('team_id', teamId)
+    .eq('channel_id', channelId)
+    .not('parent_id', 'is', null)
+    .limit(2000);
+  if (error) throw error;
+  const counts = new Map<string, number>();
+  for (const row of (data ?? []) as { parent_id: string }[]) {
+    counts.set(row.parent_id, (counts.get(row.parent_id) ?? 0) + 1);
+  }
+  return counts;
+}
+
+// --- Team Jira board (huddle_team_jira_board migration) ---------------------
+export type TeamJiraBoard = {
+  team_id: string;
+  project_key: string;
+  site: string | null;
+  board_name: string | null;
+  columns: unknown[];
+};
+
+export async function getTeamBoard(teamId: string): Promise<TeamJiraBoard | null> {
+  const { data, error } = await supabase
+    .from('team_jira_board')
+    .select('*')
+    .eq('team_id', teamId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as TeamJiraBoard) ?? null;
 }
 
 export async function searchMessages(teamId: string, query: string, channelId?: string): Promise<Message[]> {
