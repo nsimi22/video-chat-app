@@ -4,6 +4,8 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { tabBarClearance } from '@/theme';
 import type { Channel } from '@/lib/api';
 import type { ScheduledCall } from '@/lib/scheduledCalls';
 import type { IcsEvent } from '@/lib/ics';
@@ -47,6 +49,7 @@ type ColBlock = {
 type LaidColBlock = ColBlock & { col: number; cols: number };
 
 export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEvent, onSelectDay }: Props) {
+  const insets = useSafeAreaInsets();
   const channelById = useMemo(() => {
     const m = new Map<string, Channel>();
     for (const c of channels) m.set(c.id, c);
@@ -203,7 +206,7 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
         </View>
       )}
 
-      <ScrollView ref={scrollRef} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 32 }}>
+      <ScrollView ref={scrollRef} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: tabBarClearance(insets.bottom) }}>
         <Grid days={days} blocksByDay={blocksByDay} nowHour={nowHour} onTapBlock={onTapEvent} />
       </ScrollView>
     </View>

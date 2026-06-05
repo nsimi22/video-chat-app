@@ -6,6 +6,8 @@
 
 import { useMemo } from 'react';
 import { ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { tabBarClearance } from '@/theme';
 import type { Channel } from '@/lib/api';
 import type { ScheduledCall } from '@/lib/scheduledCalls';
 import type { IcsEvent } from '@/lib/ics';
@@ -57,6 +59,7 @@ function monthCells(anchor: Date): CellDay[] {
 }
 
 export function MonthView({ anchorMonth, selectedDay, events, icsEvents, channels, onSelectDay, onTapEvent }: Props) {
+  const insets = useSafeAreaInsets();
   const channelById = useMemo(() => {
     const m = new Map<string, Channel>();
     for (const c of channels) m.set(c.id, c);
@@ -137,7 +140,7 @@ export function MonthView({ anchorMonth, selectedDay, events, icsEvents, channel
 
   return (
     <View style={{ flex: 1, backgroundColor: C.bg }}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 32 }}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: tabBarClearance(insets.bottom) }}>
         {/* weekday header */}
         <View style={{ flexDirection: 'row', paddingTop: 10, paddingBottom: 6, borderBottomWidth: 0.5, borderBottomColor: C.hair }}>
           {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((w, i) => (

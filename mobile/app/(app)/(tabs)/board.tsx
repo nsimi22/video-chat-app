@@ -12,7 +12,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import {
   Bookmark,
@@ -48,7 +48,7 @@ import {
   type JiraBoardIssue,
 } from '@/lib/jira';
 import type { JiraSettings } from '@/lib/integrations';
-import { colors, radius, space } from '@/theme';
+import { colors, radius, space, tabBarClearance } from '@/theme';
 
 // Jira board tab — design prototype screen 6, read path of the desktop
 // kanban (renderer/jira-board.js): the shared team_jira_board row names the
@@ -149,6 +149,7 @@ function prioMeta(p: string): { icon: LucideIcon; color: string } {
 }
 
 export default function BoardScreen() {
+  const insets = useSafeAreaInsets();
   const { activeTeam, userId } = useAuth();
   const [jira, setJira] = useState<JiraSettings | null>(null);
   const [project, setProject] = useState<string | null>(null);
@@ -283,7 +284,7 @@ export default function BoardScreen() {
           {/* Cards */}
           <ScrollView
             style={{ flex: 1 }}
-            contentContainerStyle={{ paddingHorizontal: space(4), paddingBottom: space(4), gap: 9 }}
+            contentContainerStyle={{ paddingHorizontal: space(4), paddingBottom: tabBarClearance(insets.bottom), gap: 9 }}
             refreshControl={<RefreshControl tintColor={colors.accent} refreshing={refreshing} onRefresh={() => load({ pull: true })} />}
           >
             {cards.length === 0 && (

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, Text, TouchableOpacity, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import { GitBranch, KeyRound, LogOut, Smile, Sparkles, Ticket, Users } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
@@ -17,7 +17,7 @@ import {
 } from '@/lib/integrations';
 import { jiraIsConfigured } from '@/lib/jira';
 import { Avatar, Button, Field } from '@/components/ui';
-import { colors, radius, space, type PresenceStatus } from '@/theme';
+import { colors, radius, space, tabBarClearance, type PresenceStatus } from '@/theme';
 
 // "You" tab — design prototype screen 8. Profile card, presence selector,
 // integrations (read-only mirror of the desktop Settings panel), account
@@ -69,6 +69,7 @@ function Group({ children }: { children: React.ReactNode }) {
 }
 
 export default function YouScreen() {
+  const insets = useSafeAreaInsets();
   const { userId, activeTeam, setActiveTeam, signOut } = useAuth();
   const { myStatus, setMyStatus } = usePresence();
   const [name, setName] = useState('');
@@ -176,7 +177,7 @@ export default function YouScreen() {
   return (
     <SafeAreaView edges={['top']} style={{ flex: 1, backgroundColor: colors.bg }}>
       <ScrollView
-        contentContainerStyle={{ paddingHorizontal: space(4), paddingBottom: space(8) }}
+        contentContainerStyle={{ paddingHorizontal: space(4), paddingBottom: tabBarClearance(insets.bottom) }}
         keyboardShouldPersistTaps="handled"
       >
         <Text style={{ fontSize: 32, fontWeight: '700', letterSpacing: -0.6, color: colors.text, paddingTop: space(2), paddingBottom: space(3) }}>

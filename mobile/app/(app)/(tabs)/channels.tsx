@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, RefreshControl, Text, TextInput, TouchableOpacity, View, ActivityIndicator, SectionList } from 'react-native';
 import ReanimatedSwipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { router, useFocusEffect } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BellOff, Lock, Plus, Search, Star, Trash2, Users } from 'lucide-react-native';
 import { deleteChannel, leaveDmChannel, listChannels, listTeamProfiles, type Channel, type Profile } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
@@ -14,7 +14,7 @@ import { Avatar, Logo } from '@/components/ui';
 import { NewChannelSheet } from '@/components/NewChannelSheet';
 import { NewDmSheet } from '@/components/NewDmSheet';
 import { UnreadBadge } from '@/components/UnreadBadge';
-import { colors, space } from '@/theme';
+import { colors, space, tabBarClearance } from '@/theme';
 
 // DM channel ids look like `dm:<a>::<b>` with the two user uuids sorted
 // (see renderer/api.js openDm). Return the *other* participant's uuid for
@@ -56,6 +56,7 @@ function canDelete(c: Channel, userId: string): boolean {
 type Section = { title: 'Favorites' | 'Channels' | 'Direct Messages'; data: Channel[] };
 
 export default function ChannelsScreen() {
+  const insets = useSafeAreaInsets();
   const { activeTeam, userId } = useAuth();
   const { isMuted, toggle: toggleMute } = useMutedChannels();
   const { favorites, isFavorite, toggleFavorite } = useFavorites();
@@ -252,6 +253,9 @@ export default function ChannelsScreen() {
       <SectionList
         sections={sections}
         keyExtractor={(c, index) => `${c.team_id}/${c.id}/${index}`}
+        // Content scrolls under the floating glass tab bar; pad so the
+        // last row clears it.
+        contentContainerStyle={{ paddingBottom: tabBarClearance(insets.bottom) }}
         refreshControl={<RefreshControl tintColor={colors.accent} refreshing={refreshing} onRefresh={onPullRefresh} />}
         stickySectionHeadersEnabled={false}
         renderSectionHeader={({ section }) => {

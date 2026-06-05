@@ -1,3 +1,5 @@
+import { Platform } from 'react-native';
+
 // Unified Huddle design tokens — ported from the Claude Design handoff
 // (huddle-mobile/Huddle Mobile Prototype.html, :root oklch vars), converted
 // to sRGB hex because React Native doesn't parse oklch(). The warm-charcoal
@@ -32,6 +34,16 @@ export const colors = {
 
 export const radius = { sm: 8, md: 12, lg: 18 };
 export const space = (n: number) => n * 4;
+
+// ── Floating liquid-glass tab bar metrics ──
+// The bar (app/(app)/(tabs)/_layout.tsx) floats over full-height content,
+// so root tab screens pad their scroll content by tabBarClearance() and
+// FloatingCall snaps its bottom corner above tabBarOffset() + TAB_BAR_HEIGHT.
+export const TAB_BAR_HEIGHT = 64;
+export const tabBarOffset = (insetBottom: number) =>
+  Math.max(insetBottom, Platform.OS === 'ios' ? 16 : 12);
+export const tabBarClearance = (insetBottom: number) =>
+  tabBarOffset(insetBottom) + TAB_BAR_HEIGHT + 20;
 
 // Presence status → dot color. Green available, yellow away, orange BRB,
 // red unavailable, faint offline. Wire values shared with desktop

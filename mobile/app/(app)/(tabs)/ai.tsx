@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -10,14 +11,14 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Send, Sparkles } from 'lucide-react-native';
 import { useAuth } from '@/context/AuthContext';
 import { AiClient, type AiSettings, type ChatMessage } from '@/lib/ai';
 import { getAiSettings } from '@/lib/integrations';
 import { getProfile, type Profile } from '@/lib/api';
 import { Avatar, Markdown } from '@/components/ui';
-import { colors, radius, space } from '@/theme';
+import { colors, radius, space, tabBarClearance } from '@/theme';
 
 // Huddle AI tab — design prototype screen 7. A direct conversation with the
 // user's configured AI provider (Anthropic or OpenRouter, the same
@@ -36,6 +37,7 @@ const SUGGESTIONS = [
 type Turn = { role: 'user' | 'assistant'; text: string };
 
 export default function AiScreen() {
+  const insets = useSafeAreaInsets();
   const { userId } = useAuth();
   const [settings, setSettings] = useState<AiSettings | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -44,6 +46,15 @@ export default function AiScreen() {
   const [text, setText] = useState('');
   const [thinking, setThinking] = useState(false);
   const listRef = useRef<FlatList<Turn>>(null);
+  // The composer sits above the floating glass tab bar when idle, but
+  // docks to the keyboard while typing (the bar is covered by the
+  // keyboard anyway, so the clearance would just leave a gap).
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKeyboardOpen(true));
+    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKeyboardOpen(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
 
   useEffect(() => {
     if (!userId) return;
@@ -150,7 +161,7 @@ export default function AiScreen() {
 
         {/* Suggestions + composer */}
         {configured && (
-          <View style={{ paddingHorizontal: space(3.5), paddingBottom: space(2.5) }}>
+          <View style={{ paddingHorizontal: space(3.5), paddingBottom: keyboardOpen ? space(2.5) : tabBarClearance(insets.bottom) }}>
             {turns.length === 0 && (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: space(2.75) }}>
                 {SUGGESTIONS.map((s) => (
