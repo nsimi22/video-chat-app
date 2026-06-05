@@ -224,7 +224,12 @@ function CallView({
         // pattern for dynamic numColumns on FlatList.
         key={`grid-${numColumns}`}
         data={tracks}
-        keyExtractor={(t, i) => (isTrackReference(t) ? `${t.participant.identity}:${t.source}` : `ph:${i}`)}
+        // Placeholders key by participant+source too — when a camera mutes,
+        // useTracks swaps TrackReference → placeholder for the SAME tile,
+        // and an index-based placeholder key made FlatList unmount the whole
+        // cell (taking a PiP-registered VideoTrack with it → Fabric recycle
+        // assertion → SIGABRT). Placeholder items carry participant/source.
+        keyExtractor={(t) => `${t.participant.identity}:${t.source}`}
         numColumns={numColumns}
         contentContainerStyle={{
           padding: space(1),
@@ -254,6 +259,13 @@ function CallView({
             pipTrack !== null &&
             item.participant.identity === pipTrack.participant.identity &&
             item.source === pipTrack.source;
+          // Hoisted so the iosPIP prop doesn't dereference .publication on
+          // the TrackReference|placeholder union (isPipTile implies a real
+          // reference at runtime, but TS can't carry that narrowing).
+          const pipPreferredSize =
+            isPipTile && isTrackReference(item)
+              ? item.publication.dimensions ?? PIP_WINDOW_FALLBACK
+              : PIP_WINDOW_FALLBACK;
           return (
             <View
               style={{
@@ -267,38 +279,38 @@ function CallView({
               }}
             >
               {/* The VideoTrack stays MOUNTED for the tile's lifetime and is
-                  driven via trackRef — unmounting it (the old ternary swap to
-                  the placeholder) while AVKit's PiP controller still held the
-                  native view tripped Fabric's recycle assertion and
-                  SIGABRT'd the app the moment a camera toggled off. Passing
-                  trackRef={undefined} to a mounted view is the already-proven
-                  pattern from the frozen-fallback path below. */}
-              {!isPlaceholder && (
-                <VideoTrack
-                  // Clear trackRef when there's no video to draw: camera
-                  // muted, or (pipTile only) iOS suspended local capture in
-                  // the background — the PIPController then swaps to its
-                  // fallbackView instead of freezing on the last frame.
-                  trackRef={showVideo && !(isPipTile && showFrozenFallback) ? item : undefined}
-                  style={isLocal ? { flex: 1, transform: [{ scaleX: -1 }] } : { flex: 1 }}
-                  // Only the chosen pipTrack tile registers iosPIP, so
-                  // we don't fight the floater's iosPIP for iOS's
-                  // singleton AVPictureInPictureController. Honour the
-                  // track's real aspect when available; floater
-                  // dimensions are the right "looked at this last"
-                  // fallback before the first frame lands.
-                  iosPIP={
-                    isPipTile
-                      ? {
-                          enabled: true,
-                          startAutomatically: true,
-                          preferredSize: item.publication.dimensions ?? PIP_WINDOW_FALLBACK,
-                          fallbackView: <PipFallbackView name={displayName} />,
-                        }
-                      : undefined
-                  }
-                />
-              )}
+                  driven via trackRef — unmounting it while AVKit's PiP
+                  controller still held the native view tripped Fabric's
+                  recycle assertion and SIGABRT'd the app the moment a camera
+                  toggled off. Mounted even for placeholder items: a muted
+                  camera swaps the tile's data to a placeholder, and a
+                  conditional mount here would be an unmount all the same.
+                  Passing trackRef={undefined} to a mounted view is the
+                  already-proven pattern from the frozen-fallback path. */}
+              <VideoTrack
+                // Clear trackRef when there's no video to draw: camera
+                // muted/placeholder, or (pipTile only) iOS suspended local
+                // capture in the background — the PIPController then swaps
+                // to its fallbackView instead of freezing on the last frame.
+                trackRef={!isPlaceholder && showVideo && !(isPipTile && showFrozenFallback) ? item : undefined}
+                style={isLocal ? { flex: 1, transform: [{ scaleX: -1 }] } : { flex: 1 }}
+                // Only the chosen pipTrack tile registers iosPIP, so
+                // we don't fight the floater's iosPIP for iOS's
+                // singleton AVPictureInPictureController. Honour the
+                // track's real aspect when available; floater
+                // dimensions are the right "looked at this last"
+                // fallback before the first frame lands.
+                iosPIP={
+                  isPipTile
+                    ? {
+                        enabled: true,
+                        startAutomatically: true,
+                        preferredSize: pipPreferredSize,
+                        fallbackView: <PipFallbackView name={displayName} />,
+                      }
+                    : undefined
+                }
+              />
               {!showVideo && (
                 <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', padding: space(3), backgroundColor: colors.surfaceAlt }}>
                   <Avatar name={displayName} size={96} />
