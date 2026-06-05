@@ -1325,10 +1325,14 @@
     renderColumns();
     try {
       const cfgPromise = getBoardCols(project); // in parallel with the search
-      const jql = `project = "${project}" ORDER BY status ASC, updated DESC`;
+      // Active work plus a recent-Done window (mirrors how Jira boards hide
+      // stale done issues). The old unfiltered single-page query truncated
+      // at 100 issues, which silently dropped whole status groups once the
+      // project outgrew it (e.g. DAP's Scoping column rendering empty).
+      const jql = `project = "${project}" AND (statusCategory != Done OR updated >= -14d) ORDER BY updated DESC`;
       // Explicit field list = the card/detail fields PLUS `labels` (which
-      // BRIEF omits), minus `description` (too heavy across 100 issues).
-      const res = await client.searchIssues(jql, 100, { fields: BOARD_FIELDS });
+      // BRIEF omits), minus `description` (too heavy across the board).
+      const res = await client.searchIssuesAll(jql, 500, { fields: BOARD_FIELDS });
       board.issues = (res?.issues || []).map(mapIssue);
       board.columns = deriveColumns(board.issues, await cfgPromise);
     } catch (err) {

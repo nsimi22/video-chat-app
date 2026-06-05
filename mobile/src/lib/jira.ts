@@ -118,7 +118,7 @@ function authHeaders(s: Required<JiraSettings>): Record<string, string> {
 // labels. Deliberately without `description` (fetched lazily on card open).
 export const BOARD_FIELDS = 'summary,status,assignee,issuetype,priority,labels';
 
-export type JiraSearchResult = { issues?: JiraBoardIssue[] };
+export type JiraSearchResult = { issues?: JiraBoardIssue[]; nextPageToken?: string };
 export type JiraBoardIssue = {
   key: string;
   fields: {
@@ -132,19 +132,33 @@ export type JiraBoardIssue = {
   };
 };
 
+// Paginated: /rest/api/3/search/jql serves at most ~100 issues per page,
+// so a single request silently truncates bigger projects (whole status
+// groups vanished from the board once DAP passed 100 issues). Walk
+// nextPageToken until `max` or the last page.
 export async function searchJiraIssues(
   s: JiraSettings,
   jql: string,
-  max = 100,
+  max = 500,
   fields = BOARD_FIELDS,
 ): Promise<JiraBoardIssue[]> {
   if (!jiraIsConfigured(s)) throw new Error('Jira is not configured.');
   const host = normHost(s.host);
-  const q = `jql=${encodeURIComponent(jql)}&maxResults=${max}&fields=${encodeURIComponent(fields)}`;
-  const res = await fetch(`https://${host}/rest/api/3/search/jql?${q}`, { headers: authHeaders(s) });
-  if (!res.ok) throw new Error(`Jira search failed (${res.status})`);
-  const json = (await res.json()) as JiraSearchResult;
-  return json.issues ?? [];
+  const out: JiraBoardIssue[] = [];
+  let pageToken: string | undefined;
+  while (out.length < max) {
+    const q =
+      `jql=${encodeURIComponent(jql)}&maxResults=${Math.min(100, max - out.length)}&fields=${encodeURIComponent(fields)}` +
+      (pageToken ? `&nextPageToken=${encodeURIComponent(pageToken)}` : '');
+    const res = await fetch(`https://${host}/rest/api/3/search/jql?${q}`, { headers: authHeaders(s) });
+    if (!res.ok) throw new Error(`Jira search failed (${res.status})`);
+    const json = (await res.json()) as JiraSearchResult;
+    const page = json.issues ?? [];
+    out.push(...page);
+    if (!json.nextPageToken || page.length === 0) break;
+    pageToken = json.nextPageToken;
+  }
+  return out;
 }
 
 export type BoardColumnConfig = { name: string; statuses: { name: string; cat: string }[] };

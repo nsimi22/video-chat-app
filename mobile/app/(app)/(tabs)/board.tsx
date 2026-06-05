@@ -181,8 +181,12 @@ export default function BoardScreen() {
         setError(null);
         return;
       }
+      // Active work plus a recent-Done window (mirrors how Jira boards
+      // hide stale done issues) — keeps the result set bounded so the
+      // pagination cap can't push live statuses off the board again.
+      const jql = `project = "${proj}" AND (statusCategory != Done OR updated >= -14d) ORDER BY updated DESC`;
       const [issues, boardCols] = await Promise.all([
-        searchJiraIssues(settings, `project = "${proj}" ORDER BY status ASC, updated DESC`, 100),
+        searchJiraIssues(settings, jql, 500),
         getJiraBoardConfig(settings, proj),
       ]);
       const mapped = issues.map(mapIssue);
