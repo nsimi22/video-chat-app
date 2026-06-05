@@ -31,7 +31,10 @@ type Mode = 'week' | '3day' | 'month';
 
 const UPCOMING_HORIZON_DAYS = 60;
 const ICS_MAX_HORIZON_MS = UPCOMING_HORIZON_DAYS * 24 * 60 * 60 * 1000;
-const ICS_BACKLOG_MS = 60 * 60 * 1000;
+// Symmetric 60-day window into the past so scrolled-back weeks still show
+// subscribed-calendar events. (Truly unbounded ICS history isn't practical —
+// recurring feeds expand to thousands of occurrences.)
+const ICS_BACKLOG_MS = UPCOMING_HORIZON_DAYS * 24 * 60 * 60 * 1000;
 const ICS_POLL_MS = 15 * 60 * 1000;
 // Per-feed network deadline. A slow / unresponsive ICS endpoint mustn't
 // stall the tab — the polling timer will retry on its next tick anyway.
@@ -119,7 +122,8 @@ export default function CalendarScreen() {
     if (!activeTeam || !userId) return;
     try {
       const [rows, ch, subs] = await Promise.all([
-        loadScheduledCalls(activeTeam.id, { from: addDays(new Date(), -7) }),
+        // No `from` bound — past events stay visible when scrolling back.
+        loadScheduledCalls(activeTeam.id),
         listChannels(activeTeam.id),
         getCalendarSubscriptions(userId),
       ]);
