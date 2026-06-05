@@ -8,7 +8,7 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Copy, Pin, Trash2 } from 'lucide-react-native';
+import { Copy, MessageCircle, Pin, Trash2, X } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
 import { colors, radius, space } from '@/theme';
 import type { Message } from '@/lib/api';
@@ -28,6 +28,9 @@ type Props = {
   onCopy: () => void;
   onTogglePin: () => void;
   onDelete: () => void;
+  // Optional — only the channel view passes it (a message inside a thread
+  // can't spawn a nested thread).
+  onOpenThread?: () => void;
 };
 
 export function MessageActionSheet({
@@ -38,6 +41,7 @@ export function MessageActionSheet({
   onCopy,
   onTogglePin,
   onDelete,
+  onOpenThread,
 }: Props) {
   const visible = message !== null;
   const slideY = useRef(new Animated.Value(SHEET_HEIGHT)).current;
@@ -71,7 +75,10 @@ export function MessageActionSheet({
             transform: [{ translateY: slideY }],
           }}
         >
-          <SafeAreaView edges={['bottom']}>
+          {/* paddingBottom gives the last row breathing room above the home
+              indicator — flush sheets read as cut off. Same value across
+              every bottom sheet so they feel like one family. */}
+          <SafeAreaView edges={['bottom']} style={{ paddingBottom: space(3) }}>
             {/* Grabber */}
             <View
               style={{
@@ -125,6 +132,16 @@ export function MessageActionSheet({
             />
 
             {/* Actions */}
+            {onOpenThread && (
+              <SheetAction
+                icon={MessageCircle}
+                label="Reply in thread"
+                onPress={() => {
+                  onClose();
+                  onOpenThread();
+                }}
+              />
+            )}
             <SheetAction
               icon={Copy}
               label="Copy"
@@ -152,7 +169,7 @@ export function MessageActionSheet({
                 }}
               />
             )}
-            <SheetAction label="Cancel" onPress={onClose} />
+            <SheetAction icon={X} label="Cancel" onPress={onClose} />
           </SafeAreaView>
         </Animated.View>
       </View>

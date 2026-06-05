@@ -4,6 +4,8 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { tabBarClearance } from '@/theme';
 import type { Channel } from '@/lib/api';
 import type { ScheduledCall } from '@/lib/scheduledCalls';
 import type { IcsEvent } from '@/lib/ics';
@@ -18,6 +20,8 @@ import {
   fmtHourLabel,
   fmtTime,
   hourOf,
+  icsAllDayOnDay,
+  layoutOverlaps,
   sameDay,
 } from './tokens';
 import { HuddleMiniMark } from './atoms';
@@ -41,7 +45,11 @@ type ColBlock = {
   scheduledCallId: string | null;
 };
 
+// ColBlock + the side-by-side lane assignment from layoutOverlaps().
+type LaidColBlock = ColBlock & { col: number; cols: number };
+
 export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEvent, onSelectDay }: Props) {
+  const insets = useSafeAreaInsets();
   const channelById = useMemo(() => {
     const m = new Map<string, Channel>();
     for (const c of channels) m.set(c.id, c);
@@ -54,7 +62,8 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
   );
 
   const blocksByDay = useMemo(() => {
-    const out = new Map<string, ColBlock[]>();
+    const raw = new Map<string, ColBlock[]>();
+    const out = raw;
     for (const d of days) out.set(d.toDateString(), []);
     for (const e of events) {
       const key = e.startsAt.toDateString();
@@ -76,19 +85,34 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
       const key = e.start.toDateString();
       if (!out.has(key)) continue;
       const start = hourOf(e.start);
-      const end = e.end ? hourOf(e.end) : start + 0.5;
+      // Cross-midnight events would get endHour < startHour (hourOf reads
+      // clock time only) — clamp the block to midnight. See WeekView.
+      const end = !e.end ? start + 0.5 : sameDay(e.end, e.start) ? hourOf(e.end) : DAY_END;
       out.get(key)!.push({
         key: 'i:' + (e.uid || `${e.title}:${e.start.toISOString()}`),
         title: e.title || '(untitled)',
         startHour: start,
-        endHour: Math.min(DAY_END, end),
+        endHour: Math.min(DAY_END, Math.max(end, start + 0.25)),
         color: C.text2,
         isHuddle: false,
         scheduledCallId: null,
       });
     }
-    return out;
+    // Overlapping events within a day split the column side-by-side.
+    const laid = new Map<string, LaidColBlock[]>();
+    for (const [key, list] of raw) laid.set(key, layoutOverlaps(list));
+    return laid;
   }, [days, events, icsEvents, channelById]);
+
+  // All-day ICS events per column — banner chips above the hour grid.
+  const allDayByDay = useMemo(() => {
+    const out = new Map<string, IcsEvent[]>();
+    for (const d of days) {
+      out.set(d.toDateString(), icsEvents.filter((e) => icsAllDayOnDay(e, d)));
+    }
+    return out;
+  }, [days, icsEvents]);
+  const hasAllDay = days.some((d) => (allDayByDay.get(d.toDateString()) ?? []).length > 0);
 
   const now = new Date();
   const nowHour = hourOf(now);
@@ -143,7 +167,46 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
         })}
       </View>
 
-      <ScrollView ref={scrollRef} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 32 }}>
+      {/* all-day banner row — one cell per column, sharing the hour gutter */}
+      {hasAllDay && (
+        <View style={{ flexDirection: 'row', paddingLeft: 44, paddingVertical: 4, borderBottomWidth: 0.5, borderBottomColor: C.hair }}>
+          {days.map((day, idx) => {
+            const items = allDayByDay.get(day.toDateString()) ?? [];
+            return (
+              <View
+                key={day.toISOString()}
+                style={{
+                  flex: 1,
+                  gap: 3,
+                  paddingHorizontal: 2,
+                  borderRightWidth: idx < days.length - 1 ? 0.5 : 0,
+                  borderRightColor: C.hair,
+                }}
+              >
+                {items.map((e) => (
+                  <View
+                    key={'ad:' + (e.uid || `${e.title}:${e.start?.toISOString()}`)}
+                    style={{
+                      backgroundColor: C.surface2,
+                      borderLeftWidth: 2.5,
+                      borderLeftColor: C.text2,
+                      borderRadius: 4,
+                      paddingHorizontal: 5,
+                      paddingVertical: 3,
+                    }}
+                  >
+                    <Text numberOfLines={1} style={{ fontSize: 10, fontWeight: '600', color: '#fff' }}>
+                      {e.title || '(untitled)'}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            );
+          })}
+        </View>
+      )}
+
+      <ScrollView ref={scrollRef} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: tabBarClearance(insets.bottom) }}>
         <Grid days={days} blocksByDay={blocksByDay} nowHour={nowHour} onTapBlock={onTapEvent} />
       </ScrollView>
     </View>
@@ -157,7 +220,7 @@ function Grid({
   onTapBlock,
 }: {
   days: Date[];
-  blocksByDay: Map<string, ColBlock[]>;
+  blocksByDay: Map<string, LaidColBlock[]>;
   nowHour: number;
   onTapBlock: (id: string) => void;
 }) {
@@ -218,42 +281,54 @@ function Grid({
   );
 }
 
-function ColumnEventBlock({ block, onPress }: { block: ColBlock; onPress: (id: string) => void }) {
+function ColumnEventBlock({ block, onPress }: { block: LaidColBlock; onPress: (id: string) => void }) {
   const top = (block.startHour - DAY_START) * HOUR_PX;
   const height = Math.max(20, (block.endHour - block.startHour) * HOUR_PX - 2);
   const startDate = new Date();
   startDate.setHours(Math.floor(block.startHour), Math.round((block.startHour % 1) * 60), 0, 0);
   const disabled = !block.scheduledCallId;
+  // % lane math inside the day column — overlapping events sit side by side.
+  const laneLeft = (block.col / block.cols) * 100;
+  const laneWidth = 100 / block.cols;
   return (
-    <TouchableOpacity
-      onPress={() => block.scheduledCallId && onPress(block.scheduledCallId)}
-      activeOpacity={disabled ? 1 : 0.7}
-      disabled={disabled}
+    <View
+      pointerEvents="box-none"
       style={{
         position: 'absolute',
         top,
-        left: 1,
-        right: 3,
         height,
-        backgroundColor: block.color + '26',
-        borderLeftWidth: 2.5,
-        borderLeftColor: block.color,
-        borderRadius: 5,
-        paddingHorizontal: 7,
-        paddingVertical: 5,
-        overflow: 'hidden',
+        left: `${laneLeft}%`,
+        width: `${laneWidth}%`,
+        paddingLeft: block.col === 0 ? 1 : 0,
+        paddingRight: block.col === block.cols - 1 ? 3 : 2,
       }}
     >
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 }}>
-        {block.isHuddle && <HuddleMiniMark size={9} color={block.color} />}
-        <Text numberOfLines={1} style={{ fontSize: 11, fontWeight: '600', color: '#fff', flex: 1, lineHeight: 14 }}>
-          {block.title}
+      <TouchableOpacity
+        onPress={() => block.scheduledCallId && onPress(block.scheduledCallId)}
+        activeOpacity={disabled ? 1 : 0.7}
+        disabled={disabled}
+        style={{
+          flex: 1,
+          backgroundColor: block.color + '26',
+          borderLeftWidth: 2.5,
+          borderLeftColor: block.color,
+          borderRadius: 5,
+          paddingHorizontal: block.cols > 1 ? 4 : 7,
+          paddingVertical: 5,
+          overflow: 'hidden',
+        }}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+          {block.isHuddle && <HuddleMiniMark size={9} color={block.color} />}
+          <Text numberOfLines={block.cols > 1 ? 2 : 1} style={{ fontSize: block.cols > 1 ? 10 : 11, fontWeight: '600', color: '#fff', flex: 1, lineHeight: 13 }}>
+            {block.title}
+          </Text>
+        </View>
+        <Text numberOfLines={1} style={{ fontSize: 9.5, color: block.color, fontWeight: '500', lineHeight: 12 }}>
+          {fmtTime(startDate)}
         </Text>
-      </View>
-      <Text style={{ fontSize: 9.5, color: block.color, fontWeight: '500', lineHeight: 12 }}>
-        {fmtTime(startDate)}
-      </Text>
-    </TouchableOpacity>
+      </TouchableOpacity>
+    </View>
   );
 }
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { supabase } from '@/lib/supabase';
-import { fetchMessages, fetchMessagesSince, type Message } from '@/lib/api';
+import { fetchMessages, fetchMessagesSince, fetchReplyCounts, type Message } from '@/lib/api';
 
 // Loads paginated message history for a channel and keeps it live via a
 // postgres_changes subscription on public.messages. Channel `id` is only unique
@@ -18,6 +18,12 @@ import { fetchMessages, fetchMessagesSince, type Message } from '@/lib/api';
 // catch-up response leaves the array out of chronological order.
 export function useChannelMessages(teamId: string, channelId: string) {
   const [messages, setMessages] = useState<Message[]>([]);
+  // parent message id -> reply count, for the thread chips. Seeded with one
+  // channel-wide query; incremented live when a reply INSERT arrives. Reply
+  // DELETEs can't be attributed (the payload only carries the PK), so the
+  // count can briefly overstate until the next channel open — same
+  // tolerance as desktop's in-memory tally.
+  const [replyCounts, setReplyCounts] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(true);
   const oldestTs = useRef<string | null>(null);
@@ -26,8 +32,13 @@ export function useChannelMessages(teamId: string, channelId: string) {
   useEffect(() => {
     let active = true;
     setMessages([]);
+    setReplyCounts(new Map());
     setLoading(true);
     setHasMore(true);
+    // Reply ids already reflected in replyCounts — the INSERT handler
+    // checks this so a reply that lands in both the seed/recount query
+    // and the realtime stream isn't counted twice.
+    const countedReplyIds = new Set<string>();
     oldestTs.current = null;
     latestTs.current = null;
     let firstSubscribe = true;
@@ -51,6 +62,20 @@ export function useChannelMessages(teamId: string, channelId: string) {
         setHasMore(false);
         setLoading(false);
       });
+
+    // Seed (and on catch-up, re-reconcile) the reply tallies. Wholesale
+    // replace: the query is the source of truth, so this also heals any
+    // drift from replies that arrived while the realtime socket was down.
+    const reconcileReplyCounts = () => {
+      fetchReplyCounts(teamId, channelId)
+        .then(({ counts, ids }) => {
+          if (!active) return;
+          for (const id of ids) countedReplyIds.add(id);
+          setReplyCounts(counts);
+        })
+        .catch((e) => console.warn('fetchReplyCounts failed', e));
+    };
+    reconcileReplyCounts();
 
     const BATCH = 500;
     const catchUp = async () => {
@@ -95,7 +120,20 @@ export function useChannelMessages(teamId: string, channelId: string) {
           if (!active) return;
           if (payload.eventType === 'INSERT') {
             const m = payload.new as Message;
-            if (m.channel_id !== channelId || m.parent_id) return; // other channel / thread reply
+            if (m.channel_id !== channelId) return;
+            if (m.parent_id) {
+              // Thread reply — bump the parent's chip instead of the list.
+              // Skip ids the seed/recount snapshot already covered.
+              if (countedReplyIds.has(m.id)) return;
+              countedReplyIds.add(m.id);
+              const pid = m.parent_id;
+              setReplyCounts((prev) => {
+                const next = new Map(prev);
+                next.set(pid, (next.get(pid) ?? 0) + 1);
+                return next;
+              });
+              return;
+            }
             if (m.ts && m.ts > (latestTs.current ?? '')) latestTs.current = m.ts;
             setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
           } else if (payload.eventType === 'UPDATE') {
@@ -116,8 +154,11 @@ export function useChannelMessages(teamId: string, channelId: string) {
           firstSubscribe = false;
           return;
         }
-        // Reconnect after a transient drop — fill any gap.
+        // Reconnect after a transient drop — fill any gap. catchUp only
+        // covers root messages (fetchMessagesSince filters out replies),
+        // so reconcile the reply tallies separately.
         catchUp();
+        reconcileReplyCounts();
       });
 
     // Belt-and-suspenders: the WS sometimes auto-reconnects silently
@@ -125,7 +166,11 @@ export function useChannelMessages(teamId: string, channelId: string) {
     // brings the app back from a long background). Re-run catch-up
     // when AppState returns to 'active'.
     const onAppStateChange = (state: AppStateStatus) => {
-      if (state === 'active') catchUp();
+      if (state !== 'active') return;
+      catchUp();
+      // Replies posted while backgrounded never reach catchUp (it only
+      // fetches root messages) — recount them.
+      reconcileReplyCounts();
     };
     const appStateSub = AppState.addEventListener('change', onAppStateChange);
 
@@ -146,5 +191,5 @@ export function useChannelMessages(teamId: string, channelId: string) {
     if (older.length < 50) setHasMore(false);
   }, [teamId, channelId, hasMore]);
 
-  return { messages, loading, hasMore, loadOlder };
+  return { messages, replyCounts, loading, hasMore, loadOlder };
 }

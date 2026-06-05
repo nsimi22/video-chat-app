@@ -17,8 +17,10 @@ import { Stack, router, useFocusEffect, useLocalSearchParams } from 'expo-router
 import { useHeaderHeight } from '@react-navigation/elements';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
-import { Pin, Paperclip, Phone, Plus } from 'lucide-react-native';
+import { ChevronRight, MessageCircle, Pin, Paperclip, Phone, Plus, Star } from 'lucide-react-native';
 import { MessageActionSheet } from '@/components/MessageActionSheet';
+import { PollCard } from '@/components/PollCard';
+import { CreatePollSheet } from '@/components/CreatePollSheet';
 import { SlashSuggest } from '@/components/SlashSuggest';
 import { MentionSuggest, MENTION_TOKEN_RE } from '@/components/MentionSuggest';
 import { GifPicker } from '@/components/GifPicker';
@@ -33,6 +35,7 @@ import {
   extractMentions,
   listTeamProfiles,
   sendMessage,
+  sendPollMessage,
   setPin,
   toggleReaction,
   uploadAttachment,
@@ -42,9 +45,9 @@ import {
 } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { useUnread } from '@/context/UnreadContext';
-import { supabase } from '@/lib/supabase';
-import { teamTopic } from '@/lib/topics';
-import { Avatar, Markdown } from '@/components/ui';
+import { useFavorites } from '@/context/FavoritesContext';
+import { usePresence } from '@/context/PresenceContext';
+import { AiMessageCard, Avatar, Markdown } from '@/components/ui';
 import { MessageUnfurls } from '@/components/Unfurl';
 import { DateBanner, isSameLocalDay } from '@/components/DateBanner';
 import { ReactorSheet } from '@/components/ReactorSheet';
@@ -55,7 +58,9 @@ export default function ChannelScreen() {
   const { id: channelId, name } = useLocalSearchParams<{ id: string; name?: string }>();
   const { activeTeam, userId } = useAuth();
   const teamId = activeTeam?.id ?? '';
-  const { messages, loading, hasMore, loadOlder } = useChannelMessages(teamId, String(channelId));
+  const { messages, replyCounts, loading, hasMore, loadOlder } = useChannelMessages(teamId, String(channelId));
+  const { isFavorite, toggleFavorite } = useFavorites();
+  const { sendTyping, onTyping } = usePresence();
   const [roster, setRoster] = useState<Profile[]>([]);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -76,11 +81,11 @@ export default function ChannelScreen() {
   const [giphyKey, setGiphyKey] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [pollOpen, setPollOpen] = useState(false);
   // Track TextInput selection so emoji insert lands at the cursor instead
   // of always appending — matters when the user has typed text and tapped
   // back into the middle of it.
   const [selection, setSelection] = useState({ start: 0, end: 0 });
-  const teamChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const lastTypingSent = useRef(0);
 
   // Render newest-first so the visible bottom is the latest message. This
@@ -145,15 +150,14 @@ export default function ChannelScreen() {
     }, [channelId, setActiveChannel]),
   );
 
-  // Typing indicator over the team:<id> broadcast topic (same as desktop).
-  // The topic is RLS-gated, so the channel must be marked `private`.
+  // Typing indicator over the shared team topic. The channel itself lives
+  // in PresenceContext (one join per topic per socket); this screen just
+  // registers a listener scoped to its channelId.
   useEffect(() => {
-    if (!teamId) return;
     let active = true;
     const timers = new Set<ReturnType<typeof setTimeout>>();
-    const ch = supabase.channel(teamTopic(teamId), { config: { broadcast: { self: false }, private: true } });
-    ch.on('broadcast', { event: 'typing' }, ({ payload }) => {
-      if (!active || !payload || payload.channelId !== String(channelId) || payload.from === userId) return;
+    const off = onTyping((payload) => {
+      if (!active || payload.channelId !== String(channelId)) return;
       setTypingNames((prev) => Array.from(new Set([...prev, payload.name])));
       const t = setTimeout(() => {
         timers.delete(t);
@@ -161,35 +165,28 @@ export default function ChannelScreen() {
       }, 3500);
       timers.add(t);
     });
-    ch.subscribe();
-    teamChannelRef.current = ch;
     return () => {
       active = false;
       timers.forEach(clearTimeout);
-      supabase.removeChannel(ch);
-      teamChannelRef.current = null;
+      off();
     };
-  }, [teamId, channelId, userId]);
+  }, [channelId, onTyping]);
 
   const profileFor = useCallback((uid: string) => roster.find((p) => p.user_id === uid), [roster]);
 
   const onChangeText = (t: string) => {
     setText(t);
     const now = Date.now();
-    if (now - lastTypingSent.current > 1500 && teamChannelRef.current) {
+    if (now - lastTypingSent.current > 1500 && userId) {
       // Skip the broadcast until the roster fetch has resolved our
       // own profile — otherwise the receiver renders "Someone is
       // typing" which is uglier than no indicator at all. The user
       // typing within ~100ms of channel mount (before
       // listTeamProfiles returns) is the realistic trigger.
-      const me = profileFor(userId ?? '');
+      const me = profileFor(userId);
       if (!me?.name) return;
       lastTypingSent.current = now;
-      teamChannelRef.current.send({
-        type: 'broadcast',
-        event: 'typing',
-        payload: { from: userId, name: me.name, channelId: String(channelId) },
-      });
+      sendTyping({ from: userId, name: me.name, channelId: String(channelId) });
     }
   };
 
@@ -360,28 +357,41 @@ export default function ChannelScreen() {
   // Memoise the Stack.Screen options so the header doesn't get re-applied
   // on every composer keystroke (which would otherwise hand expo-router a
   // brand-new headerRight closure each render and re-mount the button).
+  const fav = isFavorite(String(channelId));
   const screenOptions = useMemo(
     () => ({
       title: headerTitle,
       headerBackButtonDisplayMode: 'minimal' as const,
       headerBackTitle: '',
       headerRight: () => (
-        <TouchableOpacity
-          // navigate (not push) so a quick double-tap can't stack two call
-          // screens. channelId is already a string from useLocalSearchParams.
-          onPress={() =>
-            router.navigate({ pathname: '/(app)/call/[id]', params: { id: channelId, name: headerTitle } })
-          }
-          accessibilityLabel="Start call"
-          accessibilityRole="button"
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          style={{ paddingHorizontal: 4 }}
-        >
-          <Phone size={22} color={colors.accent} strokeWidth={2} />
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+          {/* Star — favorite/unfavorite the open conversation (design
+              prototype chat header). */}
+          <TouchableOpacity
+            onPress={() => toggleFavorite(String(channelId))}
+            accessibilityLabel={fav ? 'Remove from favorites' : 'Add to favorites'}
+            accessibilityRole="button"
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Star size={21} color={fav ? colors.away : colors.textDim} fill={fav ? colors.away : 'transparent'} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            // navigate (not push) so a quick double-tap can't stack two call
+            // screens. channelId is already a string from useLocalSearchParams.
+            onPress={() =>
+              router.navigate({ pathname: '/(app)/call/[id]', params: { id: channelId, name: headerTitle } })
+            }
+            accessibilityLabel="Start call"
+            accessibilityRole="button"
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={{ paddingHorizontal: 4 }}
+          >
+            <Phone size={22} color={colors.accentTx} strokeWidth={2} />
+          </TouchableOpacity>
+        </View>
       ),
     }),
-    [headerTitle, channelId],
+    [headerTitle, channelId, fav, toggleFavorite],
   );
 
   // Read live so the offset tracks the actual stack header height — a
@@ -456,9 +466,8 @@ export default function ChannelScreen() {
                   {!grouped && (
                     <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 2 }}>
                       <Text style={{ color: colors.text, fontWeight: '600' }}>
-                        {isAi ? 'AI' : (p?.name ?? 'Unknown')}{'  '}
+                        {isAi ? 'Huddle AI' : (p?.name ?? 'Unknown')}{'  '}
                         <Text style={{ color: colors.textDim, fontWeight: '400', fontSize: 11 }}>
-                          {isAi && p ? `via ${p.name} · ` : ''}
                           {new Date(item.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </Text>
                       </Text>
@@ -467,13 +476,28 @@ export default function ChannelScreen() {
                       ) : null}
                     </View>
                   )}
-                  {!!item.body && (
-                    <View>
-                      <Markdown body={item.body} mentionNames={mentionNames} />
-                      {item.edited_ts ? <Text style={{ color: colors.textDim, fontSize: 11, marginTop: 2 }}>(edited)</Text> : null}
-                    </View>
+                  {item.meta?.poll ? (
+                    // Poll messages render the interactive card in place of
+                    // the body (the "📊 Poll: …" body is a fallback for
+                    // notifications/search, same as desktop).
+                    <PollCard message={item} meId={userId} roster={roster} />
+                  ) : isAi ? (
+                    // AI output gets the accent card + "via @asker · model"
+                    // footer (desktop's .msg-ai treatment).
+                    <AiMessageCard body={item.body} mentionNames={mentionNames} viaName={p?.name} model={item.ai_model}>
+                      {!!item.body && <MessageUnfurls body={item.body} viewerId={userId} />}
+                    </AiMessageCard>
+                  ) : (
+                    <>
+                      {!!item.body && (
+                        <View>
+                          <Markdown body={item.body} mentionNames={mentionNames} />
+                          {item.edited_ts ? <Text style={{ color: colors.textDim, fontSize: 11, marginTop: 2 }}>(edited)</Text> : null}
+                        </View>
+                      )}
+                      {!!item.body && <MessageUnfurls body={item.body} viewerId={userId} />}
+                    </>
                   )}
-                  {!!item.body && <MessageUnfurls body={item.body} viewerId={userId} />}
                   {(item.attachments ?? []).map((a, i) => {
                     const mime = a.type ?? a.contentType ?? '';
                     return mime.startsWith('image/') ? (
@@ -495,6 +519,39 @@ export default function ChannelScreen() {
                       </View>
                     );
                   })}
+                  {(replyCounts.get(item.id) ?? 0) > 0 && (
+                    // Thread chip — replies live under messages.parent_id;
+                    // tap to open the thread screen (design prototype's
+                    // "N replies" pill).
+                    <TouchableOpacity
+                      onPress={() =>
+                        router.push({
+                          pathname: '/(app)/thread/[id]',
+                          params: { id: item.id, channelId: String(channelId), name: headerTitle },
+                        })
+                      }
+                      activeOpacity={0.7}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        alignSelf: 'flex-start',
+                        gap: 6,
+                        marginTop: space(2),
+                        paddingHorizontal: space(2.5),
+                        paddingVertical: space(1),
+                        borderRadius: 20,
+                        backgroundColor: colors.surfaceAlt,
+                        borderWidth: 1,
+                        borderColor: colors.borderSoft,
+                      }}
+                    >
+                      <MessageCircle size={13} color={colors.accentTx} />
+                      <Text style={{ fontSize: 12.5, fontWeight: '700', color: colors.accentTx }}>
+                        {replyCounts.get(item.id)} {replyCounts.get(item.id) === 1 ? 'reply' : 'replies'}
+                      </Text>
+                      <ChevronRight size={14} color={colors.textFaint} />
+                    </TouchableOpacity>
+                  )}
                   {item.reactions && Object.keys(item.reactions).length > 0 && (
                     <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: space(1.5) }}>
                       {Object.entries(item.reactions).map(([emoji, users]) => (
@@ -574,6 +631,19 @@ export default function ChannelScreen() {
         onPickPhoto={attachImage}
         onPickGif={() => setGifPickerOpen(true)}
         onPickEmoji={() => setEmojiOpen(true)}
+        onPickPoll={() => setPollOpen(true)}
+      />
+      <CreatePollSheet
+        visible={pollOpen}
+        onClose={() => setPollOpen(false)}
+        onCreate={async (question, options, multi) => {
+          setPollOpen(false);
+          try {
+            await sendPollMessage({ teamId, channelId: String(channelId), authorId: userId!, question, options, multi });
+          } catch (e: any) {
+            Alert.alert('Could not create poll', e?.message ?? String(e));
+          }
+        }}
       />
       <GifPicker
         visible={gifPickerOpen}
@@ -590,6 +660,13 @@ export default function ChannelScreen() {
         message={sheetMessage}
         isMine={sheetMessage?.author_id === userId}
         onClose={() => setSheetMessage(null)}
+        onOpenThread={() => {
+          if (!sheetMessage) return;
+          router.push({
+            pathname: '/(app)/thread/[id]',
+            params: { id: sheetMessage.id, channelId: String(channelId), name: headerTitle },
+          });
+        }}
         onReact={(emoji) => {
           if (sheetMessage) toggleReaction(sheetMessage.id, emoji, userId!).catch(() => {});
         }}

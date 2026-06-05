@@ -5,6 +5,8 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { tabBarClearance } from '@/theme';
 import type { Channel } from '@/lib/api';
 import type { ScheduledCall } from '@/lib/scheduledCalls';
 import type { IcsEvent } from '@/lib/ics';
@@ -19,6 +21,8 @@ import {
   fmtHourLabel,
   fmtTime,
   hourOf,
+  icsAllDayOnDay,
+  layoutOverlaps,
   sameDay,
   startOfDay,
 } from './tokens';
@@ -51,6 +55,9 @@ type Block = {
   scheduledCallId: string | null;
 };
 
+// Block + the side-by-side lane assignment from layoutOverlaps().
+type LaidBlock = Block & { col: number; cols: number };
+
 export function WeekView({
   weekStart,
   selectedDay,
@@ -60,6 +67,7 @@ export function WeekView({
   onSelectDay,
   onTapEvent,
 }: Props) {
+  const insets = useSafeAreaInsets();
   const channelById = useMemo(() => {
     const m = new Map<string, Channel>();
     for (const c of channels) m.set(c.id, c);
@@ -76,13 +84,21 @@ export function WeekView({
       const ch = channelById.get(e.channelId);
       all.push({ date: e.startsAt, color: channelColorForChannel(e.channelId, ch?.type) });
     }
-    for (const e of icsEvents) {
-      if (e.start) all.push({ date: e.start, color: C.text2 });
-    }
     for (const day of days) {
       const colors: string[] = [];
       const seen = new Set<string>();
+      // All-day ICS events can span several days — count them on every
+      // covered day, not just DTSTART's.
+      for (const e of icsEvents) {
+        if (!e.start) continue;
+        const hit = e.allDay ? icsAllDayOnDay(e, day) : sameDay(e.start, day);
+        if (hit && !seen.has(C.text2)) {
+          seen.add(C.text2);
+          colors.push(C.text2);
+        }
+      }
       for (const item of all) {
+        if (colors.length === 3) break;
         if (!sameDay(item.date, day)) continue;
         if (seen.has(item.color)) continue;
         seen.add(item.color);
@@ -94,7 +110,7 @@ export function WeekView({
     return map;
   }, [days, events, icsEvents, channelById]);
 
-  const blocks = useMemo<Block[]>(() => {
+  const blocks = useMemo<LaidBlock[]>(() => {
     const out: Block[] = [];
     for (const e of events) {
       if (!sameDay(e.startsAt, selectedDay)) continue;
@@ -116,22 +132,32 @@ export function WeekView({
     for (const e of icsEvents) {
       if (!e.start || !sameDay(e.start, selectedDay) || e.allDay) continue;
       const start = hourOf(e.start);
-      const end = e.end ? hourOf(e.end) : start + 0.5;
+      // An event that crosses midnight ends on a later day — hourOf() only
+      // reads clock time, so it would yield endHour < startHour (negative
+      // duration + corrupted overlap lanes). Clamp the block to midnight.
+      const end = !e.end ? start + 0.5 : sameDay(e.end, e.start) ? hourOf(e.end) : DAY_END;
       out.push({
         key: 'i:' + (e.uid || `${e.title}:${e.start.toISOString()}`),
         kind: 'ics',
         title: e.title || '(untitled)',
         startHour: start,
-        endHour: Math.min(DAY_END, end),
+        endHour: Math.min(DAY_END, Math.max(end, start + 0.25)),
         color: C.text2,
         channelName: '',
         isHuddle: false,
         scheduledCallId: null,
       });
     }
-    out.sort((a, b) => a.startHour - b.startHour);
-    return out;
+    // Overlapping events split the lane side-by-side instead of stacking.
+    return layoutOverlaps(out);
   }, [events, icsEvents, selectedDay, channelById]);
+
+  // All-day ICS events covering the selected day — rendered as a banner
+  // strip pinned above the timeline (they have no meaningful hour).
+  const allDayItems = useMemo(
+    () => icsEvents.filter((e) => icsAllDayOnDay(e, selectedDay)),
+    [icsEvents, selectedDay],
+  );
 
   const isToday = sameDay(selectedDay, new Date());
   const nowHour = hourOf(new Date());
@@ -190,11 +216,38 @@ export function WeekView({
         </View>
       </View>
 
+      {/* all-day banner strip */}
+      {allDayItems.length > 0 && (
+        <View style={{ borderBottomWidth: 0.5, borderBottomColor: C.hair, paddingVertical: 6, paddingLeft: 56, paddingRight: 12, gap: 4 }}>
+          {allDayItems.map((e) => (
+            <View
+              key={'ad:' + (e.uid || `${e.title}:${e.start?.toISOString()}`)}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                backgroundColor: C.surface2,
+                borderLeftWidth: 3,
+                borderLeftColor: C.text2,
+                borderRadius: 6,
+                paddingHorizontal: 10,
+                paddingVertical: 6,
+              }}
+            >
+              <Text numberOfLines={1} style={{ fontSize: 13, fontWeight: '600', color: '#fff', flex: 1 }}>
+                {e.title || '(untitled)'}
+              </Text>
+              <Text style={{ fontSize: 11, fontWeight: '500', color: C.text2 }}>All day</Text>
+            </View>
+          ))}
+        </View>
+      )}
+
       {/* timeline */}
       <ScrollView
         ref={scrollRef}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 32 }}
+        contentContainerStyle={{ paddingBottom: tabBarClearance(insets.bottom) }}
       >
         <Timeline
           blocks={blocks}
@@ -213,7 +266,7 @@ function Timeline({
   nowHour,
   onTapBlock,
 }: {
-  blocks: Block[];
+  blocks: LaidBlock[];
   isToday: boolean;
   nowHour: number;
   onTapBlock: (id: string) => void;
@@ -250,16 +303,20 @@ function Timeline({
         </View>
       ))}
 
-      {blocks.map((b) => (
-        <EventBlock key={b.key} block={b} onPress={onTapBlock} />
-      ))}
+      {/* Lane container — blocks position with % left/width inside it so
+          overlapping events render side by side. */}
+      <View pointerEvents="box-none" style={{ position: 'absolute', top: 0, bottom: 0, left: 56, right: 12 }}>
+        {blocks.map((b) => (
+          <EventBlock key={b.key} block={b} onPress={onTapBlock} />
+        ))}
+      </View>
 
       {isToday && <CurrentTimeBar nowHour={nowHour} />}
     </View>
   );
 }
 
-function EventBlock({ block, onPress }: { block: Block; onPress: (id: string) => void }) {
+function EventBlock({ block, onPress }: { block: LaidBlock; onPress: (id: string) => void }) {
   const top = (block.startHour - DAY_START) * HOUR_PX + 8;
   const height = Math.max(28, (block.endHour - block.startHour) * HOUR_PX - 2);
   const startDate = new Date();
@@ -267,42 +324,51 @@ function EventBlock({ block, onPress }: { block: Block; onPress: (id: string) =>
   const endDate = new Date();
   endDate.setHours(Math.floor(block.endHour), Math.round((block.endHour % 1) * 60), 0, 0);
   const disabled = !block.scheduledCallId;
+  const narrow = block.cols > 1;
   return (
-    <TouchableOpacity
-      onPress={() => block.scheduledCallId && onPress(block.scheduledCallId)}
-      activeOpacity={disabled ? 1 : 0.7}
-      disabled={disabled}
+    <View
+      pointerEvents="box-none"
       style={{
         position: 'absolute',
         top,
-        left: 56,
-        right: 12,
         height,
-        backgroundColor: block.color + '22',
-        borderLeftWidth: 3,
-        borderLeftColor: block.color,
-        borderRadius: 6,
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-        overflow: 'hidden',
+        left: `${(block.col / block.cols) * 100}%`,
+        width: `${100 / block.cols}%`,
+        paddingRight: block.col < block.cols - 1 ? 3 : 0,
       }}
     >
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-        {block.isHuddle && <HuddleMiniMark size={11} color={block.color} />}
-        <Text numberOfLines={1} style={{ fontSize: 13, fontWeight: '600', color: '#fff', flex: 1 }}>
-          {block.title}
-        </Text>
-      </View>
-      {/* Hide the time row when the tile isn't tall enough to fit both
-          the title and the time without clipping (≤ 30-min events
-          render at the floor of 28px, which only fits the title).
-          The week scale also surfaces it via the timeline gridline. */}
-      {height >= 44 && (
-        <Text style={{ fontSize: 11, fontWeight: '500', color: block.color, opacity: 0.9 }}>
-          {fmtTime(startDate)} – {fmtTime(endDate)}
-        </Text>
-      )}
-    </TouchableOpacity>
+      <TouchableOpacity
+        onPress={() => block.scheduledCallId && onPress(block.scheduledCallId)}
+        activeOpacity={disabled ? 1 : 0.7}
+        disabled={disabled}
+        style={{
+          flex: 1,
+          backgroundColor: block.color + '22',
+          borderLeftWidth: 3,
+          borderLeftColor: block.color,
+          borderRadius: 6,
+          paddingHorizontal: narrow ? 7 : 10,
+          paddingVertical: 6,
+          overflow: 'hidden',
+        }}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+          {block.isHuddle && <HuddleMiniMark size={11} color={block.color} />}
+          <Text numberOfLines={narrow ? 2 : 1} style={{ fontSize: narrow ? 12 : 13, fontWeight: '600', color: '#fff', flex: 1 }}>
+            {block.title}
+          </Text>
+        </View>
+        {/* Hide the time row when the tile isn't tall enough to fit both
+            the title and the time without clipping (≤ 30-min events
+            render at the floor of 28px, which only fits the title).
+            The week scale also surfaces it via the timeline gridline. */}
+        {height >= 44 && (
+          <Text numberOfLines={1} style={{ fontSize: 11, fontWeight: '500', color: block.color, opacity: 0.9 }}>
+            {fmtTime(startDate)} – {fmtTime(endDate)}
+          </Text>
+        )}
+      </TouchableOpacity>
+    </View>
   );
 }
 

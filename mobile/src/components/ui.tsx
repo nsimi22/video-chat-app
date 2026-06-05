@@ -15,8 +15,8 @@ import {
 
 const MONO_FONT = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Bot } from 'lucide-react-native';
-import { colors, radius, space } from '@/theme';
+import { Bot, Sparkles } from 'lucide-react-native';
+import { colors, radius, space, statusColor, type PresenceStatus } from '@/theme';
 
 export function Screen({ children, padded = true }: { children: React.ReactNode; padded?: boolean }) {
   return (
@@ -125,7 +125,26 @@ export function LinkButton({ title, onPress, disabled }: { title: string; onPres
   );
 }
 
-export function Avatar({ name, color, size = 36, uri, ai }: { name: string; color?: string | null; size?: number; uri?: string | null; ai?: boolean }) {
+export function Avatar({
+  name,
+  color,
+  size = 36,
+  uri,
+  ai,
+  status,
+  ring,
+}: {
+  name: string;
+  color?: string | null;
+  size?: number;
+  uri?: string | null;
+  ai?: boolean;
+  // Presence dot anchored bottom-right (design kit MAvatar). Omit to
+  // render no dot — most call sites don't track presence.
+  status?: PresenceStatus | string | null;
+  // Optional ring color (e.g. the active You-tab avatar).
+  ring?: string;
+}) {
   const initials = (name || '?')
     .split(/\s+/)
     .slice(0, 2)
@@ -139,20 +158,38 @@ export function Avatar({ name, color, size = 36, uri, ai }: { name: string; colo
     alignItems: 'center' as const,
     justifyContent: 'center' as const,
     overflow: 'hidden' as const,
+    borderWidth: ring ? 2 : 0,
+    borderColor: ring ?? 'transparent',
   };
-  if (uri && !ai) {
-    return <Image source={{ uri }} style={box} />;
-  }
-  if (ai) {
-    return (
-      <View style={box}>
-        <Bot size={size * 0.5} color="#fff" />
-      </View>
-    );
-  }
-  return (
+  const face = uri && !ai ? (
+    <Image source={{ uri }} style={box} />
+  ) : ai ? (
+    <View style={box}>
+      <Bot size={size * 0.5} color="#fff" />
+    </View>
+  ) : (
     <View style={box}>
       <Text style={{ color: '#fff', fontWeight: '600', fontSize: size * 0.4 }}>{initials}</Text>
+    </View>
+  );
+  if (!status) return face;
+  const dot = Math.max(9, Math.round(size * 0.28));
+  return (
+    <View style={{ width: size, height: size }}>
+      {face}
+      <View
+        style={{
+          position: 'absolute',
+          right: -1,
+          bottom: -1,
+          width: dot,
+          height: dot,
+          borderRadius: dot / 2,
+          backgroundColor: statusColor(status),
+          borderWidth: 2,
+          borderColor: colors.bg,
+        }}
+      />
     </View>
   );
 }
@@ -283,9 +320,10 @@ function MarkdownImpl({
   // Previously this happened inside pushTextWithMentions, which is hit
   // once per plain-text segment per block, so a 50-message channel was
   // burning hundreds of regex compilations per render pass.
-  const mentionRe = mentionNames && mentionNames.length
-    ? new RegExp(`(^|\\s)@(${mentionNames.map(escapeRegex).join('|')})\\b`, 'gi')
-    : null;
+  // The broadcast keywords @here / @channel always highlight, even before
+  // the roster resolves (mirrors renderer/markdown.js).
+  const mentionTokens = [...(mentionNames ?? []).map(escapeRegex), 'here', 'channel'];
+  const mentionRe = new RegExp(`(^|\\s)@(${mentionTokens.join('|')})\\b`, 'gi');
   // Block-level: contiguous `> ` lines render as a quoted block (left border
   // + dim text); everything else is a paragraph. Paragraphs keep newlines so
   // multi-line bodies don't run together.
@@ -323,6 +361,46 @@ function MarkdownImpl({
   }
   flush();
   return <View>{blocks}</View>;
+}
+
+// Accent-tinted wrapper for AI-generated messages — mobile port of
+// desktop's .msg.msg-ai card (v2 styling) with the "via @asker · model"
+// footer from msg-ai-footer. The author row stays outside; this cards
+// just the body (plus any unfurls passed as children).
+export function AiMessageCard({
+  body,
+  mentionNames,
+  viaName,
+  model,
+  children,
+}: {
+  body: string;
+  mentionNames?: string[];
+  viaName?: string | null;
+  model?: string | null;
+  children?: React.ReactNode;
+}) {
+  return (
+    <View
+      style={{
+        backgroundColor: 'rgba(79, 163, 244, 0.08)', // accent @ 8%
+        borderWidth: 1,
+        borderColor: colors.accent,
+        borderRadius: radius.md,
+        padding: space(3),
+        marginTop: 2,
+      }}
+    >
+      {!!body && <Markdown body={body} mentionNames={mentionNames} />}
+      {children}
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: space(2) }}>
+        <Sparkles size={11} color={colors.accentTx} />
+        <Text style={{ fontSize: 11, color: colors.textDim }}>via @{viaName || 'someone'}</Text>
+        <Text style={{ fontSize: 11, color: colors.textFaint }}>·</Text>
+        <Text style={{ fontSize: 11, color: colors.textFaint, fontFamily: MONO_FONT }}>{model || 'unknown model'}</Text>
+      </View>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({

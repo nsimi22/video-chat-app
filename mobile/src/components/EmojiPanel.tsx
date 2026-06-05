@@ -56,7 +56,7 @@ export function EmojiPanel({ visible, onClose, onPick }: Props) {
             transform: [{ translateY: slideY }],
           }}
         >
-          <SafeAreaView edges={['bottom']}>
+          <SafeAreaView edges={['bottom']} style={{ paddingBottom: space(3) }}>
             <View
               style={{
                 alignSelf: 'center',

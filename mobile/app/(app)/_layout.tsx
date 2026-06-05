@@ -6,6 +6,8 @@ import { useAuth } from '@/context/AuthContext';
 import { CallProvider, useCall } from '@/context/CallContext';
 import { UnreadProvider } from '@/context/UnreadContext';
 import { MutedChannelsProvider } from '@/context/MutedChannelsContext';
+import { FavoritesProvider } from '@/context/FavoritesContext';
+import { PresenceProvider } from '@/context/PresenceContext';
 import { FloatingCall } from '@/components/FloatingCall';
 import { registerForPush } from '@/lib/push';
 import { colors } from '@/theme';
@@ -44,6 +46,8 @@ export default function AppLayout() {
     <CallProvider>
       <MutedChannelsProvider>
         <UnreadProvider>
+          <FavoritesProvider>
+          <PresenceProvider>
           <CallRoomShell>
         <View style={{ flex: 1, backgroundColor: colors.bg }}>
           <Stack
@@ -74,10 +78,13 @@ export default function AppLayout() {
               }}
             />
             <Stack.Screen name="event/[id]" options={{ headerShown: false }} />
+            <Stack.Screen name="thread/[id]" options={{ title: 'Thread' }} />
           </Stack>
           <FloatingCallOverlay />
         </View>
       </CallRoomShell>
+          </PresenceProvider>
+          </FavoritesProvider>
         </UnreadProvider>
       </MutedChannelsProvider>
     </CallProvider>
@@ -105,13 +112,13 @@ function PlatformMetadataPublisher() {
   const { localParticipant } = useLocalParticipant();
   useEffect(() => {
     if (!localParticipant) return;
-    try {
-      localParticipant.setMetadata(JSON.stringify({ platform: 'mobile' }));
-    } catch (err) {
-      // Non-fatal — the pip just won't render on desktop tiles. Log
-      // for visibility; don't break the call.
-      console.warn('[livekit] setMetadata failed', err);
-    }
+    // setMetadata resolves via a signal-server round-trip, so failures
+    // (request timeout, token missing canUpdateOwnMetadata) reject the
+    // PROMISE — a sync try/catch never sees them and the rejection
+    // surfaced as an unhandled SignalRequestError red-box. Non-fatal
+    // either way: the pip just won't render on desktop tiles.
+    Promise.resolve(localParticipant.setMetadata(JSON.stringify({ platform: 'mobile' })))
+      .catch((err) => console.warn('[livekit] setMetadata failed', err));
   }, [localParticipant?.identity]);
   return null;
 }

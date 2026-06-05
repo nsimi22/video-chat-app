@@ -1,11 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { Modal, Pressable, View, Text, Animated, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Image as ImageIcon, Sticker, Smile } from 'lucide-react-native';
+import { BarChart3, Image as ImageIcon, Sticker, Smile } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
 import { colors, radius, space } from '@/theme';
 
-const SHEET_HEIGHT = 260;
+const SHEET_HEIGHT = 300;
 
 type Props = {
   visible: boolean;
@@ -13,12 +13,13 @@ type Props = {
   onPickPhoto: () => void;
   onPickGif: () => void;
   onPickEmoji: () => void;
+  onPickPoll: () => void;
 };
 
-// Bottom-sheet "insert" menu for the composer. Photo / GIF / Emoji. Same
-// slide+backdrop pattern as MessageActionSheet so the affordances feel
+// Bottom-sheet "insert" menu for the composer. Poll / Photo / GIF / Emoji.
+// Same slide+backdrop pattern as MessageActionSheet so the affordances feel
 // consistent.
-export function ComposerMenu({ visible, onClose, onPickPhoto, onPickGif, onPickEmoji }: Props) {
+export function ComposerMenu({ visible, onClose, onPickPhoto, onPickGif, onPickEmoji, onPickPoll }: Props) {
   const slideY = useRef(new Animated.Value(SHEET_HEIGHT)).current;
   const backdrop = useRef(new Animated.Value(0)).current;
 
@@ -59,7 +60,7 @@ export function ComposerMenu({ visible, onClose, onPickPhoto, onPickGif, onPickE
             transform: [{ translateY: slideY }],
           }}
         >
-          <SafeAreaView edges={['bottom']}>
+          <SafeAreaView edges={['bottom']} style={{ paddingBottom: space(3) }}>
             <View
               style={{
                 alignSelf: 'center',
@@ -71,6 +72,7 @@ export function ComposerMenu({ visible, onClose, onPickPhoto, onPickGif, onPickE
                 marginBottom: space(2),
               }}
             />
+            <MenuRow icon={BarChart3} label="Create poll" onPress={() => closeThen(onPickPoll)} />
             <MenuRow icon={ImageIcon} label="Photo" onPress={() => closeThen(onPickPhoto)} />
             <MenuRow icon={Sticker} label="GIF" onPress={() => closeThen(onPickGif)} />
             <MenuRow icon={Smile} label="Emoji" onPress={() => closeThen(onPickEmoji)} />

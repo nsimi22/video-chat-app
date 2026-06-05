@@ -68,10 +68,28 @@
     // `fields` overrides the brief/full preset with an explicit comma-
     // separated field list — used by the board, which needs `labels`
     // (absent from BRIEF) but not the heavy `description` (in FULL).
-    searchIssues(jql, max = 20, { full = false, fields = null } = {}) {
+    // `pageToken` continues a previous page (the /search/jql endpoint
+    // serves at most ~100 issues per request and signals more via
+    // nextPageToken in the response).
+    searchIssues(jql, max = 20, { full = false, fields = null, pageToken = null } = {}) {
       const fieldList = fields || (full ? ISSUE_FIELDS_FULL : ISSUE_FIELDS_BRIEF);
-      const q = `jql=${encodeURIComponent(jql)}&maxResults=${max}&fields=${encodeURIComponent(fieldList)}`;
+      const q = `jql=${encodeURIComponent(jql)}&maxResults=${max}&fields=${encodeURIComponent(fieldList)}`
+        + (pageToken ? `&nextPageToken=${encodeURIComponent(pageToken)}` : '');
       return this._request(`/rest/api/3/search/jql?${q}`);
+    }
+    // Walk nextPageToken until `max` issues or the last page. One page is
+    // one request, so this stays a single round-trip for small projects.
+    async searchIssuesAll(jql, max = 500, opts = {}) {
+      const issues = [];
+      let pageToken = null;
+      while (issues.length < max) {
+        const res = await this.searchIssues(jql, Math.min(100, max - issues.length), { ...opts, pageToken });
+        const page = res?.issues || [];
+        issues.push(...page);
+        if (!res?.nextPageToken || page.length === 0) break;
+        pageToken = res.nextPageToken;
+      }
+      return { issues };
     }
     // The /search/jql endpoint dropped the `total` field; this is the
     // sanctioned way to get a match count for a JQL query.

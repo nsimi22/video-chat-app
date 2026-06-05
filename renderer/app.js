@@ -1855,6 +1855,7 @@ async function joinTeamAndStart(teamId) {
   els.login.classList.add('hidden');
   els.app.classList.remove('hidden');
   els.me.textContent = huddle.name;
+  initMeStatus(huddle);
   if (huddle.team?.name) els.workspaceName.textContent = huddle.team.name;
 
   state.profileCard = new window.ProfileCard({
@@ -2695,7 +2696,7 @@ async function teardownTeam() {
   state.poppedOutCalls.clear();
   els.channels.replaceChildren();
   els.dms.replaceChildren();
-  els.people.replaceChildren();
+  els.people?.replaceChildren();
   // Clear any leftover toasts so they don't bleed into the login
   // screen of the next session.
   els.toasts?.replaceChildren();
@@ -2877,6 +2878,7 @@ function onMemberOffline(peerId) {
   // so they can be DMed. Re-render so the now-offline member sinks
   // to the bottom of the sorted list with a grey dot.
   renderRoster();
+  refreshDmPresence();
 }
 
 function onCallPresence({ channelId, count }) {
@@ -2946,6 +2948,9 @@ function onWelcome({ peers, channels }) {
   // to the normal default-channel logic if the target isn't visible
   // (e.g. the link pointed at a private channel the user wasn't
   // explicitly invited to).
+  // Initial presence paint for the DM rows — the team presence sync
+  // fires before the sidebar exists, so the live handlers miss it.
+  refreshDmPresence();
   if (consumePendingInviteHop()) {
     // Drain any buffered protocol URL too — cold-start where the
     // session auto-resumed into a previous team can leave a
@@ -3063,6 +3068,8 @@ function renderFavoritesSidebar() {
     els.favorites.appendChild(li);
     updateUnreadBadge(id);
   }
+  // Rebuilt rows lost their presence dots — repaint them.
+  refreshDmPresence();
 }
 
 function appendChannelToSidebar(channel, makeActive) {
@@ -3642,6 +3649,7 @@ function resolveMemberDisplay(member) {
       online: true,
       name: state.huddle.name || member.name,
       color: state.huddle.color || member.color || '',
+      status: state.huddle.presenceStatus || 'active',
     };
   }
   const online = state.huddle.peerInfo.has(member.id);
@@ -3650,31 +3658,165 @@ function resolveMemberDisplay(member) {
     online,
     name: live?.name || member.name,
     color: online ? (live?.color || member.color || '') : '',
+    status: online ? (live?.status || 'active') : null,
   };
 }
 
-// Render the People sidebar from the full team roster. Online
-// teammates get a coloured dot, offline ones get a grey dot + dimmed
-// text but stay visible so they remain DMable.
+// ── Presence status (Available / Away / BRB / Unavailable) ──────────
+// Carried as `status` in the team presence meta; mobile sets and renders
+// the same field (PresenceContext). Wire values come from the single
+// source in api.js (window.HUDDLE_PRESENCE_VALUES); only the human labels
+// live here. Color ramp: green → yellow → orange → red.
+const PRESENCE_LABELS = { active: 'Available', away: 'Away', brb: 'BRB', unavailable: 'Unavailable' };
+const PRESENCE_STATES = (window.HUDDLE_PRESENCE_VALUES || Object.keys(PRESENCE_LABELS))
+  .map((id) => ({ id, label: PRESENCE_LABELS[id] || id }));
+
+function presenceStatusLabel(s) {
+  return (PRESENCE_STATES.find((x) => x.id === s) || PRESENCE_STATES[0]).label;
+}
+
+function renderMeStatus() {
+  const s = state.huddle?.presenceStatus || 'active';
+  const title = `Status: ${presenceStatusLabel(s)} — click to change`;
+  els.me.dataset.status = s;
+  els.me.title = title;
+  // v2 nav-rail avatar (bottom-left) carries the same state — its dot is
+  // a CSS ::after keyed off data-status, immune to the shell's initial
+  // repaints (which rewrite textContent).
+  const railMe = document.getElementById('huddle-rail-me');
+  if (railMe) {
+    railMe.dataset.status = s;
+    railMe.title = title;
+  }
+}
+
+function initMeStatus(huddle) {
+  renderMeStatus();
+  // Status flips re-render the me-row dot and the roster (self row).
+  huddle.addEventListener('presence-status', () => { renderMeStatus(); renderRoster(); });
+  // start() can run again after a team switch — wire the clicks once.
+  // Under v2 the rail avatar is the ONLY trigger: the me-row sits in the
+  // workspace header there, and a menu popping above it gets clipped to
+  // a single floating row (looked like a stuck "Unavailable" chip).
+  const isV2 = document.documentElement.getAttribute('data-ui') === 'v2';
+  if (!isV2 && !els.me.dataset.statusWired) {
+    els.me.dataset.statusWired = '1';
+    els.me.addEventListener('click', () => toggleStatusMenu(els.me, false));
+  }
+  const railMe = document.getElementById('huddle-rail-me');
+  if (railMe && !railMe.dataset.statusWired) {
+    railMe.dataset.statusWired = '1';
+    railMe.style.cursor = 'pointer';
+    railMe.setAttribute('role', 'button');
+    railMe.removeAttribute('aria-hidden');
+    railMe.setAttribute('aria-label', 'Set your status');
+    railMe.addEventListener('click', () => toggleStatusMenu(railMe, true));
+  }
+}
+
+// `side` anchors the menu beside the trigger (the v2 nav rail is too
+// narrow to host a dropdown); otherwise it pops above the me-row.
+function toggleStatusMenu(trigger, side) {
+  const existing = document.querySelector('.status-menu');
+  if (existing) { existing.remove(); return; }
+  const menu = document.createElement('div');
+  menu.className = 'status-menu';
+  for (const st of PRESENCE_STATES) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'status-menu-item' + ((state.huddle?.presenceStatus || 'active') === st.id ? ' selected' : '');
+    const dot = document.createElement('span');
+    dot.className = `status-menu-dot status-${st.id}`;
+    item.append(dot, document.createTextNode(st.label));
+    item.onclick = () => {
+      menu.remove();
+      state.huddle?.setPresenceStatus(st.id);
+    };
+    menu.appendChild(item);
+  }
+  if (side) {
+    // Fixed positioning from the trigger's rect — the rail clips
+    // absolutely-positioned children, and fixed also dodges z-index
+    // stacking against the sidebar.
+    const r = trigger.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.left = `${Math.round(r.right + 10)}px`;
+    menu.style.bottom = `${Math.round(window.innerHeight - r.bottom)}px`;
+    menu.style.top = 'auto';
+    document.body.appendChild(menu);
+  } else {
+    trigger.parentElement.appendChild(menu);
+  }
+  const outside = (e) => {
+    if (!menu.contains(e.target) && !trigger.contains(e.target)) {
+      menu.remove();
+      document.removeEventListener('mousedown', outside);
+    }
+  };
+  document.addEventListener('mousedown', outside);
+}
+
+// Render the People sidebar from the full team roster. The standing
+// section was removed from the sidebar (2026-06-05 — roster discovery
+// lives in the DM picker, presence rides DM rows); this is a guarded
+// no-op unless the markup comes back.
 function renderRoster() {
+  if (!els.people) return;
   els.people.replaceChildren();
   const members = sortRosterMembers([...state.huddle.roster.values()]);
   for (const m of members) renderRosterRow(m);
 }
 
+// Presence dots on 1:1 DM rows (home list + Favorites copies) — the
+// sidebar's presence surface now that the People section is gone. Paints
+// or updates a status dot per row from live peerInfo; offline peers get
+// no dot. Cheap enough to re-run on every presence event (N = DM count).
+// Reuses the existing .dot styling, including today's status-* colors.
+function refreshDmPresence() {
+  if (!state.huddle) return;
+  for (const list of [els.dms, els.favorites]) {
+    if (!list) continue;
+    for (const li of list.querySelectorAll('li[data-id]')) {
+      const channel = state.channelMeta.get(li.dataset.id);
+      if (!channel || channel.type !== 'dm' || isGroupDm(channel)) continue;
+      const peerId = (channel.memberIds || []).find((id) => id !== state.huddle.peerId);
+      if (!peerId) continue;
+      const live = state.huddle.peerInfo.get(peerId);
+      let dot = li.querySelector('.ch-presence');
+      if (!live) {
+        dot?.remove();
+        continue;
+      }
+      if (!dot) {
+        dot = document.createElement('span');
+        li.insertBefore(dot, li.firstChild);
+      }
+      const status = live.status && live.status !== 'active' ? ` status-${live.status}` : '';
+      dot.className = `dot online ch-presence${status}`;
+    }
+  }
+}
+
 function renderRosterRow(member) {
-  const { online, name, color } = resolveMemberDisplay(member);
+  const { online, name, color, status } = resolveMemberDisplay(member);
   const li = document.createElement('li');
   li.dataset.id = member.id;
   li.dataset.name = name;
   const dot = document.createElement('span');
   dot.className = online ? 'dot online' : 'dot';
   dot.style.background = color;
+  // Away / BRB override the avatar-color dot with the status color —
+  // clear the inline background so the status class wins.
+  if (online && status && status !== 'active') {
+    dot.classList.add(`status-${status}`);
+    dot.style.background = '';
+  }
   li.append(dot, document.createTextNode(name));
   attachProfileTrigger(li, member.id);
+  const statusNote = online && status && status !== 'active' ? ` (${presenceStatusLabel(status)})` : '';
   li.title = member.id === state.huddle.peerId
-    ? 'You'
-    : `View ${name}'s profile${online ? '' : ' (offline)'}`;
+    ? `You${statusNote}`
+    : `View ${name}'s profile${online ? statusNote : ' (offline)'}`;
   if (!online) li.classList.add('offline');
   els.people.appendChild(li);
 }
@@ -3698,6 +3840,7 @@ function onMemberOnline(peer) {
   // Team presence finally landed for this peer — if their LK track
   // already arrived and we stamped the tile 'guest', re-label it now.
   refreshTileLabelForPeer(peer.id);
+  refreshDmPresence();
 }
 
 // (onMemberOffline + onCallPeerLeft above replace the old onPeerLeft —
@@ -5958,13 +6101,17 @@ function renderMemberPicker(container) {
     return;
   }
   for (const m of members) {
-    const { online, name, color } = resolveMemberDisplay(m);
+    const { online, name, color, status } = resolveMemberDisplay(m);
     const row = document.createElement('div');
     row.className = 'row' + (online ? '' : ' offline');
     row.dataset.name = name;
     const dot = document.createElement('span');
     dot.className = online ? 'dot online' : 'dot';
     dot.style.background = color;
+    if (online && status && status !== 'active') {
+      dot.classList.add(`status-${status}`);
+      dot.style.background = '';
+    }
     const check = document.createElement('span');
     check.className = 'check';
     const lbl = document.createElement('span');
@@ -6006,7 +6153,7 @@ function openDmPicker(opts = {}) {
     els.dmPeople.appendChild(empty);
   } else {
     for (const m of members) {
-      const { online, name, color } = resolveMemberDisplay(m);
+      const { online, name, color, status } = resolveMemberDisplay(m);
       const row = document.createElement('div');
       row.className = 'row' + (online ? '' : ' offline');
       row.dataset.userId = m.id;
@@ -6014,6 +6161,10 @@ function openDmPicker(opts = {}) {
       const dot = document.createElement('span');
       dot.className = online ? 'dot online' : 'dot';
       dot.style.background = color;
+      if (online && status && status !== 'active') {
+        dot.classList.add(`status-${status}`);
+        dot.style.background = '';
+      }
       const lbl = document.createElement('span');
       lbl.textContent = name;
       const check = document.createElement('span');

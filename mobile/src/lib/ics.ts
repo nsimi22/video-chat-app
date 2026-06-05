@@ -6,10 +6,12 @@
 // Recurrence support (kept in lockstep with renderer/ics.js — if you fix a
 // bug here, check the desktop file too):
 //   - Expanded: FREQ=DAILY|WEEKLY|MONTHLY|YEARLY with INTERVAL, COUNT,
-//     UNTIL, BYDAY (weekly), BYMONTHDAY (monthly), and EXDATE.
-//   - Not expanded: BYSETPOS, BYWEEKNO, BYYEARDAY, BYHOUR, RECURRENCE-ID
-//     overrides, the numeric BYDAY prefix like "1MO". Events with
-//     unsupported rules emit a single DTSTART so they remain visible.
+//     UNTIL, BYDAY (weekly), BYMONTHDAY (monthly), EXDATE, and
+//     RECURRENCE-ID overrides (a moved occurrence replaces the generated
+//     one instead of appearing twice).
+//   - Not expanded: BYSETPOS, BYWEEKNO, BYYEARDAY, BYHOUR, the numeric
+//     BYDAY prefix like "1MO". Events with unsupported rules emit a
+//     single DTSTART so they remain visible.
 //
 // Mobile-specific note: no buildEvent yet — mobile doesn't auto-post an
 // .ics attachment to the channel on schedule (deferred for v1). Add it
@@ -46,11 +48,22 @@ export function parseIcs(text: string, opts?: ParseIcsOptions): { events: IcsEve
   const lines = unfoldLines(text);
   let inEvent = false;
   let cur: IcsEvent | null = null;
+  // RECURRENCE-ID of the VEVENT being parsed (null = master/standalone).
+  // Overrides are deferred so they can replace generated occurrences no
+  // matter where they appear in the feed relative to their master.
+  // `candidates` holds every plausible instant for the named occurrence —
+  // feeds sometimes express RECURRENCE-ID in a different form than the
+  // master's DTSTART (floating vs TZID vs UTC), and a single-instant
+  // comparison would miss those, leaving the moved meeting rendered twice.
+  let curRecur: { primaryMs: number; candidates: number[] } | null = null;
+  const masters: IcsEvent[] = [];
+  const overrides: { ev: IcsEvent; primaryMs: number; candidates: number[] }[] = [];
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     if (trimmed === 'BEGIN:VEVENT') {
       inEvent = true;
+      curRecur = null;
       cur = {
         uid: '', title: '', description: '', location: '', url: '',
         start: null, end: null, allDay: false, rrule: '', exdate: [], raw: {},
@@ -59,11 +72,8 @@ export function parseIcs(text: string, opts?: ParseIcsOptions): { events: IcsEve
     }
     if (trimmed === 'END:VEVENT') {
       if (cur && cur.start) {
-        if (cur.rrule) {
-          for (const occ of expandSeries(cur, expandUntil)) out.events.push(occ);
-        } else {
-          out.events.push(cur);
-        }
+        if (curRecur !== null) overrides.push({ ev: cur, ...curRecur });
+        else masters.push(cur);
       }
       inEvent = false;
       cur = null;
@@ -80,6 +90,11 @@ export function parseIcs(text: string, opts?: ParseIcsOptions): { events: IcsEve
       case 'LOCATION': cur.location = unescapeText(cl.value); break;
       case 'URL': cur.url = cl.value; break;
       case 'RRULE': cur.rrule = cl.value; break;
+      case 'RECURRENCE-ID': {
+        const candidates = dateTimeCandidates(cl.value, cl.params);
+        if (candidates.length) curRecur = { primaryMs: candidates[0], candidates };
+        break;
+      }
       case 'EXDATE': {
         // EXDATE may carry comma-separated values AND may appear multiple
         // times in one VEVENT — accumulate into the array. raw[] would
@@ -102,7 +117,58 @@ export function parseIcs(text: string, opts?: ParseIcsOptions): { events: IcsEve
       }
     }
   }
+  for (const m of masters) {
+    if (m.rrule) {
+      for (const occ of expandSeries(m, expandUntil)) out.events.push(occ);
+    } else {
+      out.events.push(m);
+    }
+  }
+  if (overrides.length) {
+    // A RECURRENCE-ID override replaces the generated occurrence it names
+    // (RFC 5545 §3.8.4.4) — drop the original so a moved meeting doesn't
+    // render twice. Match on the master's UID (kept in raw.UID across
+    // expansion) + ANY plausible instant of the named occurrence (covers
+    // feeds whose override form differs from the master DTSTART's).
+    const ovByUid = new Map<string, Set<number>>();
+    for (const o of overrides) {
+      const uid = o.ev.uid;
+      if (!ovByUid.has(uid)) ovByUid.set(uid, new Set());
+      for (const c of o.candidates) ovByUid.get(uid)!.add(c);
+    }
+    out.events = out.events.filter((e) => {
+      const set = ovByUid.get(e.raw?.UID || e.uid);
+      return !(set && e.start && set.has(e.start.getTime()));
+    });
+    for (const o of overrides) {
+      // Suffix like recurring instances so list keys stay unique even
+      // though the override shares the master's bare UID.
+      out.events.push({
+        ...o.ev,
+        uid: `${o.ev.uid}/${new Date(o.primaryMs).toISOString()}`,
+        _recurringInstance: true,
+      });
+    }
+  }
   return out;
+}
+
+// Every plausible instant for a date-time string whose form may not match
+// the master DTSTART's: as-parsed (honoring TZID/Z/floating), plus the
+// floating-local and UTC readings of the same wall-clock fields. Used for
+// RECURRENCE-ID matching only — display always uses the as-parsed instant.
+function dateTimeCandidates(value: string, params?: Record<string, string>): number[] {
+  const out: number[] = [];
+  const p = parseDate(value, params);
+  if (p) out.push(p.date.getTime());
+  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z)?$/.exec((value || '').trim());
+  if (m) {
+    const y = parseInt(m[1], 10), mo = parseInt(m[2], 10), dd = parseInt(m[3], 10);
+    const hh = parseInt(m[4], 10), mm = parseInt(m[5], 10), ss = parseInt(m[6], 10);
+    out.push(new Date(y, mo - 1, dd, hh, mm, ss).getTime()); // floating-local reading
+    out.push(Date.UTC(y, mo - 1, dd, hh, mm, ss));           // UTC reading
+  }
+  return [...new Set(out)];
 }
 
 // ---------------------------------------------------------------------------
@@ -390,9 +456,108 @@ function findUnquotedColon(line: string): number {
   return -1;
 }
 
+// Outlook/Exchange feeds emit WINDOWS timezone names in TZID (e.g.
+// "Mountain Standard Time"), which Intl can't resolve. Map the common ones
+// to IANA before resolution — without this, every Outlook event falls back
+// to floating and renders at the author's wall-clock hour, not the
+// viewer's. Subset of CLDR's windowsZones.xml covering the zones a feed is
+// realistically authored in. Kept in lockstep with renderer/ics.js.
+const WINDOWS_TZ: Record<string, string> = {
+  'Hawaiian Standard Time': 'Pacific/Honolulu',
+  'Alaskan Standard Time': 'America/Anchorage',
+  'Pacific Standard Time': 'America/Los_Angeles',
+  'Pacific Standard Time (Mexico)': 'America/Tijuana',
+  'US Mountain Standard Time': 'America/Phoenix',
+  'Mountain Standard Time': 'America/Denver',
+  'Mountain Standard Time (Mexico)': 'America/Chihuahua',
+  'Central Standard Time': 'America/Chicago',
+  'Central Standard Time (Mexico)': 'America/Mexico_City',
+  'Canada Central Standard Time': 'America/Regina',
+  'Eastern Standard Time': 'America/New_York',
+  'US Eastern Standard Time': 'America/Indiana/Indianapolis',
+  'Atlantic Standard Time': 'America/Halifax',
+  'Newfoundland Standard Time': 'America/St_Johns',
+  'SA Pacific Standard Time': 'America/Bogota',
+  'Venezuela Standard Time': 'America/Caracas',
+  'Argentina Standard Time': 'America/Argentina/Buenos_Aires',
+  'E. South America Standard Time': 'America/Sao_Paulo',
+  'UTC': 'UTC',
+  'Greenwich Standard Time': 'Atlantic/Reykjavik',
+  'GMT Standard Time': 'Europe/London',
+  'W. Europe Standard Time': 'Europe/Berlin',
+  'Romance Standard Time': 'Europe/Paris',
+  'Central Europe Standard Time': 'Europe/Budapest',
+  'Central European Standard Time': 'Europe/Warsaw',
+  'GTB Standard Time': 'Europe/Bucharest',
+  'FLE Standard Time': 'Europe/Kiev',
+  'E. Europe Standard Time': 'Europe/Chisinau',
+  'Turkey Standard Time': 'Europe/Istanbul',
+  'Russian Standard Time': 'Europe/Moscow',
+  'South Africa Standard Time': 'Africa/Johannesburg',
+  'Egypt Standard Time': 'Africa/Cairo',
+  'Israel Standard Time': 'Asia/Jerusalem',
+  'Arab Standard Time': 'Asia/Riyadh',
+  'Arabian Standard Time': 'Asia/Dubai',
+  'Iran Standard Time': 'Asia/Tehran',
+  'Pakistan Standard Time': 'Asia/Karachi',
+  'India Standard Time': 'Asia/Kolkata',
+  'Sri Lanka Standard Time': 'Asia/Colombo',
+  'Nepal Standard Time': 'Asia/Kathmandu',
+  'Bangladesh Standard Time': 'Asia/Dhaka',
+  'SE Asia Standard Time': 'Asia/Bangkok',
+  'China Standard Time': 'Asia/Shanghai',
+  'Taipei Standard Time': 'Asia/Taipei',
+  'Singapore Standard Time': 'Asia/Singapore',
+  'Tokyo Standard Time': 'Asia/Tokyo',
+  'Korea Standard Time': 'Asia/Seoul',
+  'W. Australia Standard Time': 'Australia/Perth',
+  'Cen. Australia Standard Time': 'Australia/Adelaide',
+  'AUS Eastern Standard Time': 'Australia/Sydney',
+  'E. Australia Standard Time': 'Australia/Brisbane',
+  'New Zealand Standard Time': 'Pacific/Auckland',
+};
+
+// Convert a wall-clock time in an IANA timezone to an absolute instant.
+// Two-pass offset estimation via Intl (the second pass nails times near a
+// DST transition). Returns null when the runtime can't resolve the zone —
+// the caller falls back to treating the time as floating-local, which is
+// the old behavior.
+function zonedToUtc(
+  y: number, mo: number, dd: number, hh: number, mm: number, ss: number,
+  timeZone: string,
+): Date | null {
+  const zone = WINDOWS_TZ[timeZone] ?? timeZone;
+  let dtf: Intl.DateTimeFormat;
+  try {
+    dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone: zone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hourCycle: 'h23',
+    });
+  } catch {
+    return null; // unknown TZID or no Intl timezone data on this runtime
+  }
+  const wallUtc = Date.UTC(y, mo - 1, dd, hh, mm, ss);
+  const offsetAt = (utcMs: number): number => {
+    const parts: Record<string, string> = {};
+    for (const p of dtf.formatToParts(new Date(utcMs))) parts[p.type] = p.value;
+    const asUtc = Date.UTC(
+      parseInt(parts.year, 10), parseInt(parts.month, 10) - 1, parseInt(parts.day, 10),
+      parseInt(parts.hour, 10) % 24, parseInt(parts.minute, 10), parseInt(parts.second, 10),
+    );
+    return asUtc - utcMs;
+  };
+  let utc = wallUtc - offsetAt(wallUtc);
+  utc = wallUtc - offsetAt(utc);
+  return new Date(utc);
+}
+
 // §3.3.4/3.3.5: YYYYMMDD (all-day) or YYYYMMDDTHHMMSS[Z]. TZID-qualified
-// local times are treated as floating. Round-trip-check the calendar
-// fields to refuse silent JS Date overflow (e.g. Feb 30 → Mar 2).
+// times are converted from their zone to the device's local time (falling
+// back to floating when the zone can't be resolved), so events authored in
+// other timezones land at the right local hour. Round-trip-check the
+// calendar fields to refuse silent JS Date overflow (e.g. Feb 30 → Mar 2).
 function parseDate(
   value: string,
   params?: Record<string, string>,
@@ -441,6 +606,13 @@ function parseDate(
       d.getMinutes() !== mm ||
       d.getSeconds() !== ss
     ) return null;
+    // The wall-clock fields are valid; if a TZID names the zone they're
+    // in, convert to the real instant so the event renders at the right
+    // local hour for this user.
+    if (params?.TZID) {
+      const zoned = zonedToUtc(y, mo, dd, hh, mm, ss, params.TZID);
+      if (zoned) d = zoned;
+    }
   }
   return { date: d, allDay: false };
 }

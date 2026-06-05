@@ -94,6 +94,58 @@ export function hourOf(d: Date): number {
   return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
 }
 
+// Assign overlapping timeline blocks to side-by-side columns (the iCal
+// pattern). Blocks are clustered by transitive overlap; within a cluster
+// each block takes the first column whose previous occupant has ended, and
+// every block in the cluster shares the cluster's column count so widths
+// line up.
+export function layoutOverlaps<T extends { startHour: number; endHour: number }>(
+  blocks: T[],
+): (T & { col: number; cols: number })[] {
+  const sorted = [...blocks].sort((a, b) => a.startHour - b.startHour || b.endHour - a.endHour);
+  const out: (T & { col: number; cols: number })[] = [];
+  let cluster: (T & { col: number; cols: number })[] = [];
+  let colEnds: number[] = [];
+  let clusterEnd = -Infinity;
+  const flush = () => {
+    for (const b of cluster) b.cols = colEnds.length || 1;
+    out.push(...cluster);
+    cluster = [];
+    colEnds = [];
+    clusterEnd = -Infinity;
+  };
+  for (const src of sorted) {
+    if (cluster.length && src.startHour >= clusterEnd) flush();
+    let col = colEnds.findIndex((end) => end <= src.startHour);
+    if (col === -1) {
+      col = colEnds.length;
+      colEnds.push(src.endHour);
+    } else {
+      colEnds[col] = src.endHour;
+    }
+    cluster.push({ ...src, col, cols: 1 });
+    clusterEnd = Math.max(clusterEnd, src.endHour);
+  }
+  flush();
+  return out;
+}
+
+// Does an all-day ICS event cover this day? All-day spans are
+// [DTSTART, DTEND) with DTEND exclusive per RFC 5545 §3.6.1 (a one-day
+// event on the 5th has DTEND on the 6th). Missing or non-compliant DTEND
+// (== DTSTART) renders as a single day.
+export function icsAllDayOnDay(
+  e: { start: Date | null; end: Date | null; allDay: boolean },
+  day: Date,
+): boolean {
+  if (!e.allDay || !e.start) return false;
+  const d = startOfDay(day).getTime();
+  const s = startOfDay(e.start).getTime();
+  if (!e.end) return d === s;
+  const endEx = Math.max(startOfDay(e.end).getTime(), s + 1);
+  return d >= s && d < endEx;
+}
+
 export function sameDay(a: Date, b: Date): boolean {
   return (
     a.getFullYear() === b.getFullYear() &&

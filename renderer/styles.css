@@ -204,13 +204,19 @@ input:focus, textarea:focus {
   display: flex; align-items: center; justify-content: space-between;
   margin-top: 6px;
   gap: 8px;
+  position: relative; /* anchors the .status-menu popup */
 }
 .me {
   font-size: 12px; color: var(--text-dim);
   display: flex; align-items: center; gap: 6px;
   flex: 1; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer;
+  border-radius: 5px;
+  padding: 2px 4px; margin-left: -4px;
+  transition: background var(--t-fast), color var(--t-fast);
 }
+.me:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
 .me::before {
   content: '';
   width: 7px; height: 7px;
@@ -219,6 +225,43 @@ input:focus, textarea:focus {
   flex: none;
   box-shadow: 0 0 8px rgba(48, 209, 88, 0.6);
 }
+/* Presence states — green Available, yellow Away, orange BRB, red
+   Unavailable. The dot follows the `status` carried in the team presence
+   meta; same ramp as the mobile client. */
+.me[data-status='away']::before { background: #ffd60a; box-shadow: 0 0 8px rgba(255, 214, 10, 0.6); }
+.me[data-status='brb']::before { background: var(--warn); box-shadow: 0 0 8px rgba(255, 159, 10, 0.6); }
+.me[data-status='unavailable']::before { background: #ff5b5b; box-shadow: 0 0 8px rgba(255, 91, 91, 0.6); }
+.dot.status-away { background: #ffd60a; }
+.dot.status-brb { background: var(--warn); }
+.dot.status-unavailable { background: #ff5b5b; }
+/* Presence dot on 1:1 DM sidebar rows (refreshDmPresence) — slightly
+   smaller than roster dots so it reads as a prefix, not a bullet. */
+.channel-list li .ch-presence { width: 7px; height: 7px; flex: none; margin-right: 1px; }
+.sidebar .dot.status-away { box-shadow: 0 0 0 2px var(--bg-sidebar), 0 0 8px rgba(255, 214, 10, 0.5); }
+.sidebar .dot.status-brb { box-shadow: 0 0 0 2px var(--bg-sidebar), 0 0 8px rgba(255, 159, 10, 0.5); }
+.sidebar .dot.status-unavailable { box-shadow: 0 0 0 2px var(--bg-sidebar), 0 0 8px rgba(255, 91, 91, 0.5); }
+.status-menu {
+  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 1000;
+  min-width: 150px;
+  background: var(--bg-elev); border: 1px solid var(--line-strong);
+  border-radius: 10px; padding: 4px;
+  box-shadow: var(--shadow-2);
+  backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.status-menu-item {
+  display: flex; align-items: center; gap: 8px;
+  background: transparent; border: none; color: var(--text);
+  font: inherit; font-size: 13px; text-align: left;
+  padding: 7px 9px; border-radius: 7px; cursor: pointer;
+}
+.status-menu-item:hover { background: rgba(255, 255, 255, 0.07); }
+.status-menu-item.selected { color: var(--accent-2); font-weight: 600; }
+.status-menu-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.status-menu-dot.status-active { background: var(--good); }
+.status-menu-dot.status-away { background: #ffd60a; }
+.status-menu-dot.status-brb { background: var(--warn); }
+.status-menu-dot.status-unavailable { background: #ff5b5b; }
 .me-row .ghost {
   background: transparent; border: none; color: var(--text-dim);
   cursor: pointer; padding: 2px 6px; font-size: 14px;
@@ -3011,7 +3054,25 @@ body.popout-call .popout-stage > .draw-toolbar {
   align-items: center;
   justify-content: center;
   user-select: none;
+  position: relative; /* anchors the presence dot */
 }
+/* Presence dot on the rail avatar — the v2 status trigger. ::after (not a
+   DOM child) so paintMeBadge's textContent rewrites can't wipe it. */
+[data-ui="v2"] .huddle-rail-me::after {
+  content: '';
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--good);
+  border: 2px solid var(--bg-0);
+}
+[data-ui="v2"] .huddle-rail-me[data-status='away']::after { background: #ffd60a; }
+[data-ui="v2"] .huddle-rail-me[data-status='brb']::after { background: var(--warn); }
+[data-ui="v2"] .huddle-rail-me[data-status='unavailable']::after { background: #ff5b5b; }
+[data-ui="v2"] .huddle-rail-me:hover { filter: brightness(1.12); }
 
 /* Existing sidebar reads as the design's "contextual panel" under
    v2 — slimmer, warm-charcoal, soft hairline. Headers / rows /
@@ -3332,7 +3393,11 @@ body.popout-call .popout-stage > .draw-toolbar {
 [data-ui="v2"] .me-row .me {
   color: var(--tx-lo);
   font-family: var(--font);
+  /* Not a status trigger under v2 (the rail avatar is) — drop the
+     clickable affordance the base .me rules add. */
+  cursor: default;
 }
+[data-ui="v2"] .me-row .me:hover { background: transparent; color: var(--tx-lo); }
 [data-ui="v2"] .me-row .ghost { color: var(--tx-lo); }
 [data-ui="v2"] .me-row .ghost:hover {
   background: var(--bg-2);

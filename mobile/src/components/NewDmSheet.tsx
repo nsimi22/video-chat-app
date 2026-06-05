@@ -258,9 +258,18 @@ export function NewDmSheet({ visible, onClose, onOpened, teamId, creatorId, rost
                         size={30}
                         uri={p.avatar_url ?? undefined}
                       />
-                      <Text style={{ flex: 1, color: colors.text, fontSize: 15 }} numberOfLines={1}>
-                        {p.name}
-                      </Text>
+                      {/* Bio rides along — with the People tab gone, this
+                          picker is mobile's only roster view. */}
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={{ color: colors.text, fontSize: 15 }} numberOfLines={1}>
+                          {p.name}
+                        </Text>
+                        {p.bio ? (
+                          <Text style={{ color: colors.textDim, fontSize: 12, marginTop: 1 }} numberOfLines={1}>
+                            {p.bio}
+                          </Text>
+                        ) : null}
+                      </View>
                       <View
                         style={{
                           width: 22,

@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { Alert, ScrollView, View } from 'react-native';
+import { Alert, ScrollView, Text, View } from 'react-native';
 import { router } from 'expo-router';
+import { PenLine, Sparkles, Video } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
-import { Brand, Button, Field, H1, LinkButton, P, Screen } from '@/components/ui';
-import { space } from '@/theme';
+import { Button, Field, LinkButton, Logo, Screen } from '@/components/ui';
+import { colors, space } from '@/theme';
 
 // After a successful sign-in (OTP or password), route based on whether
 // the user has a profile name set yet. Mirrors verify.tsx so the password
@@ -84,14 +85,29 @@ export default function EmailScreen() {
 
   return (
     <Screen>
-      <ScrollView contentContainerStyle={{ paddingBottom: space(8) }} keyboardShouldPersistTaps="handled">
-      <Brand tagline="Team video, screen-share, and chat — in one app." />
-      <H1>Sign in to Huddle</H1>
-      <P>
-        {mode === 'otp'
-          ? "We'll email you an 8-digit code."
-          : 'Use a password if you’ve set one, or create an account.'}
-      </P>
+      <ScrollView contentContainerStyle={{ paddingBottom: space(8), flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
+      {/* Hero — design prototype's sign-in screen. */}
+      <View style={{ alignItems: 'center', marginBottom: space(8) }}>
+        <Logo size={52} />
+        <Text
+          style={{
+            fontSize: 27,
+            fontWeight: '800',
+            letterSpacing: -0.8,
+            color: colors.text,
+            textAlign: 'center',
+            lineHeight: 31,
+            marginTop: space(5),
+            marginBottom: space(2.5),
+          }}
+        >
+          Chat, call, and draw — without leaving the conversation.
+        </Text>
+        <Text style={{ fontSize: 14.5, color: colors.textDim, textAlign: 'center', lineHeight: 21 }}>
+          Sign in to your team on Huddle.
+        </Text>
+      </View>
+      <Text style={{ fontSize: 12.5, fontWeight: '600', color: colors.textMid, marginBottom: space(2) }}>Work email</Text>
       <Field
         placeholder="you@company.com"
         autoCapitalize="none"
@@ -115,7 +131,12 @@ export default function EmailScreen() {
       ) : null}
 
       {mode === 'otp' ? (
-        <Button title="Send code" onPress={sendCode} loading={busy} disabled={!validEmail} />
+        <>
+          <Button title="Continue with email" onPress={sendCode} loading={busy} disabled={!validEmail} />
+          <Text style={{ fontSize: 12.5, color: colors.textFaint, textAlign: 'center', marginTop: space(4), lineHeight: 19 }}>
+            We'll email you a code. No password required.
+          </Text>
+        </>
       ) : (
         <View style={{ flexDirection: 'row', gap: space(2) }}>
           <View style={{ flex: 1 }}>
@@ -131,6 +152,15 @@ export default function EmailScreen() {
         title={mode === 'otp' ? 'Use a password instead' : 'Use the email code instead'}
         onPress={() => { setMode(mode === 'otp' ? 'password' : 'otp'); setPassword(''); }}
       />
+      {/* Feature strip (design footer): Calls · Whiteboard · AI built in */}
+      <View style={{ flexDirection: 'row', justifyContent: 'center', gap: space(5.5), marginTop: space(6) }}>
+        {([[Video, 'Calls'], [PenLine, 'Whiteboard'], [Sparkles, 'AI built in']] as const).map(([Icon, label]) => (
+          <View key={label} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Icon size={15} color={colors.accentTx} />
+            <Text style={{ fontSize: 12.5, color: colors.textDim }}>{label}</Text>
+          </View>
+        ))}
+      </View>
       </ScrollView>
     </Screen>
   );

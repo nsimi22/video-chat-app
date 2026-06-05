@@ -78,7 +78,7 @@ export function ReactorSheet({ open, emoji, userIds, profiles, meId, onClose }: 
             transform: [{ translateY: slideY }],
           }}
         >
-          <SafeAreaView edges={['bottom']}>
+          <SafeAreaView edges={['bottom']} style={{ paddingBottom: space(3) }}>
             {/* Grabber — same affordance as MessageActionSheet so users
                 recognize the gesture target without it being interactive. */}
             <View style={{ alignItems: 'center', paddingTop: space(2) }}>

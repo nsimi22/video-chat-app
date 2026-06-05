@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Platform, Pressable, useWindowDimensions, View } from 'react-native';
+import { Pressable, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import {
@@ -11,7 +11,7 @@ import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-na
 import { Mic, MicOff, PhoneOff, type LucideIcon } from 'lucide-react-native';
 import { Avatar } from '@/components/ui';
 import { PipFallbackView } from '@/components/PipFallbackView';
-import { colors, radius, space } from '@/theme';
+import { colors, radius, space, TAB_BAR_HEIGHT, tabBarOffset } from '@/theme';
 import { useCall } from '@/context/CallContext';
 import { PIP_WINDOW_FALLBACK, useIsAppBackgrounded, usePipTrack } from '@/lib/pipTrack';
 
@@ -30,12 +30,9 @@ import { PIP_WINDOW_FALLBACK, useIsAppBackgrounded, usePipTrack } from '@/lib/pi
 const FLOATER_WIDTH = PIP_WINDOW_FALLBACK.width;
 const FLOATER_HEIGHT = PIP_WINDOW_FALLBACK.height;
 const FLOATER_CONTROLS_HEIGHT = 32;
-// react-navigation's default bottom-tab content heights (sans safe-area
-// inset, which we add separately). Keep this in sync if we override
-// `tabBarStyle.height` in (app)/(tabs)/_layout.tsx — there's no React
-// hook for it from outside the tab navigator, so we mirror the default
-// by hand. See `getDefaultTabBarHeight()` in @react-navigation/bottom-tabs.
-const TAB_BAR_CONTENT_HEIGHT = Platform.OS === 'ios' ? 49 : 56;
+// The floating liquid-glass tab bar's geometry lives in theme.ts
+// (TAB_BAR_HEIGHT + tabBarOffset) — shared with (app)/(tabs)/_layout.tsx
+// so the bottom snap corner clears the glass pill.
 // Gap from screen edges when snapped into a corner.
 const EDGE_PADDING = space(3);
 // Velocity multiplier when projecting where a drag would have ended
@@ -75,7 +72,7 @@ export function FloatingCall() {
     const left = EDGE_PADDING;
     const top = insets.top + EDGE_PADDING;
     const bottom =
-      winHeight - FLOATER_HEIGHT - insets.bottom - TAB_BAR_CONTENT_HEIGHT - space(2);
+      winHeight - FLOATER_HEIGHT - tabBarOffset(insets.bottom) - TAB_BAR_HEIGHT - space(2);
     return { right, left, top, bottom };
   }, [winWidth, winHeight, insets.top, insets.bottom]);
 

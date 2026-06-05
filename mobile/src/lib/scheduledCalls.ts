@@ -46,25 +46,29 @@ function marshal(row: Row): ScheduledCall {
   };
 }
 
-// Default `from` = 1h ago so a call that just started still shows up
-// (people often rejoin a just-started scheduled call). Matches the
-// desktop default.
+// `from` bounds how far back to load; omit it to load full history (the
+// calendar keeps past events visible when scrolling back). The unbounded
+// path orders DESCENDING + limit so that if the team ever outgrows the
+// row cap it's the *oldest* events that drop, never upcoming ones, then
+// reverses back to ascending for callers.
 export async function loadScheduledCalls(
   teamId: string,
-  { from = new Date(Date.now() - 60 * 60 * 1000), limit = 500 }: { from?: Date; limit?: number } = {},
+  { from, limit = 500 }: { from?: Date; limit?: number } = {},
 ): Promise<ScheduledCall[]> {
-  const { data, error } = await supabase
+  let q = supabase
     .from('scheduled_calls')
     .select('*')
     .eq('team_id', teamId)
-    .gte('starts_at', from.toISOString())
-    .order('starts_at', { ascending: true })
+    .order('starts_at', { ascending: !!from })
     .limit(limit);
+  if (from) q = q.gte('starts_at', from.toISOString());
+  const { data, error } = await q;
   if (error) {
     console.warn('loadScheduledCalls failed', error.message, error.details ?? '', error.hint ?? '', error.code ?? '');
     return [];
   }
-  return ((data ?? []) as Row[]).map(marshal);
+  const rows = ((data ?? []) as Row[]).map(marshal);
+  return from ? rows : rows.reverse();
 }
 
 // Single-row lookup by id — used by the detail screen so it doesn't have
