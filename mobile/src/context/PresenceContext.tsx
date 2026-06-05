@@ -40,6 +40,10 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
   const typingCbs = useRef<Set<(p: TypingPayload) => void>>(new Set());
   const myStatusRef = useRef<PresenceStatus>('active');
   const subscribedRef = useRef(false);
+  // Last name/color we tracked with. setMyStatus re-tracks from this ref —
+  // reading presenceState() instead would race the initial track's server
+  // round-trip and could blank the user's name for every peer.
+  const myMetaRef = useRef<{ name: string; color: string | null } | null>(null);
 
   useEffect(() => {
     if (!activeTeam?.id || !userId) return;
@@ -83,6 +87,9 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
         color = p?.color ?? null;
       } catch {}
       if (!active) return;
+      myMetaRef.current = { name, color };
+      // myStatusRef (not a captured value) so a status picked while the
+      // profile fetch was in flight still rides this initial track.
       ch.track({ name, color, online_at: new Date().toISOString(), status: myStatusRef.current }).catch(() => {});
     });
     channelRef.current = ch;
@@ -91,6 +98,7 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
       active = false;
       subscribedRef.current = false;
       channelRef.current = null;
+      myMetaRef.current = null;
       setStatuses({});
       supabase.removeChannel(ch);
     };
@@ -100,17 +108,18 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
     myStatusRef.current = s;
     setMyStatusState(s);
     const ch = channelRef.current;
-    if (ch && subscribedRef.current) {
-      // Re-track replaces our presence meta; peers pick it up via sync.
-      const prev = userId ? ch.presenceState<{ name?: string; color?: string | null }>()[userId]?.[0] : undefined;
+    // Skip the immediate re-track until the initial profile track has run
+    // (myMetaRef set) — tracking now would broadcast an empty name to every
+    // peer, and the pending initial track already carries the new status
+    // via myStatusRef.
+    if (ch && subscribedRef.current && myMetaRef.current) {
       ch.track({
-        name: prev?.name ?? '',
-        color: prev?.color ?? null,
+        ...myMetaRef.current,
         online_at: new Date().toISOString(),
         status: s,
       }).catch(() => {});
     }
-  }, [userId]);
+  }, []);
 
   const sendTyping = useCallback((payload: TypingPayload) => {
     const ch = channelRef.current;

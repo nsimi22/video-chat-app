@@ -384,7 +384,9 @@ function BoardEmpty({ title, sub }: { title: string; sub: string }) {
 // renderer/jira-board.js. Description renders ADF blocks so headings are
 // called out instead of flattening into one run of text.
 type PickerKind = 'status' | 'assignee' | 'priority';
-type PickerOption = { id: string; label: string; selected: boolean };
+// `cat` carries the target status's real category (statusCategory.key from
+// the /transitions response) so applyPick doesn't have to guess it.
+type PickerOption = { id: string; label: string; selected: boolean; cat?: string };
 
 function CardSheet({
   ticket,
@@ -437,6 +439,7 @@ function CardSheet({
           id: tr.id,
           label: tr.to?.name || tr.name,
           selected: (tr.to?.name || '').toLowerCase() === t.status.toLowerCase(),
+          cat: tr.to?.statusCategory?.key,
         })));
       } else if (kind === 'assignee') {
         const users = await listJiraAssignableUsers(jira, project || '');
@@ -460,10 +463,11 @@ function CardSheet({
     try {
       if (picker === 'status') {
         await transitionJiraIssue(jira, t.key, opt.id);
-        // The transition's target name is the new status; category isn't in
-        // the option, so re-derive it loosely (done-ish names → done).
+        // Use the real statusCategory from the transitions response; the
+        // name-regex is only a fallback for a response that omits it.
         const name = opt.label;
-        const cat = /done|closed|resolved/i.test(name) ? 'done' : /to do|backlog|open|scoping/i.test(name) ? 'new' : 'indeterminate';
+        const cat = opt.cat
+          || (/done|closed|resolved/i.test(name) ? 'done' : /to do|backlog|open|scoping/i.test(name) ? 'new' : 'indeterminate');
         onUpdated({ ...t, status: name, cat });
       } else if (picker === 'assignee') {
         await updateJiraIssue(jira, t.key, { assigneeAccountId: opt.id || null });

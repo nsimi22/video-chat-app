@@ -82,12 +82,14 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
       const key = e.start.toDateString();
       if (!out.has(key)) continue;
       const start = hourOf(e.start);
-      const end = e.end ? hourOf(e.end) : start + 0.5;
+      // Cross-midnight events would get endHour < startHour (hourOf reads
+      // clock time only) — clamp the block to midnight. See WeekView.
+      const end = !e.end ? start + 0.5 : sameDay(e.end, e.start) ? hourOf(e.end) : DAY_END;
       out.get(key)!.push({
         key: 'i:' + (e.uid || `${e.title}:${e.start.toISOString()}`),
         title: e.title || '(untitled)',
         startHour: start,
-        endHour: Math.min(DAY_END, end),
+        endHour: Math.min(DAY_END, Math.max(end, start + 0.25)),
         color: C.text2,
         isHuddle: false,
         scheduledCallId: null,

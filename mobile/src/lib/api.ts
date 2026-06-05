@@ -549,22 +549,29 @@ export async function closePoll(messageId: string): Promise<void> {
 
 // --- Threads ----------------------------------------------------------------
 // Reply tallies for the thread chips in the channel view. One query for the
-// whole channel (just the parent_id column), counted client-side — the same
-// data desktop derives from its in-memory `all` array.
-export async function fetchReplyCounts(teamId: string, channelId: string): Promise<Map<string, number>> {
+// whole channel, counted client-side — the same data desktop derives from
+// its in-memory `all` array. Also returns the reply ids so the caller's
+// realtime INSERT handler can dedup against this snapshot (a reply landing
+// during the query would otherwise be counted twice).
+export async function fetchReplyCounts(
+  teamId: string,
+  channelId: string,
+): Promise<{ counts: Map<string, number>; ids: Set<string> }> {
   const { data, error } = await supabase
     .from('messages')
-    .select('parent_id')
+    .select('id,parent_id')
     .eq('team_id', teamId)
     .eq('channel_id', channelId)
     .not('parent_id', 'is', null)
     .limit(2000);
   if (error) throw error;
   const counts = new Map<string, number>();
-  for (const row of (data ?? []) as { parent_id: string }[]) {
+  const ids = new Set<string>();
+  for (const row of (data ?? []) as { id: string; parent_id: string }[]) {
     counts.set(row.parent_id, (counts.get(row.parent_id) ?? 0) + 1);
+    ids.add(row.id);
   }
-  return counts;
+  return { counts, ids };
 }
 
 // --- Team Jira board (huddle_team_jira_board migration) ---------------------

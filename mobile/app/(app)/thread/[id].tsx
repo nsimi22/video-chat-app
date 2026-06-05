@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
+  type AppStateStatus,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -53,8 +55,13 @@ export default function ThreadScreen() {
 
   // Live replies. The team-wide filter mirrors useChannelMessages — channel
   // id alone isn't unique across teams; narrow to this thread client-side.
+  // postgres_changes is at-most-once and mobile tears the WS down on
+  // background, so re-SUBSCRIBED and AppState 'active' both refetch the
+  // whole thread (fetchThread is cheap and load() replaces wholesale) —
+  // the same gap-fill discipline as useChannelMessages.
   useEffect(() => {
     if (!teamId) return;
+    let firstSubscribe = true;
     const sub = supabase
       .channel(`db:messages:thread:${parentId}`)
       .on(
@@ -74,9 +81,22 @@ export default function ThreadScreen() {
           }
         },
       )
-      .subscribe();
-    return () => { supabase.removeChannel(sub); };
-  }, [teamId, parentId]);
+      .subscribe((status) => {
+        if (status !== 'SUBSCRIBED') return;
+        if (firstSubscribe) {
+          firstSubscribe = false;
+          return;
+        }
+        load(); // reconnect after a transient drop — fill any gap
+      });
+    const appStateSub = AppState.addEventListener('change', (state: AppStateStatus) => {
+      if (state === 'active') load();
+    });
+    return () => {
+      appStateSub.remove();
+      supabase.removeChannel(sub);
+    };
+  }, [teamId, parentId, load]);
 
   const profileFor = useCallback((uid: string) => roster.find((p) => p.user_id === uid), [roster]);
   const mentionNames = useMemo(() => roster.map((p) => p.name).filter((n): n is string => !!n), [roster]);

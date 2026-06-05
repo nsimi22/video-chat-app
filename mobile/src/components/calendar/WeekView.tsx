@@ -129,13 +129,16 @@ export function WeekView({
     for (const e of icsEvents) {
       if (!e.start || !sameDay(e.start, selectedDay) || e.allDay) continue;
       const start = hourOf(e.start);
-      const end = e.end ? hourOf(e.end) : start + 0.5;
+      // An event that crosses midnight ends on a later day — hourOf() only
+      // reads clock time, so it would yield endHour < startHour (negative
+      // duration + corrupted overlap lanes). Clamp the block to midnight.
+      const end = !e.end ? start + 0.5 : sameDay(e.end, e.start) ? hourOf(e.end) : DAY_END;
       out.push({
         key: 'i:' + (e.uid || `${e.title}:${e.start.toISOString()}`),
         kind: 'ics',
         title: e.title || '(untitled)',
         startHour: start,
-        endHour: Math.min(DAY_END, end),
+        endHour: Math.min(DAY_END, Math.max(end, start + 0.25)),
         color: C.text2,
         channelName: '',
         isHuddle: false,

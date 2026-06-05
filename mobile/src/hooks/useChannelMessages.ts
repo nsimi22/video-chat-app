@@ -35,6 +35,10 @@ export function useChannelMessages(teamId: string, channelId: string) {
     setReplyCounts(new Map());
     setLoading(true);
     setHasMore(true);
+    // Reply ids already reflected in replyCounts — the INSERT handler
+    // checks this so a reply that lands in both the seed/recount query
+    // and the realtime stream isn't counted twice.
+    const countedReplyIds = new Set<string>();
     oldestTs.current = null;
     latestTs.current = null;
     let firstSubscribe = true;
@@ -59,9 +63,19 @@ export function useChannelMessages(teamId: string, channelId: string) {
         setLoading(false);
       });
 
-    fetchReplyCounts(teamId, channelId)
-      .then((counts) => { if (active) setReplyCounts(counts); })
-      .catch((e) => console.warn('fetchReplyCounts failed', e));
+    // Seed (and on catch-up, re-reconcile) the reply tallies. Wholesale
+    // replace: the query is the source of truth, so this also heals any
+    // drift from replies that arrived while the realtime socket was down.
+    const reconcileReplyCounts = () => {
+      fetchReplyCounts(teamId, channelId)
+        .then(({ counts, ids }) => {
+          if (!active) return;
+          for (const id of ids) countedReplyIds.add(id);
+          setReplyCounts(counts);
+        })
+        .catch((e) => console.warn('fetchReplyCounts failed', e));
+    };
+    reconcileReplyCounts();
 
     const BATCH = 500;
     const catchUp = async () => {
@@ -109,6 +123,9 @@ export function useChannelMessages(teamId: string, channelId: string) {
             if (m.channel_id !== channelId) return;
             if (m.parent_id) {
               // Thread reply — bump the parent's chip instead of the list.
+              // Skip ids the seed/recount snapshot already covered.
+              if (countedReplyIds.has(m.id)) return;
+              countedReplyIds.add(m.id);
               const pid = m.parent_id;
               setReplyCounts((prev) => {
                 const next = new Map(prev);
@@ -137,8 +154,11 @@ export function useChannelMessages(teamId: string, channelId: string) {
           firstSubscribe = false;
           return;
         }
-        // Reconnect after a transient drop — fill any gap.
+        // Reconnect after a transient drop — fill any gap. catchUp only
+        // covers root messages (fetchMessagesSince filters out replies),
+        // so reconcile the reply tallies separately.
         catchUp();
+        reconcileReplyCounts();
       });
 
     // Belt-and-suspenders: the WS sometimes auto-reconnects silently
@@ -146,7 +166,11 @@ export function useChannelMessages(teamId: string, channelId: string) {
     // brings the app back from a long background). Re-run catch-up
     // when AppState returns to 'active'.
     const onAppStateChange = (state: AppStateStatus) => {
-      if (state === 'active') catchUp();
+      if (state !== 'active') return;
+      catchUp();
+      // Replies posted while backgrounded never reach catchUp (it only
+      // fetches root messages) — recount them.
+      reconcileReplyCounts();
     };
     const appStateSub = AppState.addEventListener('change', onAppStateChange);
 
