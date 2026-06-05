@@ -937,7 +937,8 @@ input:focus, textarea:focus {
 }
 
 /* GIF picker — sits above the composer like the emoji picker. */
-.gif-picker {
+.gif-picker,
+.poll-composer {
   position: absolute; bottom: 64px; right: 16px; left: 16px;
   background: var(--bg-2);
   border: 1px solid var(--line);
@@ -951,6 +952,61 @@ input:focus, textarea:focus {
 }
 .gif-search-row { display: flex; gap: 6px; align-items: center; }
 .gif-search-row input { flex: 1; }
+
+/* Poll composer — shares the floating popover chrome with .gif-picker
+   (grouped selector above); narrower since it's a form, not a media grid. */
+.poll-composer {
+  left: auto;
+  width: min(420px, calc(100% - 32px));
+  padding: 12px;
+}
+.poll-composer-head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; }
+.poll-composer #poll-options { display: flex; flex-direction: column; gap: 6px; }
+.poll-composer-foot { display: flex; align-items: center; gap: 10px; }
+.poll-composer-foot .poll-multi-label {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 12.5px; color: var(--text-dim);
+  margin-right: auto;
+}
+.poll-composer-foot #poll-add-option { font-size: 12.5px; }
+
+/* Poll card — interactive option rows with result bars behind the labels. */
+.poll-card { display: flex; flex-direction: column; gap: 6px; max-width: 440px; }
+.poll-question { font-weight: 600; margin-bottom: 2px; }
+.poll-option {
+  position: relative; overflow: hidden;
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; text-align: left;
+  padding: 7px 10px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  cursor: pointer;
+  box-shadow: none; min-height: auto;
+}
+.poll-option:hover:not(:disabled) { background: rgba(255,255,255,.08); }
+.poll-option:disabled { cursor: default; opacity: .85; }
+.poll-option.mine { border-color: var(--accent); }
+.poll-bar {
+  position: absolute; inset: 0 auto 0 0;
+  background: var(--accent);
+  opacity: .22;
+  transition: width .25s ease;
+  pointer-events: none;
+}
+.poll-option-label { position: relative; flex: 1; min-width: 0; }
+.poll-count { position: relative; flex: none; font-size: 12px; color: var(--text-dim); }
+.poll-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; color: var(--text-dim); margin-top: 2px;
+}
+.poll-close-btn {
+  background: transparent; border: none; color: var(--text-dim);
+  font-size: 12px; cursor: pointer; padding: 2px 4px;
+  box-shadow: none; min-height: auto; text-decoration: underline;
+}
+.poll-close-btn:hover { color: var(--text); background: transparent; }
 .gif-grid {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
   overflow-y: auto; min-height: 60px;

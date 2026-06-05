@@ -279,6 +279,7 @@ class ChatView {
     this._wireMesh();
     this._initEmojiPicker();
     this._initGifPicker();
+    this._initPollComposer();
   }
 
   // --- Public API ---------------------------------------------------------
@@ -721,11 +722,17 @@ class ChatView {
   // 50 thumbs-up doesn't produce a tooltip the browser truncates
   // mid-name.
   _reactionTooltip(emoji, peers) {
+    return `${this._namesPhrase(peers)} reacted with ${emoji}`;
+  }
+
+  // Shared "you, Alice and 2 others" phrase builder for reaction pills
+  // and poll-option tooltips.
+  _namesPhrase(peers) {
     const myId = this.mesh.peerId;
     const names = [];
     let unknown = 0;
     // Self goes first so the user can confirm at a glance which
-    // reactions they themselves contributed to.
+    // reactions/votes they themselves contributed to.
     if (peers.includes(myId)) names.push('you');
     for (const uid of peers) {
       if (uid === myId) continue;
@@ -744,12 +751,10 @@ class ChatView {
       names.length = MAX_NAMES;
       names.push(`${overflow} more`);
     }
-    let who;
-    if (names.length === 0) who = 'no one';
-    else if (names.length === 1) who = names[0];
-    else if (names.length === 2) who = `${names[0]} and ${names[1]}`;
-    else who = `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-    return `${who} reacted with ${emoji}`;
+    if (names.length === 0) return 'no one';
+    if (names.length === 1) return names[0];
+    if (names.length === 2) return `${names[0]} and ${names[1]}`;
+    return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
   }
 
   // Teammates that can be @-mentioned: the live team roster (current
@@ -1610,9 +1615,16 @@ class ChatView {
       head.append(edited);
     }
 
-    // Body: edit-mode textarea or rendered markdown.
+    // Body: poll card, edit-mode textarea, or rendered markdown.
     let body;
-    if (this.editingMessageId === m.id) {
+    if (m.meta?.poll) {
+      // Polls render as an interactive card in place of the body. The
+      // body text ("📊 Poll: …") still exists on the row for mobile,
+      // notifications, and search — just not rendered here. Polls are
+      // not editable (edit would desync body from meta.poll), so the
+      // editingMessageId branch can't apply.
+      body = this._renderPollCard(m, isMine);
+    } else if (this.editingMessageId === m.id) {
       body = document.createElement('div');
       body.className = 'msg-body editing';
       const ta = document.createElement('textarea');
@@ -1756,19 +1768,24 @@ class ChatView {
     link.onclick = () => this._copyMessageLink(m.id);
     actions.appendChild(link);
     if (isMine) {
-      const edit = document.createElement('button');
-      edit.className = 'msg-action';
-      edit.innerHTML = window.HuddleIcons.edit;
-      edit.title = 'Edit message';
-      edit.setAttribute('aria-label', 'Edit message');
-      edit.onclick = () => this._beginEdit(m.id);
+      // Polls can't be edited (body and meta.poll would desync); the
+      // author still gets delete.
+      if (!m.meta?.poll) {
+        const edit = document.createElement('button');
+        edit.className = 'msg-action';
+        edit.innerHTML = window.HuddleIcons.edit;
+        edit.title = 'Edit message';
+        edit.setAttribute('aria-label', 'Edit message');
+        edit.onclick = () => this._beginEdit(m.id);
+        actions.append(edit);
+      }
       const del = document.createElement('button');
       del.className = 'msg-action danger';
       del.innerHTML = window.HuddleIcons.trash;
       del.title = 'Delete message';
       del.setAttribute('aria-label', 'Delete message');
       del.onclick = () => this._delete(m.id);
-      actions.append(edit, del);
+      actions.append(del);
     }
 
     // Jira + GitHub unfurls: scan the message text and render a card per
@@ -1974,6 +1991,141 @@ class ChatView {
       if (this.els.gifPicker.contains(e.target) || e.target === this.els.gifBtn) return;
       this.els.gifPicker.classList.add('hidden');
     });
+  }
+
+  // ----- Polls -------------------------------------------------------------
+
+  _initPollComposer() {
+    if (!this.els.pollBtn) return;
+    this._on(this.els.pollBtn, 'click', (e) => {
+      e.stopPropagation();
+      const hidden = this.els.pollComposer.classList.toggle('hidden');
+      if (!hidden) this._openPollComposer();
+    });
+    if (this.els.pollClose) this._on(this.els.pollClose, 'click', () => this.els.pollComposer.classList.add('hidden'));
+    if (this.els.pollAddOption) this._on(this.els.pollAddOption, 'click', () => this._addPollOptionInput());
+    if (this.els.pollCreate) this._on(this.els.pollCreate, 'click', () => this._createPoll());
+    this._on(document, 'click', (e) => {
+      if (this.els.pollComposer?.classList.contains('hidden')) return;
+      if (this.els.pollComposer.contains(e.target) || e.target === this.els.pollBtn) return;
+      this.els.pollComposer.classList.add('hidden');
+    });
+  }
+
+  _openPollComposer() {
+    this.els.pollQuestion.value = '';
+    this.els.pollMulti.checked = false;
+    this.els.pollOptions.replaceChildren();
+    this._addPollOptionInput();
+    this._addPollOptionInput();
+    this.els.pollQuestion.focus();
+  }
+
+  _addPollOptionInput() {
+    const POLL_MAX_OPTIONS = 10;
+    const n = this.els.pollOptions.children.length;
+    if (n >= POLL_MAX_OPTIONS) return null;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'poll-option-input';
+    input.placeholder = `Option ${n + 1}`;
+    input.maxLength = 150;
+    // Enter walks to the next option (adding one on the last row).
+    input.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const next = input.nextElementSibling || (input.value.trim() ? this._addPollOptionInput() : null);
+      next?.focus();
+    });
+    this.els.pollOptions.appendChild(input);
+    return input;
+  }
+
+  async _createPoll() {
+    const question = this.els.pollQuestion.value.trim();
+    const options = [...this.els.pollOptions.querySelectorAll('input')]
+      .map((i) => i.value.trim()).filter(Boolean);
+    if (!question) { this.els.pollQuestion.focus(); return; }
+    if (options.length < 2) { this.els.pollOptions.querySelector('input')?.focus(); return; }
+    this.els.pollCreate.disabled = true;
+    try {
+      await this.mesh.sendPollMessage({
+        channelId: this.currentChannel,
+        // A poll created while a thread is open belongs to that thread,
+        // matching where the composer's normal sends go (_send).
+        parentId: this.threadParentId || null,
+        question,
+        options,
+        multi: this.els.pollMulti.checked,
+      });
+      this.els.pollComposer.classList.add('hidden');
+    } finally {
+      this.els.pollCreate.disabled = false;
+    }
+  }
+
+  // Interactive poll card rendered in place of the message body.
+  // Clicking an option toggles the user's vote through the
+  // toggle_poll_vote RPC; the resulting messages UPDATE re-renders
+  // this card on every viewer's screen with fresh tallies.
+  _renderPollCard(m, isMine) {
+    const poll = m.meta.poll;
+    const card = document.createElement('div');
+    card.className = 'msg-body poll-card';
+    const q = document.createElement('div');
+    q.className = 'poll-question';
+    q.textContent = poll.question || '';
+    card.appendChild(q);
+
+    const votes = poll.votes || {};
+    const closed = !!poll.closed_at;
+    const myId = this.mesh.peerId;
+    // Percentages are share-of-voters: in a multi-answer poll each bar
+    // reads "X% of voters picked this" (bars can sum past 100%), which
+    // keeps the bars consistent with the distinct-voter count in the
+    // footer. For single-choice the two denominators are identical.
+    const voterCount = new Set(Object.values(votes).flat()).size;
+
+    for (const opt of poll.options || []) {
+      const voters = Array.isArray(votes[opt.id]) ? votes[opt.id] : [];
+      const row = document.createElement('button');
+      row.className = 'poll-option' + (voters.includes(myId) ? ' mine' : '');
+      row.disabled = closed;
+      const pct = voterCount ? Math.round((voters.length / voterCount) * 100) : 0;
+      const bar = document.createElement('span');
+      bar.className = 'poll-bar';
+      bar.style.width = `${pct}%`;
+      const label = document.createElement('span');
+      label.className = 'poll-option-label';
+      label.textContent = opt.text;
+      const count = document.createElement('span');
+      count.className = 'poll-count';
+      count.textContent = voters.length ? `${voters.length} · ${pct}%` : '';
+      row.append(bar, label, count);
+      if (voters.length) row.title = `${this._namesPhrase(voters)} voted`;
+      row.onclick = () => this.mesh.togglePollVote(m.id, opt.id);
+      card.appendChild(row);
+    }
+
+    const foot = document.createElement('div');
+    foot.className = 'poll-foot';
+    const info = document.createElement('span');
+    const votesLabel = `${voterCount} ${voterCount === 1 ? 'vote' : 'votes'}`;
+    info.textContent = closed
+      ? `Final results · ${votesLabel}`
+      : votesLabel + (poll.multi ? ' · multiple answers' : '');
+    foot.appendChild(info);
+    if (!closed && isMine) {
+      const close = document.createElement('button');
+      close.className = 'poll-close-btn';
+      close.textContent = 'Close poll';
+      close.onclick = () => {
+        if (confirm('Close this poll? Voting will be locked and final results shown.')) this.mesh.closePoll(m.id);
+      };
+      foot.appendChild(close);
+    }
+    card.appendChild(foot);
+    return card;
   }
 
   async _openGifPicker() {
