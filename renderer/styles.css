@@ -3393,7 +3393,11 @@ body.popout-call .popout-stage > .draw-toolbar {
 [data-ui="v2"] .me-row .me {
   color: var(--tx-lo);
   font-family: var(--font);
+  /* Not a status trigger under v2 (the rail avatar is) — drop the
+     clickable affordance the base .me rules add. */
+  cursor: default;
 }
+[data-ui="v2"] .me-row .me:hover { background: transparent; color: var(--tx-lo); }
 [data-ui="v2"] .me-row .ghost { color: var(--tx-lo); }
 [data-ui="v2"] .me-row .ghost:hover {
   background: var(--bg-2);

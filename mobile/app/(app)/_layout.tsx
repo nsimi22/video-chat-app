@@ -112,13 +112,13 @@ function PlatformMetadataPublisher() {
   const { localParticipant } = useLocalParticipant();
   useEffect(() => {
     if (!localParticipant) return;
-    try {
-      localParticipant.setMetadata(JSON.stringify({ platform: 'mobile' }));
-    } catch (err) {
-      // Non-fatal — the pip just won't render on desktop tiles. Log
-      // for visibility; don't break the call.
-      console.warn('[livekit] setMetadata failed', err);
-    }
+    // setMetadata resolves via a signal-server round-trip, so failures
+    // (request timeout, token missing canUpdateOwnMetadata) reject the
+    // PROMISE — a sync try/catch never sees them and the rejection
+    // surfaced as an unhandled SignalRequestError red-box. Non-fatal
+    // either way: the pip just won't render on desktop tiles.
+    Promise.resolve(localParticipant.setMetadata(JSON.stringify({ platform: 'mobile' })))
+      .catch((err) => console.warn('[livekit] setMetadata failed', err));
   }, [localParticipant?.identity]);
   return null;
 }

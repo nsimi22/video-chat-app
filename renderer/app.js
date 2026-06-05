@@ -3698,7 +3698,11 @@ function initMeStatus(huddle) {
   // Status flips re-render the me-row dot and the roster (self row).
   huddle.addEventListener('presence-status', () => { renderMeStatus(); renderRoster(); });
   // start() can run again after a team switch — wire the clicks once.
-  if (!els.me.dataset.statusWired) {
+  // Under v2 the rail avatar is the ONLY trigger: the me-row sits in the
+  // workspace header there, and a menu popping above it gets clipped to
+  // a single floating row (looked like a stuck "Unavailable" chip).
+  const isV2 = document.documentElement.getAttribute('data-ui') === 'v2';
+  if (!isV2 && !els.me.dataset.statusWired) {
     els.me.dataset.statusWired = '1';
     els.me.addEventListener('click', () => toggleStatusMenu(els.me, false));
   }
