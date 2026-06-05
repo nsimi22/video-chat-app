@@ -234,6 +234,9 @@ input:focus, textarea:focus {
 .dot.status-away { background: #ffd60a; }
 .dot.status-brb { background: var(--warn); }
 .dot.status-unavailable { background: #ff5b5b; }
+/* Presence dot on 1:1 DM sidebar rows (refreshDmPresence) — slightly
+   smaller than roster dots so it reads as a prefix, not a bullet. */
+.channel-list li .ch-presence { width: 7px; height: 7px; flex: none; margin-right: 1px; }
 .sidebar .dot.status-away { box-shadow: 0 0 0 2px var(--bg-sidebar), 0 0 8px rgba(255, 214, 10, 0.5); }
 .sidebar .dot.status-brb { box-shadow: 0 0 0 2px var(--bg-sidebar), 0 0 8px rgba(255, 159, 10, 0.5); }
 .sidebar .dot.status-unavailable { box-shadow: 0 0 0 2px var(--bg-sidebar), 0 0 8px rgba(255, 91, 91, 0.5); }

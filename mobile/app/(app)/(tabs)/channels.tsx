@@ -4,7 +4,7 @@ import ReanimatedSwipeable, { type SwipeableMethods } from 'react-native-gesture
 import { router, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BellOff, Lock, Plus, Search, Star, Trash2, Users } from 'lucide-react-native';
-import { deleteChannel, leaveDmChannel, listChannels, listTeamProfiles, openDm, type Channel, type Profile } from '@/lib/api';
+import { deleteChannel, leaveDmChannel, listChannels, listTeamProfiles, type Channel, type Profile } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { useMutedChannels } from '@/context/MutedChannelsContext';
 import { useFavorites } from '@/context/FavoritesContext';
@@ -50,11 +50,10 @@ function canDelete(c: Channel, userId: string): boolean {
   return !!c.created_by && c.created_by === userId;
 }
 
-// SectionList rows: channels/DMs in the top sections, team-roster people
-// in the trailing Team section (the design folds the old People tab in
-// here, matching the desktop sidebar).
-type Item = { kind: 'channel'; channel: Channel } | { kind: 'person'; profile: Profile };
-type Section = { title: 'Favorites' | 'Channels' | 'Direct Messages' | 'Team'; data: Item[] };
+// Roster discovery lives behind the Direct Messages "+" picker — a
+// standing Team section duplicated it and pushed channels below the fold,
+// so it was cut (2026-06-05).
+type Section = { title: 'Favorites' | 'Channels' | 'Direct Messages'; data: Channel[] };
 
 export default function ChannelsScreen() {
   const { activeTeam, userId } = useAuth();
@@ -126,41 +125,23 @@ export default function ChannelsScreen() {
     router.push({ pathname: '/(app)/channel/[id]', params: { id, name } });
   }
 
-  const openPersonDm = useCallback(async (p: Profile) => {
-    if (!userId || !activeTeam) return;
-    try {
-      const ch = await openDm(activeTeam.id, userId, p.user_id, p.name);
-      router.push({ pathname: '/(app)/channel/[id]', params: { id: ch.id, name: p.name } });
-    } catch (e: any) {
-      Alert.alert('Could not open DM', e?.message ?? String(e));
-    }
-  }, [userId, activeTeam]);
-
   const sections = useMemo<Section[]>(() => {
     const q = query.trim().toLowerCase();
     const matches = (label: string) => !q || label.toLowerCase().includes(q);
     const favSet = new Set(favorites);
-    const favItems: Item[] = favorites
+    const favItems = favorites
       .map((id) => channels.find((c) => c.id === id))
-      .filter((c): c is Channel => !!c && matches(channelLabel(c, profiles, userId)))
-      .map((channel) => ({ kind: 'channel', channel }));
-    const channelItems: Item[] = channels
+      .filter((c): c is Channel => !!c && matches(channelLabel(c, profiles, userId)));
+    const channelItems = channels
       .filter((c) => c.type !== 'dm' && !favSet.has(c.id) && matches(c.name))
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map((channel) => ({ kind: 'channel', channel }));
-    const dmItems: Item[] = channels
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const dmItems = channels
       .filter((c) => c.type === 'dm' && !favSet.has(c.id) && matches(channelLabel(c, profiles, userId)))
-      .sort((a, b) => channelLabel(a, profiles, userId).localeCompare(channelLabel(b, profiles, userId)))
-      .map((channel) => ({ kind: 'channel', channel }));
-    const teamItems: Item[] = profiles
-      .filter((p) => p.user_id !== userId && matches(p.name || ''))
-      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-      .map((profile) => ({ kind: 'person', profile }));
+      .sort((a, b) => channelLabel(a, profiles, userId).localeCompare(channelLabel(b, profiles, userId)));
     const out: Section[] = [];
     if (favItems.length) out.push({ title: 'Favorites', data: favItems });
     out.push({ title: 'Channels', data: channelItems });
     out.push({ title: 'Direct Messages', data: dmItems });
-    out.push({ title: 'Team', data: teamItems });
     return out;
   }, [channels, profiles, favorites, query, userId]);
 
@@ -270,9 +251,7 @@ export default function ChannelsScreen() {
       </View>
       <SectionList
         sections={sections}
-        keyExtractor={(item, index) =>
-          item.kind === 'channel' ? `${item.channel.team_id}/${item.channel.id}/${index}` : `person/${item.profile.user_id}`
-        }
+        keyExtractor={(c, index) => `${c.team_id}/${c.id}/${index}`}
         refreshControl={<RefreshControl tintColor={colors.accent} refreshing={refreshing} onRefresh={onPullRefresh} />}
         stickySectionHeadersEnabled={false}
         renderSectionHeader={({ section }) => {
@@ -329,31 +308,7 @@ export default function ChannelsScreen() {
             </Text>
           ) : null
         }
-        renderItem={({ item }) => {
-          if (item.kind === 'person') {
-            const p = item.profile;
-            return (
-              <TouchableOpacity
-                onPress={() => openPersonDm(p)}
-                activeOpacity={0.7}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  paddingHorizontal: space(4),
-                  paddingVertical: space(3),
-                  borderBottomWidth: 1,
-                  borderBottomColor: colors.borderSoft,
-                }}
-              >
-                <Avatar name={p.name} color={p.color} size={32} uri={p.avatar_url} status={statuses[p.user_id] ?? 'offline'} />
-                <View style={{ marginLeft: space(3), flex: 1, minWidth: 0 }}>
-                  <Text style={{ color: colors.text, fontSize: 16, fontWeight: '500' }} numberOfLines={1}>{p.name}</Text>
-                  {p.bio ? <Text style={{ color: colors.textDim, fontSize: 13, marginTop: 1 }} numberOfLines={1}>{p.bio}</Text> : null}
-                </View>
-              </TouchableOpacity>
-            );
-          }
-          const channel = item.channel;
+        renderItem={({ item: channel }) => {
           const label = channelLabel(channel, profiles, userId);
           const deletable = !!userId && canDelete(channel, userId);
           const muted = isMuted(channel.id);

@@ -2696,7 +2696,7 @@ async function teardownTeam() {
   state.poppedOutCalls.clear();
   els.channels.replaceChildren();
   els.dms.replaceChildren();
-  els.people.replaceChildren();
+  els.people?.replaceChildren();
   // Clear any leftover toasts so they don't bleed into the login
   // screen of the next session.
   els.toasts?.replaceChildren();
@@ -2878,6 +2878,7 @@ function onMemberOffline(peerId) {
   // so they can be DMed. Re-render so the now-offline member sinks
   // to the bottom of the sorted list with a grey dot.
   renderRoster();
+  refreshDmPresence();
 }
 
 function onCallPresence({ channelId, count }) {
@@ -2947,6 +2948,9 @@ function onWelcome({ peers, channels }) {
   // to the normal default-channel logic if the target isn't visible
   // (e.g. the link pointed at a private channel the user wasn't
   // explicitly invited to).
+  // Initial presence paint for the DM rows — the team presence sync
+  // fires before the sidebar exists, so the live handlers miss it.
+  refreshDmPresence();
   if (consumePendingInviteHop()) {
     // Drain any buffered protocol URL too — cold-start where the
     // session auto-resumed into a previous team can leave a
@@ -3064,6 +3068,8 @@ function renderFavoritesSidebar() {
     els.favorites.appendChild(li);
     updateUnreadBadge(id);
   }
+  // Rebuilt rows lost their presence dots — repaint them.
+  refreshDmPresence();
 }
 
 function appendChannelToSidebar(channel, makeActive) {
@@ -3749,13 +3755,45 @@ function toggleStatusMenu(trigger, side) {
   document.addEventListener('mousedown', outside);
 }
 
-// Render the People sidebar from the full team roster. Online
-// teammates get a coloured dot, offline ones get a grey dot + dimmed
-// text but stay visible so they remain DMable.
+// Render the People sidebar from the full team roster. The standing
+// section was removed from the sidebar (2026-06-05 — roster discovery
+// lives in the DM picker, presence rides DM rows); this is a guarded
+// no-op unless the markup comes back.
 function renderRoster() {
+  if (!els.people) return;
   els.people.replaceChildren();
   const members = sortRosterMembers([...state.huddle.roster.values()]);
   for (const m of members) renderRosterRow(m);
+}
+
+// Presence dots on 1:1 DM rows (home list + Favorites copies) — the
+// sidebar's presence surface now that the People section is gone. Paints
+// or updates a status dot per row from live peerInfo; offline peers get
+// no dot. Cheap enough to re-run on every presence event (N = DM count).
+// Reuses the existing .dot styling, including today's status-* colors.
+function refreshDmPresence() {
+  if (!state.huddle) return;
+  for (const list of [els.dms, els.favorites]) {
+    if (!list) continue;
+    for (const li of list.querySelectorAll('li[data-id]')) {
+      const channel = state.channelMeta.get(li.dataset.id);
+      if (!channel || channel.type !== 'dm' || isGroupDm(channel)) continue;
+      const peerId = (channel.memberIds || []).find((id) => id !== state.huddle.peerId);
+      if (!peerId) continue;
+      const live = state.huddle.peerInfo.get(peerId);
+      let dot = li.querySelector('.ch-presence');
+      if (!live) {
+        dot?.remove();
+        continue;
+      }
+      if (!dot) {
+        dot = document.createElement('span');
+        li.insertBefore(dot, li.firstChild);
+      }
+      const status = live.status && live.status !== 'active' ? ` status-${live.status}` : '';
+      dot.className = `dot online ch-presence${status}`;
+    }
+  }
 }
 
 function renderRosterRow(member) {
@@ -3801,6 +3839,7 @@ function onMemberOnline(peer) {
   // Team presence finally landed for this peer — if their LK track
   // already arrived and we stamped the tile 'guest', re-label it now.
   refreshTileLabelForPeer(peer.id);
+  refreshDmPresence();
 }
 
 // (onMemberOffline + onCallPeerLeft above replace the old onPeerLeft —
