@@ -3,13 +3,12 @@ import { supabase } from '@/lib/supabase';
 import { getProfile } from '@/lib/api';
 import { teamTopic } from '@/lib/topics';
 import { useAuth } from '@/context/AuthContext';
-import type { PresenceStatus } from '@/theme';
+import { normalizePresence, type PresenceStatus } from '@/theme';
 
 // Team presence over the `team:<team_id>` realtime topic — the same topic
-// desktop tracks on ({ name, color, online_at }, renderer/api.js). Mobile
-// adds a `status` field (active / away / busy) for the You-tab presence
-// selector; desktop currently ignores it and just shows online/offline,
-// so the extra key is forward-compatible, not a protocol break.
+// desktop tracks on (renderer/api.js). Both clients carry a `status` field
+// (active / away / brb / unavailable — PRESENCE_WIRE_VALUES in @/theme);
+// unknown values degrade to active, so the key stays forward-compatible.
 //
 // This provider owns the ONE channel instance for the topic. Phoenix
 // allows a single join per topic per socket, so the chat screen's typing
@@ -58,8 +57,7 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
       const state = ch.presenceState<{ status?: string }>();
       const next: Record<string, PresenceStatus> = {};
       for (const [key, metas] of Object.entries(state)) {
-        const s = metas[metas.length - 1]?.status;
-        next[key] = s === 'away' || s === 'brb' || s === 'unavailable' ? s : 'active';
+        next[key] = normalizePresence(metas[metas.length - 1]?.status);
       }
       setStatuses(next);
     };

@@ -3664,15 +3664,12 @@ function resolveMemberDisplay(member) {
 
 // ── Presence status (Available / Away / BRB / Unavailable) ──────────
 // Carried as `status` in the team presence meta; mobile sets and renders
-// the same field (PresenceContext). The selector lives on the sidebar
-// me-row — clicking your own name opens the status menu. Color ramp:
-// green → yellow → orange → red.
-const PRESENCE_STATES = [
-  { id: 'active', label: 'Available' },
-  { id: 'away', label: 'Away' },
-  { id: 'brb', label: 'BRB' },
-  { id: 'unavailable', label: 'Unavailable' },
-];
+// the same field (PresenceContext). Wire values come from the single
+// source in api.js (window.HUDDLE_PRESENCE_VALUES); only the human labels
+// live here. Color ramp: green → yellow → orange → red.
+const PRESENCE_LABELS = { active: 'Available', away: 'Away', brb: 'BRB', unavailable: 'Unavailable' };
+const PRESENCE_STATES = (window.HUDDLE_PRESENCE_VALUES || Object.keys(PRESENCE_LABELS))
+  .map((id) => ({ id, label: PRESENCE_LABELS[id] || id }));
 
 function presenceStatusLabel(s) {
   return (PRESENCE_STATES.find((x) => x.id === s) || PRESENCE_STATES[0]).label;

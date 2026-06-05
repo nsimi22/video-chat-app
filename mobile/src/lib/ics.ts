@@ -51,15 +51,19 @@ export function parseIcs(text: string, opts?: ParseIcsOptions): { events: IcsEve
   // RECURRENCE-ID of the VEVENT being parsed (null = master/standalone).
   // Overrides are deferred so they can replace generated occurrences no
   // matter where they appear in the feed relative to their master.
-  let curRecurMs: number | null = null;
+  // `candidates` holds every plausible instant for the named occurrence —
+  // feeds sometimes express RECURRENCE-ID in a different form than the
+  // master's DTSTART (floating vs TZID vs UTC), and a single-instant
+  // comparison would miss those, leaving the moved meeting rendered twice.
+  let curRecur: { primaryMs: number; candidates: number[] } | null = null;
   const masters: IcsEvent[] = [];
-  const overrides: { ev: IcsEvent; recurMs: number }[] = [];
+  const overrides: { ev: IcsEvent; primaryMs: number; candidates: number[] }[] = [];
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     if (trimmed === 'BEGIN:VEVENT') {
       inEvent = true;
-      curRecurMs = null;
+      curRecur = null;
       cur = {
         uid: '', title: '', description: '', location: '', url: '',
         start: null, end: null, allDay: false, rrule: '', exdate: [], raw: {},
@@ -68,7 +72,7 @@ export function parseIcs(text: string, opts?: ParseIcsOptions): { events: IcsEve
     }
     if (trimmed === 'END:VEVENT') {
       if (cur && cur.start) {
-        if (curRecurMs !== null) overrides.push({ ev: cur, recurMs: curRecurMs });
+        if (curRecur !== null) overrides.push({ ev: cur, ...curRecur });
         else masters.push(cur);
       }
       inEvent = false;
@@ -87,8 +91,8 @@ export function parseIcs(text: string, opts?: ParseIcsOptions): { events: IcsEve
       case 'URL': cur.url = cl.value; break;
       case 'RRULE': cur.rrule = cl.value; break;
       case 'RECURRENCE-ID': {
-        const p = parseDate(cl.value, cl.params);
-        if (p) curRecurMs = p.date.getTime();
+        const candidates = dateTimeCandidates(cl.value, cl.params);
+        if (candidates.length) curRecur = { primaryMs: candidates[0], candidates };
         break;
       }
       case 'EXDATE': {
@@ -124,12 +128,13 @@ export function parseIcs(text: string, opts?: ParseIcsOptions): { events: IcsEve
     // A RECURRENCE-ID override replaces the generated occurrence it names
     // (RFC 5545 §3.8.4.4) — drop the original so a moved meeting doesn't
     // render twice. Match on the master's UID (kept in raw.UID across
-    // expansion) + the named occurrence's start instant.
+    // expansion) + ANY plausible instant of the named occurrence (covers
+    // feeds whose override form differs from the master DTSTART's).
     const ovByUid = new Map<string, Set<number>>();
     for (const o of overrides) {
       const uid = o.ev.uid;
       if (!ovByUid.has(uid)) ovByUid.set(uid, new Set());
-      ovByUid.get(uid)!.add(o.recurMs);
+      for (const c of o.candidates) ovByUid.get(uid)!.add(c);
     }
     out.events = out.events.filter((e) => {
       const set = ovByUid.get(e.raw?.UID || e.uid);
@@ -140,12 +145,30 @@ export function parseIcs(text: string, opts?: ParseIcsOptions): { events: IcsEve
       // though the override shares the master's bare UID.
       out.events.push({
         ...o.ev,
-        uid: `${o.ev.uid}/${new Date(o.recurMs).toISOString()}`,
+        uid: `${o.ev.uid}/${new Date(o.primaryMs).toISOString()}`,
         _recurringInstance: true,
       });
     }
   }
   return out;
+}
+
+// Every plausible instant for a date-time string whose form may not match
+// the master DTSTART's: as-parsed (honoring TZID/Z/floating), plus the
+// floating-local and UTC readings of the same wall-clock fields. Used for
+// RECURRENCE-ID matching only — display always uses the as-parsed instant.
+function dateTimeCandidates(value: string, params?: Record<string, string>): number[] {
+  const out: number[] = [];
+  const p = parseDate(value, params);
+  if (p) out.push(p.date.getTime());
+  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z)?$/.exec((value || '').trim());
+  if (m) {
+    const y = parseInt(m[1], 10), mo = parseInt(m[2], 10), dd = parseInt(m[3], 10);
+    const hh = parseInt(m[4], 10), mm = parseInt(m[5], 10), ss = parseInt(m[6], 10);
+    out.push(new Date(y, mo - 1, dd, hh, mm, ss).getTime()); // floating-local reading
+    out.push(Date.UTC(y, mo - 1, dd, hh, mm, ss));           // UTC reading
+  }
+  return [...new Set(out)];
 }
 
 // ---------------------------------------------------------------------------

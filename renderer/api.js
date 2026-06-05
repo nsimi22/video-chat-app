@@ -23,6 +23,12 @@
   let _supabase = null;
   let _config = null;
 
+  // Presence wire vocabulary — single source on desktop (app.js derives
+  // its labeled selector from this; mobile mirrors it in theme.ts
+  // PRESENCE_WIRE_VALUES). Unknown values degrade to 'active' everywhere.
+  const PRESENCE_VALUES = ['active', 'away', 'brb', 'unavailable'];
+  window.HUDDLE_PRESENCE_VALUES = PRESENCE_VALUES;
+
   async function getSupabase() {
     if (_supabase) return _supabase;
     _config = await window.huddle.getSupabaseConfig();
@@ -93,7 +99,7 @@
       // the team presence meta as `status`. Mobile broadcasts and renders
       // the same field. Persisted per-device so a restart keeps your state.
       const savedStatus = localStorage.getItem('huddle:presence-status');
-      this.presenceStatus = ['active', 'away', 'brb', 'unavailable'].includes(savedStatus) ? savedStatus : 'active';
+      this.presenceStatus = PRESENCE_VALUES.includes(savedStatus) ? savedStatus : 'active';
       this.peerInfo = new Map(); // user_id -> { id, name, color, status }
       // Full team roster, populated on start() and read by the
       // sidebar + DM picker + member picker so offline teammates
@@ -522,7 +528,7 @@
           if (!meta) continue;
           seen.add(key);
           if (key === this.peerId) continue;
-          const metaStatus = ['away', 'brb', 'unavailable'].includes(meta.status) ? meta.status : 'active';
+          const metaStatus = PRESENCE_VALUES.includes(meta.status) ? meta.status : 'active';
           if (!this.peerInfo.has(key)) {
             const peer = { id: key, name: meta.name, color: meta.color, status: metaStatus };
             this.peerInfo.set(key, peer);
@@ -2001,7 +2007,7 @@
     // re-track so peers pick it up on their next presence sync. Persisted
     // per-device. Mirrors the mobile You-tab selector.
     async setPresenceStatus(status) {
-      if (!['active', 'away', 'brb', 'unavailable'].includes(status)) return;
+      if (!PRESENCE_VALUES.includes(status)) return;
       this.presenceStatus = status;
       try { localStorage.setItem('huddle:presence-status', status); } catch {}
       this.dispatchEvent(new CustomEvent('presence-status', { detail: status }));

@@ -19,6 +19,7 @@ import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { AiMessageCard, Avatar, Markdown } from '@/components/ui';
 import { MessageUnfurls } from '@/components/Unfurl';
+import { PollCard } from '@/components/PollCard';
 import { colors, radius, space } from '@/theme';
 
 // Thread view — design prototype screen 3. Route id is the parent message
@@ -155,13 +156,18 @@ export default function ThreadScreen() {
               </Text>
             </Text>
           </View>
-          {isAi ? (
+          {m.meta?.poll ? (
+            // Desktop posts polls into threads too — render the votable
+            // card here, not the "📊 Poll: …" fallback body.
+            <PollCard message={m} meId={userId} roster={roster} />
+          ) : isAi ? (
             <AiMessageCard body={m.body} mentionNames={mentionNames} viaName={p?.name} model={m.ai_model}>
               {!!m.body && <MessageUnfurls body={m.body} viewerId={userId} />}
             </AiMessageCard>
           ) : (
             <>
               {!!m.body && <Markdown body={m.body} mentionNames={mentionNames} />}
+              {m.edited_ts ? <Text style={{ color: colors.textDim, fontSize: 11, marginTop: 2 }}>(edited)</Text> : null}
               {!!m.body && <MessageUnfurls body={m.body} viewerId={userId} />}
             </>
           )}

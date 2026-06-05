@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -161,9 +161,15 @@ export default function BoardScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openTicket, setOpenTicket] = useState<Ticket | null>(null);
+  // Last successful load — a full board load is up to ~9 Jira/Supabase
+  // round-trips, so incidental tab focuses within the TTL are free.
+  // Pull-to-refresh always bypasses.
+  const lastLoadedAt = useRef(0);
+  const BOARD_TTL_MS = 60_000;
 
   const load = useCallback(async ({ pull = false }: { pull?: boolean } = {}) => {
     if (!activeTeam || !userId) return;
+    if (!pull && Date.now() - lastLoadedAt.current < BOARD_TTL_MS) return;
     if (pull) setRefreshing(true);
     try {
       const [settings, teamBoard] = await Promise.all([
@@ -195,6 +201,7 @@ export default function BoardScreen() {
       setTickets(mapped);
       setColumns(cols);
       setError(null);
+      lastLoadedAt.current = Date.now();
       setActiveCol((curr) => (curr && cols.some((c) => c.id === curr) ? curr : cols.find((c) => c.cat === 'indeterminate')?.id ?? cols[0]?.id ?? null));
     } catch (e: any) {
       setError(e?.message ?? String(e));

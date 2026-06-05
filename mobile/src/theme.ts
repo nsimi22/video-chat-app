@@ -45,14 +45,23 @@ export const tabBarOffset = (insetBottom: number) =>
 export const tabBarClearance = (insetBottom: number) =>
   tabBarOffset(insetBottom) + TAB_BAR_HEIGHT + 20;
 
-// Presence status → dot color. Green available, yellow away, orange BRB,
-// red unavailable, faint offline. Wire values shared with desktop
-// (renderer/api.js PRESENCE_STATES).
-export type PresenceStatus = 'active' | 'away' | 'brb' | 'unavailable' | 'offline';
+// Presence status — single source for the wire vocabulary on mobile.
+// Green available, yellow away, orange BRB, red unavailable, faint offline.
+// Wire values shared with desktop (renderer/api.js PRESENCE_VALUES).
+export const PRESENCE_WIRE_VALUES = ['active', 'away', 'brb', 'unavailable'] as const;
+export type PresenceWireStatus = (typeof PRESENCE_WIRE_VALUES)[number];
+export type PresenceStatus = PresenceWireStatus | 'offline';
+
+// Coerce a wire value (possibly from a newer/older client) to a renderable
+// status — unknown values degrade to Available, matching desktop.
+export function normalizePresence(s: string | null | undefined): PresenceWireStatus {
+  return s === 'away' || s === 'brb' || s === 'unavailable' ? s : 'active';
+}
+
 export function statusColor(s: PresenceStatus | string | null | undefined): string {
   return s === 'active' || s === 'online' ? colors.online
     : s === 'away' ? colors.away
     : s === 'brb' ? colors.brb
-    : s === 'unavailable' || s === 'busy' ? colors.busy
+    : s === 'unavailable' ? colors.busy
     : colors.textFaint;
 }

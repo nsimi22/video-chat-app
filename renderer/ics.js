@@ -493,7 +493,11 @@
     // RECURRENCE-ID of the VEVENT being parsed (null = master/standalone).
     // Overrides are deferred so they can replace generated occurrences no
     // matter where they appear in the feed relative to their master.
-    let curRecurMs = null;
+    // `candidates` holds every plausible instant for the named occurrence —
+    // feeds sometimes express RECURRENCE-ID in a different form than the
+    // master's DTSTART (floating vs TZID vs UTC). Lockstep with
+    // mobile/src/lib/ics.ts.
+    let curRecur = null;
     const masters = [];
     const overrides = [];
     for (const line of lines) {
@@ -501,7 +505,7 @@
       if (!trimmed) continue;
       if (trimmed === 'BEGIN:VEVENT') {
         inEvent = true;
-        curRecurMs = null;
+        curRecur = null;
         cur = {
           uid: '', title: '', description: '', location: '', url: '',
           start: null, end: null, allDay: false, rrule: '',
@@ -511,7 +515,7 @@
       }
       if (trimmed === 'END:VEVENT') {
         if (cur && cur.start) {
-          if (curRecurMs !== null) overrides.push({ ev: cur, recurMs: curRecurMs });
+          if (curRecur !== null) overrides.push({ ev: cur, primaryMs: curRecur.primaryMs, candidates: curRecur.candidates });
           else masters.push(cur);
         }
         inEvent = false;
@@ -530,8 +534,8 @@
         case 'URL': cur.url = cl.value; break;
         case 'RRULE': cur.rrule = cl.value; break;
         case 'RECURRENCE-ID': {
-          const p = parseDate(cl.value, cl.params);
-          if (p) curRecurMs = p.date.getTime();
+          const candidates = dateTimeCandidates(cl.value, cl.params);
+          if (candidates.length) curRecur = { primaryMs: candidates[0], candidates };
           break;
         }
         case 'EXDATE': {
@@ -568,11 +572,12 @@
       // A RECURRENCE-ID override replaces the generated occurrence it
       // names (RFC 5545 §3.8.4.4) — drop the original so a moved meeting
       // doesn't render twice. Match on the master's UID (kept in raw.UID
-      // across expansion) + the named occurrence's start instant.
+      // across expansion) + ANY plausible instant of the named occurrence
+      // (covers feeds whose override form differs from the master's).
       const ovByUid = new Map();
       for (const o of overrides) {
         if (!ovByUid.has(o.ev.uid)) ovByUid.set(o.ev.uid, new Set());
-        ovByUid.get(o.ev.uid).add(o.recurMs);
+        for (const c of o.candidates) ovByUid.get(o.ev.uid).add(c);
       }
       out.events = out.events.filter((e) => {
         const set = ovByUid.get((e.raw && e.raw.UID) || e.uid);
@@ -582,12 +587,30 @@
         // Suffix like recurring instances so list keys stay unique even
         // though the override shares the master's bare UID.
         out.events.push(Object.assign({}, o.ev, {
-          uid: `${o.ev.uid}/${new Date(o.recurMs).toISOString()}`,
+          uid: `${o.ev.uid}/${new Date(o.primaryMs).toISOString()}`,
           _recurringInstance: true,
         }));
       }
     }
     return out;
+  }
+
+  // Every plausible instant for a date-time string whose form may not match
+  // the master DTSTART's: as-parsed (honoring TZID/Z/floating), plus the
+  // floating-local and UTC readings of the same wall-clock fields. Used for
+  // RECURRENCE-ID matching only. Lockstep with mobile/src/lib/ics.ts.
+  function dateTimeCandidates(value, params) {
+    const out = [];
+    const p = parseDate(value, params);
+    if (p) out.push(p.date.getTime());
+    const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z)?$/.exec((value || '').trim());
+    if (m) {
+      const y = parseInt(m[1], 10), mo = parseInt(m[2], 10), dd = parseInt(m[3], 10);
+      const hh = parseInt(m[4], 10), mm = parseInt(m[5], 10), ss = parseInt(m[6], 10);
+      out.push(new Date(y, mo - 1, dd, hh, mm, ss).getTime()); // floating-local reading
+      out.push(Date.UTC(y, mo - 1, dd, hh, mm, ss));           // UTC reading
+    }
+    return [...new Set(out)];
   }
 
   // ---------------------------------------------------------------------------
