@@ -2024,22 +2024,21 @@ class ChatView {
   _addPollOptionInput() {
     const POLL_MAX_OPTIONS = 10;
     const n = this.els.pollOptions.children.length;
-    if (n >= POLL_MAX_OPTIONS) return;
+    if (n >= POLL_MAX_OPTIONS) return null;
     const input = document.createElement('input');
     input.type = 'text';
     input.className = 'poll-option-input';
     input.placeholder = `Option ${n + 1}`;
     input.maxLength = 150;
-    // Enter walks to the next option (adding one on the last row);
-    // Enter on the question jumps into options the same way.
+    // Enter walks to the next option (adding one on the last row).
     input.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter') return;
       e.preventDefault();
-      const next = input.nextElementSibling;
-      if (next) next.focus();
-      else if (input.value.trim()) { this._addPollOptionInput(); input.nextElementSibling?.focus(); }
+      const next = input.nextElementSibling || (input.value.trim() ? this._addPollOptionInput() : null);
+      next?.focus();
     });
     this.els.pollOptions.appendChild(input);
+    return input;
   }
 
   async _createPoll() {
@@ -2052,6 +2051,9 @@ class ChatView {
     try {
       await this.mesh.sendPollMessage({
         channelId: this.currentChannel,
+        // A poll created while a thread is open belongs to that thread,
+        // matching where the composer's normal sends go (_send).
+        parentId: this.threadParentId || null,
         question,
         options,
         multi: this.els.pollMulti.checked,
@@ -2078,14 +2080,18 @@ class ChatView {
     const votes = poll.votes || {};
     const closed = !!poll.closed_at;
     const myId = this.mesh.peerId;
-    const total = Object.values(votes).reduce((n, v) => n + (Array.isArray(v) ? v.length : 0), 0);
+    // Percentages are share-of-voters: in a multi-answer poll each bar
+    // reads "X% of voters picked this" (bars can sum past 100%), which
+    // keeps the bars consistent with the distinct-voter count in the
+    // footer. For single-choice the two denominators are identical.
+    const voterCount = new Set(Object.values(votes).flat()).size;
 
     for (const opt of poll.options || []) {
       const voters = Array.isArray(votes[opt.id]) ? votes[opt.id] : [];
       const row = document.createElement('button');
       row.className = 'poll-option' + (voters.includes(myId) ? ' mine' : '');
       row.disabled = closed;
-      const pct = total ? Math.round((voters.length / total) * 100) : 0;
+      const pct = voterCount ? Math.round((voters.length / voterCount) * 100) : 0;
       const bar = document.createElement('span');
       bar.className = 'poll-bar';
       bar.style.width = `${pct}%`;
@@ -2104,7 +2110,6 @@ class ChatView {
     const foot = document.createElement('div');
     foot.className = 'poll-foot';
     const info = document.createElement('span');
-    const voterCount = new Set(Object.values(votes).flat()).size;
     const votesLabel = `${voterCount} ${voterCount === 1 ? 'vote' : 'votes'}`;
     info.textContent = closed
       ? `Final results · ${votesLabel}`

@@ -1288,9 +1288,10 @@
     // as reactions; the UPDATE rides the existing messages realtime
     // subscription. See migration 20260604220000_huddle_polls.
 
-    async sendPollMessage({ channelId, question, options, multi }) {
+    async sendPollMessage({ channelId, parentId, question, options, multi }) {
       await this._insertMessage({
         channelId,
+        parentId,
         text: `📊 Poll: ${question}`,
         extra: {
           meta: {

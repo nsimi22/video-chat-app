@@ -937,7 +937,8 @@ input:focus, textarea:focus {
 }
 
 /* GIF picker — sits above the composer like the emoji picker. */
-.gif-picker {
+.gif-picker,
+.poll-composer {
   position: absolute; bottom: 64px; right: 16px; left: 16px;
   background: var(--bg-2);
   border: 1px solid var(--line);
@@ -952,20 +953,12 @@ input:focus, textarea:focus {
 .gif-search-row { display: flex; gap: 6px; align-items: center; }
 .gif-search-row input { flex: 1; }
 
-/* Poll composer — same floating-above-the-composer chrome as .gif-picker,
-   narrower since it's a form, not a media grid. */
+/* Poll composer — shares the floating popover chrome with .gif-picker
+   (grouped selector above); narrower since it's a form, not a media grid. */
 .poll-composer {
-  position: absolute; bottom: 64px; right: 16px;
+  left: auto;
   width: min(420px, calc(100% - 32px));
-  background: var(--bg-2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
   padding: 12px;
-  display: flex; flex-direction: column; gap: 8px;
-  z-index: 30;
-  box-shadow: var(--shadow-2);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
 }
 .poll-composer-head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; }
 .poll-composer #poll-options { display: flex; flex-direction: column; gap: 6px; }
