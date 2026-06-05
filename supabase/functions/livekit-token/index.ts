@@ -92,6 +92,11 @@ Deno.serve(async (req) => {
     canPublish: !isScreenPopout, // popout is subscribe-only
     canPublishData: !isScreenPopout,
     canSubscribe: true,
+    // Mobile stamps `platform: "mobile"` on its participant metadata so
+    // desktop tiles can render the Mobile pip (PR #179). Without this
+    // grant LiveKit silently ignores the update and the client's
+    // setMetadata times out on every join.
+    canUpdateOwnMetadata: !isScreenPopout,
   });
 
   return json({ token: await at.toJwt(), url: LIVEKIT_URL, room });
