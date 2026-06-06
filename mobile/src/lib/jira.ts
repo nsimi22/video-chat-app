@@ -379,6 +379,67 @@ export async function fetchJiraIssue(s: JiraSettings, key: string, hostOverride?
   }
 }
 
+// --- AI tool read path -------------------------------------------------------
+// A fuller single-issue fetch for the Huddle AI tools layer (src/lib/ai-tools.ts).
+// Unlike fetchJiraIssue (compact unfurl fields) this pulls description too and
+// flattens ADF to plain text so the model can read a ticket without learning the
+// ADF schema — mirrors the desktop renderer/ai-tools.js marshalIssue().
+
+const AI_FIELDS = 'summary,status,assignee,issuetype,priority,reporter,labels,created,updated,description';
+
+export type JiraIssueDetail = {
+  key: string;
+  url: string;
+  summary: string;
+  status: string;
+  issueType: string;
+  priority: string;
+  assignee: string | null;
+  reporter: string | null;
+  labels: string[];
+  created: string | null;
+  updated: string | null;
+  description: string;
+};
+
+// Flatten an ADF document to plain text (headings, paragraphs, list items,
+// code, quotes). Reuses the block walker the card detail sheet uses.
+export function adfToText(doc: unknown): string {
+  const blocks = adfToBlocks(doc);
+  return blocks
+    .map((b) => {
+      if (b.type === 'li') return `${b.ordered ? `${b.index}.` : '-'} ${b.text}`;
+      return b.text;
+    })
+    .join('\n')
+    .trim();
+}
+
+export async function fetchJiraIssueDetail(s: JiraSettings, key: string): Promise<JiraIssueDetail> {
+  if (!jiraIsConfigured(s)) throw new Error('Jira is not configured.');
+  const host = normHost(s.host);
+  const res = await fetch(
+    `https://${host}/rest/api/3/issue/${encodeURIComponent(key)}?fields=${encodeURIComponent(AI_FIELDS)}`,
+    { headers: authHeaders(s) },
+  );
+  const json = await jsonOrThrow(res, `Get issue ${key}`);
+  const f = json?.fields ?? {};
+  return {
+    key: json?.key ?? key,
+    url: jiraIssueUrl(host, json?.key ?? key),
+    summary: f.summary || '',
+    status: f.status?.name || '',
+    issueType: f.issuetype?.name || '',
+    priority: f.priority?.name || '',
+    assignee: f.assignee?.displayName || null,
+    reporter: f.reporter?.displayName || null,
+    labels: Array.isArray(f.labels) ? f.labels : [],
+    created: f.created || null,
+    updated: f.updated || null,
+    description: adfToText(f.description),
+  };
+}
+
 // --- Auto-unfurl extractors ------------------------------------------------
 // Same regexes as the desktop's renderer/jira.js so the two clients pick up
 // the exact same set of references from a message body.
