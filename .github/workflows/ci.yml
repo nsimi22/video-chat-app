@@ -1,0 +1,74 @@
+# Lightweight pull-request CI. The heavy installer builds live in
+# release.yml (tag-triggered); this workflow is the fast gate that runs on
+# every PR and on pushes to main:
+#
+#   • desktop — validates the npm lockfile + the copy-vendor postinstall,
+#     then syntax-checks every shipped renderer/main-process JS file. There
+#     is no test or lint suite on the desktop side yet, so `node --check`
+#     is the cheapest guard against a parse error reaching a release build.
+#   • mobile  — runs the real TypeScript typecheck and the design-token
+#     verifier. (expo lint is intentionally omitted — ESLint isn't set up
+#     in mobile/, and `expo lint` would try to install it interactively.)
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push to the same branch/PR supersedes in-flight runs.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Desktop (syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # --omit=dev skips Electron's binary download (a devDependency) while
+      # still validating the lockfile and running the copy-vendor postinstall
+      # against the runtime deps the renderer vendors.
+      - name: Install dependencies
+        run: npm ci --omit=dev
+
+      - name: Syntax-check renderer + main process
+        run: |
+          find main.js preload.js scripts renderer \
+            -path renderer/vendor -prune -o \
+            -type f -name '*.js' -print0 \
+            | xargs -0 -n1 -P4 node --check
+
+  mobile:
+    name: Mobile (typecheck)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Verify design tokens
+        run: node scripts/verify-tokens.js
