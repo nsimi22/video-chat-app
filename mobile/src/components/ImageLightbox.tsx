@@ -57,23 +57,25 @@ export function ImageLightbox({ uri, onClose }: Props) {
         >
           <Pressable
             onPress={onClose}
-            // Backdrop dismisses on tap. The inner Pressable around the
-            // image absorbs its own taps (RN bubbles touch up to the
-            // first responder ancestor by default), so the photo
-            // itself doesn't close the lightbox.
+            // Tap anywhere to dismiss. The image fills the window
+            // (resizeMode="contain" letterboxes it), so there's no
+            // exposed backdrop to tap around it — wrapping the image in
+            // its own tap-swallowing Pressable would therefore cover the
+            // whole screen and make the lightbox impossible to close by
+            // tapping. Letting taps bubble up to this handler gives the
+            // expected tap-to-close behavior. Pinch-zoom and panning are
+            // drag gestures, not taps, so they don't trigger onPress.
             style={{ width: winWidth, height: winHeight, alignItems: 'center', justifyContent: 'center' }}
           >
             {uri ? (
-              <Pressable onPress={() => { /* swallow taps on the image itself */ }}>
-                <Image
-                  source={{ uri }}
-                  // Fit to window without cropping: contain keeps the
-                  // full aspect ratio in view regardless of source size.
-                  style={{ width: winWidth, height: winHeight }}
-                  resizeMode="contain"
-                  accessibilityLabel="Attachment image"
-                />
-              </Pressable>
+              <Image
+                source={{ uri }}
+                // Fit to window without cropping: contain keeps the
+                // full aspect ratio in view regardless of source size.
+                style={{ width: winWidth, height: winHeight }}
+                resizeMode="contain"
+                accessibilityLabel="Attachment image"
+              />
             ) : (
               <View />
             )}
