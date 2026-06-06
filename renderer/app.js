@@ -1877,6 +1877,7 @@ async function joinTeamAndStart(teamId) {
       getAi: () => state.ai,
       getGitHub: () => state.github,
       attachProfileTrigger: (el, userId) => attachProfileTrigger(el, userId),
+      presenceStatusFor: (userId) => presenceStatusForUser(userId),
       openImageLightbox: (url, name) => openImageLightbox(url, name),
       toast: (msg) => showToast(msg),
       renderPinnedDrawer: (msgs, onPick) => renderPinnedDrawer(msgs, onPick),
@@ -2879,6 +2880,7 @@ function onMemberOffline(peerId) {
   // to the bottom of the sorted list with a grey dot.
   renderRoster();
   refreshDmPresence();
+  refreshMessagePresence();
 }
 
 function onCallPresence({ channelId, count }) {
@@ -3667,9 +3669,31 @@ function resolveMemberDisplay(member) {
 // the same field (PresenceContext). Wire values come from the single
 // source in api.js (window.HUDDLE_PRESENCE_VALUES); only the human labels
 // live here. Color ramp: green → yellow → orange → red.
-const PRESENCE_LABELS = { active: 'Available', away: 'Away', brb: 'BRB', unavailable: 'Unavailable' };
+const PRESENCE_LABELS = window.HUDDLE_PRESENCE_LABELS
+  || { active: 'Available', away: 'Away', brb: 'BRB', unavailable: 'Unavailable' };
 const PRESENCE_STATES = (window.HUDDLE_PRESENCE_VALUES || Object.keys(PRESENCE_LABELS))
   .map((id) => ({ id, label: PRESENCE_LABELS[id] || id }));
+
+// Live presence status for any user, for avatar dots: self reads the
+// local selector, peers read the team presence meta, offline → null.
+function presenceStatusForUser(userId) {
+  if (!state.huddle || !userId) return null;
+  if (userId === state.huddle.peerId) return state.huddle.presenceStatus || 'active';
+  const live = state.huddle.peerInfo.get(userId);
+  return live ? (live.status || 'active') : null;
+}
+
+// Patch the presence dots on rendered chat-message avatars in place —
+// rows are built once per message, so presence flips repaint via this
+// walk (same pattern as refreshDmPresence). Cheap: N = rendered rows.
+function refreshMessagePresence() {
+  for (const av of document.querySelectorAll('.msg .avatar[data-uid]')) {
+    const dot = av.querySelector('.av-presence');
+    if (!dot) continue;
+    const status = presenceStatusForUser(av.dataset.uid);
+    dot.className = 'av-presence' + (status ? ` on status-${status}` : '');
+  }
+}
 
 function presenceStatusLabel(s) {
   return (PRESENCE_STATES.find((x) => x.id === s) || PRESENCE_STATES[0]).label;
@@ -3692,8 +3716,9 @@ function renderMeStatus() {
 
 function initMeStatus(huddle) {
   renderMeStatus();
-  // Status flips re-render the me-row dot and the roster (self row).
-  huddle.addEventListener('presence-status', () => { renderMeStatus(); renderRoster(); });
+  // Status flips re-render the me-row dot, the roster (self row), and
+  // the self avatars in rendered chat rows.
+  huddle.addEventListener('presence-status', () => { renderMeStatus(); renderRoster(); refreshMessagePresence(); });
   // start() can run again after a team switch — wire the clicks once.
   // Under v2 the rail avatar is the ONLY trigger: the me-row sits in the
   // workspace header there, and a menu popping above it gets clipped to
@@ -3841,6 +3866,7 @@ function onMemberOnline(peer) {
   // already arrived and we stamped the tile 'guest', re-label it now.
   refreshTileLabelForPeer(peer.id);
   refreshDmPresence();
+  refreshMessagePresence();
 }
 
 // (onMemberOffline + onCallPeerLeft above replace the old onPeerLeft —

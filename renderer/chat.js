@@ -1584,6 +1584,15 @@ class ChatView {
       // pre-load images into the chat row itself — the colored
       // initial is fine inline.
       this.hooks.attachProfileTrigger?.(avatar, m.authorId);
+      // Presence dot on the author's avatar. data-uid lets the host's
+      // refreshMessagePresence() repaint dots in place when presence
+      // flips — rows are built once, so a render-time-only status
+      // would go stale.
+      avatar.dataset.uid = m.authorId;
+      const presence = document.createElement('span');
+      const status = this.hooks.presenceStatusFor?.(m.authorId);
+      presence.className = 'av-presence' + (status ? ` on status-${status}` : '');
+      avatar.appendChild(presence);
     }
 
     const right = document.createElement('div');

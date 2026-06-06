@@ -84,15 +84,29 @@
     _render(p) {
       const isSelf = p.user_id === this.huddle.peerId;
       const initial = (p.name || '?').slice(0, 1).toUpperCase();
+      // Presence: self reads the local selector; peers read the live team
+      // presence meta; offline teammates get a gray "Offline" row so the
+      // card always answers "are they around?".
+      const live = this.huddle.peerInfo?.get(p.user_id);
+      const status = isSelf
+        ? (this.huddle.presenceStatus || 'active')
+        : (live ? (live.status || 'active') : null);
+      const labels = window.HUDDLE_PRESENCE_LABELS || {};
+      const statusLabel = status ? (labels[status] || status) : 'Offline';
+      const statusClass = status ? `status-${status}` : 'status-offline';
       const avatarHtml = p.avatar_url
         ? `<img class="profile-card-avatar" src="${escapeAttr(p.avatar_url)}" alt="">`
         : `<div class="profile-card-avatar fallback" style="background:${escapeAttr(p.color || '#888')}">${escapeText(initial)}</div>`;
       this.el.innerHTML = `
         <div class="profile-card-head">
-          ${avatarHtml}
+          <span class="profile-card-avatar-wrap">
+            ${avatarHtml}
+            <span class="profile-card-presence ${statusClass}"></span>
+          </span>
           <div class="profile-card-id">
             <div class="profile-card-name">${escapeText(p.name || 'Unknown')}</div>
             ${p.email ? `<div class="profile-card-email">${escapeText(p.email)}</div>` : ''}
+            <div class="profile-card-status"><span class="profile-card-status-dot ${statusClass}"></span>${escapeText(statusLabel)}</div>
           </div>
         </div>
         ${p.bio ? `<div class="profile-card-bio">${escapeText(p.bio)}</div>` : ''}

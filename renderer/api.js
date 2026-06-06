@@ -28,6 +28,9 @@
   // PRESENCE_WIRE_VALUES). Unknown values degrade to 'active' everywhere.
   const PRESENCE_VALUES = ['active', 'away', 'brb', 'unavailable'];
   window.HUDDLE_PRESENCE_VALUES = PRESENCE_VALUES;
+  // Human labels live beside the wire values so every surface (status
+  // menu, profile card, tooltips) renders the same vocabulary.
+  window.HUDDLE_PRESENCE_LABELS = { active: 'Available', away: 'Away', brb: 'BRB', unavailable: 'Unavailable' };
 
   async function getSupabase() {
     if (_supabase) return _supabase;
