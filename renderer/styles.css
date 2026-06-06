@@ -2173,7 +2173,24 @@ body.has-fullscreen-tile { overflow: hidden; }
   color: white; font-weight: 600; font-size: 14px;
   letter-spacing: -0.02em;
   box-shadow: var(--shadow-1);
+  position: relative; /* anchors the presence dot */
 }
+/* Presence dot on chat-message avatars — green/yellow/orange/red per the
+   shared status vocabulary; hidden entirely for offline authors. Patched
+   in place by refreshMessagePresence() on presence events. */
+.av-presence { display: none; }
+.av-presence.on {
+  display: block;
+  position: absolute;
+  right: -2px; bottom: -2px;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--good);
+  border: 2px solid var(--bg);
+}
+.av-presence.on.status-away { background: #ffd60a; }
+.av-presence.on.status-brb { background: var(--warn); }
+.av-presence.on.status-unavailable { background: #ff5b5b; }
 .msg-head {
   display: flex; gap: 8px; align-items: baseline;
   margin-bottom: 1px;
@@ -2485,6 +2502,30 @@ body.has-fullscreen-tile { overflow: hidden; }
 .profile-card-id { min-width: 0; }
 .profile-card-name { font-weight: 600; font-size: 15px; color: var(--text); letter-spacing: -0.01em; }
 .profile-card-email { color: var(--text-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Presence on the profile card: corner dot on the avatar + a labeled
+   status row under the name/email. Offline renders gray. */
+.profile-card-avatar-wrap { position: relative; flex-shrink: 0; display: inline-flex; }
+.profile-card-presence {
+  position: absolute;
+  right: 0; bottom: 0;
+  width: 13px; height: 13px;
+  border-radius: 50%;
+  background: var(--good);
+  border: 2.5px solid var(--bg-elev, #242426);
+}
+.profile-card-status {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 3px;
+  color: var(--text-dim); font-size: 12px; font-weight: 500;
+}
+.profile-card-status-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--good); flex: none;
+}
+.profile-card-presence.status-away, .profile-card-status-dot.status-away { background: #ffd60a; }
+.profile-card-presence.status-brb, .profile-card-status-dot.status-brb { background: var(--warn); }
+.profile-card-presence.status-unavailable, .profile-card-status-dot.status-unavailable { background: #ff5b5b; }
+.profile-card-presence.status-offline, .profile-card-status-dot.status-offline { background: var(--text-faint, #666); }
 .profile-card-bio {
   margin: 0 0 12px; padding: 10px 12px;
   background: rgba(0, 0, 0, 0.25);
