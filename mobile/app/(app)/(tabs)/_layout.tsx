@@ -19,10 +19,14 @@ import { colors, tabBarOffset } from '@/theme';
 // People folds into Messages (Team section); Settings lives inside You.
 // The chat (channel/[id]) and call (call/[id]) screens live one level up
 // at the (app) Stack so they push *over* the tab bar.
-const tabIcon =
-  (Icon: LucideIcon) =>
-  ({ focused, color }: { focused: boolean; color: string }) =>
-    <Icon size={focused ? 24 : 22} color={color} strokeWidth={focused ? 2.4 : 2} />;
+const tabIcon = (Icon: LucideIcon) => {
+  // Named so react/display-name is satisfied — the variable name becomes the
+  // component's display name in dev tools / warnings.
+  const TabBarIcon = ({ focused, color }: { focused: boolean; color: string }) => (
+    <Icon size={focused ? 24 : 22} color={color} strokeWidth={focused ? 2.4 : 2} />
+  );
+  return TabBarIcon;
+};
 
 // The You tab renders your avatar with a presence dot instead of a glyph
 // (design kit MTabBar). Profile is fetched once per user; presence rides

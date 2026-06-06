@@ -32,7 +32,7 @@ export default function TeamScreen() {
       <H1>Pick a team</H1>
       {teams.length === 0 ? (
         <>
-          <P>You're not a member of any team yet. Ask a teammate for an invite, then sign in again.</P>
+          <P>You&apos;re not a member of any team yet. Ask a teammate for an invite, then sign in again.</P>
           <Button title="Sign out" variant="ghost" onPress={signOut} />
         </>
       ) : (

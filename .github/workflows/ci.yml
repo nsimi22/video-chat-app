@@ -6,9 +6,8 @@
 #     then syntax-checks every shipped renderer/main-process JS file. There
 #     is no test or lint suite on the desktop side yet, so `node --check`
 #     is the cheapest guard against a parse error reaching a release build.
-#   • mobile  — runs the real TypeScript typecheck and the design-token
-#     verifier. (expo lint is intentionally omitted — ESLint isn't set up
-#     in mobile/, and `expo lint` would try to install it interactively.)
+#   • mobile  — runs ESLint (expo lint), the real TypeScript typecheck, and
+#     the design-token verifier.
 name: CI
 
 on:
@@ -66,6 +65,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Lint
+        run: npm run lint
 
       - name: Typecheck
         run: npm run typecheck
