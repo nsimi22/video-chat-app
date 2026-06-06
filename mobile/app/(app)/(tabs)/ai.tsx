@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -14,8 +14,9 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Send, Sparkles } from 'lucide-react-native';
 import { useAuth } from '@/context/AuthContext';
-import { AiClient, type AiSettings, type ChatMessage } from '@/lib/ai';
-import { getAiSettings } from '@/lib/integrations';
+import { AiClient, type AiSettings, type ChatMessage, type ToolDef } from '@/lib/ai';
+import { buildIntegrationTools } from '@/lib/ai-tools';
+import { getAiSettings, getJiraSettings, getGithubSettings, type JiraSettings, type GithubSettings } from '@/lib/integrations';
 import { getProfile, type Profile } from '@/lib/api';
 import { Avatar, Markdown } from '@/components/ui';
 import { colors, radius, space, tabBarClearance } from '@/theme';
@@ -28,10 +29,17 @@ import { colors, radius, space, tabBarClearance } from '@/theme';
 const SYSTEM_PROMPT =
   'You are Huddle AI, a helpful assistant inside the Huddle team chat app. Be concise and practical. Format with simple markdown (bold, code) only.';
 
+// When Jira / GitHub tools are wired in, tell the model to use them instead of
+// claiming it lacks access — that "I can't reach external tools" refusal is
+// exactly what this prompt prevents.
+const SYSTEM_PROMPT_WITH_TOOLS =
+  SYSTEM_PROMPT +
+  ' You have read access to the user\'s connected Jira and GitHub via tools. When the user names a Jira ticket key (e.g. "DAP-135"), an epic, a GitHub issue/PR, or asks anything you could answer by reading them, CALL the tools to fetch the real data first, then answer — never say you cannot access Jira or GitHub. If a tool needs a key or number you do not have, search first (jira_search_issues / github_search) to find it. Summaries should be tight bullet points.';
+
 const SUGGESTIONS = [
-  'Summarize what a daily stand-up should cover',
+  'Summarize the latest open Jira tickets',
+  'What open PRs need review?',
   'Draft a ticket for a login bug',
-  'Write a friendly release announcement',
 ];
 
 type Turn = { role: 'user' | 'assistant'; text: string };
@@ -40,11 +48,16 @@ export default function AiScreen() {
   const insets = useSafeAreaInsets();
   const { userId } = useAuth();
   const [settings, setSettings] = useState<AiSettings | null>(null);
+  const [jira, setJira] = useState<JiraSettings | null>(null);
+  const [github, setGithub] = useState<GithubSettings | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [me, setMe] = useState<Profile | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [text, setText] = useState('');
   const [thinking, setThinking] = useState(false);
+  // Name of the integration tool currently running, surfaced in the
+  // thinking footer so a slow Jira/GitHub fetch doesn't look stuck.
+  const [toolNote, setToolNote] = useState<string | null>(null);
   const listRef = useRef<FlatList<Turn>>(null);
   // The composer sits above the floating glass tab bar when idle, but
   // docks to the keyboard while typing (the bar is covered by the
@@ -58,12 +71,20 @@ export default function AiScreen() {
 
   useEffect(() => {
     if (!userId) return;
-    getAiSettings(userId).then((s) => { setSettings(s); setSettingsLoaded(true); }).catch(() => setSettingsLoaded(true));
-    getProfile(userId).then(setMe).catch(() => {});
+    // Guard against a fast account switch: ignore resolutions from the
+    // previous userId so stale settings don't clobber the new account's.
+    let active = true;
+    getAiSettings(userId).then((s) => { if (active) { setSettings(s); setSettingsLoaded(true); } }).catch(() => { if (active) setSettingsLoaded(true); });
+    getJiraSettings(userId).then((j) => { if (active) setJira(j); }).catch(() => {});
+    getGithubSettings(userId).then((g) => { if (active) setGithub(g); }).catch(() => {});
+    getProfile(userId).then((p) => { if (active) setMe(p); }).catch(() => {});
+    return () => { active = false; };
   }, [userId]);
 
   const client = settings ? new AiClient(settings) : null;
   const configured = !!client?.isConfigured();
+  // Jira/GitHub read tools, rebuilt when either integration's settings load.
+  const tools: ToolDef[] = useMemo(() => buildIntegrationTools(jira, github), [jira, github]);
   const modelLabel = settings?.provider === 'openrouter'
     ? settings.openrouterModel || 'openrouter'
     : settings?.anthropicModel || (configured ? 'anthropic' : '—');
@@ -75,18 +96,25 @@ export default function AiScreen() {
     const nextTurns: Turn[] = [...turns, { role: 'user', text: prompt }];
     setTurns(nextTurns);
     setThinking(true);
+    setToolNote(null);
     setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 60);
     try {
       const history: ChatMessage[] = nextTurns.map((t) => ({ role: t.role, content: t.text }));
-      const result = await client.chat({ system: SYSTEM_PROMPT, messages: history });
+      const result = await client.chat({
+        system: tools.length ? SYSTEM_PROMPT_WITH_TOOLS : SYSTEM_PROMPT,
+        messages: history,
+        tools: tools.length ? tools : undefined,
+        onToolUse: (name) => setToolNote(name),
+      });
       setTurns((prev) => [...prev, { role: 'assistant', text: result.text || '(no response)' }]);
     } catch (e: any) {
       setTurns((prev) => [...prev, { role: 'assistant', text: `Request failed: ${e?.message ?? String(e)}` }]);
     } finally {
       setThinking(false);
+      setToolNote(null);
       setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 60);
     }
-  }, [text, turns, client, configured, thinking]);
+  }, [text, turns, client, configured, thinking, tools]);
 
   return (
     <SafeAreaView edges={['top']} style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -97,7 +125,9 @@ export default function AiScreen() {
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text }}>Huddle AI</Text>
             <Text style={{ fontSize: 11.5, color: colors.textDim }}>
-              {configured ? 'Ask anything — answers stay on this device' : 'Not configured'}
+              {configured
+                ? (tools.length ? 'Ask anything — reads your Jira & GitHub' : 'Ask anything — answers stay on this device')
+                : 'Not configured'}
             </Text>
           </View>
           <Text style={{ fontSize: 10.5, color: colors.textFaint, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, overflow: 'hidden' }} numberOfLines={1}>
@@ -131,7 +161,9 @@ export default function AiScreen() {
               <View style={{ flex: 1, justifyContent: 'flex-end', paddingBottom: space(2) }}>
                 <Text style={{ color: colors.text, fontSize: 15, fontWeight: '600', marginBottom: 4 }}>Ask Huddle AI</Text>
                 <Text style={{ color: colors.textDim, fontSize: 13, lineHeight: 19 }}>
-                  Drafts, summaries, quick answers. Try a suggestion below to start.
+                  {tools.length
+                    ? 'Summaries, drafts, quick answers — grounded in your Jira & GitHub. Try a suggestion below.'
+                    : 'Drafts, summaries, quick answers. Try a suggestion below to start.'}
                 </Text>
               </View>
             }
@@ -140,6 +172,9 @@ export default function AiScreen() {
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: space(2.75) }}>
                   <Avatar name="AI" ai size={30} />
                   <ActivityIndicator color={colors.textDim} size="small" />
+                  {toolNote ? (
+                    <Text style={{ fontSize: 12, color: colors.textDim }}>{`reading ${toolNote.replace(/_/g, ' ')}…`}</Text>
+                  ) : null}
                 </View>
               ) : null
             }
