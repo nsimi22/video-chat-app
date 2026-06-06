@@ -71,10 +71,14 @@ export default function AiScreen() {
 
   useEffect(() => {
     if (!userId) return;
-    getAiSettings(userId).then((s) => { setSettings(s); setSettingsLoaded(true); }).catch(() => setSettingsLoaded(true));
-    getJiraSettings(userId).then(setJira).catch(() => {});
-    getGithubSettings(userId).then(setGithub).catch(() => {});
-    getProfile(userId).then(setMe).catch(() => {});
+    // Guard against a fast account switch: ignore resolutions from the
+    // previous userId so stale settings don't clobber the new account's.
+    let active = true;
+    getAiSettings(userId).then((s) => { if (active) { setSettings(s); setSettingsLoaded(true); } }).catch(() => { if (active) setSettingsLoaded(true); });
+    getJiraSettings(userId).then((j) => { if (active) setJira(j); }).catch(() => {});
+    getGithubSettings(userId).then((g) => { if (active) setGithub(g); }).catch(() => {});
+    getProfile(userId).then((p) => { if (active) setMe(p); }).catch(() => {});
+    return () => { active = false; };
   }, [userId]);
 
   const client = settings ? new AiClient(settings) : null;

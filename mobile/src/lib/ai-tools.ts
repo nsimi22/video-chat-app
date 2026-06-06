@@ -91,8 +91,9 @@ function buildGithubTools(github: GithubSettings | null): ToolDef[] {
         required: ['owner', 'repo', 'number'],
       },
       run: async ({ owner, repo, number }) => {
-        if (!owner || !repo || !number) throw new Error('owner, repo and number are required');
-        return fetchGithubIssueDetail(s, String(owner), String(repo), Number(number));
+        const num = Number(number);
+        if (!owner || !repo || !Number.isFinite(num)) throw new Error('owner, repo and a valid issue/PR number are required');
+        return fetchGithubIssueDetail(s, String(owner), String(repo), num);
       },
     },
     {

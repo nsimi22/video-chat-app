@@ -406,9 +406,15 @@ export type JiraIssueDetail = {
 // code, quotes). Reuses the block walker the card detail sheet uses.
 export function adfToText(doc: unknown): string {
   const blocks = adfToBlocks(doc);
+  // Re-emit basic markdown structure (headings, code fences, quotes, lists)
+  // rather than flattening everything — the model reads ticket descriptions
+  // more accurately when the shape survives.
   return blocks
     .map((b) => {
       if (b.type === 'li') return `${b.ordered ? `${b.index}.` : '-'} ${b.text}`;
+      if (b.type === 'heading') return `${'#'.repeat(Math.min(Math.max(b.level, 1), 6))} ${b.text}`;
+      if (b.type === 'code') return `\`\`\`\n${b.text}\n\`\`\``;
+      if (b.type === 'quote') return `> ${b.text}`;
       return b.text;
     })
     .join('\n')
