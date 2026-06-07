@@ -37,7 +37,7 @@ export default function ProfileScreen() {
 
   return (
     <Screen>
-      <H1>What's your name?</H1>
+      <H1>What&apos;s your name?</H1>
       <P>This is how teammates will see you.</P>
       <Field placeholder="Ada Lovelace" value={name} onChangeText={setName} onSubmitEditing={submit} autoFocus />
       <Button title="Continue" onPress={submit} loading={busy} disabled={!name.trim()} />

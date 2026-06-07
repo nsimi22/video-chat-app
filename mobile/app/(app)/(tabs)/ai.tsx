@@ -148,7 +148,7 @@ export default function AiScreen() {
               Connect an AI provider
             </Text>
             <Text style={{ color: colors.textDim, fontSize: 13, lineHeight: 19, textAlign: 'center' }}>
-              Add an Anthropic or OpenRouter API key in the desktop app's Settings panel — mobile reads the same account.
+              Add an Anthropic or OpenRouter API key in the desktop app&apos;s Settings panel — mobile reads the same account.
             </Text>
           </View>
         ) : (

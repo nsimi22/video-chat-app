@@ -134,7 +134,7 @@ export default function EmailScreen() {
         <>
           <Button title="Continue with email" onPress={sendCode} loading={busy} disabled={!validEmail} />
           <Text style={{ fontSize: 12.5, color: colors.textFaint, textAlign: 'center', marginTop: space(4), lineHeight: 19 }}>
-            We'll email you a code. No password required.
+            We&apos;ll email you a code. No password required.
           </Text>
         </>
       ) : (

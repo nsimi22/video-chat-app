@@ -324,7 +324,7 @@ export default function YouScreen() {
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: space(6) }}>
           <KeyRound size={12} color={colors.textFaint} />
           <Text style={{ color: colors.textFaint, fontSize: 12, flex: 1 }}>
-            Integration API keys (Jira, GitHub, AI, Giphy) are managed in the desktop app's Settings panel.
+            Integration API keys (Jira, GitHub, AI, Giphy) are managed in the desktop app&apos;s Settings panel.
           </Text>
         </View>
       </ScrollView>

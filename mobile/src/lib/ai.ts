@@ -42,7 +42,7 @@ export type ChatArgs = {
 export type ChatResult = {
   text: string;
   model: string;
-  toolUses: Array<{ name: string; input: Record<string, unknown> }>;
+  toolUses: { name: string; input: Record<string, unknown> }[];
 };
 
 export class AiClient {
@@ -79,7 +79,7 @@ export class AiClient {
       ? args.tools.map(({ name, description, input_schema }) => ({ name, description, input_schema }))
       : null;
     const toolUses: ChatResult['toolUses'] = [];
-    const convo: Array<{ role: string; content: unknown }> = args.messages.map((m) => ({ role: m.role, content: m.content }));
+    const convo: { role: string; content: unknown }[] = args.messages.map((m) => ({ role: m.role, content: m.content }));
     for (let i = 0; i < args.maxIterations; i++) {
       const lastRound = i === args.maxIterations - 1;
       const body: Record<string, unknown> = {
@@ -102,14 +102,14 @@ export class AiClient {
       const text = await res.text();
       if (!res.ok) throw new Error(`Anthropic ${res.status}: ${parseProviderError(text)}`);
       const json = safeJsonParse(text, `Anthropic ${res.status} returned non-JSON body`);
-      const blocks: Array<{ type: string; text?: string; name?: string; id?: string; input?: Record<string, unknown> }> = json.content || [];
+      const blocks: { type: string; text?: string; name?: string; id?: string; input?: Record<string, unknown> }[] = json.content || [];
       const toolBlocks = blocks.filter((b) => b.type === 'tool_use');
       if (!apiTools || lastRound || toolBlocks.length === 0) {
         const outText = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
         return { text: outText, model: args.model, toolUses };
       }
       convo.push({ role: 'assistant', content: blocks });
-      const results: Array<Record<string, unknown>> = [];
+      const results: Record<string, unknown>[] = [];
       for (const tu of toolBlocks) {
         const def = args.tools!.find((t) => t.name === tu.name);
         let resultText: string;
@@ -139,7 +139,7 @@ export class AiClient {
         }))
       : null;
     const toolUses: ChatResult['toolUses'] = [];
-    const convo: Array<Record<string, unknown>> = args.system
+    const convo: Record<string, unknown>[] = args.system
       ? [{ role: 'system', content: args.system }, ...args.messages.map((m) => ({ role: m.role, content: m.content }))]
       : args.messages.map((m) => ({ role: m.role, content: m.content }));
     for (let i = 0; i < args.maxIterations; i++) {
@@ -162,7 +162,7 @@ export class AiClient {
       if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${parseProviderError(text)}`);
       const json = safeJsonParse(text, `OpenRouter ${res.status} returned non-JSON body`);
       const message = json.choices?.[0]?.message || {};
-      const calls: Array<{ id: string; function: { name: string; arguments: string } }> = message.tool_calls || [];
+      const calls: { id: string; function: { name: string; arguments: string } }[] = message.tool_calls || [];
       if (!apiTools || lastRound || calls.length === 0) {
         return { text: message.content || '', model: args.model, toolUses };
       }
@@ -196,7 +196,7 @@ export class AiClient {
 // Convenience used by /summarize. Mirrors renderer/ai.js .summarize().
 export async function summarize(
   client: AiClient,
-  msgs: Array<{ text: string; ts: string; authorName: string }>,
+  msgs: { text: string; ts: string; authorName: string }[],
   topicHint?: string,
 ): Promise<ChatResult> {
   const system =
