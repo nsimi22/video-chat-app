@@ -43,40 +43,57 @@
 
   // Matches a fenced block whose info-string is exactly `action-items`
   // (optionally with surrounding whitespace). [\s\S] so the body can span
-  // lines; non-greedy so we stop at the first closing fence. `m` isn't
-  // needed — ^/$ aren't used — but we keep the fences anchored to their own
-  // lines via the explicit \n around them.
-  const BLOCK_RE = /\n?```[ \t]*action-items[ \t]*\n([\s\S]*?)\n?```[ \t]*\n?/i;
+  // lines; non-greedy so we stop at the first closing fence. `g` so we catch
+  // *every* such block, not just the first — a model occasionally emits the
+  // block more than once (e.g. a stray second copy), and a block we don't
+  // strip would otherwise survive as a raw ```action-items fence in the
+  // visible message. `m` isn't needed — ^/$ aren't used — but we keep the
+  // fences anchored to their own lines via the explicit \n around them.
+  // NOTE: this RegExp is stateful (`g` ⇒ carries .lastIndex); never share a
+  // single .exec/.test loop across calls. parseActionItems uses matchAll +
+  // String.replace, both of which manage state internally per call.
+  const BLOCK_RE = /\n?```[ \t]*action-items[ \t]*\n([\s\S]*?)\n?```[ \t]*\n?/gi;
 
-  // Pull the action-items block out of an AI message.
+  // Pull the action-items block(s) out of an AI message.
   // Returns { items: Array<{text, owner?}>, cleanText: string }.
-  //   - items: parsed records, in order, with non-empty text. Lines that
-  //     aren't valid JSON (or lack text) are skipped rather than throwing —
-  //     a partially-truncated block still yields whatever parsed.
-  //   - cleanText: the message with the fenced block removed and trailing
+  //   - items: parsed records, in order, with non-empty text, gathered from
+  //     every action-items block in the message. Lines that aren't valid
+  //     JSON (or lack text) are skipped rather than throwing — a partially-
+  //     malformed block still yields whatever parsed.
+  //   - cleanText: the message with every fenced block removed and trailing
   //     whitespace trimmed, so the renderer shows only the human-readable
-  //     part. Unchanged when there's no block.
+  //     part (and never a leftover raw fence). Unchanged when there's no block.
   function parseActionItems(text) {
     const src = String(text == null ? '' : text);
-    const m = BLOCK_RE.exec(src);
-    if (!m) return { items: [], cleanText: src };
 
     const items = [];
-    for (const rawLine of m[1].split('\n')) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      let obj;
-      try { obj = JSON.parse(line); } catch { continue; }
-      if (!obj || typeof obj !== 'object') continue;
-      const itemText = typeof obj.text === 'string' ? obj.text.trim() : '';
-      if (!itemText) continue;
-      const owner = typeof obj.owner === 'string' && obj.owner.trim()
-        ? obj.owner.trim()
-        : null;
-      items.push({ text: itemText, owner });
+    // matchAll gives us a fresh iterator each call, so the global flag's
+    // lastIndex doesn't leak between invocations.
+    for (const m of src.matchAll(BLOCK_RE)) {
+      for (const rawLine of m[1].split('\n')) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        if (!obj || typeof obj !== 'object') continue;
+        const itemText = typeof obj.text === 'string' ? obj.text.trim() : '';
+        if (!itemText) continue;
+        const owner = typeof obj.owner === 'string' && obj.owner.trim()
+          ? obj.owner.trim()
+          : null;
+        items.push({ text: itemText, owner });
+      }
     }
 
-    // Strip the block (and collapse the gap it leaves) from the display text.
+    // Fast path: no block at all → return the original text untouched.
+    if (items.length === 0 && !BLOCK_RE.test(src)) {
+      BLOCK_RE.lastIndex = 0; // .test left lastIndex advanced; reset it.
+      return { items: [], cleanText: src };
+    }
+    BLOCK_RE.lastIndex = 0; // reset after the .test above (if it ran)
+
+    // Strip every block (and collapse the gap it leaves) from the display
+    // text. String.replace with a global RegExp replaces all matches.
     const cleanText = src.replace(BLOCK_RE, '\n').replace(/\n{3,}/g, '\n\n').trim();
     return { items, cleanText };
   }
