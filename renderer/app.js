@@ -2006,6 +2006,12 @@ async function startCall(channelId, { audioFirst = false } = {}) {
     if (audioFirst && state.mesh) {
       const on = state.mesh.toggleCam();
       els.btnCam.classList.toggle('muted', !on);
+      // Mirror the manual btnCam handler (setPeerCamOn after toggleCam):
+      // the call channel is { broadcast: { self: false } }, so we never
+      // hear our own mute-state echo and the self-tile's cam-off overlay
+      // only flips if we drive it locally. Without this the local view
+      // shows a black/last-frame tile while peers correctly see cam-off.
+      setPeerCamOn(state.huddle.peerId, on);
     }
   } catch (err) {
     console.warn('No camera/mic available', err);
