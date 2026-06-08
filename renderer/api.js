@@ -610,8 +610,8 @@
     // Normalise a row into _activeRecording + emit a single
     // 'recording-state' event the renderer listens on. We keep the most
     // recent row by started_at so a stale UPDATE on an old (completed) row
-    // can't clobber the live one. 'completed' is surfaced too so the
-    // renderer can post the Meeting Recap exactly once.
+    // can't clobber the live one. The stop transition is surfaced so the
+    // renderer can submit its transcript snapshot for the server-side recap.
     _handleRecordingRow(row) {
       const prev = this._activeRecording;
       const prevTs = prev ? Date.parse(prev.started_at || 0) : -1;
@@ -645,12 +645,44 @@
       return data?.recording || null;
     }
 
-    // Public URL for a finished recording's MP4 (storage_path -> uploads
-    // bucket public URL). Null when the file hasn't landed yet.
-    recordingPublicUrl(storagePath) {
+    // Short-lived signed URL for a finished recording's MP4. The MP4 now lives
+    // in the PRIVATE `recordings` bucket (migration 20260608130000), so there's
+    // no permanent public URL to leak — we mint a time-limited signed URL on
+    // demand. Storage RLS (recordings_read_channel_members) additionally gates
+    // this to channel members, so a non-member's createSignedUrl 401s.
+    // Returns null when the file hasn't landed yet or the caller can't read it;
+    // the server recap embeds its own signed URL, and this is the on-click
+    // regenerate path so the link keeps working after that one expires.
+    async recordingSignedUrl(storagePath, expiresInSeconds = 60 * 60) {
       if (!storagePath) return null;
-      const { data } = this.supabase.storage.from('uploads').getPublicUrl(storagePath);
-      return data?.publicUrl || null;
+      const { data, error } = await this.supabase.storage
+        .from('recordings')
+        .createSignedUrl(storagePath, expiresInSeconds);
+      if (error) { console.warn('[recording] createSignedUrl failed', error); return null; }
+      return data?.signedUrl || null;
+    }
+
+    // Submit the local caption-transcript snapshot for a recording so the
+    // server (livekit-egress-webhook) can build the AI recap even if this
+    // client leaves before the egress completes. The transcript lives only in
+    // the renderer (app.js state.cc.lines); the edge function stores it on the
+    // call_recordings row (service-role; first submit wins). Lenient: a failed
+    // submit just means the server falls back to a link-only recap.
+    async submitRecordingTranscript(channelId, recordingId, transcript) {
+      try {
+        const { error } = await this.supabase.functions.invoke('recording-egress', {
+          body: {
+            action: 'submit-transcript',
+            team_id: this.team.id,
+            channel_id: channelId,
+            recording_id: recordingId || null,
+            transcript: transcript || '',
+          },
+        });
+        if (error) console.warn('[recording] submit-transcript failed', error);
+      } catch (err) {
+        console.warn('[recording] submit-transcript threw', err);
+      }
     }
 
     // --- Team channel: presence + signaling + typing + announcements -----

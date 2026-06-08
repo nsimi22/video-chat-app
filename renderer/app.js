@@ -369,14 +369,6 @@ const state = {
     forChannelId: null,   // channel the buffer belongs to (for summary post)
     _finalizing: false,   // guards finalizeCallTranscript against re-entry
   },
-  // Transcript snapshots taken when cloud recordings are stopped, so the
-  // post-recording Meeting Recap (postMeetingRecap) has the lines even if
-  // captions are torn down before the egress finishes uploading. Keyed by
-  // recording.id (NOT a single global) so that two recordings stopped in
-  // quick succession can't clobber each other's captured buffer — each recap
-  // reads and deletes its own snapshot. An entry exists only in the window
-  // between that recording's Stop and its recap posting.
-  recordingTranscriptSnapshots: new Map(),
   // Meeting thread: anchored by the "📞 Call started" message posted
   // when startCall runs. Joiners pick the root up via the call-channel
   // 'meeting-root' broadcast or fetchActiveMeetingRoot as a fallback.
@@ -1827,7 +1819,8 @@ async function joinTeamAndStart(teamId) {
   huddle.addEventListener('chat-channel-updated', (e) => onChannelUpdated(e.detail));
   huddle.addEventListener('call-presence', (e) => onCallPresence(e.detail));
   // Shared call-recording state (the call_recordings realtime row). Drives
-  // the Record button for every participant and triggers the Meeting Recap.
+  // the Record button for every participant and submits the transcript
+  // snapshot for the server-side Meeting Recap on the stop transition.
   huddle.addEventListener('recording-state', (e) => onRecordingState(e.detail));
   huddle.addEventListener('saved-message-added', (e) => onSavedMessageChange('add', e.detail.save));
   huddle.addEventListener('saved-message-updated', (e) => onSavedMessageChange('update', e.detail.save));
@@ -2023,6 +2016,16 @@ async function startCall(channelId) {
 // into the team. The HuddleClient keeps chat realtime running.
 async function leaveCall() {
   if (!state.mesh) return;
+  // If WE started a recording that's still in-flight, submit our caption
+  // transcript before finalizeCallTranscript() clears the buffer below. The
+  // server posts the recap from this snapshot when the egress completes, so
+  // leaving mid-recording no longer loses the recap. First-write-wins on the
+  // server makes this a no-op if the stop transition already submitted.
+  const rec = state.huddle?.activeRecording;
+  if (rec && rec.started_by === state.huddle?.peerId
+    && ['starting', 'recording', 'stopping'].includes(rec.status)) {
+    submitRecordingTranscriptSnapshot(rec.id, rec.channel_id);
+  }
   // Snapshot + clear the captions buffer synchronously, then
   // dispatch the AI summary as a background task. We don't await
   // because the AI round-trip can take several seconds; blocking
@@ -2593,11 +2596,12 @@ function finalizeCallTranscript() {
   // freshly-accumulating buffer.
   if (state.cc._finalizing) { console.log('[recap] skip: finalize already in flight'); return; }
   if (!state.cc.on && state.cc.lines.length === 0) { console.log('[recap] skip: captions off and no buffered lines'); return; }
-  // If this call was being recorded, the post-recording Meeting Recap
-  // (postMeetingRecap, fired from onRecordingState when the egress
-  // completes) already folds the transcript summary in alongside the
-  // recording link. Skip the standalone transcript-only "📞 Call recap"
-  // so the channel doesn't get two near-identical summaries.
+  // If this call was being recorded, the server-side Meeting Recap
+  // (livekit-egress-webhook, posted when the egress completes) already folds
+  // the transcript summary in alongside the recording link — the renderer
+  // submitted its transcript snapshot on the stop/leave transition. Skip the
+  // standalone transcript-only "📞 Call recap" so the channel doesn't get two
+  // near-identical summaries. (This legacy suppression is intentionally kept.)
   if (state.huddle?.isRecordingActive()) {
     console.log('[recap] skip: recording active — Meeting Recap will cover it');
     return;
@@ -5458,7 +5462,8 @@ function onLocalCameraStreamChanged({ stream }) {
 // state. The call_recordings realtime subscription (huddle.watchCallRecordings)
 // fires 'recording-state' on the huddle whenever the row changes, so every
 // participant — not just the starter — sees the same "● Recording" button +
-// banner. When a recording completes, the starter posts the Meeting Recap.
+// banner. When the recording stops, the starter submits its transcript and the
+// SERVER (livekit-egress-webhook) posts the Meeting Recap on egress completion.
 // ---------------------------------------------------------------------------
 
 async function toggleRecording() {
@@ -5496,8 +5501,13 @@ function syncRecordButtonState() {
 }
 
 // React to call_recordings changes. Keeps the button in sync for everyone
-// and, on completion, lets the recording starter post the Meeting Recap so
-// the link + AI summary land exactly once in the channel.
+// and, on the stop transition, submits the starter's caption transcript so
+// the SERVER (livekit-egress-webhook) can generate + post the Meeting Recap
+// exactly once when the egress completes. The recap is NO LONGER posted by the
+// client — moving it server-side means it survives the starter leaving the
+// call and dedups atomically (recap_posted_message_id claim), instead of being
+// lost if the starter left before egress finished or double-posted from two
+// clients of the same user.
 function onRecordingState({ recording, previous }) {
   // Only care about the channel we're actually in.
   if (!state.inCallChannelId || recording?.channel_id !== state.inCallChannelId) {
@@ -5506,80 +5516,31 @@ function onRecordingState({ recording, previous }) {
   }
   syncRecordButtonState();
 
-  // The recording's starter is the single recap poster (avoids N duplicate
-  // recaps in an N-person call). started_by is the auth user id, which
-  // equals huddle.peerId for the local user.
+  // The recording's starter is the single transcript submitter (the webhook
+  // reads the starter's AI key, and a transcript from any other member would
+  // be redundant). started_by is the auth user id == huddle.peerId locally.
   const isStarter = recording.started_by === state.huddle?.peerId;
 
-  // Snapshot the transcript the moment Stop is clicked (status -> stopping).
-  // The egress takes a few seconds to finalise the MP4; by capturing the
-  // buffer now we guarantee the recap has the transcript even if captions
-  // get torn down before the 'completed' event arrives.
+  // Submit the transcript snapshot the moment Stop is clicked (status ->
+  // stopping). The egress takes a few seconds to finalise the MP4; submitting
+  // now guarantees the server has the transcript even if captions get torn
+  // down before the 'completed' event arrives. The edge function's first-write-
+  // wins guard makes a duplicate submit (e.g. also on leave) a no-op.
   const becameStopping = recording.status === 'stopping'
     && previous?.status !== 'stopping';
   if (becameStopping && isStarter) {
-    // Key by recording.id so two recordings stopped in quick succession can't
-    // clobber each other's captured buffer — each recap reads/deletes its own.
-    state.recordingTranscriptSnapshots.set(recording.id, (state.cc.lines || []).slice());
-  }
-
-  const becameCompleted = recording.status === 'completed'
-    && previous?.id === recording.id && previous?.status !== 'completed';
-  if (becameCompleted && isStarter) {
-    postMeetingRecap(recording).catch((err) => console.warn('[recap] post failed', err));
+    submitRecordingTranscriptSnapshot(recording.id, recording.channel_id);
   }
 }
 
-// Build + post the "Meeting Recap" message for a finished recording. Reuses
-// the call's transcript buffer (state.cc.lines) and the configured AI client
-// — the same pipeline finalizeCallTranscript uses — then prepends the
-// recording download link. Posts under the meeting thread when one exists.
-async function postMeetingRecap(recording) {
-  const channelId = recording.channel_id;
-  const link = state.huddle?.recordingPublicUrl(recording.storage_path);
-  const meetingThreadId = state.meeting?.threadRootChannelId === channelId
-    ? state.meeting.threadRootId
-    : null;
-
-  // Transcript-driven recap. Prefer this recording's snapshot captured at Stop
-  // time (onRecordingState, keyed by recording.id) so the recap is intact even
-  // if captions were torn down between Stop and the egress completing; fall back
-  // to the live buffer for the in-call completion path. Delete the entry after
-  // reading so the per-recording snapshot doesn't linger in the Map.
-  const snapshot = state.recordingTranscriptSnapshots.get(recording.id);
-  const buffer = snapshot?.length ? snapshot : (state.cc.lines || []);
-  state.recordingTranscriptSnapshots.delete(recording.id);
-  const lines = buffer.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
-  const ai = state.ai;
-  let summary = '';
-  if (ai?.isConfigured() && lines.length) {
-    const transcript = lines.map((l) => `${l.fromName || 'someone'}: ${l.text}`).join('\n');
-    const system = "You are summarising a recorded team call. Produce a concise meeting recap (under 200 words) in markdown: 2-3 bullets of key points, then a 'Decisions' section if any were made, then 'Action items' (with owners if you can infer them). The transcript is rough speech-to-text — fix obvious recognition errors silently and don't quote raw lines.";
-    try {
-      const result = await ai.chat({ system, messages: [{ role: 'user', content: transcript }] });
-      summary = result.text || '';
-    } catch (err) {
-      console.warn('[recap] AI summarise failed', err);
-    }
-  }
-
-  const parts = ['**🎥 Meeting Recap**', ''];
-  if (link) parts.push(`📼 [Recording](${link})`, '');
-  else parts.push('_Recording is still processing — the link will be available shortly._', '');
-  if (summary) parts.push(summary);
-  else if (!lines.length) parts.push('_No transcript was captured (turn on captions during the call for an AI recap)._');
-  const body = parts.join('\n');
-
-  try {
-    await state.huddle?.sendAiMessage({
-      channelId,
-      parentId: meetingThreadId || null,
-      text: body,
-      model: ai?.defaultModel,
-    });
-  } catch (err) {
-    console.warn('[recap] failed to POST Meeting Recap message', err);
-  }
+// Flatten the live caption buffer into the "Name: line" transcript the server
+// summariser expects and submit it for `recordingId`. Lenient (the api helper
+// swallows errors) so a failed submit just degrades to a link-only recap.
+// Kept separate from onRecordingState so the leaveCall path can reuse it.
+function submitRecordingTranscriptSnapshot(recordingId, channelId) {
+  const lines = (state.cc.lines || []).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  const transcript = lines.map((l) => `${l.fromName || 'someone'}: ${l.text}`).join('\n');
+  state.huddle?.submitRecordingTranscript(channelId, recordingId, transcript);
 }
 
 // Cross-client identifier for a screen share. Mesh peers see the same

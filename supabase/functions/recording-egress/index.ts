@@ -12,11 +12,13 @@
 // egress composites exactly the room desktop + mobile already join.
 //
 // Egress output: a single MP4 (RoomComposite, "speaker" layout) uploaded to
-// the existing `uploads` Supabase Storage bucket over its S3-compatible
+// the PRIVATE `recordings` Supabase Storage bucket over its S3-compatible
 // endpoint. Supabase Storage speaks S3, so LiveKit's built-in S3Upload
 // targets it directly — no extra relay. The object key is
-// `recordings/<team>/<channel>/<recordingId>.mp4`; the renderer turns it
-// into a public URL with storage.from('uploads').getPublicUrl(path).
+// `recordings/<team>/<channel>/<recordingId>.mp4`; the renderer resolves a
+// short-lived signed URL on demand (storage.from('recordings').createSignedUrl)
+// rather than a permanent public link, so a private channel's recording can't
+// leak to anyone holding an old URL (see migration 20260608130000).
 //
 // Actions (POST body { action, team_id, channel_id }):
 //   action='start' -> insert call_recordings(status='starting'), start the
@@ -26,12 +28,19 @@
 //                     the livekit-egress-webhook companion (or, if no
 //                     webhook is configured, the row stays 'stopping' until
 //                     a webhook/cron sweeps it — see PR notes).
+//   action='submit-transcript' -> store the caller's live caption transcript
+//                     snapshot on the active/most-recent recording row so the
+//                     webhook can build the AI recap server-side (the
+//                     transcript only exists in the starter's client). Caller
+//                     must be the recording's starter; service-role writes the
+//                     transcript column. Submitted on the stop/leave
+//                     transition (see app.js onRecordingState).
 //
 // Required Edge Function secrets (document as infra assumptions):
 //   LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET   (shared w/ livekit-token)
 //   SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY (anon auto-injected)
 //   EGRESS_S3_ACCESS_KEY, EGRESS_S3_SECRET_KEY  — Storage S3 access keys
-//   EGRESS_S3_BUCKET   (default 'uploads')
+//   EGRESS_S3_BUCKET   (default 'recordings' — the private bucket)
 //   EGRESS_S3_REGION   (default 'us-east-1' — Supabase Storage ignores it
 //                       but the S3 protocol requires a value)
 //   EGRESS_S3_ENDPOINT — Storage S3 endpoint,
@@ -52,7 +61,7 @@ const LIVEKIT_URL = Deno.env.get('LIVEKIT_URL')!;
 const LIVEKIT_API_KEY = Deno.env.get('LIVEKIT_API_KEY')!;
 const LIVEKIT_API_SECRET = Deno.env.get('LIVEKIT_API_SECRET')!;
 
-const S3_BUCKET = Deno.env.get('EGRESS_S3_BUCKET') ?? 'uploads';
+const S3_BUCKET = Deno.env.get('EGRESS_S3_BUCKET') ?? 'recordings';
 const S3_REGION = Deno.env.get('EGRESS_S3_REGION') ?? 'us-east-1';
 const S3_ENDPOINT = Deno.env.get('EGRESS_S3_ENDPOINT') ?? '';
 const S3_ACCESS_KEY = Deno.env.get('EGRESS_S3_ACCESS_KEY') ?? '';
@@ -72,7 +81,7 @@ Deno.serve(async (req) => {
   const authHeader = req.headers.get('Authorization') ?? '';
   if (!authHeader.startsWith('Bearer ')) return json({ error: 'missing bearer token' }, 401);
 
-  let body: { action?: string; team_id?: string; channel_id?: string };
+  let body: { action?: string; team_id?: string; channel_id?: string; recording_id?: string; transcript?: string };
   try {
     body = await req.json();
   } catch {
@@ -81,8 +90,8 @@ Deno.serve(async (req) => {
   const action = body.action?.trim();
   const teamId = body.team_id?.trim();
   const channelId = body.channel_id?.trim();
-  if (action !== 'start' && action !== 'stop') {
-    return json({ error: "action must be 'start' or 'stop'" }, 400);
+  if (action !== 'start' && action !== 'stop' && action !== 'submit-transcript') {
+    return json({ error: "action must be 'start', 'stop', or 'submit-transcript'" }, 400);
   }
   if (!teamId || !channelId) return json({ error: 'team_id and channel_id are required' }, 400);
 
@@ -105,6 +114,9 @@ Deno.serve(async (req) => {
   const room = `call:${teamId}:${channelId}`;
   const egressClient = new EgressClient(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
 
+  if (action === 'submit-transcript') {
+    return await handleSubmitTranscript(teamId, channelId, user.id, body.recording_id?.trim(), body.transcript);
+  }
   if (action === 'stop') {
     return await handleStop(teamId, channelId, egressClient);
   }
@@ -224,4 +236,62 @@ async function handleStop(
   // fires its egress_ended webhook (see livekit-egress-webhook in the PR
   // notes). Without a webhook the row stays 'stopping' until swept.
   return json({ ok: true, recording: { ...row, status: 'stopping' } });
+}
+
+// Store the starter's caption-transcript snapshot on the recording row so the
+// webhook can build the AI recap server-side. The transcript lives only in the
+// starter's client (app.js state.cc.lines); they POST it here on the
+// stop/leave transition. The membership check already ran for the caller in
+// the handler; here we additionally require that the caller is the recording's
+// starter (started_by) so a non-starter member can't overwrite the transcript.
+//
+// We target the most-recent recording in the channel rather than only an
+// in-flight one: by the time the renderer submits (on the stop transition or
+// during leave-call teardown) the webhook may already have flipped the row to
+// 'completed'. recording_id pins the exact row when the client knows it; we
+// fall back to the latest row for the channel otherwise.
+async function handleSubmitTranscript(
+  teamId: string,
+  channelId: string,
+  callerId: string,
+  recordingId: string | undefined,
+  transcript: string | undefined,
+): Promise<Response> {
+  if (typeof transcript !== 'string') {
+    return json({ error: 'transcript (string) is required' }, 400);
+  }
+  // Cap the stored transcript so a runaway client can't bloat the row. ~200k
+  // chars is far longer than any realistic captioned call and still well
+  // within the summariser's input budget after truncation in the webhook.
+  const trimmed = transcript.slice(0, 200_000);
+
+  let query = admin
+    .from('call_recordings')
+    .select('*')
+    .eq('team_id', teamId)
+    .eq('channel_id', channelId);
+  query = recordingId
+    ? query.eq('id', recordingId)
+    : query.order('started_at', { ascending: false }).limit(1);
+  const { data: row } = await query.maybeSingle();
+
+  if (!row) return json({ ok: true, skipped: 'no recording row' });
+  // Only the starter may submit the transcript for their recording. started_by
+  // is null only after the starter's account was deleted, in which case there's
+  // no live client to submit anyway.
+  if (row.started_by !== callerId) {
+    return json({ error: 'only the recording starter may submit a transcript' }, 403);
+  }
+  // Don't clobber a transcript already stored (e.g. a duplicate submit from a
+  // second client of the same user, or a stop-then-leave double fire).
+  if (row.transcript) return json({ ok: true, already: true, recording_id: row.id });
+
+  const { error } = await admin
+    .from('call_recordings')
+    .update({ transcript: trimmed })
+    .eq('id', row.id)
+    // Atomic guard: only the first submit wins, mirroring the recap claim.
+    .is('transcript', null);
+  if (error) return json({ error: 'could not store transcript', detail: error.message }, 500);
+  return json({ ok: true, recording_id: row.id });
 }
