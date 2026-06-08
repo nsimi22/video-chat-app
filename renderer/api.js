@@ -928,16 +928,19 @@
     // the same person. The caller passes the shared DM channel id so the
     // callee can join the exact same call on accept without re-deriving it.
 
-    // Invite `toUserId` to a huddle on the shared DM `channelId`. Carries
-    // caller identity (name/color/avatar) so the recipient's knock card
-    // can render an avatar without a profile round-trip.
-    sendKnock({ to, knockId, channelId, avatarUrl }) {
+    // Invite `toUserId` to a huddle on the shared DM `channelId`. We carry
+    // `from` (user id) plus name/color as a best-effort hint, but the
+    // recipient renders caller identity from its own trusted presence
+    // cache (peerInfo) and only falls back to these payload fields when
+    // the cache has nothing — broadcast payloads are attacker-spoofable,
+    // so we never let them drive the avatar (the card uses an initials
+    // fallback), which is why no avatar is sent.
+    sendKnock({ to, knockId, channelId }) {
       this._teamChannel?.send({
         type: 'broadcast', event: 'knock',
         payload: {
           to, knockId, channelId,
           from: this.peerId, fromName: this.name, fromColor: this.color,
-          fromAvatar: avatarUrl || null,
         },
       });
     }

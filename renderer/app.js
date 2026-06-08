@@ -3714,7 +3714,6 @@ async function knockTeammate(profile) {
     to: targetId,
     knockId,
     channelId: channel.id,
-    avatarUrl: state.huddle.profile?.avatar_url || null,
   });
 
   const card = _renderKnockingCard(profile.name || 'teammate');
@@ -3748,8 +3747,24 @@ function _clearOutgoingKnock() {
 // Callee side. A teammate knocked us.
 function onIncomingKnock(payload) {
   if (!payload || !state.huddle) return;
-  const { from, fromName, fromColor, fromAvatar, knockId, channelId } = payload;
+  const { from, knockId, channelId } = payload;
   if (!from || !knockId || !channelId) return;
+
+  // Caller identity comes from the TRUSTED presence cache (peerInfo),
+  // not the broadcast payload — the directed broadcast carries an
+  // attacker-controllable `fromName`/`fromColor`, so deriving the name +
+  // color we render from the presence state we built ourselves blocks
+  // identity spoofing over the wire. `from` (user id) and `channelId`
+  // still come from the payload; the accept path re-checks DM membership
+  // via createDm, so a forged channel can't grant access. We fall back to
+  // the payload only when the cache has nothing (e.g. a knock that races
+  // ahead of the presence sync). The avatar is intentionally dropped:
+  // peerInfo holds no avatar URL, and honoring the payload's would load
+  // an attacker-supplied image, so the card uses the initial-on-color
+  // fallback instead.
+  const peer = state.huddle.peerInfo?.get(from);
+  const fromName = peer?.name || payload.fromName;
+  const fromColor = peer?.color || payload.fromColor;
 
   // Auto-decline when we can't take it, so the caller gets a fast,
   // honest "declined" rather than waiting out the 30s timeout:
@@ -3763,7 +3778,7 @@ function onIncomingKnock(payload) {
     return;
   }
 
-  const el = _renderKnockCard({ from, fromName, fromColor, fromAvatar, knockId, channelId });
+  const el = _renderKnockCard({ from, fromName, fromColor, knockId, channelId });
   const timer = setTimeout(() => {
     // Knock expired on our end without an answer — just dismiss; the
     // caller's own timeout fires independently and notifies them.
@@ -3780,6 +3795,11 @@ function onIncomingKnock(payload) {
 async function _acceptIncomingKnock() {
   const inc = _knock.incoming;
   if (!inc || !state.huddle) return;
+  // If we were mid-knock ourselves (crossed knocks), cancel our outgoing
+  // one before answering this one — otherwise our knockee keeps ringing
+  // for the full 30s and our own "knocking…" card lingers while we hop
+  // into a different call. _cancelOutgoingKnock no-ops when there's none.
+  if (_knock.outgoing) _cancelOutgoingKnock();
   state.huddle.sendKnockResponse({ to: inc.peerId, knockId: inc.knockId, channelId: inc.channelId, accepted: true });
   const channelId = inc.channelId;
   const peerName = inc.peerName;
@@ -3826,6 +3846,11 @@ function onKnockResponse(payload) {
   const peerName = o.peerName || payload.fromName || 'They';
   _clearOutgoingKnock();
   if (payload.accepted) {
+    // If a separate knock was ringing US at the same time (crossed
+    // knocks), decline it before we join — otherwise the stale incoming
+    // card stays up and that other caller is left un-answered while we're
+    // already in a call. _declineIncomingKnock no-ops when there's none.
+    if (_knock.incoming) _declineIncomingKnock();
     focusChannel(channelId);
     startCall(channelId, { audioFirst: true });
   } else {
@@ -3863,14 +3888,17 @@ function _knockAvatar({ name, color, avatarUrl }) {
   return wrap;
 }
 
-// Incoming knock: Accept / Decline.
-function _renderKnockCard({ fromName, fromColor, fromAvatar }) {
+// Incoming knock: Accept / Decline. Name + color are the trusted,
+// presence-derived values resolved in onIncomingKnock; there's no
+// avatarUrl by design (see onIncomingKnock), so the card renders the
+// initial-on-color fallback rather than an attacker-supplied image.
+function _renderKnockCard({ fromName, fromColor }) {
   const card = document.createElement('div');
   card.className = 'knock-card incoming';
   card.setAttribute('role', 'alertdialog');
   card.setAttribute('aria-label', 'Incoming huddle knock');
 
-  card.appendChild(_knockAvatar({ name: fromName, color: fromColor, avatarUrl: fromAvatar }));
+  card.appendChild(_knockAvatar({ name: fromName, color: fromColor }));
 
   const body = document.createElement('div');
   body.className = 'knock-card-body';
