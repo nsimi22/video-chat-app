@@ -121,6 +121,7 @@
       this.peerMediaState = new Map(); // peerId -> { micOn, camOn }
       this.url = _config.url;
       this._teamChannel = null;
+      this._knockChannel = null;            // private knock:<peerId> receive topic
       this._screenChannels = new Map();     // streamId -> RealtimeChannel
       this._whiteboardChannels = new Map(); // whiteboardId -> RealtimeChannel
       this._dbChannel = null;               // postgres_changes subscription
@@ -138,6 +139,15 @@
       // ready-promises wrapping the RealtimeChannel.
       this._lurkers = new Map();
       this._lurkerCounts = new Map(); // channel.id -> last seen count
+      // Cloud call recording. _recordingChannel is a postgres_changes
+      // subscription on public.call_recordings scoped to the active call's
+      // channel; it drives the shared "● Recording" indicator (every
+      // participant sees the same state) and lets the renderer react when a
+      // recording completes (post the Meeting Recap). _activeRecording is
+      // the latest row we've seen for the watched channel, or null.
+      this._recordingChannel = null;
+      this._recordingChannelId = null;
+      this._activeRecording = null;
     }
 
     async start() {
@@ -146,6 +156,10 @@
       // `welcome` event mirroring the old server's behaviour so the rest of
       // the renderer can boot exactly the same way.
       await this._joinTeamChannel();
+      // Knock signaling is an enhancement on top of core chat/presence, so a
+      // failure to subscribe to our private knock topic must not block boot —
+      // log and continue. Worst case the user can't receive knocks this session.
+      await this._joinKnockChannel().catch((err) => console.warn('[knock] subscribe failed', err));
       await this._subscribeToMessages();
       await this._loadInitialChannels();
       await this._loadRoster();
@@ -197,7 +211,7 @@
         document.removeEventListener('visibilitychange', this._onVisibilityChange);
         this._onVisibilityChange = null;
       }
-      const direct = [this._teamChannel, this._dbChannel, this._callChannel];
+      const direct = [this._teamChannel, this._knockChannel, this._dbChannel, this._callChannel];
       // Screen + whiteboard maps still store raw promise<RealtimeChannel>;
       // _lurkers values are now {channel, ready} pairs.
       const indirectPromises = [...this._screenChannels.values(), ...this._whiteboardChannels.values()];
@@ -209,6 +223,7 @@
         .concat(lurkerChannels.map((ch) => Promise.resolve().then(() => ch.unsubscribe()).catch(() => {})));
       await Promise.allSettled(work);
       this._teamChannel = null;
+      this._knockChannel = null;
       this._dbChannel = null;
       this._callChannel = null;
       this._callChannelId = null;
@@ -417,6 +432,10 @@
       ]);
       this._screenChannels.clear();
       this.remoteScreenLabels.clear();
+      // Drop the recording watcher too — the indicator is call-scoped.
+      // (App-level leaveCall re-establishes a watcher for the channel the
+      // user keeps viewing as a lurker, if it wants one.)
+      await this.unwatchCallRecordings();
       this.dispatchEvent(new CustomEvent('call-left', { detail: { channelId: wasIn } }));
     }
 
@@ -507,6 +526,171 @@
     get callPeerInfo() { return this._callPeerInfo; }
     get inCallChannelId() { return this._callChannelId; }
 
+    // --- Cloud call recording -------------------------------------------
+    //
+    // Recording is a server-side LiveKit egress (the renderer never touches
+    // LiveKit directly). The recording-egress Edge Function — gated by the
+    // same can_see_channel membership check as livekit-token — starts/stops
+    // the egress and owns every write to public.call_recordings (clients
+    // have SELECT only). The renderer's job is: (1) ask the function to
+    // start/stop, and (2) watch the table over realtime so EVERY participant
+    // sees the same "● Recording" state and the recording-row can drive the
+    // post-call recap.
+
+    // Latest call_recordings row we've seen for the watched channel, or null.
+    get activeRecording() { return this._activeRecording; }
+    // True when an egress is in-flight (starting/recording/stopping) for the
+    // channel currently being watched — what the Record button reflects.
+    isRecordingActive() {
+      const s = this._activeRecording?.status;
+      return s === 'starting' || s === 'recording' || s === 'stopping';
+    }
+
+    // Subscribe to call_recordings changes for `channelId` so the shared
+    // indicator stays live for all participants. Idempotent per channel.
+    // RLS scopes the rows to channel members, but we still filter by
+    // team_id+channel_id server-side to avoid waking on unrelated calls.
+    async watchCallRecordings(channelId) {
+      if (this._recordingChannelId === channelId && this._recordingChannel) return;
+      await this.unwatchCallRecordings();
+      this._recordingChannelId = channelId;
+      // Seed current state with a one-shot read so a participant who joins
+      // AFTER recording started still sees the indicator immediately
+      // (postgres_changes only delivers events from subscribe-time onward).
+      try {
+        const { data } = await this.supabase
+          .from('call_recordings')
+          .select('*')
+          .eq('team_id', this.team.id)
+          .eq('channel_id', channelId)
+          .in('status', ['starting', 'recording', 'stopping'])
+          .order('started_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (this._recordingChannelId === channelId && data) this._handleRecordingRow(data);
+      } catch (err) {
+        console.warn('[recording] initial fetch failed', err);
+      }
+      const ch = this.supabase.channel(`recordings:${this.team.id}:${channelId}`, {
+        config: { broadcast: { self: false } },
+      });
+      ch.on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'call_recordings',
+        filter: `channel_id=eq.${channelId}`,
+      }, ({ new: row }) => {
+        if (!row || row.team_id !== this.team.id) return;
+        this._handleRecordingRow(row);
+      });
+      // Publish the channel handle BEFORE awaiting the subscribe handshake —
+      // same pattern as the lurker path (watchCallPresence). Otherwise an
+      // unwatchCallRecordings() that races in while we're still inside the
+      // subscribe await would find _recordingChannel === null and have nothing
+      // to tear down; the channel would then leak the moment subscribe resolved.
+      // With the handle stored up front, unwatch can unsubscribe it directly
+      // (and it nulls _recordingChannelId, which we re-check below).
+      this._recordingChannel = ch;
+      await new Promise((resolve) => {
+        ch.subscribe((s) => {
+          if (s === 'SUBSCRIBED' || s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') resolve();
+        });
+      });
+      // If we were superseded while the handshake was in flight — either an
+      // unwatch (channelId now null) or a watch on a different channel — this
+      // `ch` is orphaned: the live watcher is whatever the newer call stored.
+      // Tear it down so it doesn't leak a subscribed channel in the background.
+      if (this._recordingChannelId !== channelId) {
+        try { await ch.unsubscribe(); } catch {}
+      }
+    }
+
+    async unwatchCallRecordings() {
+      const ch = this._recordingChannel;
+      this._recordingChannel = null;
+      this._recordingChannelId = null;
+      this._activeRecording = null;
+      if (ch) { try { await ch.unsubscribe(); } catch {} }
+    }
+
+    // Normalise a row into _activeRecording + emit a single
+    // 'recording-state' event the renderer listens on. We keep the most
+    // recent row by started_at so a stale UPDATE on an old (completed) row
+    // can't clobber the live one. The stop transition is surfaced so the
+    // renderer can submit its transcript snapshot for the server-side recap.
+    _handleRecordingRow(row) {
+      const prev = this._activeRecording;
+      const prevTs = prev ? Date.parse(prev.started_at || 0) : -1;
+      const rowTs = Date.parse(row.started_at || 0);
+      // Always accept a newer row; for the same row accept any update.
+      if (prev && prev.id !== row.id && rowTs < prevTs) return;
+      this._activeRecording = row;
+      this.dispatchEvent(new CustomEvent('recording-state', {
+        detail: { recording: row, previous: prev },
+      }));
+    }
+
+    // Ask the edge function to start the egress. Returns the recording row
+    // (existing one if a recording was already active). Throws on failure so
+    // the renderer can surface a toast.
+    async startRecording(channelId) {
+      const { data, error } = await this.supabase.functions.invoke('recording-egress', {
+        body: { action: 'start', team_id: this.team.id, channel_id: channelId },
+      });
+      if (error) throw new Error(`recording start failed: ${error.message || error}`);
+      if (data?.recording) this._handleRecordingRow(data.recording);
+      return data?.recording || null;
+    }
+
+    async stopRecording(channelId) {
+      const { data, error } = await this.supabase.functions.invoke('recording-egress', {
+        body: { action: 'stop', team_id: this.team.id, channel_id: channelId },
+      });
+      if (error) throw new Error(`recording stop failed: ${error.message || error}`);
+      if (data?.recording) this._handleRecordingRow(data.recording);
+      return data?.recording || null;
+    }
+
+    // Short-lived signed URL for a finished recording's MP4. The MP4 now lives
+    // in the PRIVATE `recordings` bucket (migration 20260608130000), so there's
+    // no permanent public URL to leak — we mint a time-limited signed URL on
+    // demand. Storage RLS (recordings_read_channel_members) additionally gates
+    // this to channel members, so a non-member's createSignedUrl 401s.
+    // Returns null when the file hasn't landed yet or the caller can't read it;
+    // the server recap embeds its own signed URL, and this is the on-click
+    // regenerate path so the link keeps working after that one expires.
+    async recordingSignedUrl(storagePath, expiresInSeconds = 60 * 60) {
+      if (!storagePath) return null;
+      const { data, error } = await this.supabase.storage
+        .from('recordings')
+        .createSignedUrl(storagePath, expiresInSeconds);
+      if (error) { console.warn('[recording] createSignedUrl failed', error); return null; }
+      return data?.signedUrl || null;
+    }
+
+    // Submit the local caption-transcript snapshot for a recording so the
+    // server (livekit-egress-webhook) can build the AI recap even if this
+    // client leaves before the egress completes. The transcript lives only in
+    // the renderer (app.js state.cc.lines); the edge function stores it on the
+    // call_recordings row (service-role; first submit wins). Lenient: a failed
+    // submit just means the server falls back to a link-only recap.
+    async submitRecordingTranscript(channelId, recordingId, transcript) {
+      try {
+        const { error } = await this.supabase.functions.invoke('recording-egress', {
+          body: {
+            action: 'submit-transcript',
+            team_id: this.team.id,
+            channel_id: channelId,
+            recording_id: recordingId || null,
+            transcript: transcript || '',
+          },
+        });
+        if (error) console.warn('[recording] submit-transcript failed', error);
+      } catch (err) {
+        console.warn('[recording] submit-transcript threw', err);
+      }
+    }
+
     // --- Team channel: presence + signaling + typing + announcements -----
 
     async _joinTeamChannel() {
@@ -568,6 +752,62 @@
             await ch.track({ name: this.name, color: this.color, online_at: new Date().toISOString(), status: this.presenceStatus });
             resolve();
           } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            reject(err || new Error('realtime ' + status));
+          }
+        });
+      });
+    }
+
+    // --- Knock-to-huddle signaling (receive) ----------------------------
+    //
+    // A "knock" is a lightweight, Slack-Huddle-style call invite. It used to
+    // ride the shared team channel as a directed broadcast filtered client-side
+    // by a `to` field, but that let any team member forge a knock's `from` and
+    // ring-bomb arbitrary targets (the team topic's realtime write policy only
+    // checks team membership). Knocks now flow through the `knock-signal` edge
+    // function, which authenticates the sender, checks both parties share a
+    // team, stamps a TRUSTED server-side `from`, and relays onto a per-recipient
+    // private topic `knock:<user_id>` using the service role. The companion RLS
+    // migration forbids any client from writing `knock:*`, so the only way a
+    // message lands here is via that trusted server path — no spoofing possible.
+    //
+    // The receive side stays a plain subscription on our own knock topic; we no
+    // longer need a `to` filter because the topic itself is private to us (read
+    // RLS gates `knock:<id>` to the user whose id == <id>). There's no DB row:
+    // a knock is ephemeral (auto-expires in ~30s), so a broadcast is the right
+    // primitive. The renderer drives the caller-side "knocking…" UI locally.
+    //
+    // Three events flow through:
+    //   knock          caller → callee   "join my huddle?"
+    //   knock-response callee → caller   accept / decline
+    //   knock-cancel   caller → callee   caller bailed before an answer
+    async _joinKnockChannel() {
+      const topic = `knock:${this.peerId}`;
+      const ch = this.supabase.channel(topic, {
+        // Receive-only and private: we never .send() on this channel (sends go
+        // through the edge function), and `private: true` makes Realtime apply
+        // the RLS that scopes the topic to us.
+        config: { broadcast: { self: false, ack: false }, private: true },
+      });
+      this._knockChannel = ch;
+
+      // The server already addressed this topic to us, so every event here is
+      // ours — we re-dispatch each as the same CustomEvent the renderer's knock
+      // state machine already listens for, keeping app.js untouched.
+      ch.on('broadcast', { event: 'knock' }, ({ payload }) => {
+        this.dispatchEvent(new CustomEvent('knock', { detail: payload }));
+      });
+      ch.on('broadcast', { event: 'knock-response' }, ({ payload }) => {
+        this.dispatchEvent(new CustomEvent('knock-response', { detail: payload }));
+      });
+      ch.on('broadcast', { event: 'knock-cancel' }, ({ payload }) => {
+        this.dispatchEvent(new CustomEvent('knock-cancel', { detail: payload }));
+      });
+
+      await new Promise((resolve, reject) => {
+        ch.subscribe((status, err) => {
+          if (status === 'SUBSCRIBED') resolve();
+          else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
             reject(err || new Error('realtime ' + status));
           }
         });
@@ -887,6 +1127,50 @@
         type: 'broadcast', event: 'typing',
         payload: { from: this.peerId, fromName: this.name, channelId, parentId: parentId || null },
       });
+    }
+
+    // --- Knock-to-huddle (outgoing) -------------------------------------
+    //
+    // All three now route through the `knock-signal` edge function instead of
+    // a direct client broadcast. The function authenticates us, verifies the
+    // target is a genuine teammate, stamps a TRUSTED server-side `from` (so a
+    // forged `from` is impossible), and relays onto the recipient's private
+    // `knock:<to>` topic with the service role — the one path RLS permits to
+    // write a knock. We deliberately send NO identity fields (no `from`,
+    // `fromName`, `fromColor`): the server stamps them, and the receiver
+    // anyway renders caller identity from its own trusted presence cache
+    // (peerInfo, see onIncomingKnock in app.js). A `knockId` ties a knock to
+    // its eventual response/cancel so the UI can ignore stale signals; the
+    // shared DM `channelId` lets the callee join the same call on accept.
+    //
+    // These are fire-and-forget like the old broadcasts — the renderer drives
+    // its UI optimistically and doesn't await delivery — but we surface invoke
+    // errors to the console so a misconfigured deploy is debuggable.
+    _invokeKnock(type, args) {
+      return this.supabase.functions
+        .invoke('knock-signal', { body: { type, team_id: this.team.id, ...args } })
+        .then(({ error }) => {
+          if (error) console.warn(`[knock] ${type} failed`, error.message || error);
+        })
+        .catch((err) => console.warn(`[knock] ${type} threw`, err));
+    }
+
+    // Invite `to` (user id) to a huddle on the shared DM `channelId`.
+    sendKnock({ to, knockId, channelId }) {
+      this._invokeKnock('knock', { to, knock_id: knockId, channel_id: channelId });
+    }
+
+    // Recipient's answer. `accepted` true → both sides join the call;
+    // false → the caller sees a "declined" toast and stops ringing.
+    sendKnockResponse({ to, knockId, channelId, accepted }) {
+      this._invokeKnock('knock-response', { to, knock_id: knockId, channel_id: channelId, accepted: !!accepted });
+    }
+
+    // Caller gave up before an answer (clicked Cancel, or the 30s
+    // timeout fired). Lets the recipient dismiss the knock card so it
+    // doesn't linger as a phantom invite.
+    sendKnockCancel({ to, knockId, channelId }) {
+      this._invokeKnock('knock-cancel', { to, knock_id: knockId, channel_id: channelId });
     }
 
     // Drawing strokes ride on a per-screen private channel so peers who

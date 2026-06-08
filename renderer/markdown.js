@@ -41,6 +41,16 @@ function renderMarkdown(text, { mentionNames, myName } = {}) {
   // inject a <span> into the href, and a literal ** in a URL would get a
   // <strong> mid-attribute — both produce broken markup and dead links.
   const links = [];
+  const labels = [];
+  // [label](url) links — handled BEFORE bare-URL autolinking so the URL inside
+  // the parens isn't linkified on its own (which left the "[label](" text
+  // behind and dumped the whole URL). Only http(s) targets; the label is
+  // already HTML-escaped from the top of this function, so it's safe as text.
+  s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, url) => {
+    const i = links.push(url) - 1;
+    labels[i] = label;
+    return `${SENT}L${i}${SENT}`;
+  });
   s = s.replace(/\bhttps?:\/\/[^\s<]+[^\s<.,;:!?)]/g, (m) => {
     const i = links.push(m) - 1;
     return `${SENT}L${i}${SENT}`;
@@ -100,7 +110,7 @@ function renderMarkdown(text, { mentionNames, myName } = {}) {
   s = s.replace(/\uE000I(\d+)\uE000/g, (_, i) => `<code>${inlines[+i]}</code>`);
   s = s.replace(/\uE000B(\d+)\uE000/g, (_, i) => `<pre><code>${blocks[+i]}</code></pre>`);
   s = s.replace(/\uE000L(\d+)\uE000/g, (_, i) =>
-    `<a href="${links[+i]}" target="_blank" rel="noopener noreferrer">${links[+i]}</a>`);
+    `<a href="${links[+i]}" target="_blank" rel="noopener noreferrer">${labels[+i] || links[+i]}</a>`);
 
   return s;
 }

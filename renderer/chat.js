@@ -280,6 +280,7 @@ class ChatView {
     this._initEmojiPicker();
     this._initGifPicker();
     this._initPollComposer();
+    this._initClipRecorder();
   }
 
   // --- Public API ---------------------------------------------------------
@@ -560,6 +561,13 @@ class ChatView {
     // switch never strands the user's last keystrokes in a
     // never-fired timer.
     this._flushDraftSave();
+    // Release any live camera/screen capture the clip recorder is holding
+    // (e.g. the modal was left open when the team switched). Force-close so
+    // teardown happens without a "Discard your recording?" prompt — there's
+    // nobody to answer it during a programmatic destroy, and a blocked dialog
+    // would strand the camera/screen tracks on.
+    try { this._clipRecorder?.close(true); } catch {}
+    this._clipRecorder = null;
     this._listenerCtrl?.abort();
     this._listenerCtrl = null;
   }
@@ -684,6 +692,29 @@ class ChatView {
     this._autoResizeComposer();
     this.els.composer.focus();
     this._hideSlashSuggest();
+  }
+
+  // Drop `text` into the composer and focus it, caret at the end. Used by
+  // the action-items "Create ticket → GitHub issue" path to seed a
+  // `/gh issue …` command the user reviews and sends (which runs the
+  // existing _runSlashGh flow — no create logic is duplicated). Mirrors
+  // _fillSlashSuggest's manual auto-resize since a programmatic value
+  // assignment doesn't fire the composer's `input` listener.
+  _prefillComposer(text) {
+    if (!this.els?.composer) return;
+    this.els.composer.value = text || '';
+    this._autoResizeComposer();
+    // A programmatic `.value =` doesn't fire the composer's `input`
+    // listener, so the per-channel draft is never persisted — switch
+    // channels and the seeded text (e.g. a `/gh issue …` command) is
+    // silently lost. Mirror what the input handler does and schedule
+    // the same debounced draft save so the prefill survives a switch.
+    if (this.currentChannel) this._scheduleDraftSave(this.currentChannel, this.els.composer.value);
+    this.els.composer.focus();
+    try {
+      const end = this.els.composer.value.length;
+      this.els.composer.setSelectionRange(end, end);
+    } catch {}
   }
 
   // --- @-mention autocomplete ---------------------------------------------
@@ -1626,6 +1657,18 @@ class ChatView {
 
     // Body: poll card, edit-mode textarea, or rendered markdown.
     let body;
+    // Action items: AI recaps (/summarize, post-call recap) embed a fenced
+    // ```action-items block of structured items. Parse it out of AI-message
+    // text so (a) the displayed markdown shows only the human-readable part
+    // and (b) we can render a "Create ticket" row per item below the body.
+    // Non-AI messages never carry the block, so we skip the parse for them.
+    let actionItems = [];
+    let displayText = m.text || '';
+    if (m.aiGenerated && window.HuddleActionItems) {
+      const parsed = window.HuddleActionItems.parseActionItems(m.text || '');
+      actionItems = parsed.items;
+      displayText = parsed.cleanText;
+    }
     if (m.meta?.poll) {
       // Polls render as an interactive card in place of the body. The
       // body text ("📊 Poll: …") still exists on the row for mobile,
@@ -1658,7 +1701,9 @@ class ChatView {
     } else {
       body = document.createElement('div');
       body.className = 'msg-body';
-      body.innerHTML = window.renderMarkdown(m.text || '', {
+      // displayText == m.text for normal messages; for AI recaps it's the
+      // text with the machine-readable action-items block stripped out.
+      body.innerHTML = window.renderMarkdown(displayText, {
         // The hot-loop callers (_render, refreshAllMessages) pre-compute
         // this once per pass and pass it through. Single-shot callers
         // (_appendIncremental, refreshMessageById → _replaceNodeById)
@@ -1674,8 +1719,22 @@ class ChatView {
       attachmentsEl = document.createElement('div');
       attachmentsEl.className = 'msg-attachments';
       for (const a of m.attachments) {
-        const isImage = (a.contentType || '').startsWith('image/');
-        if (isImage) {
+        const ct = a.contentType || '';
+        const isImage = ct.startsWith('image/');
+        // Huddle Clips (and any other video upload) render as an inline
+        // player. We key off the MIME type so plain video uploads work too,
+        // not just clips recorded in-app (which also carry kind === 'clip').
+        const isVideo = ct.startsWith('video/') || a.kind === 'clip' || a.kind === 'video';
+        if (isVideo) {
+          const video = document.createElement('video');
+          video.src = a.url;
+          video.controls = true;
+          video.preload = 'metadata';
+          video.playsInline = true;
+          video.className = 'msg-video';
+          if (a.poster) video.poster = a.poster;
+          attachmentsEl.appendChild(video);
+        } else if (isImage) {
           const img = document.createElement('img');
           img.src = a.url;
           img.alt = a.name;
@@ -1804,6 +1863,25 @@ class ChatView {
 
     const children = [head, body];
     if (attachmentsEl) children.push(attachmentsEl);
+    // Action-items widget: one "Create ticket" row per parsed item, sitting
+    // directly under the recap text. Each row's button reuses the existing
+    // Jira create modal / `/gh issue` flow pre-filled — see action-items.js.
+    if (actionItems.length && window.HuddleActionItems) {
+      const widget = window.HuddleActionItems.renderActionItems(actionItems, {
+        // Provenance label for the ticket body — the recap is rendered in
+        // the channel it belongs to, so the current channel name is right.
+        channelName: this.hooks.getChannelName?.(this.currentChannel) || '',
+        getJira: () => this.hooks.getJira?.(),
+        getGitHub: () => this.hooks.getGitHub?.(),
+        getAiTicketRepo: () => this.hooks.getAiTicketRepo?.() || '',
+        openTicketModal: (preset) => this.hooks.openTicketModal?.(preset),
+        // Pre-fill the composer with the `/gh issue …` command so the
+        // existing slash flow creates the issue on send (no dup logic).
+        prefillComposer: (text) => this._prefillComposer(text),
+        toast: (msg) => this.hooks.toast?.(msg),
+      });
+      if (widget) children.push(widget);
+    }
     if (jiraEls.length) children.push(...jiraEls);
     if (ghEls.length) children.push(...ghEls);
     // AI message footer: "via @<asker> · <model>" sits below the
@@ -1891,7 +1969,7 @@ class ChatView {
       recapBlock.className = 'meeting-root-recap';
       const label = document.createElement('div');
       label.className = 'meeting-root-recap-label';
-      label.textContent = '📋 Call recap';
+      label.textContent = 'Call recap';
       const body = document.createElement('div');
       body.className = 'meeting-root-recap-body';
       if (typeof window.renderMarkdown === 'function') {
@@ -2019,6 +2097,78 @@ class ChatView {
       if (this.els.pollComposer.contains(e.target) || e.target === this.els.pollBtn) return;
       this.els.pollComposer.classList.add('hidden');
     });
+  }
+
+  // --- Huddle Clips -------------------------------------------------------
+
+  // Wire the composer's "Record a clip" button to the ClipRecorder modal.
+  // The recorder itself (camera/screen capture, MediaRecorder, preview,
+  // stop/re-record/discard) lives in renderer/clip-recorder.js; we only
+  // own the entry point and the "post the finished blob" hand-off.
+  _initClipRecorder() {
+    if (!this.els.clipBtn || !window.ClipRecorder) return;
+    this._clipRecorder = new window.ClipRecorder({
+      els: this.els,
+      signal: this._listenerCtrl.signal,
+      hooks: {
+        // Reuse the app's screen source picker (promise-returning variant).
+        pickScreenSource: this.hooks.pickScreenSource,
+        denoiseEnabled: () => this.hooks.denoiseEnabled?.() ?? true,
+        toast: (msg) => this.hooks.toast?.(msg),
+        // Finished clip → upload via the normal uploadFile path, then post
+        // it as a chat message with a video attachment in the *current*
+        // channel/thread (snapshotted so a mid-upload channel switch posts
+        // to the right place).
+        onPost: (blob, meta) => this._postClip(blob, meta),
+      },
+    });
+    this._on(this.els.clipBtn, 'click', (e) => {
+      e.stopPropagation();
+      this._clipRecorder.open();
+    });
+  }
+
+  // Upload a recorded clip Blob and post it as a video attachment. Mirrors
+  // the _beginUpload + _submit flow: the clip rides as a normal attachment
+  // (same JSONB shape) so no message-schema change is needed; rendering
+  // keys off the `video/*` contentType.
+  async _postClip(blob, meta) {
+    const channelId = this.currentChannel;
+    const parentId = this.threadParentId;
+    // uploadFile takes a File/Blob with a .name + .type; wrap the Blob in a
+    // File so the stored object gets a sensible filename + content type.
+    const file = new File([blob], meta.name, { type: meta.mimeType || blob.type });
+    let info;
+    try {
+      info = await this.mesh.uploadFile(file);
+    } catch (err) {
+      console.warn('clip upload failed', err);
+      this.hooks.toast?.('Clip upload failed — try again.');
+      // Re-throw so the recorder's _post() learns the hand-off failed and
+      // keeps the recording (re-enabling Post) instead of closing + discarding
+      // a clip that never actually made it to the channel.
+      throw err;
+    }
+    // Tag the attachment as a clip so the renderer can treat it specially
+    // (inline <video controls>) and so future features (transcripts) have a
+    // hook. `kind` is additive metadata; existing image/file attachments
+    // simply don't have it.
+    info.kind = 'clip';
+    if (meta.durationSecs) info.durationSecs = meta.durationSecs;
+    try {
+      await this.mesh.sendMessage({
+        channelId,
+        parentId,
+        text: '',
+        attachments: [info],
+      });
+    } catch (err) {
+      console.warn('clip post failed', err);
+      this.hooks.toast?.('Couldn’t post the clip.');
+      // Re-throw for the same reason as the upload path: the recorder needs
+      // to know the post didn't land so it can keep the take for a retry.
+      throw err;
+    }
   }
 
   _openPollComposer() {

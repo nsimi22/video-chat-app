@@ -37,6 +37,7 @@ const els = {
   teamJoinLinkGo: $('#team-join-link-go'),
   copyTeamLink: $('#copy-team-link'),
   copyCallLink: $('#copy-call-link'),
+  btnKnockDm: $('#btn-knock-dm'),
   toasts: $('#toasts'),
   loginError: $('#login-error'),
   signOutBtn: $('#sign-out'),
@@ -89,12 +90,14 @@ const els = {
   btnMic: $('#btn-mic'),
   btnCam: $('#btn-cam'),
   btnBlur: $('#btn-blur'),
+  btnDenoise: $('#btn-denoise'),
   btnShare: $('#btn-share'),
   btnLeave: $('#btn-leave'),
   btnPopoutCall: $('#btn-popout-call'),
   btnLayout: $('#btn-layout'),
   btnFullscreen: $('#btn-fullscreen'),
   btnHand: $('#btn-hand'),
+  btnRecord: $('#btn-record'),
   btnReact: $('#btn-react'),
   reactPopover: $('#react-popover'),
   pinnedBtn: $('#pinned-btn'),
@@ -189,6 +192,22 @@ const els = {
   sourcePicker: $('#source-picker'),
   sourceGrid: $('#source-grid'),
   sourceCancel: $('#source-cancel'),
+  // Huddle Clips recorder (composer → #clip-btn). The recorder logic
+  // lives in clip-recorder.js and is driven by ChatView; these are the
+  // DOM handles it manipulates.
+  clipBtn: $('#clip-btn'),
+  clipRecorder: $('#clip-recorder'),
+  clipClose: $('#clip-close'),
+  clipCam: $('#clip-cam'),
+  clipScreen: $('#clip-screen'),
+  clipPreview: $('#clip-preview'),
+  clipTimer: $('#clip-timer'),
+  clipError: $('#clip-error'),
+  clipStatus: $('#clip-status'),
+  clipRecord: $('#clip-record'),
+  clipStop: $('#clip-stop'),
+  clipRetake: $('#clip-retake'),
+  clipPost: $('#clip-post'),
   // Settings
   openSettings: $('#open-settings'),
   settingsModal: $('#settings-modal'),
@@ -1089,6 +1108,12 @@ async function bootCallPopout(cfg) {
   // doesn't run renderCallHeader so the main-window's
   // BlurPipeline.isAvailable() gate doesn't apply here.
   if (!window.BlurPipeline?.isAvailable()) btnBlur.classList.add('hidden');
+  const btnDenoise = mkIconBtn('popout-btn-denoise', 'denoise', 'Suppress background noise');
+  btnDenoise.disabled = true;
+  // Hide outright if the Web-Audio runtime is somehow missing — the
+  // popout skips renderCallHeader so the main-window availability gate
+  // doesn't apply here (mirrors the blur button above).
+  if (!window.DenoisePipeline?.isAvailable()) btnDenoise.classList.add('hidden');
   const btnShare = mkIconBtn('popout-btn-share', 'screen', 'Share a screen');
   btnShare.disabled = true;
   const btnHand = mkIconBtn('popout-btn-hand', 'hand', 'Raise hand');
@@ -1106,7 +1131,7 @@ async function bootCallPopout(cfg) {
   btnLeave.className = 'ctrl danger';
   btnLeave.title = 'Leave call';
   btnLeave.innerHTML = `${window.HuddleIcons.phoneDown}<span>Leave</span>`;
-  bar.append(btnMic, btnCam, btnBlur, btnShare, btnHand, btnReact, btnLeave);
+  bar.append(btnMic, btnCam, btnBlur, btnDenoise, btnShare, btnHand, btnReact, btnLeave);
   wrap.appendChild(bar);
   wrap.appendChild(reactPopover);
   stage.appendChild(wrap);
@@ -1128,6 +1153,7 @@ async function bootCallPopout(cfg) {
   els.btnMic = btnMic;
   els.btnCam = btnCam;
   els.btnBlur = btnBlur;
+  els.btnDenoise = btnDenoise;
   els.btnShare = btnShare;
   els.btnHand = btnHand;
   els.btnReact = btnReact;
@@ -1138,6 +1164,7 @@ async function bootCallPopout(cfg) {
   const stub = () => document.createElement('div');
   els.btnStartCall = stub();
   els.btnJoinCall = stub();
+  els.btnKnockDm = stub();
   els.btnJira = stub();
   els.btnPopoutCall = stub();
   els.channelName = stub();
@@ -1163,6 +1190,7 @@ async function bootCallPopout(cfg) {
     setPeerCamOn(state.huddle.peerId, on);
   };
   btnBlur.onclick = toggleBackgroundBlur;
+  btnDenoise.onclick = toggleNoiseSuppression;
   btnShare.onclick = () => { if (state.mesh) openSourcePicker(); };
   state.reactPopoverCleanup?.();
   state.reactPopoverCleanup = wireReactPopover(btnReact, reactPopover);
@@ -1247,6 +1275,7 @@ async function startPopoutCall(channelId) {
   els.btnMic.disabled = false;
   els.btnCam.disabled = false;
   if (els.btnBlur && window.BlurPipeline?.isAvailable()) els.btnBlur.disabled = false;
+  if (els.btnDenoise && window.DenoisePipeline?.isAvailable()) els.btnDenoise.disabled = false;
   if (els.btnShare) els.btnShare.disabled = false;
   if (els.btnHand) els.btnHand.disabled = false;
   if (els.btnReact) els.btnReact.disabled = false;
@@ -1254,10 +1283,17 @@ async function startPopoutCall(channelId) {
   // very first frame peers receive is already blurred — toggling
   // after the fact briefly publishes a sharp frame.
   applyPersistedBlurPreference();
+  // NOTE: blur stays pre-setCamera here too and likely shares the same
+  // latent ordering issue noise suppression had — follow-up pass.
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, huddle.name);
+    // Engage persisted noise suppression AFTER setCamera so the mic
+    // publication exists and the pipeline actually starts on the live
+    // track (idempotent — early-returns if already on).
+    applyPersistedNoiseSuppressionPreference();
     syncBlurButtonState();
+    syncNoiseSuppressionButtonState();
   } catch (err) {
     showCallError('Could not access camera/microphone: ' + (err?.message || err));
   }
@@ -1817,6 +1853,10 @@ async function joinTeamAndStart(teamId) {
   huddle.addEventListener('chat-channel-removed', (e) => onChannelRemoved(e.detail.channelId));
   huddle.addEventListener('chat-channel-updated', (e) => onChannelUpdated(e.detail));
   huddle.addEventListener('call-presence', (e) => onCallPresence(e.detail));
+  // Shared call-recording state (the call_recordings realtime row). Drives
+  // the Record button for every participant and submits the transcript
+  // snapshot for the server-side Meeting Recap on the stop transition.
+  huddle.addEventListener('recording-state', (e) => onRecordingState(e.detail));
   huddle.addEventListener('saved-message-added', (e) => onSavedMessageChange('add', e.detail.save));
   huddle.addEventListener('saved-message-updated', (e) => onSavedMessageChange('update', e.detail.save));
   huddle.addEventListener('saved-message-removed', (e) => onSavedMessageChange('remove', { messageId: e.detail.messageId }));
@@ -1842,6 +1882,12 @@ async function joinTeamAndStart(teamId) {
   // the next call's backfill.
   huddle.addEventListener('chat-update', (e) => onUpdatedMessageForMeeting(e.detail?.message));
   huddle.addEventListener('chat-message-deleted', (e) => onDeletedMessageForMeeting(e.detail));
+  // Knock-to-huddle signaling (see api.js sendKnock/sendKnockResponse/
+  // sendKnockCancel). Inbound knock → ring the recipient with an
+  // Accept/Decline card; a response/cancel updates the matching side.
+  huddle.addEventListener('knock', (e) => onIncomingKnock(e.detail));
+  huddle.addEventListener('knock-response', (e) => onKnockResponse(e.detail));
+  huddle.addEventListener('knock-cancel', (e) => onKnockCancel(e.detail));
 
   // Construct ChatView + assign state BEFORE huddle.start(), because
   // start() dispatches `welcome` synchronously at the end of its
@@ -1862,6 +1908,9 @@ async function joinTeamAndStart(teamId) {
     huddle,
     onMessage: (profile) => openDmWith(profile.user_id, profile.name),
     onEditProfile: () => openSettingsToProfile(),
+    // Knock-to-huddle: clicking "Knock" on a present teammate's card
+    // rings them with a lightweight call invite (see knockTeammate).
+    onKnock: (profile) => knockTeammate(profile),
   });
 
   state.chat = new ChatView({
@@ -1873,6 +1922,9 @@ async function joinTeamAndStart(teamId) {
       getDefaultJiraProject: () => state.settings?.jira?.defaultProject || '',
       getAiTicketContext: () => state.settings?.aiTicket?.context || '',
       getAiTicketRepo: () => state.settings?.aiTicket?.githubRepo || '',
+      // Bare channel name (e.g. "general") for the action-items ticket
+      // provenance line. Returns '' for unknown ids / DMs without a name.
+      getChannelName: (id) => state.channelMeta.get(id)?.name || '',
       openTicketModal: (preset) => openTicketModal(preset),
       getAi: () => state.ai,
       getGitHub: () => state.github,
@@ -1885,6 +1937,13 @@ async function joinTeamAndStart(teamId) {
       onPinChanged: () => refreshPinnedCount(),
       isMessageSaved: (id) => state.savedById.has(id),
       openSavePopover: (args) => openSavePopover(args),
+      // Huddle Clips: the recorder reuses the screen source picker (the
+      // promise-returning variant) so it can offer screen capture without
+      // duplicating the permission gate / thumbnail UI.
+      pickScreenSource: () => pickScreenSourceForClip(),
+      // Clips run the mic through the same denoise pipeline as calls, gated
+      // by the same persisted pref (default-on).
+      denoiseEnabled: () => getNoiseSuppressionPreference(),
     },
   });
   wireControls();
@@ -1904,7 +1963,11 @@ async function joinTeamAndStart(teamId) {
 // User clicked "Start call" or "Join call". Construct the call client
 // first (so its event listeners are attached before huddle.joinCall
 // fires presence-sync events for everyone already in the call), then join.
-async function startCall(channelId) {
+//
+// `audioFirst` (used by knock-to-huddle) joins with the camera muted so
+// a spontaneous huddle is voice-only by default; the user can flip the
+// camera on with the existing cam toggle once in.
+async function startCall(channelId, { audioFirst = false } = {}) {
   if (!state.huddle || state.mesh) return; // already in a call or no team
   if (state.callStarting) return;          // double-click / re-entrancy guard
   state.callStarting = true;
@@ -1969,6 +2032,12 @@ async function startCall(channelId) {
   // (state.cc.manager) is independent; CC button still controls
   // whether THIS peer transcribes.
   bindCallCaptionsListener();
+  // Watch call_recordings for this channel so the Record button reflects
+  // the shared recording state (a recording another participant already
+  // started shows as active here too) and so we can post the recap when it
+  // finishes. Fire-and-forget — the call is usable before the watcher
+  // subscribes, and onRecordingState repaints the button when it lands.
+  state.huddle?.watchCallRecordings(channelId).catch((err) => console.warn('[recording] watch failed', err));
   // Avatar stack switches from channel-roster to in-call-participants
   // now that a call is live here. peer-joined hooks keep it in sync
   // as participants arrive; this initial paint covers the bootstrap.
@@ -1982,10 +2051,38 @@ async function startCall(channelId) {
   // very first frame peers receive is already blurred — toggling
   // after the fact briefly publishes a sharp frame.
   applyPersistedBlurPreference();
+  // NOTE: blur is still applied before setCamera (above). It likely has
+  // the same latent ordering issue noise suppression had — if the blur
+  // pipeline also needs the live publication, applying it pre-setCamera
+  // may only stash the flag. Left as-is for this pass; worth a follow-up
+  // to verify and reorder blur the same way we did noise suppression.
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, state.huddle.name);
+    // Engage the persisted noise-suppression preference AFTER setCamera
+    // resolves: only now does the mic publication exist, so
+    // setNoiseSuppression(true) can clone the live mic track and actually
+    // start the pipeline. Called before setCamera it merely stashed the
+    // flag (audio published raw, button looked active, first user click
+    // no-op'd). setNoiseSuppression is idempotent — it early-returns when
+    // the state already matches — so this won't double-start.
+    applyPersistedNoiseSuppressionPreference();
     syncBlurButtonState();
+    syncNoiseSuppressionButtonState();
+    // Audio-first huddles join with the camera off — flip it back down
+    // right after the tile is up so peers never see a video frame and
+    // the cam button reflects the muted state. toggleCam returns the new
+    // on/off, so only mute if it's currently on.
+    if (audioFirst && state.mesh) {
+      const on = state.mesh.toggleCam();
+      els.btnCam.classList.toggle('muted', !on);
+      // Mirror the manual btnCam handler (setPeerCamOn after toggleCam):
+      // the call channel is { broadcast: { self: false } }, so we never
+      // hear our own mute-state echo and the self-tile's cam-off overlay
+      // only flips if we drive it locally. Without this the local view
+      // shows a black/last-frame tile while peers correctly see cam-off.
+      setPeerCamOn(state.huddle.peerId, on);
+    }
   } catch (err) {
     console.warn('No camera/mic available', err);
     // The call itself is still alive (signaling + presence work) so
@@ -2005,6 +2102,16 @@ async function startCall(channelId) {
 // into the team. The HuddleClient keeps chat realtime running.
 async function leaveCall() {
   if (!state.mesh) return;
+  // If WE started a recording that's still in-flight, submit our caption
+  // transcript before finalizeCallTranscript() clears the buffer below. The
+  // server posts the recap from this snapshot when the egress completes, so
+  // leaving mid-recording no longer loses the recap. First-write-wins on the
+  // server makes this a no-op if the stop transition already submitted.
+  const rec = state.huddle?.activeRecording;
+  if (rec && rec.started_by === state.huddle?.peerId
+    && ['starting', 'recording', 'stopping'].includes(rec.status)) {
+    submitRecordingTranscriptSnapshot(rec.id, rec.channel_id);
+  }
   // Snapshot + clear the captions buffer synchronously, then
   // dispatch the AI summary as a background task. We don't await
   // because the AI round-trip can take several seconds; blocking
@@ -2575,6 +2682,16 @@ function finalizeCallTranscript() {
   // freshly-accumulating buffer.
   if (state.cc._finalizing) { console.log('[recap] skip: finalize already in flight'); return; }
   if (!state.cc.on && state.cc.lines.length === 0) { console.log('[recap] skip: captions off and no buffered lines'); return; }
+  // If this call was being recorded, the server-side Meeting Recap
+  // (livekit-egress-webhook, posted when the egress completes) already folds
+  // the transcript summary in alongside the recording link — the renderer
+  // submitted its transcript snapshot on the stop/leave transition. Skip the
+  // standalone transcript-only "📞 Call recap" so the channel doesn't get two
+  // near-identical summaries. (This legacy suppression is intentionally kept.)
+  if (state.huddle?.isRecordingActive()) {
+    console.log('[recap] skip: recording active — Meeting Recap will cover it');
+    return;
+  }
   state.cc._finalizing = true;
 
   // Snapshot + reset shared state synchronously so a follow-up
@@ -2614,7 +2731,13 @@ function finalizeCallTranscript() {
   (async () => {
     lines.sort((a, b) => (a.ts || 0) - (b.ts || 0));
     const transcript = lines.map((l) => `${l.fromName || 'someone'}: ${l.text}`).join('\n');
-    const system = "You are summarising a live call transcript captured via the browser's speech-to-text. Produce a concise recap (under 200 words) in markdown: 2-3 bullets of the main points discussed, then a 'Decisions' section if any were made, then 'Action items' (with owners if you can infer them). The transcript is rough — fix obvious recognition errors silently and don't quote raw lines.";
+    // Append the action-items prompt (shared with /summarize) so the recap
+    // emits a machine-readable ```action-items block the chat renderer turns
+    // into one-click "Create ticket" rows. window.ACTION_ITEMS_PROMPT is
+    // defined in action-items.js; fall back to an empty string if that
+    // module ever fails to load so the recap still produces prose.
+    const system = "You are summarising a live call transcript captured via the browser's speech-to-text. Produce a concise recap (under 200 words) in markdown: 2-3 bullets of the main points discussed, then a 'Decisions' section if any were made, then 'Action items' (with owners if you can infer them). The transcript is rough — fix obvious recognition errors silently and don't quote raw lines."
+      + (window.ACTION_ITEMS_PROMPT ? `\n\n${window.ACTION_ITEMS_PROMPT}` : '');
     let result;
     try {
       result = await ai.chat({ system, messages: [{ role: 'user', content: transcript }] });
@@ -2622,7 +2745,7 @@ function finalizeCallTranscript() {
       console.warn('[recap] AI chat FAILED:', err);
       return;
     }
-    const body = `**📞 Call recap**\n\n${result.text || '(no recap produced)'}`;
+    const body = `**Call recap**\n\n${result.text || '(no recap produced)'}`;
     try {
       // Prefer the meeting thread when a root id is set — the recap
       // lives next to any in-call notes the user wrote, instead of
@@ -2678,6 +2801,13 @@ async function teardownTeam() {
   // per mousedown.
   state.profileCard?.destroy();
   state.profileCard = null;
+  // Dismiss any live knock cards + their timers — the team realtime
+  // channel that carries knock signals is going away, so a ringing
+  // card here would be a dead end. We don't bother sending a cancel/
+  // decline on the wire: the channel is being torn down anyway, and the
+  // other side's own 30s timeout will clear it.
+  _clearOutgoingKnock();
+  _clearIncomingKnock();
   // Drop a redemption hop that never finished (e.g. user signed out
   // mid-load). Otherwise the next sign-in's onWelcome would jump
   // somebody else's session into a stale channel.
@@ -2808,8 +2938,18 @@ function renderCallHeader() {
   // rather than letting users click into an inevitable failure.
   const blurAvail = !!window.BlurPipeline?.isAvailable();
   els.btnBlur?.classList.toggle('hidden', !inCallHere || !blurAvail);
+  // Noise suppression: same in-call-only gate as blur. The Web-Audio
+  // pipeline has no vendored runtime to miss, so isAvailable() is
+  // effectively always true on desktop — but we still gate on it so a
+  // stripped-down runtime hides the button instead of failing on click.
+  const denoiseAvail = !!window.DenoisePipeline?.isAvailable();
+  els.btnDenoise?.classList.toggle('hidden', !inCallHere || !denoiseAvail);
   els.btnShare.classList.toggle('hidden', !inCallHere);
   els.btnHand?.classList.toggle('hidden', !inCallHere);
+  // Recording toggle: in-call only. Reflects the shared recording state
+  // (active for everyone, not just the starter) via syncRecordButtonState.
+  els.btnRecord?.classList.toggle('hidden', !inCallHere);
+  if (inCallHere) syncRecordButtonState();
   els.btnReact?.classList.toggle('hidden', !inCallHere);
   if (!inCallHere) els.reactPopover?.classList.add('hidden');
   els.btnJira.classList.toggle('hidden', !inCallHere);
@@ -3235,6 +3375,7 @@ function focusChannel(channelId) {
   }
   renderCallHeader();
   renderHeaderMembers(channel);
+  renderKnockButton(channel);
   refreshNotifyButton();
   // Visiting a channel clears its unread.
   state.unread.delete(channelId);
@@ -3539,7 +3680,38 @@ function refreshHeaderMembersForCurrent() {
   const channelId = state.chat?.currentChannel;
   if (!channelId) return;
   const ch = state.channelMeta.get(channelId);
-  if (ch) renderHeaderMembers(ch);
+  if (ch) { renderHeaderMembers(ch); renderKnockButton(ch); }
+}
+
+// The other party in a 1:1 DM. Resolves the id from memberIds (minus
+// self) or, before the member list loads, the `dm:<a>::<b>` id; name
+// comes from live presence, falling back to the DM label. Returns null
+// for anything that isn't a 1:1 DM with a resolvable peer.
+function dmPeer(channel) {
+  const me = state.huddle?.peerId;
+  if (!me || !channel || channel.type !== 'dm' || isGroupDm(channel)) return null;
+  const others = (channel.memberIds || []).filter((x) => x !== me);
+  let id = others.length === 1 ? others[0] : null;
+  if (!id) {
+    const m = /^dm:([0-9a-f-]+)::([0-9a-f-]+)$/.exec(channel.id);
+    if (m) id = m[1] === me ? m[2] : (m[2] === me ? m[1] : null);
+  }
+  if (!id) return null;
+  return { id, name: state.huddle.peerInfo.get(id)?.name || dmLabelFor(channel) };
+}
+
+// Show the DM-header Knock button only for a 1:1 DM whose peer is present
+// + Available, and only when we're free to ring (not already in a call).
+// Same reachability rule as the profile-card Knock button. Stashes the
+// resolved peer on the button so the click handler rings the right person.
+function renderKnockButton(channel) {
+  const btn = els.btnKnockDm;
+  if (!btn || !btn.classList) return; // absent / stubbed (popout window)
+  const peer = dmPeer(channel);
+  const canKnock = !!peer && !state.mesh && !_knock.outgoing
+    && presenceStatusForUser(peer.id) === 'active';
+  btn.classList.toggle('hidden', !canKnock);
+  btn._knockPeer = canKnock ? peer : null;
 }
 
 // 2-avatar stack for group DM sidebar rows (replaces the Users SVG
@@ -3604,6 +3776,324 @@ async function openDmWith(userId, name) {
     console.warn('createDm failed', err);
     showCallError('Could not open DM: ' + (err?.message || err));
   }
+}
+
+// ===========================================================================
+// Knock-to-huddle — spontaneous, Slack-Huddle-style calls
+// ===========================================================================
+//
+// The flow rides the team channel as directed Realtime broadcasts (see
+// api.js sendKnock / sendKnockResponse / sendKnockCancel and the matching
+// `ch.on('broadcast', ...)` handlers). No DB rows: a knock is ephemeral
+// and auto-expires after KNOCK_TTL_MS.
+//
+//   Caller            Callee
+//   ─────────────────────────────────────────────
+//   sendKnock  ─────▶  onIncomingKnock (Accept/Decline card)
+//                        Accept  → sendKnockResponse(accepted) + startCall
+//                        Decline → sendKnockResponse(declined)
+//   onKnockResponse ◀──┘
+//     accepted → startCall on the shared DM channel
+//     declined → "X declined" toast
+//   (caller Cancel / 30s timeout) → sendKnockCancel ─▶ onKnockCancel
+//
+// We allow exactly one outgoing and one incoming knock at a time; a
+// second attempt while one is live is rejected with a toast. `knockId`
+// ties responses/cancels to their originating knock so a late signal
+// from an already-expired knock to the same person is ignored.
+
+// Auto-expire a knock after ~30s of silence — matches the spec and keeps
+// a ringing card from lingering forever if the other side went away.
+const KNOCK_TTL_MS = 30000;
+
+// Live knock state. `outgoing` = a knock WE sent that's still ringing;
+// `incoming` = a knock card WE'RE showing. Each holds { knockId,
+// channelId, peerId, peerName, timer, el }.
+const _knock = { outgoing: null, incoming: null };
+
+function _genKnockId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  return 'k_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+}
+
+// Caller side. Triggered from the profile card's "Knock" button.
+// `profile` is the full target profile { user_id, name, avatar_url, ... }.
+async function knockTeammate(profile) {
+  const targetId = profile?.user_id;
+  if (!state.huddle || !targetId) return;
+  if (targetId === state.huddle.peerId) return; // can't knock yourself
+
+  // Guard rails before we ring:
+  if (state.mesh) { showToast('You’re already in a call.'); return; }
+  if (_knock.outgoing) { showToast('You’re already knocking someone.'); return; }
+  // Recipient must be present + Available; the button is only shown in
+  // that case, but presence can flip between render and click.
+  if (presenceStatusForUser(targetId) !== 'active') {
+    showToast(`${profile.name || 'They'} just went away.`);
+    return;
+  }
+
+  // Ensure the shared DM exists so the callee has a channel to join, and
+  // so we both land on the same room. createDm is idempotent.
+  let channel;
+  try {
+    channel = await state.huddle.createDm(targetId, profile.name);
+    onChannelAdded(channel);
+  } catch (err) {
+    console.warn('knock: createDm failed', err);
+    showCallError('Could not start huddle: ' + (err?.message || err));
+    return;
+  }
+  // Bail if something changed while the DM round-trip was in flight.
+  if (state.mesh || _knock.outgoing) return;
+
+  const knockId = _genKnockId();
+  state.huddle.sendKnock({
+    to: targetId,
+    knockId,
+    channelId: channel.id,
+  });
+
+  const card = _renderKnockingCard(profile.name || 'teammate');
+  const timer = setTimeout(() => {
+    // Timed out with no answer — cancel on the wire so the callee's
+    // card disappears, then clean up our own "knocking…" card.
+    if (!_knock.outgoing || _knock.outgoing.knockId !== knockId) return;
+    state.huddle.sendKnockCancel({ to: targetId, knockId, channelId: channel.id });
+    _clearOutgoingKnock();
+    showToast(`No answer from ${profile.name || 'them'}.`);
+  }, KNOCK_TTL_MS);
+  _knock.outgoing = { knockId, channelId: channel.id, peerId: targetId, peerName: profile.name, timer, el: card };
+}
+
+// Caller hit "Cancel" on their own "knocking…" card before an answer.
+function _cancelOutgoingKnock() {
+  const o = _knock.outgoing;
+  if (!o) return;
+  state.huddle.sendKnockCancel({ to: o.peerId, knockId: o.knockId, channelId: o.channelId });
+  _clearOutgoingKnock();
+}
+
+function _clearOutgoingKnock() {
+  const o = _knock.outgoing;
+  if (!o) return;
+  clearTimeout(o.timer);
+  o.el?.remove();
+  _knock.outgoing = null;
+}
+
+// Callee side. A teammate knocked us.
+function onIncomingKnock(payload) {
+  if (!payload || !state.huddle) return;
+  const { from, knockId, channelId } = payload;
+  if (!from || !knockId || !channelId) return;
+
+  // Caller identity comes from the TRUSTED presence cache (peerInfo),
+  // not the broadcast payload — the directed broadcast carries an
+  // attacker-controllable `fromName`/`fromColor`, so deriving the name +
+  // color we render from the presence state we built ourselves blocks
+  // identity spoofing over the wire. `from` (user id) and `channelId`
+  // still come from the payload; the accept path re-checks DM membership
+  // via createDm, so a forged channel can't grant access. We fall back to
+  // the payload only when the cache has nothing (e.g. a knock that races
+  // ahead of the presence sync). The avatar is intentionally dropped:
+  // peerInfo holds no avatar URL, and honoring the payload's would load
+  // an attacker-supplied image, so the card uses the initial-on-color
+  // fallback instead.
+  const peer = state.huddle.peerInfo?.get(from);
+  const fromName = peer?.name || payload.fromName;
+  const fromColor = peer?.color || payload.fromColor;
+
+  // Auto-decline when we can't take it, so the caller gets a fast,
+  // honest "declined" rather than waiting out the 30s timeout:
+  //   - already in a call (busy)
+  //   - already showing another knock card (one at a time)
+  //   - our own presence is anything but Available (away/brb/etc.)
+  const busy = !!state.mesh || !!_knock.incoming;
+  const myStatus = state.huddle.presenceStatus || 'active';
+  if (busy || myStatus !== 'active') {
+    state.huddle.sendKnockResponse({ to: from, knockId, channelId, accepted: false });
+    return;
+  }
+
+  const el = _renderKnockCard({ from, fromName, fromColor, knockId, channelId });
+  const timer = setTimeout(() => {
+    // Knock expired on our end without an answer — just dismiss; the
+    // caller's own timeout fires independently and notifies them.
+    if (_knock.incoming && _knock.incoming.knockId === knockId) _clearIncomingKnock();
+  }, KNOCK_TTL_MS);
+  _knock.incoming = { knockId, channelId, peerId: from, peerName: fromName, timer, el };
+
+  // A soft notification helps when Huddle is backgrounded.
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try { new Notification('Knock knock', { body: `${fromName || 'A teammate'} wants to huddle` }); } catch {}
+  }
+}
+
+async function _acceptIncomingKnock() {
+  const inc = _knock.incoming;
+  if (!inc || !state.huddle) return;
+  // If we were mid-knock ourselves (crossed knocks), cancel our outgoing
+  // one before answering this one — otherwise our knockee keeps ringing
+  // for the full 30s and our own "knocking…" card lingers while we hop
+  // into a different call. _cancelOutgoingKnock no-ops when there's none.
+  if (_knock.outgoing) _cancelOutgoingKnock();
+  state.huddle.sendKnockResponse({ to: inc.peerId, knockId: inc.knockId, channelId: inc.channelId, accepted: true });
+  const channelId = inc.channelId;
+  const peerName = inc.peerName;
+  const peerId = inc.peerId;
+  _clearIncomingKnock();
+  // Ensure the DM is in our sidebar/channelMeta before focusing it — the
+  // caller's createDm adds us as a member, but the realtime channel-added
+  // event can lag the knock. createDm is idempotent, so calling it here
+  // guarantees focusChannel (which no-ops on an unknown channel) lands on
+  // the right DM. The call itself only needs channelId and would connect
+  // regardless, but we want the chat panel to follow along.
+  try {
+    const channel = await state.huddle.createDm(peerId, peerName);
+    onChannelAdded(channel);
+  } catch (err) {
+    console.warn('knock accept: createDm failed', err);
+  }
+  // Surface the DM and jump straight into the (audio-first) call.
+  focusChannel(channelId);
+  startCall(channelId, { audioFirst: true });
+}
+
+function _declineIncomingKnock() {
+  const inc = _knock.incoming;
+  if (!inc || !state.huddle) return;
+  state.huddle.sendKnockResponse({ to: inc.peerId, knockId: inc.knockId, channelId: inc.channelId, accepted: false });
+  _clearIncomingKnock();
+}
+
+function _clearIncomingKnock() {
+  const inc = _knock.incoming;
+  if (!inc) return;
+  clearTimeout(inc.timer);
+  inc.el?.remove();
+  _knock.incoming = null;
+}
+
+// Caller side. The callee answered our knock.
+function onKnockResponse(payload) {
+  const o = _knock.outgoing;
+  // Ignore stale answers (e.g. from a previous, already-expired knock).
+  if (!o || !payload || payload.knockId !== o.knockId) return;
+  const channelId = o.channelId;
+  const peerName = o.peerName || payload.fromName || 'They';
+  _clearOutgoingKnock();
+  if (payload.accepted) {
+    // If a separate knock was ringing US at the same time (crossed
+    // knocks), decline it before we join — otherwise the stale incoming
+    // card stays up and that other caller is left un-answered while we're
+    // already in a call. _declineIncomingKnock no-ops when there's none.
+    if (_knock.incoming) _declineIncomingKnock();
+    focusChannel(channelId);
+    startCall(channelId, { audioFirst: true });
+  } else {
+    showToast(`${peerName} can’t huddle right now.`);
+  }
+}
+
+// Callee side. The caller cancelled (manual Cancel or their 30s timeout).
+function onKnockCancel(payload) {
+  const inc = _knock.incoming;
+  if (!inc || !payload || payload.knockId !== inc.knockId) return;
+  _clearIncomingKnock();
+}
+
+// ---- Knock UI -------------------------------------------------------------
+//
+// Both cards live in #toasts (already a fixed, top-of-stacking-context
+// container) but use .knock-card styling — bigger and persistent, unlike
+// auto-dismissing toasts. We build them with DOM APIs (not innerHTML) so
+// user-controlled names can't inject markup.
+
+function _knockAvatar({ name, color, avatarUrl }) {
+  const wrap = document.createElement('div');
+  wrap.className = 'knock-card-avatar';
+  if (avatarUrl) {
+    const img = document.createElement('img');
+    img.src = avatarUrl;
+    img.alt = '';
+    wrap.appendChild(img);
+  } else {
+    wrap.classList.add('fallback');
+    wrap.style.background = color || '#888';
+    wrap.textContent = (name || '?').slice(0, 1).toUpperCase();
+  }
+  return wrap;
+}
+
+// Incoming knock: Accept / Decline. Name + color are the trusted,
+// presence-derived values resolved in onIncomingKnock; there's no
+// avatarUrl by design (see onIncomingKnock), so the card renders the
+// initial-on-color fallback rather than an attacker-supplied image.
+function _renderKnockCard({ fromName, fromColor }) {
+  const card = document.createElement('div');
+  card.className = 'knock-card incoming';
+  card.setAttribute('role', 'alertdialog');
+  card.setAttribute('aria-label', 'Incoming huddle knock');
+
+  card.appendChild(_knockAvatar({ name: fromName, color: fromColor }));
+
+  const body = document.createElement('div');
+  body.className = 'knock-card-body';
+  const title = document.createElement('div');
+  title.className = 'knock-card-title';
+  title.textContent = `${fromName || 'A teammate'} wants to huddle`;
+  const sub = document.createElement('div');
+  sub.className = 'knock-card-sub';
+  sub.textContent = 'Audio-first · camera off';
+  body.append(title, sub);
+  card.appendChild(body);
+
+  const actions = document.createElement('div');
+  actions.className = 'knock-card-actions';
+  const decline = document.createElement('button');
+  decline.className = 'knock-btn decline';
+  decline.textContent = 'Decline';
+  decline.onclick = () => _declineIncomingKnock();
+  const accept = document.createElement('button');
+  accept.className = 'knock-btn accept';
+  accept.textContent = 'Accept';
+  accept.onclick = () => _acceptIncomingKnock();
+  actions.append(decline, accept);
+  card.appendChild(actions);
+
+  els.toasts?.appendChild(card);
+  return card;
+}
+
+// Outgoing "knocking…" card: just a Cancel.
+function _renderKnockingCard(peerName) {
+  const card = document.createElement('div');
+  card.className = 'knock-card outgoing';
+  card.setAttribute('role', 'status');
+
+  const body = document.createElement('div');
+  body.className = 'knock-card-body';
+  const title = document.createElement('div');
+  title.className = 'knock-card-title';
+  title.textContent = `Knocking ${peerName}…`;
+  const sub = document.createElement('div');
+  sub.className = 'knock-card-sub';
+  sub.textContent = 'Waiting for an answer';
+  body.append(title, sub);
+  card.appendChild(body);
+
+  const actions = document.createElement('div');
+  actions.className = 'knock-card-actions';
+  const cancel = document.createElement('button');
+  cancel.className = 'knock-btn decline';
+  cancel.textContent = 'Cancel';
+  cancel.onclick = () => _cancelOutgoingKnock();
+  actions.appendChild(cancel);
+  card.appendChild(actions);
+
+  els.toasts?.appendChild(card);
+  return card;
 }
 
 // Wire any element to open the profile card for `userId` on click.
@@ -5409,6 +5899,75 @@ function syncBlurButtonState() {
   els.btnBlur.classList.toggle('active', !!state.mesh?.blurOn);
 }
 
+// ---------------------------------------------------------------------------
+// Noise suppression
+//
+// The audio mirror of the background-blur block above. The call client
+// holds the denoise pipeline + the mic-track swap; the renderer just
+// wires the toggle button and persists the preference. Unlike blur,
+// there's no self-tile stream to re-point — swapping the published mic
+// track doesn't change any local <video>, and remote audio rides
+// LK-managed <audio> elements that follow the publication automatically.
+// We persist via localStorage exactly like the blur preference (a
+// simple client-only on/off default, per CLAUDE.md).
+// ---------------------------------------------------------------------------
+const NOISE_SUPPRESSION_PREF_KEY = 'huddle.noiseSuppression';
+function getNoiseSuppressionPreference() {
+  // Default ON: denoise unless the user explicitly turned it off ('0'). The
+  // call toggle is the single escape hatch for the raw-audio cases (music,
+  // soft talkers, hardware suppression).
+  try { return localStorage.getItem(NOISE_SUPPRESSION_PREF_KEY) !== '0'; }
+  catch { return true; }
+}
+function setNoiseSuppressionPreference(on) {
+  try {
+    if (on) localStorage.removeItem(NOISE_SUPPRESSION_PREF_KEY); // back to default-on
+    else localStorage.setItem(NOISE_SUPPRESSION_PREF_KEY, '0');
+  } catch {}
+}
+
+async function toggleNoiseSuppression() {
+  if (!state.mesh) return;
+  if (!window.DenoisePipeline?.isAvailable()) {
+    showToast("Noise suppression isn't available on this device.");
+    return;
+  }
+  const next = !state.mesh.noiseSuppressionOn;
+  if (els.btnDenoise) els.btnDenoise.disabled = true;
+  try {
+    await state.mesh.setNoiseSuppression(next);
+    setNoiseSuppressionPreference(next);
+    syncNoiseSuppressionButtonState();
+    showToast(next ? 'Noise suppression on' : 'Noise suppression off');
+  } catch (err) {
+    console.warn('toggleNoiseSuppression failed', err);
+    showToast('Could not toggle noise suppression: ' + (err?.message || err));
+  } finally {
+    if (els.btnDenoise) els.btnDenoise.disabled = false;
+  }
+}
+
+// Called from startCall / startPopoutCall AFTER setCamera resolves, so
+// the mic publication already exists and setNoiseSuppression(true) can
+// clone the live mic track and start the pipeline. (Calling it before
+// setCamera only stashed the preference — no publication to act on yet —
+// which left audio published raw while the button showed active and made
+// the first user toggle a no-op.) Safe to call unconditionally: it bails
+// when the pref is off and setNoiseSuppression is idempotent.
+function applyPersistedNoiseSuppressionPreference() {
+  if (!state.mesh) return;
+  if (!getNoiseSuppressionPreference()) return;
+  if (!window.DenoisePipeline?.isAvailable()) return;
+  state.mesh.setNoiseSuppression(true).catch((err) => {
+    console.warn('applyPersistedNoiseSuppressionPreference failed', err);
+  });
+}
+
+function syncNoiseSuppressionButtonState() {
+  if (!els.btnDenoise) return;
+  els.btnDenoise.classList.toggle('active', !!state.mesh?.noiseSuppressionOn);
+}
+
 // The mesh swaps the published MediaStream when blur is toggled
 // mid-call (replaceTrack on the senders, new composite locally), so
 // the self-cam tile's <video>.srcObject needs to be re-pointed —
@@ -5417,6 +5976,95 @@ function onLocalCameraStreamChanged({ stream }) {
   const tile = state.tilesByKey.get('self-cam');
   const video = tile?.querySelector('video');
   if (video) video.srcObject = stream;
+}
+
+// ---------------------------------------------------------------------------
+// Cloud call recording
+//
+// The server (LiveKit egress, via the recording-egress Edge Function) owns
+// the actual recording; the renderer toggles it and reflects the SHARED
+// state. The call_recordings realtime subscription (huddle.watchCallRecordings)
+// fires 'recording-state' on the huddle whenever the row changes, so every
+// participant — not just the starter — sees the same "● Recording" button +
+// banner. When the recording stops, the starter submits its transcript and the
+// SERVER (livekit-egress-webhook) posts the Meeting Recap on egress completion.
+// ---------------------------------------------------------------------------
+
+async function toggleRecording() {
+  if (!state.mesh || !state.huddle) return;
+  const channelId = state.inCallChannelId;
+  if (!channelId) return;
+  const active = state.huddle.isRecordingActive();
+  if (els.btnRecord) els.btnRecord.disabled = true;
+  try {
+    if (active) {
+      await state.huddle.stopRecording(channelId);
+      showToast('Stopping recording…');
+    } else {
+      await state.huddle.startRecording(channelId);
+      showToast('Recording started — everyone in the call is notified.');
+    }
+  } catch (err) {
+    console.warn('toggleRecording failed', err);
+    showToast('Could not toggle recording: ' + (err?.message || err));
+  } finally {
+    if (els.btnRecord) els.btnRecord.disabled = false;
+    syncRecordButtonState();
+  }
+}
+
+// Paint the Record button from the shared recording state. 'starting' and
+// 'stopping' are transient — show the button as active/pending so a second
+// click doesn't race a duplicate start/stop.
+function syncRecordButtonState() {
+  if (!els.btnRecord) return;
+  const active = !!state.huddle?.isRecordingActive();
+  els.btnRecord.classList.toggle('active', active);
+  els.btnRecord.setAttribute('aria-pressed', active ? 'true' : 'false');
+  els.btnRecord.title = active ? 'Stop recording this call' : 'Record this call';
+}
+
+// React to call_recordings changes. Keeps the button in sync for everyone
+// and, on the stop transition, submits the starter's caption transcript so
+// the SERVER (livekit-egress-webhook) can generate + post the Meeting Recap
+// exactly once when the egress completes. The recap is NO LONGER posted by the
+// client — moving it server-side means it survives the starter leaving the
+// call and dedups atomically (recap_posted_message_id claim), instead of being
+// lost if the starter left before egress finished or double-posted from two
+// clients of the same user.
+function onRecordingState({ recording, previous }) {
+  // Only care about the channel we're actually in.
+  if (!state.inCallChannelId || recording?.channel_id !== state.inCallChannelId) {
+    syncRecordButtonState();
+    return;
+  }
+  syncRecordButtonState();
+
+  // The recording's starter is the single transcript submitter (the webhook
+  // reads the starter's AI key, and a transcript from any other member would
+  // be redundant). started_by is the auth user id == huddle.peerId locally.
+  const isStarter = recording.started_by === state.huddle?.peerId;
+
+  // Submit the transcript snapshot the moment Stop is clicked (status ->
+  // stopping). The egress takes a few seconds to finalise the MP4; submitting
+  // now guarantees the server has the transcript even if captions get torn
+  // down before the 'completed' event arrives. The edge function's first-write-
+  // wins guard makes a duplicate submit (e.g. also on leave) a no-op.
+  const becameStopping = recording.status === 'stopping'
+    && previous?.status !== 'stopping';
+  if (becameStopping && isStarter) {
+    submitRecordingTranscriptSnapshot(recording.id, recording.channel_id);
+  }
+}
+
+// Flatten the live caption buffer into the "Name: line" transcript the server
+// summariser expects and submit it for `recordingId`. Lenient (the api helper
+// swallows errors) so a failed submit just degrades to a link-only recap.
+// Kept separate from onRecordingState so the leaveCall path can reuse it.
+function submitRecordingTranscriptSnapshot(recordingId, channelId) {
+  const lines = (state.cc.lines || []).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  const transcript = lines.map((l) => `${l.fromName || 'someone'}: ${l.text}`).join('\n');
+  state.huddle?.submitRecordingTranscript(channelId, recordingId, transcript);
 }
 
 // Cross-client identifier for a screen share. Mesh peers see the same
@@ -5774,6 +6422,13 @@ function wireControls() {
     const ch = state.chat?.currentChannel;
     if (ch) startCall(ch);
   };
+  els.btnKnockDm.onclick = () => {
+    // Peer is resolved + reachability-checked in renderKnockButton; bail
+    // if it went stale between render and click. knockTeammate re-checks
+    // presence and the in-call/already-knocking guards itself.
+    const peer = els.btnKnockDm._knockPeer;
+    if (peer) knockTeammate({ user_id: peer.id, name: peer.name });
+  };
   els.btnMic.onclick = () => {
     if (!state.mesh) return;
     const on = state.mesh.toggleMic();
@@ -5791,6 +6446,7 @@ function wireControls() {
     setPeerCamOn(state.huddle.peerId, on);
   };
   els.btnBlur && (els.btnBlur.onclick = toggleBackgroundBlur);
+  els.btnDenoise && (els.btnDenoise.onclick = toggleNoiseSuppression);
   els.btnShare.onclick = openSourcePicker;
   // CC button + the panel's X both toggle captions off so the panel
   // visibility and the capture state stay in sync — otherwise you'd
@@ -5846,6 +6502,7 @@ function wireControls() {
     };
   }
   if (els.btnHand) els.btnHand.onclick = toggleSelfHand;
+  if (els.btnRecord) els.btnRecord.onclick = toggleRecording;
   if (els.pinnedBtn) els.pinnedBtn.onclick = () => state.chat?.openPinnedDrawer();
   if (els.pinnedClose) els.pinnedClose.onclick = closePinnedDrawer;
   if (els.openSaved) els.openSaved.onclick = openSavedDrawer;
@@ -7023,6 +7680,58 @@ async function openSourcePicker() {
     els.sourceGrid.appendChild(card);
   }
   els.sourcePicker.classList.remove('hidden');
+}
+
+// Promise-returning variant of the source picker for the Clip recorder.
+// Reuses the same #source-picker modal DOM + permission gate as
+// openSourcePicker, but instead of immediately publishing to the call it
+// resolves with the chosen { id, name } (or null if the user cancels).
+// The clip recorder opens its own getUserMedia desktop stream from that id.
+async function pickScreenSourceForClip() {
+  // Same macOS Screen Recording gate as the call-side picker — without it
+  // desktopCapturer hands back black frames.
+  try {
+    const access = await window.huddle.getScreenAccess?.();
+    if (access === 'denied' || access === 'restricted') {
+      const ok = confirm(
+        'Huddle needs Screen Recording permission to record your screen.\n\n'
+        + 'Open System Settings → Privacy & Security → Screen Recording, enable '
+        + 'Huddle, then quit and reopen Huddle.\n\nOpen System Settings now?'
+      );
+      if (ok) window.huddle.openScreenSettings?.();
+      return null;
+    }
+  } catch { /* permission check unavailable (older build / non-mac) — proceed */ }
+
+  const sources = await window.huddle.getScreenSources();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      els.sourcePicker.classList.add('hidden');
+      // Restore the call-side cancel handler we temporarily overrode.
+      els.sourceCancel.onclick = prevCancel;
+      resolve(val);
+    };
+    const prevCancel = els.sourceCancel.onclick;
+    els.sourceCancel.onclick = () => finish(null);
+
+    els.sourceGrid.replaceChildren();
+    for (const s of sources) {
+      const card = document.createElement('div');
+      card.className = 'src';
+      const img = document.createElement('img');
+      img.src = s.thumbnail;
+      const name = document.createElement('div');
+      name.className = 'src-name';
+      name.textContent = s.name;
+      card.append(img, name);
+      card.onclick = () => finish({ id: s.id, name: s.name });
+      els.sourceGrid.appendChild(card);
+    }
+    els.sourcePicker.classList.remove('hidden');
+  });
 }
 
 // v2 UI accessor surface — the Huddle AI panel reads the AiClient and

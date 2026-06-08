@@ -91,6 +91,15 @@
       this._blurOn = false;
       this._blurPipeline = null;
       this._rawTrack = null;
+      // Noise-suppression state — the audio mirror of the blur fields
+      // above. _rawMicTrack is a long-lived clone of the LK-published
+      // raw microphone track, kept for the same reason _rawTrack is:
+      // replaceTrack stops the track it swaps out, and a stopped
+      // MediaStreamTrack can never resume, so we need a still-live
+      // source to swap back to when suppression is toggled off.
+      this._noiseSuppressionOn = false;
+      this._denoisePipeline = null;
+      this._rawMicTrack = null;
       // Local screen shares. addScreen returns a real MediaStream the
       // renderer can attach to a tile, and removeScreen can clean up by
       // id. `_pendingScreens` reserves a slot while getUserMedia is in
@@ -152,6 +161,7 @@
     get raisedHands() { return this.huddle.raisedHands; }
     get screenStreams() { return this._screenStreams; }
     get blurOn() { return this._blurOn; }
+    get noiseSuppressionOn() { return this._noiseSuppressionOn; }
 
     // --- Chat passthroughs ------------------------------------------------
     sendMessage(args)        { return this.huddle.sendMessage(args); }
@@ -391,6 +401,116 @@
       // MediaStream identity our composite reports, so refresh + dispatch
       // camera-stream-changed for the renderer to re-point its srcObject.
       this._refreshLocalCameraStream();
+    }
+
+    // --- Noise suppression ------------------------------------------------
+    //
+    // The audio twin of setBlurBackground. The denoise pipeline
+    // (renderer/denoise-pipeline.js) takes the raw mic MediaStream in
+    // and emits a cleaned MediaStream out; we wire its single audio
+    // track into LK via `LocalAudioTrack.replaceTrack(cleanTrack)` —
+    // the same replaceTrack mechanism blur uses on the camera
+    // publication. Toggling off swaps a fresh clone of our long-lived
+    // raw mic source back in.
+    //
+    // Mute interaction: toggleMic / setMicrophoneEnabled mutes the
+    // *publication*, not the underlying MediaStreamTrack, and LK
+    // re-enables the same LocalAudioTrack on unmute. replaceTrack swaps
+    // the track *inside* that LocalAudioTrack wrapper, so the mute flag
+    // and our processed/raw swap are orthogonal — a muted mic stays
+    // muted across a suppression toggle, and unmuting resumes whichever
+    // track (clean or raw) is currently wired in. We do NOT touch the
+    // mute state here.
+    async setNoiseSuppression(on) {
+      on = !!on;
+      if (this._noiseSuppressionOn === on) return;
+      if (!this.room) {
+        // Mic not up yet — record the preference; the next setCamera /
+        // applyPersistedNoiseSuppressionPreference loop re-calls us once
+        // the publication exists.
+        this._noiseSuppressionOn = on;
+        return;
+      }
+      const micPub = this.room.localParticipant.getTrackPublication(LK.Track.Source.Microphone);
+      const lkTrack = micPub?.audioTrack;
+      if (!lkTrack) {
+        this._noiseSuppressionOn = on;
+        return;
+      }
+
+      if (on) {
+        if (!window.DenoisePipeline?.isAvailable()) {
+          throw new Error('Noise-suppression pipeline is not available');
+        }
+        // Snapshot a long-lived clone of the raw mic track. Same
+        // rationale as blur's _rawTrack: (a) so LK can stop "its" track
+        // when replaceTrack swaps in the cleaned track, without ending
+        // our copy; (b) only once per call, so repeated on/off cycles
+        // don't accumulate live clones.
+        if (!this._rawMicTrack || this._rawMicTrack.readyState === 'ended') {
+          this._rawMicTrack = lkTrack.mediaStreamTrack.clone();
+        }
+        const rawStream = new MediaStream([this._rawMicTrack]);
+        const pipeline = new window.DenoisePipeline();
+        let cleanStream;
+        try {
+          cleanStream = await pipeline.start(rawStream);
+        } catch (err) {
+          try { pipeline.stop(); } catch {}
+          throw err;
+        }
+        const cleanTrack = cleanStream.getAudioTracks()[0];
+        if (!cleanTrack) {
+          try { pipeline.stop(); } catch {}
+          throw new Error('denoise pipeline returned no audio track');
+        }
+        try {
+          await lkTrack.replaceTrack(cleanTrack);
+        } catch (err) {
+          try { pipeline.stop(); } catch {}
+          throw err;
+        }
+        this._denoisePipeline = pipeline;
+        this._noiseSuppressionOn = true;
+      } else {
+        if (this._rawMicTrack && this._rawMicTrack.readyState !== 'ended') {
+          // Pass a fresh clone — LK may stop the track it accepts here,
+          // and we want _rawMicTrack to stay alive in case the user
+          // toggles suppression back on without leaving the call.
+          try {
+            await lkTrack.replaceTrack(this._rawMicTrack.clone());
+          } catch (err) {
+            console.warn('[livekit] replaceTrack(raw mic) failed', err);
+          }
+        } else {
+          // Dead-mic guard: our long-lived raw clone is gone or ended
+          // (e.g. the device was unplugged/re-enumerated, or the OS ended
+          // the track mid-call). We can't replaceTrack it back, and the
+          // current publication holds the soon-to-be-stopped *cleaned*
+          // track — so if we just stop the pipeline below, the mic goes
+          // silent for the rest of the call. Re-acquire a fresh live mic
+          // through LK instead: setMicrophoneEnabled(true) republishes a
+          // brand-new capture track on the existing publication.
+          try {
+            await this.room.localParticipant.setMicrophoneEnabled(true);
+          } catch (err) {
+            console.warn('[livekit] re-acquire mic after dead raw track failed', err);
+          }
+          // Drop the dead clone so a later toggle-on re-snapshots from
+          // the freshly-published track rather than reusing the corpse.
+          this._rawMicTrack = null;
+        }
+        if (this._denoisePipeline) {
+          try { this._denoisePipeline.stop(); } catch {}
+          this._denoisePipeline = null;
+        }
+        this._noiseSuppressionOn = false;
+      }
+
+      // Unlike blur, swapping the mic track does NOT change the self-cam
+      // tile's video, and remote audio is played through LK-managed
+      // <audio> elements that follow the publication automatically — so
+      // there's no local stream to refresh here.
     }
 
     // --- Connect / disconnect ---------------------------------------------
@@ -774,6 +894,17 @@
         this._rawTrack = null;
       }
       this._blurOn = false;
+      // Tear down the noise-suppression pipeline + its long-lived raw
+      // mic clone, mirroring the blur teardown directly above.
+      if (this._denoisePipeline) {
+        try { this._denoisePipeline.stop(); } catch {}
+        this._denoisePipeline = null;
+      }
+      if (this._rawMicTrack) {
+        try { this._rawMicTrack.stop(); } catch {}
+        this._rawMicTrack = null;
+      }
+      this._noiseSuppressionOn = false;
       if (this.room) {
         try { this.room.disconnect(); } catch (err) { console.warn('[livekit] disconnect', err); }
         this.room = null;
