@@ -21,6 +21,22 @@
   const ANTHROPIC_DEFAULT_MODEL = 'claude-opus-4-7';
   const OPENROUTER_DEFAULT_MODEL = 'anthropic/claude-opus-4-7';
 
+  // Appended to the summarizer system prompt so the model emits action
+  // items twice: once inside the human-readable bullet list (unchanged),
+  // and once more as a fenced ```action-items block of one-JSON-object-
+  // per-line records. The renderer (action-items.js → parseActionItems)
+  // strips that fenced block out of the displayed text and renders each
+  // record as a row with a "Create ticket" button. The block is at the
+  // very end and clearly delimited so a viewer that doesn't parse it
+  // just never sees a stray code fence (we strip it regardless).
+  //
+  // Each line is a standalone JSON object: {"text": "...", "owner": "..."}.
+  // owner is optional — omit it (or use null) when no assignee can be
+  // inferred. One object per line (JSON-lines) rather than a single array
+  // so a truncated / partially-malformed response still yields the items
+  // that did parse, instead of failing the whole block.
+  const ACTION_ITEMS_SUMMARIZE_PROMPT = `After the summary, IF AND ONLY IF there are action items, append a fenced code block tagged \`action-items\` containing one JSON object per line, e.g.:\n\n\`\`\`action-items\n{"text": "Write the migration for the new column", "owner": "Dana"}\n{"text": "Follow up with the vendor about pricing"}\n\`\`\`\n\nRules: "text" is the action phrased as an imperative task title (concise, no owner prefix). "owner" is the person responsible if you can infer one, otherwise omit it. Do not wrap the block in extra prose, and do not include items that aren't real action items. Omit the block entirely when there are no action items.`;
+
   class AiClient {
     constructor({ provider, anthropicKey, openrouterKey, defaultModel } = {}) {
       this.provider = provider === 'openrouter' ? 'openrouter' : 'anthropic';
@@ -232,7 +248,13 @@
     // throws RangeError, and this loop is too far from the API boundary to
     // want to crash on a malformed row.
     async summarize(channelMessages, { topicHint } = {}) {
-      const system = `You are a meeting / chat summarizer. Produce a tight, scannable summary of recent messages in a team chat. Use bullet points. Capture decisions, open questions, and any action items (with owners if you can infer them). Keep it under 250 words.`;
+      // The human-readable summary is unchanged; we *additionally* ask for
+      // a machine-readable action-items block at the very end so the
+      // renderer can turn each item into a one-click "Create ticket" row
+      // (see action-items.js). Keeping the prose intact means the message
+      // still reads fine even where the structured block isn't parsed
+      // (search, notifications, the mobile app).
+      const system = `You are a meeting / chat summarizer. Produce a tight, scannable summary of recent messages in a team chat. Use bullet points. Capture decisions, open questions, and any action items (with owners if you can infer them). Keep it under 250 words.\n\n${ACTION_ITEMS_SUMMARIZE_PROMPT}`;
       const lines = (channelMessages || [])
         .filter((m) => m.text)
         .map((m) => {

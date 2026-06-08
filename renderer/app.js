@@ -1873,6 +1873,9 @@ async function joinTeamAndStart(teamId) {
       getDefaultJiraProject: () => state.settings?.jira?.defaultProject || '',
       getAiTicketContext: () => state.settings?.aiTicket?.context || '',
       getAiTicketRepo: () => state.settings?.aiTicket?.githubRepo || '',
+      // Bare channel name (e.g. "general") for the action-items ticket
+      // provenance line. Returns '' for unknown ids / DMs without a name.
+      getChannelName: (id) => state.channelMeta.get(id)?.name || '',
       openTicketModal: (preset) => openTicketModal(preset),
       getAi: () => state.ai,
       getGitHub: () => state.github,
@@ -2614,7 +2617,13 @@ function finalizeCallTranscript() {
   (async () => {
     lines.sort((a, b) => (a.ts || 0) - (b.ts || 0));
     const transcript = lines.map((l) => `${l.fromName || 'someone'}: ${l.text}`).join('\n');
-    const system = "You are summarising a live call transcript captured via the browser's speech-to-text. Produce a concise recap (under 200 words) in markdown: 2-3 bullets of the main points discussed, then a 'Decisions' section if any were made, then 'Action items' (with owners if you can infer them). The transcript is rough — fix obvious recognition errors silently and don't quote raw lines.";
+    // Append the action-items prompt (shared with /summarize) so the recap
+    // emits a machine-readable ```action-items block the chat renderer turns
+    // into one-click "Create ticket" rows. window.ACTION_ITEMS_PROMPT is
+    // defined in action-items.js; fall back to an empty string if that
+    // module ever fails to load so the recap still produces prose.
+    const system = "You are summarising a live call transcript captured via the browser's speech-to-text. Produce a concise recap (under 200 words) in markdown: 2-3 bullets of the main points discussed, then a 'Decisions' section if any were made, then 'Action items' (with owners if you can infer them). The transcript is rough — fix obvious recognition errors silently and don't quote raw lines."
+      + (window.ACTION_ITEMS_PROMPT ? `\n\n${window.ACTION_ITEMS_PROMPT}` : '');
     let result;
     try {
       result = await ai.chat({ system, messages: [{ role: 'user', content: transcript }] });
