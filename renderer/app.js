@@ -190,6 +190,22 @@ const els = {
   sourcePicker: $('#source-picker'),
   sourceGrid: $('#source-grid'),
   sourceCancel: $('#source-cancel'),
+  // Huddle Clips recorder (composer → #clip-btn). The recorder logic
+  // lives in clip-recorder.js and is driven by ChatView; these are the
+  // DOM handles it manipulates.
+  clipBtn: $('#clip-btn'),
+  clipRecorder: $('#clip-recorder'),
+  clipClose: $('#clip-close'),
+  clipCam: $('#clip-cam'),
+  clipScreen: $('#clip-screen'),
+  clipPreview: $('#clip-preview'),
+  clipTimer: $('#clip-timer'),
+  clipError: $('#clip-error'),
+  clipStatus: $('#clip-status'),
+  clipRecord: $('#clip-record'),
+  clipStop: $('#clip-stop'),
+  clipRetake: $('#clip-retake'),
+  clipPost: $('#clip-post'),
   // Settings
   openSettings: $('#open-settings'),
   settingsModal: $('#settings-modal'),
@@ -1893,6 +1909,10 @@ async function joinTeamAndStart(teamId) {
       onPinChanged: () => refreshPinnedCount(),
       isMessageSaved: (id) => state.savedById.has(id),
       openSavePopover: (args) => openSavePopover(args),
+      // Huddle Clips: the recorder reuses the screen source picker (the
+      // promise-returning variant) so it can offer screen capture without
+      // duplicating the permission gate / thumbnail UI.
+      pickScreenSource: () => pickScreenSourceForClip(),
     },
   });
   wireControls();
@@ -7157,6 +7177,58 @@ async function openSourcePicker() {
     els.sourceGrid.appendChild(card);
   }
   els.sourcePicker.classList.remove('hidden');
+}
+
+// Promise-returning variant of the source picker for the Clip recorder.
+// Reuses the same #source-picker modal DOM + permission gate as
+// openSourcePicker, but instead of immediately publishing to the call it
+// resolves with the chosen { id, name } (or null if the user cancels).
+// The clip recorder opens its own getUserMedia desktop stream from that id.
+async function pickScreenSourceForClip() {
+  // Same macOS Screen Recording gate as the call-side picker — without it
+  // desktopCapturer hands back black frames.
+  try {
+    const access = await window.huddle.getScreenAccess?.();
+    if (access === 'denied' || access === 'restricted') {
+      const ok = confirm(
+        'Huddle needs Screen Recording permission to record your screen.\n\n'
+        + 'Open System Settings → Privacy & Security → Screen Recording, enable '
+        + 'Huddle, then quit and reopen Huddle.\n\nOpen System Settings now?'
+      );
+      if (ok) window.huddle.openScreenSettings?.();
+      return null;
+    }
+  } catch { /* permission check unavailable (older build / non-mac) — proceed */ }
+
+  const sources = await window.huddle.getScreenSources();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      els.sourcePicker.classList.add('hidden');
+      // Restore the call-side cancel handler we temporarily overrode.
+      els.sourceCancel.onclick = prevCancel;
+      resolve(val);
+    };
+    const prevCancel = els.sourceCancel.onclick;
+    els.sourceCancel.onclick = () => finish(null);
+
+    els.sourceGrid.replaceChildren();
+    for (const s of sources) {
+      const card = document.createElement('div');
+      card.className = 'src';
+      const img = document.createElement('img');
+      img.src = s.thumbnail;
+      const name = document.createElement('div');
+      name.className = 'src-name';
+      name.textContent = s.name;
+      card.append(img, name);
+      card.onclick = () => finish({ id: s.id, name: s.name });
+      els.sourceGrid.appendChild(card);
+    }
+    els.sourcePicker.classList.remove('hidden');
+  });
 }
 
 // v2 UI accessor surface — the Huddle AI panel reads the AiClient and
