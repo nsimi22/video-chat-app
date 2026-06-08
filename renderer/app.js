@@ -2138,6 +2138,11 @@ async function leaveCall() {
   // already nulled state.cc.manager.
   state.cc.lineSub?.();
   state.cc.lineSub = null;
+  // Backstop: ensure the live-transcript panel is gone for every participant
+  // on leave, regardless of which path finalizeCallTranscript() took (it
+  // early-returns before stopCaptions() when a recap is already in flight).
+  hideCaptionsPanel();
+  if (els.captionsList) els.captionsList.replaceChildren();
   // Drop the meeting-thread anchor + replies for this call.
   // finalizeCallTranscript above runs in the background and reads
   // state.meeting.threadRootId BEFORE we tear it down here — it
@@ -2690,6 +2695,13 @@ function finalizeCallTranscript() {
   // near-identical summaries. (This legacy suppression is intentionally kept.)
   if (state.huddle?.isRecordingActive()) {
     console.log('[recap] skip: recording active — Meeting Recap will cover it');
+    // Only the standalone RECAP is skipped (the server posts the Meeting
+    // Recap). We must STILL tear captions down — stop the local SR engine,
+    // clear + hide the panel — otherwise the live-transcript panel stayed
+    // stuck on screen after leaving a recorded call (and an enabler's speech
+    // recognition kept running). The transcript snapshot was already
+    // submitted to the server in leaveCall(), so clearing the buffer is safe.
+    stopCaptions();
     return;
   }
   state.cc._finalizing = true;
