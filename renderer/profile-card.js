@@ -125,7 +125,7 @@
           ${isSelf
             ? `<button class="profile-card-btn primary" data-act="edit">Edit profile</button>`
             : `<button class="profile-card-btn" data-act="message">Message</button>
-               ${canKnock ? `<button class="profile-card-btn primary" data-act="knock" title="Start a huddle now">Knock 👋</button>` : ''}`}
+               ${canKnock ? `<button class="profile-card-btn primary" data-act="knock" title="Start a huddle now">Knock</button>` : ''}`}
         </div>
       `;
       this.el.querySelector('[data-act="message"]')?.addEventListener('click', () => {

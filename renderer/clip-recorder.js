@@ -229,6 +229,24 @@
         return;
       }
 
+      // Route the mic through the denoise pipeline (default-on, same pref as
+      // calls) so the recorded clip is noise-suppressed. Own try/catch — a
+      // denoise failure must fall back to the raw mic, never abort the clip.
+      // Bails cleanly if a newer _refreshPreview superseded this one.
+      this.cleanMicTrack = null;
+      if (this.camStream && this._denoiseWanted() && window.DenoisePipeline?.isAvailable?.()) {
+        try {
+          this.denoisePipe = new window.DenoisePipeline();
+          const cleaned = await this.denoisePipe.start(this.camStream);
+          if (stale()) { try { this.denoisePipe.stop(); } catch {} this.denoisePipe = null; return; }
+          this.cleanMicTrack = cleaned.getAudioTracks()[0] || null;
+        } catch (err) {
+          console.warn('[clip] denoise setup failed, using raw mic', err);
+          try { this.denoisePipe?.stop(); } catch {}
+          this.denoisePipe = null;
+        }
+      }
+
       // Decide what the *preview* shows and what we'll record.
       const previewStream = this._buildPreviewStream();
       this.els.clipPreview.srcObject = previewStream;
@@ -264,6 +282,11 @@
     // Build the MediaStream shown in the preview (and later recorded). In
     // cam+screen mode this spins up the compositing canvas; otherwise it's
     // just the single source stream.
+    _denoiseWanted() {
+      try { return this.hooks.denoiseEnabled ? this.hooks.denoiseEnabled() !== false : true; }
+      catch { return true; }
+    }
+
     _buildPreviewStream() {
       const wantCam = !!this.camStream;
       const wantScreen = !!this.screenStream;
@@ -272,9 +295,57 @@
         this.recordStream = this._buildCompositeStream();
         return this.recordStream;
       }
-      // Single-source: record exactly what we preview.
-      this.recordStream = wantScreen ? this.screenStream : this.camStream;
+      // Camera-only: route through a mirror canvas so the self-view AND the
+      // recorded clip are both flipped (front-facing mirror). Recording the
+      // raw track would leave the saved clip un-mirrored.
+      if (wantCam) {
+        this.recordStream = this._buildMirroredCamStream();
+        return this.recordStream;
+      }
+      // Screen-only: record exactly what we preview (no mirror).
+      this.recordStream = this.screenStream;
       return this.recordStream;
+    }
+
+    // Camera-only mirror pipeline: draw the camera horizontally flipped onto a
+    // canvas and capture that as the record/preview stream, muxing in the mic.
+    // Reuses the same instance fields as the composite path (camVideoEl,
+    // canvas, _rafId, compositeStream) so _teardownCapture cleans it up too.
+    _buildMirroredCamStream() {
+      this.camVideoEl = document.createElement('video');
+      this.camVideoEl.srcObject = this.camStream;
+      this.camVideoEl.muted = true;
+      this.camVideoEl.playsInline = true;
+      this.camVideoEl.play().catch(() => {});
+
+      const st = this.camStream.getVideoTracks()[0]?.getSettings() || {};
+      this.canvas = document.createElement('canvas');
+      this.canvas.width = st.width || 1280;
+      this.canvas.height = st.height || 720;
+      this.canvasCtx = this.canvas.getContext('2d');
+
+      const draw = () => {
+        const ctx = this.canvasCtx;
+        const W = this.canvas.width, H = this.canvas.height;
+        if (this.camVideoEl.readyState >= 2) {
+          ctx.save();
+          ctx.translate(W, 0);
+          ctx.scale(-1, 1); // horizontal flip
+          ctx.drawImage(this.camVideoEl, 0, 0, W, H);
+          ctx.restore();
+        } else {
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, W, H);
+        }
+        this._rafId = requestAnimationFrame(draw);
+      };
+      this._rafId = requestAnimationFrame(draw);
+
+      const out = this.canvas.captureStream(30);
+      const micTrack = this.cleanMicTrack || this.camStream.getAudioTracks()[0];
+      if (micTrack) out.addTrack(micTrack);
+      this.compositeStream = out;
+      return out;
     }
 
     // Composite screen (full frame) + camera (circular bubble) onto a canvas
@@ -323,6 +394,12 @@
           ctx.arc(cx, cy, d / 2, 0, Math.PI * 2);
           ctx.closePath();
           ctx.clip();
+          // Mirror the camera bubble (front-facing) about its own center, so
+          // the clip circle and the screen behind it stay put — only the cam
+          // pixels flip. Matches the camera-only mirror.
+          ctx.translate(cx, 0);
+          ctx.scale(-1, 1);
+          ctx.translate(-cx, 0);
           // Cover-fit the camera into the circle (center-crop to square).
           const vw = this.camVideoEl.videoWidth || 1;
           const vh = this.camVideoEl.videoHeight || 1;
@@ -344,7 +421,7 @@
 
       // captureStream gives us the composited video; add the mic audio.
       const out = this.canvas.captureStream(30);
-      const micTrack = this.camStream.getAudioTracks()[0];
+      const micTrack = this.cleanMicTrack || this.camStream.getAudioTracks()[0];
       if (micTrack) out.addTrack(micTrack);
       // Hold the canvas-captured stream so teardown can stop its video track
       // (the mic track belongs to camStream and is stopped via that ref).
@@ -510,6 +587,11 @@
       // stream instead of re-assigning it onto a torn-down recorder.
       this._previewGen = (this._previewGen || 0) + 1;
       this._stopCompositingLoop();
+      // Stop the denoise pipeline (closes its AudioContext + synthetic track).
+      // The raw mic track it read from is stopped via camStream below.
+      try { this.denoisePipe?.stop(); } catch {}
+      this.denoisePipe = null;
+      this.cleanMicTrack = null;
       for (const s of [this.camStream, this.screenStream, this.compositeStream]) {
         if (s) for (const t of s.getTracks()) { try { t.stop(); } catch {} }
       }

@@ -1969,7 +1969,7 @@ class ChatView {
       recapBlock.className = 'meeting-root-recap';
       const label = document.createElement('div');
       label.className = 'meeting-root-recap-label';
-      label.textContent = '📋 Call recap';
+      label.textContent = 'Call recap';
       const body = document.createElement('div');
       body.className = 'meeting-root-recap-body';
       if (typeof window.renderMarkdown === 'function') {
@@ -2113,6 +2113,7 @@ class ChatView {
       hooks: {
         // Reuse the app's screen source picker (promise-returning variant).
         pickScreenSource: this.hooks.pickScreenSource,
+        denoiseEnabled: () => this.hooks.denoiseEnabled?.() ?? true,
         toast: (msg) => this.hooks.toast?.(msg),
         // Finished clip → upload via the normal uploadFile path, then post
         // it as a chat message with a video attachment in the *current*

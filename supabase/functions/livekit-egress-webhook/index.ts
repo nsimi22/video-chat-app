@@ -269,8 +269,8 @@ async function signedRecordingUrl(storagePath: string | null): Promise<string | 
 // Render the recap message body. Mirrors the renderer's postMeetingRecap output
 // so existing message styling/parsing stays consistent.
 function renderRecapBody({ link, summary }: { link: string | null; summary: { text: string } }): string {
-  const parts = ['**🎥 Meeting Recap**', ''];
-  if (link) parts.push(`📼 [Recording](${link})`, '');
+  const parts = ['**Meeting Recap**', ''];
+  if (link) parts.push(`[Recording](${link})`, '');
   else parts.push('_Recording is still processing — the link will be available shortly._', '');
   if (summary.text) parts.push(summary.text);
   else parts.push('_No AI summary was generated (no transcript captured, or no AI key configured for the recording starter)._');

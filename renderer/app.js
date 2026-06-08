@@ -37,6 +37,7 @@ const els = {
   teamJoinLinkGo: $('#team-join-link-go'),
   copyTeamLink: $('#copy-team-link'),
   copyCallLink: $('#copy-call-link'),
+  btnKnockDm: $('#btn-knock-dm'),
   toasts: $('#toasts'),
   loginError: $('#login-error'),
   signOutBtn: $('#sign-out'),
@@ -1163,6 +1164,7 @@ async function bootCallPopout(cfg) {
   const stub = () => document.createElement('div');
   els.btnStartCall = stub();
   els.btnJoinCall = stub();
+  els.btnKnockDm = stub();
   els.btnJira = stub();
   els.btnPopoutCall = stub();
   els.channelName = stub();
@@ -1906,7 +1908,7 @@ async function joinTeamAndStart(teamId) {
     huddle,
     onMessage: (profile) => openDmWith(profile.user_id, profile.name),
     onEditProfile: () => openSettingsToProfile(),
-    // Knock-to-huddle: clicking "Knock 👋" on a present teammate's card
+    // Knock-to-huddle: clicking "Knock" on a present teammate's card
     // rings them with a lightweight call invite (see knockTeammate).
     onKnock: (profile) => knockTeammate(profile),
   });
@@ -1939,6 +1941,9 @@ async function joinTeamAndStart(teamId) {
       // promise-returning variant) so it can offer screen capture without
       // duplicating the permission gate / thumbnail UI.
       pickScreenSource: () => pickScreenSourceForClip(),
+      // Clips run the mic through the same denoise pipeline as calls, gated
+      // by the same persisted pref (default-on).
+      denoiseEnabled: () => getNoiseSuppressionPreference(),
     },
   });
   wireControls();
@@ -2740,7 +2745,7 @@ function finalizeCallTranscript() {
       console.warn('[recap] AI chat FAILED:', err);
       return;
     }
-    const body = `**📞 Call recap**\n\n${result.text || '(no recap produced)'}`;
+    const body = `**Call recap**\n\n${result.text || '(no recap produced)'}`;
     try {
       // Prefer the meeting thread when a root id is set — the recap
       // lives next to any in-call notes the user wrote, instead of
@@ -3370,6 +3375,7 @@ function focusChannel(channelId) {
   }
   renderCallHeader();
   renderHeaderMembers(channel);
+  renderKnockButton(channel);
   refreshNotifyButton();
   // Visiting a channel clears its unread.
   state.unread.delete(channelId);
@@ -3674,7 +3680,38 @@ function refreshHeaderMembersForCurrent() {
   const channelId = state.chat?.currentChannel;
   if (!channelId) return;
   const ch = state.channelMeta.get(channelId);
-  if (ch) renderHeaderMembers(ch);
+  if (ch) { renderHeaderMembers(ch); renderKnockButton(ch); }
+}
+
+// The other party in a 1:1 DM. Resolves the id from memberIds (minus
+// self) or, before the member list loads, the `dm:<a>::<b>` id; name
+// comes from live presence, falling back to the DM label. Returns null
+// for anything that isn't a 1:1 DM with a resolvable peer.
+function dmPeer(channel) {
+  const me = state.huddle?.peerId;
+  if (!me || !channel || channel.type !== 'dm' || isGroupDm(channel)) return null;
+  const others = (channel.memberIds || []).filter((x) => x !== me);
+  let id = others.length === 1 ? others[0] : null;
+  if (!id) {
+    const m = /^dm:([0-9a-f-]+)::([0-9a-f-]+)$/.exec(channel.id);
+    if (m) id = m[1] === me ? m[2] : (m[2] === me ? m[1] : null);
+  }
+  if (!id) return null;
+  return { id, name: state.huddle.peerInfo.get(id)?.name || dmLabelFor(channel) };
+}
+
+// Show the DM-header Knock button only for a 1:1 DM whose peer is present
+// + Available, and only when we're free to ring (not already in a call).
+// Same reachability rule as the profile-card Knock button. Stashes the
+// resolved peer on the button so the click handler rings the right person.
+function renderKnockButton(channel) {
+  const btn = els.btnKnockDm;
+  if (!btn || !btn.classList) return; // absent / stubbed (popout window)
+  const peer = dmPeer(channel);
+  const canKnock = !!peer && !state.mesh && !_knock.outgoing
+    && presenceStatusForUser(peer.id) === 'active';
+  btn.classList.toggle('hidden', !canKnock);
+  btn._knockPeer = canKnock ? peer : null;
 }
 
 // 2-avatar stack for group DM sidebar rows (replaces the Users SVG
@@ -3779,7 +3816,7 @@ function _genKnockId() {
   return 'k_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
 }
 
-// Caller side. Triggered from the profile card's "Knock 👋" button.
+// Caller side. Triggered from the profile card's "Knock" button.
 // `profile` is the full target profile { user_id, name, avatar_url, ... }.
 async function knockTeammate(profile) {
   const targetId = profile?.user_id;
@@ -3889,7 +3926,7 @@ function onIncomingKnock(payload) {
 
   // A soft notification helps when Huddle is backgrounded.
   if ('Notification' in window && Notification.permission === 'granted') {
-    try { new Notification('Knock knock 👋', { body: `${fromName || 'A teammate'} wants to huddle` }); } catch {}
+    try { new Notification('Knock knock', { body: `${fromName || 'A teammate'} wants to huddle` }); } catch {}
   }
 }
 
@@ -5876,13 +5913,16 @@ function syncBlurButtonState() {
 // ---------------------------------------------------------------------------
 const NOISE_SUPPRESSION_PREF_KEY = 'huddle.noiseSuppression';
 function getNoiseSuppressionPreference() {
-  try { return localStorage.getItem(NOISE_SUPPRESSION_PREF_KEY) === '1'; }
-  catch { return false; }
+  // Default ON: denoise unless the user explicitly turned it off ('0'). The
+  // call toggle is the single escape hatch for the raw-audio cases (music,
+  // soft talkers, hardware suppression).
+  try { return localStorage.getItem(NOISE_SUPPRESSION_PREF_KEY) !== '0'; }
+  catch { return true; }
 }
 function setNoiseSuppressionPreference(on) {
   try {
-    if (on) localStorage.setItem(NOISE_SUPPRESSION_PREF_KEY, '1');
-    else localStorage.removeItem(NOISE_SUPPRESSION_PREF_KEY);
+    if (on) localStorage.removeItem(NOISE_SUPPRESSION_PREF_KEY); // back to default-on
+    else localStorage.setItem(NOISE_SUPPRESSION_PREF_KEY, '0');
   } catch {}
 }
 
@@ -6381,6 +6421,13 @@ function wireControls() {
   els.btnJoinCall.onclick = () => {
     const ch = state.chat?.currentChannel;
     if (ch) startCall(ch);
+  };
+  els.btnKnockDm.onclick = () => {
+    // Peer is resolved + reachability-checked in renderKnockButton; bail
+    // if it went stale between render and click. knockTeammate re-checks
+    // presence and the in-call/already-knocking guards itself.
+    const peer = els.btnKnockDm._knockPeer;
+    if (peer) knockTeammate({ user_id: peer.id, name: peer.name });
   };
   els.btnMic.onclick = () => {
     if (!state.mesh) return;
