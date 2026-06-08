@@ -6726,10 +6726,12 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   flex: 1 1 auto;
   max-height: none;
   padding-bottom: 96px; /* leave room for the dock */
-  /* The ONE right-side reservation. Each dock (captions / meeting notes)
-     contributes its width via a --dock-* var set on .stage below; any
-     combination composes by summation — no stacked margin+padding rules. */
-  padding-right: calc(var(--dock-captions, 0px) + var(--dock-notes, 0px));
+  /* The ONE right-side reservation. The leading 14px matches the base
+     .tiles padding-left so the grid stays symmetric when no dock is open
+     (without it the rightmost tile sat flush against the window edge while
+     the left kept its 14px gap). Each dock (captions / meeting notes) adds
+     its width via a --dock-* var set on .stage below; combinations sum. */
+  padding-right: calc(14px + var(--dock-captions, 0px) + var(--dock-notes, 0px));
 }
 
 /* Captions panel docks to the right side during a call. Uses
