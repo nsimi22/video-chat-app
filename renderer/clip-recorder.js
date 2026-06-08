@@ -133,7 +133,19 @@
       await this._refreshPreview();
     }
 
-    close() {
+    // close(force):
+    //   force=false (default) — user-initiated close (X button / backdrop).
+    //     If there's a live recording or an un-posted review take, confirm
+    //     before throwing it away so an accidental click can't nuke a clip.
+    //   force=true — programmatic teardown (team-switch / ChatView destroy,
+    //     or our own _post() after a successful hand-off). Skips the prompt
+    //     and always releases capture; a left-open recorder must let go of
+    //     the camera/screen even if nobody's around to answer a dialog.
+    close(force = false) {
+      if (!force && (this._phase === 'recording' || this._phase === 'review')) {
+        // eslint-disable-next-line no-alert
+        if (!confirm('Discard your recording and close?')) return;
+      }
       // If we're closed mid-recording (X button, backdrop click, or a
       // team-switch teardown), the cap + tick timers and the live
       // MediaRecorder are still running. _stopRecording() clears both timers
@@ -282,7 +294,10 @@
       this.camVideoEl.play().catch(() => {});
 
       // Size the canvas to the screen track's resolution so text stays crisp.
-      const st = this.screenStream.getVideoTracks()[0].getSettings();
+      // Guard the track lookup: a screen stream with no video track (revoked
+      // before we got here, or audio-only) would otherwise crash on
+      // getSettings(); fall back to the default 1280x720 below.
+      const st = this.screenStream.getVideoTracks()[0]?.getSettings() || {};
       this.canvas = document.createElement('canvas');
       this.canvas.width = st.width || 1280;
       this.canvas.height = st.height || 720;
@@ -357,11 +372,23 @@
       };
       this.recorder.onstop = () => this._onRecorderStop(mimeType);
       // If a track ends out from under us (user revokes screen share via the
-      // OS bar), stop cleanly rather than recording a frozen frame forever.
-      for (const t of this.recordStream.getTracks()) {
-        t.addEventListener('ended', () => {
-          if (this._phase === 'recording') this._stopRecording();
-        });
+      // OS "stop sharing" bar, or unplugs a camera), stop cleanly rather than
+      // recording a frozen/black frame forever.
+      //
+      // Crucially we listen on the *source* streams (camStream / screenStream),
+      // NOT recordStream. In cam+screen composite mode recordStream is the
+      // canvas captureStream (+ the muxed mic track) — it does NOT contain the
+      // real screen track, so the OS "stop sharing" action would fire 'ended'
+      // on the screen track without us ever hearing about it, and the canvas
+      // would just keep drawing black. Watching the originals covers all three
+      // modes (the single-source modes feed their source straight through, so
+      // those tracks are the same objects).
+      const onSourceEnded = () => {
+        if (this._phase === 'recording') this._stopRecording();
+      };
+      for (const s of [this.camStream, this.screenStream]) {
+        if (!s) continue;
+        for (const t of s.getTracks()) t.addEventListener('ended', onSourceEnded);
       }
 
       // Timeslice so chunks flush periodically — a crash mid-record still
@@ -442,9 +469,10 @@
       if (!this.recordedBlob) return;
       const blob = this.recordedBlob;
       const durationSecs = this._recordedSecs;
-      // Hand off to the caller; it owns upload + sendMessage. Close the
-      // modal optimistically — the upload chip in the composer gives the
-      // user their progress feedback.
+      // Hand off to the caller; it owns upload + sendMessage. We only tear
+      // the modal down once the hand-off *succeeds* — if onPost throws (upload
+      // or sendMessage failed) we keep the recording so the user can retry
+      // instead of silently losing the take.
       this.els.clipPost.disabled = true;
       try {
         await this.hooks.onPost?.(blob, {
@@ -453,11 +481,19 @@
           // A friendly default filename; uploadFile sanitises it anyway.
           name: `huddle-clip-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.webm`,
         });
-      } finally {
+      } catch (err) {
+        // Hand-off failed — _postClip has already toasted the specifics.
+        // Surface it inline too and re-arm the Post button so the still-held
+        // blob can be posted again. Stay in the review phase.
+        console.warn('clip post failed', err);
+        this.els.clipStatus.textContent = 'Failed to post clip.';
         this.els.clipPost.disabled = false;
+        return;
       }
-      // Don't re-discard here — close() handles teardown and revokes the URL.
-      this.close();
+      // Success — force-close (no discard prompt) so teardown releases the
+      // blob/URL and any lingering capture. Don't re-discard here; close()
+      // handles teardown and revokes the URL.
+      this.close(true);
     }
 
     // --- Cleanup ------------------------------------------------------------
@@ -483,8 +519,19 @@
       // The composite output stream's video track is owned by the canvas;
       // stopping it isn't required, but null the ref so we don't reuse it.
       this.recordStream = null;
-      if (this.camVideoEl) { this.camVideoEl.srcObject = null; this.camVideoEl = null; }
-      if (this.screenVideoEl) { this.screenVideoEl.srcObject = null; this.screenVideoEl = null; }
+      // Pause the off-DOM feed elements before dropping their srcObject so
+      // Chromium tears down the decode pipeline cleanly instead of leaving a
+      // playing element pointed at a null source.
+      if (this.camVideoEl) {
+        try { this.camVideoEl.pause(); } catch {}
+        this.camVideoEl.srcObject = null;
+        this.camVideoEl = null;
+      }
+      if (this.screenVideoEl) {
+        try { this.screenVideoEl.pause(); } catch {}
+        this.screenVideoEl.srcObject = null;
+        this.screenVideoEl = null;
+      }
       this.canvas = null;
       this.canvasCtx = null;
     }
@@ -494,7 +541,17 @@
       this.chunks = [];
       if (this.recordedUrl) { URL.revokeObjectURL(this.recordedUrl); this.recordedUrl = null; }
       const v = this.els.clipPreview;
-      if (v) { v.src = ''; v.srcObject = null; v.controls = false; v.muted = true; }
+      if (v) {
+        // Fully detach the <video> so Chromium frees the decoded buffers held
+        // for the blob/object URL. Setting src='' alone leaves a pending load;
+        // removeAttribute('src') + srcObject=null + load() resets the element
+        // to its empty state and releases those resources.
+        v.removeAttribute('src');
+        v.srcObject = null;
+        v.controls = false;
+        v.muted = true;
+        try { v.load(); } catch {}
+      }
     }
 
     _resetState() {

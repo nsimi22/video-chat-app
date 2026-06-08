@@ -562,8 +562,11 @@ class ChatView {
     // never-fired timer.
     this._flushDraftSave();
     // Release any live camera/screen capture the clip recorder is holding
-    // (e.g. the modal was left open when the team switched).
-    try { this._clipRecorder?.close(); } catch {}
+    // (e.g. the modal was left open when the team switched). Force-close so
+    // teardown happens without a "Discard your recording?" prompt — there's
+    // nobody to answer it during a programmatic destroy, and a blocked dialog
+    // would strand the camera/screen tracks on.
+    try { this._clipRecorder?.close(true); } catch {}
     this._clipRecorder = null;
     this._listenerCtrl?.abort();
     this._listenerCtrl = null;
@@ -2084,7 +2087,10 @@ class ChatView {
     } catch (err) {
       console.warn('clip upload failed', err);
       this.hooks.toast?.('Clip upload failed — try again.');
-      return;
+      // Re-throw so the recorder's _post() learns the hand-off failed and
+      // keeps the recording (re-enabling Post) instead of closing + discarding
+      // a clip that never actually made it to the channel.
+      throw err;
     }
     // Tag the attachment as a clip so the renderer can treat it specially
     // (inline <video controls>) and so future features (transcripts) have a
@@ -2102,6 +2108,9 @@ class ChatView {
     } catch (err) {
       console.warn('clip post failed', err);
       this.hooks.toast?.('Couldn’t post the clip.');
+      // Re-throw for the same reason as the upload path: the recorder needs
+      // to know the post didn't land so it can keep the take for a retry.
+      throw err;
     }
   }
 
