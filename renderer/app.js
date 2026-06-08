@@ -6470,7 +6470,11 @@ function wireControls() {
   // transcribed and broadcast" mode.
   const toggleCaptions = () => (state.cc.on ? stopCaptions() : startCaptions());
   els.btnCc && (els.btnCc.onclick = toggleCaptions);
-  els.captionsClose && (els.captionsClose.onclick = () => stopCaptions());
+  // The panel's X is "hide the transcript", not "discard the meeting
+  // transcript" — keep the buffer so a still-running recording's recap (and
+  // the post-call AI summary) isn't wiped when the user dismisses the panel.
+  // Full stop + clear is what the CC toggle button is for.
+  els.captionsClose && (els.captionsClose.onclick = () => stopCaptions({ keepBuffer: true }));
 
   // Jira board: in-call "what we're working on" overlay (call header)
   // and the full Kanban drawer (opened from the v2 nav rail).
