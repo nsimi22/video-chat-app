@@ -350,6 +350,9 @@
             <button id="btn-blur" class="ctrl icon-only hidden" title="Blur background" aria-label="Blur background">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3" stroke-dasharray="2 1.5"/><path d="M5 21v-2a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v2" stroke-dasharray="2 1.5"/></svg>
             </button>
+            <button id="btn-denoise" class="ctrl icon-only hidden" title="Suppress background noise" aria-label="Suppress background noise">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="10" y="2" width="4" height="11" rx="2"/><path d="M7 11a5 5 0 0 0 10 0"/><line x1="12" y1="16" x2="12" y2="20"/><path d="M4 8a4 4 0 0 1 0 6"/><path d="M20 8a4 4 0 0 1 0 6"/></svg>
+            </button>
             <button id="btn-share" class="ctrl icon-only hidden" title="Share a screen" aria-label="Share a screen">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="9 8 12 5 15 8"/><line x1="12" y1="5" x2="12" y2="13"/></svg>
             </button>
@@ -1014,6 +1017,7 @@
     <script src="markdown.js"></script>
     <script src="drawing.js"></script>
     <script src="blur-pipeline.js"></script>
+    <script src="denoise-pipeline.js"></script>
     <script src="ics.js"></script>
     <script src="api.js"></script>
     <script src="ai.js"></script>

@@ -89,6 +89,7 @@ const els = {
   btnMic: $('#btn-mic'),
   btnCam: $('#btn-cam'),
   btnBlur: $('#btn-blur'),
+  btnDenoise: $('#btn-denoise'),
   btnShare: $('#btn-share'),
   btnLeave: $('#btn-leave'),
   btnPopoutCall: $('#btn-popout-call'),
@@ -1089,6 +1090,12 @@ async function bootCallPopout(cfg) {
   // doesn't run renderCallHeader so the main-window's
   // BlurPipeline.isAvailable() gate doesn't apply here.
   if (!window.BlurPipeline?.isAvailable()) btnBlur.classList.add('hidden');
+  const btnDenoise = mkIconBtn('popout-btn-denoise', 'denoise', 'Suppress background noise');
+  btnDenoise.disabled = true;
+  // Hide outright if the Web-Audio runtime is somehow missing — the
+  // popout skips renderCallHeader so the main-window availability gate
+  // doesn't apply here (mirrors the blur button above).
+  if (!window.DenoisePipeline?.isAvailable()) btnDenoise.classList.add('hidden');
   const btnShare = mkIconBtn('popout-btn-share', 'screen', 'Share a screen');
   btnShare.disabled = true;
   const btnHand = mkIconBtn('popout-btn-hand', 'hand', 'Raise hand');
@@ -1106,7 +1113,7 @@ async function bootCallPopout(cfg) {
   btnLeave.className = 'ctrl danger';
   btnLeave.title = 'Leave call';
   btnLeave.innerHTML = `${window.HuddleIcons.phoneDown}<span>Leave</span>`;
-  bar.append(btnMic, btnCam, btnBlur, btnShare, btnHand, btnReact, btnLeave);
+  bar.append(btnMic, btnCam, btnBlur, btnDenoise, btnShare, btnHand, btnReact, btnLeave);
   wrap.appendChild(bar);
   wrap.appendChild(reactPopover);
   stage.appendChild(wrap);
@@ -1128,6 +1135,7 @@ async function bootCallPopout(cfg) {
   els.btnMic = btnMic;
   els.btnCam = btnCam;
   els.btnBlur = btnBlur;
+  els.btnDenoise = btnDenoise;
   els.btnShare = btnShare;
   els.btnHand = btnHand;
   els.btnReact = btnReact;
@@ -1163,6 +1171,7 @@ async function bootCallPopout(cfg) {
     setPeerCamOn(state.huddle.peerId, on);
   };
   btnBlur.onclick = toggleBackgroundBlur;
+  btnDenoise.onclick = toggleNoiseSuppression;
   btnShare.onclick = () => { if (state.mesh) openSourcePicker(); };
   state.reactPopoverCleanup?.();
   state.reactPopoverCleanup = wireReactPopover(btnReact, reactPopover);
@@ -1247,6 +1256,7 @@ async function startPopoutCall(channelId) {
   els.btnMic.disabled = false;
   els.btnCam.disabled = false;
   if (els.btnBlur && window.BlurPipeline?.isAvailable()) els.btnBlur.disabled = false;
+  if (els.btnDenoise && window.DenoisePipeline?.isAvailable()) els.btnDenoise.disabled = false;
   if (els.btnShare) els.btnShare.disabled = false;
   if (els.btnHand) els.btnHand.disabled = false;
   if (els.btnReact) els.btnReact.disabled = false;
@@ -1254,10 +1264,13 @@ async function startPopoutCall(channelId) {
   // very first frame peers receive is already blurred — toggling
   // after the fact briefly publishes a sharp frame.
   applyPersistedBlurPreference();
+  // Same for noise suppression — cleaned audio from the first packet.
+  applyPersistedNoiseSuppressionPreference();
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, huddle.name);
     syncBlurButtonState();
+    syncNoiseSuppressionButtonState();
   } catch (err) {
     showCallError('Could not access camera/microphone: ' + (err?.message || err));
   }
@@ -1982,10 +1995,14 @@ async function startCall(channelId) {
   // very first frame peers receive is already blurred — toggling
   // after the fact briefly publishes a sharp frame.
   applyPersistedBlurPreference();
+  // Same rationale for noise suppression: apply the persisted default
+  // before setCamera so the first audio peers hear is already cleaned.
+  applyPersistedNoiseSuppressionPreference();
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, state.huddle.name);
     syncBlurButtonState();
+    syncNoiseSuppressionButtonState();
   } catch (err) {
     console.warn('No camera/mic available', err);
     // The call itself is still alive (signaling + presence work) so
@@ -2808,6 +2825,12 @@ function renderCallHeader() {
   // rather than letting users click into an inevitable failure.
   const blurAvail = !!window.BlurPipeline?.isAvailable();
   els.btnBlur?.classList.toggle('hidden', !inCallHere || !blurAvail);
+  // Noise suppression: same in-call-only gate as blur. The Web-Audio
+  // pipeline has no vendored runtime to miss, so isAvailable() is
+  // effectively always true on desktop — but we still gate on it so a
+  // stripped-down runtime hides the button instead of failing on click.
+  const denoiseAvail = !!window.DenoisePipeline?.isAvailable();
+  els.btnDenoise?.classList.toggle('hidden', !inCallHere || !denoiseAvail);
   els.btnShare.classList.toggle('hidden', !inCallHere);
   els.btnHand?.classList.toggle('hidden', !inCallHere);
   els.btnReact?.classList.toggle('hidden', !inCallHere);
@@ -5409,6 +5432,69 @@ function syncBlurButtonState() {
   els.btnBlur.classList.toggle('active', !!state.mesh?.blurOn);
 }
 
+// ---------------------------------------------------------------------------
+// Noise suppression
+//
+// The audio mirror of the background-blur block above. The call client
+// holds the denoise pipeline + the mic-track swap; the renderer just
+// wires the toggle button and persists the preference. Unlike blur,
+// there's no self-tile stream to re-point — swapping the published mic
+// track doesn't change any local <video>, and remote audio rides
+// LK-managed <audio> elements that follow the publication automatically.
+// We persist via localStorage exactly like the blur preference (a
+// simple client-only on/off default, per CLAUDE.md).
+// ---------------------------------------------------------------------------
+const NOISE_SUPPRESSION_PREF_KEY = 'huddle.noiseSuppression';
+function getNoiseSuppressionPreference() {
+  try { return localStorage.getItem(NOISE_SUPPRESSION_PREF_KEY) === '1'; }
+  catch { return false; }
+}
+function setNoiseSuppressionPreference(on) {
+  try {
+    if (on) localStorage.setItem(NOISE_SUPPRESSION_PREF_KEY, '1');
+    else localStorage.removeItem(NOISE_SUPPRESSION_PREF_KEY);
+  } catch {}
+}
+
+async function toggleNoiseSuppression() {
+  if (!state.mesh) return;
+  if (!window.DenoisePipeline?.isAvailable()) {
+    showToast("Noise suppression isn't available on this device.");
+    return;
+  }
+  const next = !state.mesh.noiseSuppressionOn;
+  if (els.btnDenoise) els.btnDenoise.disabled = true;
+  try {
+    await state.mesh.setNoiseSuppression(next);
+    setNoiseSuppressionPreference(next);
+    syncNoiseSuppressionButtonState();
+    showToast(next ? 'Noise suppression on' : 'Noise suppression off');
+  } catch (err) {
+    console.warn('toggleNoiseSuppression failed', err);
+    showToast('Could not toggle noise suppression: ' + (err?.message || err));
+  } finally {
+    if (els.btnDenoise) els.btnDenoise.disabled = false;
+  }
+}
+
+// Called from startCall / startPopoutCall before setCamera so the
+// pipeline is initialised as part of mic setup. setNoiseSuppression
+// with no live mic just stashes the preference and the next mic
+// publication picks it up.
+function applyPersistedNoiseSuppressionPreference() {
+  if (!state.mesh) return;
+  if (!getNoiseSuppressionPreference()) return;
+  if (!window.DenoisePipeline?.isAvailable()) return;
+  state.mesh.setNoiseSuppression(true).catch((err) => {
+    console.warn('applyPersistedNoiseSuppressionPreference failed', err);
+  });
+}
+
+function syncNoiseSuppressionButtonState() {
+  if (!els.btnDenoise) return;
+  els.btnDenoise.classList.toggle('active', !!state.mesh?.noiseSuppressionOn);
+}
+
 // The mesh swaps the published MediaStream when blur is toggled
 // mid-call (replaceTrack on the senders, new composite locally), so
 // the self-cam tile's <video>.srcObject needs to be re-pointed —
@@ -5791,6 +5877,7 @@ function wireControls() {
     setPeerCamOn(state.huddle.peerId, on);
   };
   els.btnBlur && (els.btnBlur.onclick = toggleBackgroundBlur);
+  els.btnDenoise && (els.btnDenoise.onclick = toggleNoiseSuppression);
   els.btnShare.onclick = openSourcePicker;
   // CC button + the panel's X both toggle captions off so the panel
   // visibility and the capture state stay in sync — otherwise you'd
