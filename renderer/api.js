@@ -577,12 +577,26 @@
         if (!row || row.team_id !== this.team.id) return;
         this._handleRecordingRow(row);
       });
+      // Publish the channel handle BEFORE awaiting the subscribe handshake —
+      // same pattern as the lurker path (watchCallPresence). Otherwise an
+      // unwatchCallRecordings() that races in while we're still inside the
+      // subscribe await would find _recordingChannel === null and have nothing
+      // to tear down; the channel would then leak the moment subscribe resolved.
+      // With the handle stored up front, unwatch can unsubscribe it directly
+      // (and it nulls _recordingChannelId, which we re-check below).
+      this._recordingChannel = ch;
       await new Promise((resolve) => {
         ch.subscribe((s) => {
           if (s === 'SUBSCRIBED' || s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') resolve();
         });
       });
-      this._recordingChannel = ch;
+      // If we were superseded while the handshake was in flight — either an
+      // unwatch (channelId now null) or a watch on a different channel — this
+      // `ch` is orphaned: the live watcher is whatever the newer call stored.
+      // Tear it down so it doesn't leak a subscribed channel in the background.
+      if (this._recordingChannelId !== channelId) {
+        try { await ch.unsubscribe(); } catch {}
+      }
     }
 
     async unwatchCallRecordings() {

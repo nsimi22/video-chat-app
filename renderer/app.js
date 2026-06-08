@@ -369,11 +369,14 @@ const state = {
     forChannelId: null,   // channel the buffer belongs to (for summary post)
     _finalizing: false,   // guards finalizeCallTranscript against re-entry
   },
-  // Transcript snapshotted when a cloud recording is stopped, so the
+  // Transcript snapshots taken when cloud recordings are stopped, so the
   // post-recording Meeting Recap (postMeetingRecap) has the lines even if
-  // captions are torn down before the egress finishes uploading. Null
-  // except in the window between Stop and the recap posting.
-  recordingTranscriptSnapshot: null,
+  // captions are torn down before the egress finishes uploading. Keyed by
+  // recording.id (NOT a single global) so that two recordings stopped in
+  // quick succession can't clobber each other's captured buffer — each recap
+  // reads and deletes its own snapshot. An entry exists only in the window
+  // between that recording's Stop and its recap posting.
+  recordingTranscriptSnapshots: new Map(),
   // Meeting thread: anchored by the "📞 Call started" message posted
   // when startCall runs. Joiners pick the root up via the call-channel
   // 'meeting-root' broadcast or fetchActiveMeetingRoot as a fallback.
@@ -5515,7 +5518,9 @@ function onRecordingState({ recording, previous }) {
   const becameStopping = recording.status === 'stopping'
     && previous?.status !== 'stopping';
   if (becameStopping && isStarter) {
-    state.recordingTranscriptSnapshot = (state.cc.lines || []).slice();
+    // Key by recording.id so two recordings stopped in quick succession can't
+    // clobber each other's captured buffer — each recap reads/deletes its own.
+    state.recordingTranscriptSnapshots.set(recording.id, (state.cc.lines || []).slice());
   }
 
   const becameCompleted = recording.status === 'completed'
@@ -5536,14 +5541,14 @@ async function postMeetingRecap(recording) {
     ? state.meeting.threadRootId
     : null;
 
-  // Transcript-driven recap. Prefer the snapshot captured at Stop time
-  // (onRecordingState) so the recap is intact even if captions were torn
-  // down between Stop and the egress completing; fall back to the live
-  // buffer for the in-call completion path.
-  const buffer = state.recordingTranscriptSnapshot?.length
-    ? state.recordingTranscriptSnapshot
-    : (state.cc.lines || []);
-  state.recordingTranscriptSnapshot = null;
+  // Transcript-driven recap. Prefer this recording's snapshot captured at Stop
+  // time (onRecordingState, keyed by recording.id) so the recap is intact even
+  // if captions were torn down between Stop and the egress completing; fall back
+  // to the live buffer for the in-call completion path. Delete the entry after
+  // reading so the per-recording snapshot doesn't linger in the Map.
+  const snapshot = state.recordingTranscriptSnapshots.get(recording.id);
+  const buffer = snapshot?.length ? snapshot : (state.cc.lines || []);
+  state.recordingTranscriptSnapshots.delete(recording.id);
   const lines = buffer.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
   const ai = state.ai;
   let summary = '';
