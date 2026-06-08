@@ -1264,11 +1264,15 @@ async function startPopoutCall(channelId) {
   // very first frame peers receive is already blurred — toggling
   // after the fact briefly publishes a sharp frame.
   applyPersistedBlurPreference();
-  // Same for noise suppression — cleaned audio from the first packet.
-  applyPersistedNoiseSuppressionPreference();
+  // NOTE: blur stays pre-setCamera here too and likely shares the same
+  // latent ordering issue noise suppression had — follow-up pass.
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, huddle.name);
+    // Engage persisted noise suppression AFTER setCamera so the mic
+    // publication exists and the pipeline actually starts on the live
+    // track (idempotent — early-returns if already on).
+    applyPersistedNoiseSuppressionPreference();
     syncBlurButtonState();
     syncNoiseSuppressionButtonState();
   } catch (err) {
@@ -1995,12 +1999,22 @@ async function startCall(channelId) {
   // very first frame peers receive is already blurred — toggling
   // after the fact briefly publishes a sharp frame.
   applyPersistedBlurPreference();
-  // Same rationale for noise suppression: apply the persisted default
-  // before setCamera so the first audio peers hear is already cleaned.
-  applyPersistedNoiseSuppressionPreference();
+  // NOTE: blur is still applied before setCamera (above). It likely has
+  // the same latent ordering issue noise suppression had — if the blur
+  // pipeline also needs the live publication, applying it pre-setCamera
+  // may only stash the flag. Left as-is for this pass; worth a follow-up
+  // to verify and reorder blur the same way we did noise suppression.
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, state.huddle.name);
+    // Engage the persisted noise-suppression preference AFTER setCamera
+    // resolves: only now does the mic publication exist, so
+    // setNoiseSuppression(true) can clone the live mic track and actually
+    // start the pipeline. Called before setCamera it merely stashed the
+    // flag (audio published raw, button looked active, first user click
+    // no-op'd). setNoiseSuppression is idempotent — it early-returns when
+    // the state already matches — so this won't double-start.
+    applyPersistedNoiseSuppressionPreference();
     syncBlurButtonState();
     syncNoiseSuppressionButtonState();
   } catch (err) {
@@ -5477,10 +5491,13 @@ async function toggleNoiseSuppression() {
   }
 }
 
-// Called from startCall / startPopoutCall before setCamera so the
-// pipeline is initialised as part of mic setup. setNoiseSuppression
-// with no live mic just stashes the preference and the next mic
-// publication picks it up.
+// Called from startCall / startPopoutCall AFTER setCamera resolves, so
+// the mic publication already exists and setNoiseSuppression(true) can
+// clone the live mic track and start the pipeline. (Calling it before
+// setCamera only stashed the preference — no publication to act on yet —
+// which left audio published raw while the button showed active and made
+// the first user toggle a no-op.) Safe to call unconditionally: it bails
+// when the pref is off and setNoiseSuppression is idempotent.
 function applyPersistedNoiseSuppressionPreference() {
   if (!state.mesh) return;
   if (!getNoiseSuppressionPreference()) return;

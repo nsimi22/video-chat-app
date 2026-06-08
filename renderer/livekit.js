@@ -482,6 +482,23 @@
           } catch (err) {
             console.warn('[livekit] replaceTrack(raw mic) failed', err);
           }
+        } else {
+          // Dead-mic guard: our long-lived raw clone is gone or ended
+          // (e.g. the device was unplugged/re-enumerated, or the OS ended
+          // the track mid-call). We can't replaceTrack it back, and the
+          // current publication holds the soon-to-be-stopped *cleaned*
+          // track — so if we just stop the pipeline below, the mic goes
+          // silent for the rest of the call. Re-acquire a fresh live mic
+          // through LK instead: setMicrophoneEnabled(true) republishes a
+          // brand-new capture track on the existing publication.
+          try {
+            await this.room.localParticipant.setMicrophoneEnabled(true);
+          } catch (err) {
+            console.warn('[livekit] re-acquire mic after dead raw track failed', err);
+          }
+          // Drop the dead clone so a later toggle-on re-snapshots from
+          // the freshly-published track rather than reusing the corpse.
+          this._rawMicTrack = null;
         }
         if (this._denoisePipeline) {
           try { this._denoisePipeline.stop(); } catch {}

@@ -25,11 +25,24 @@ class NoiseGateProcessor extends AudioWorkletProcessor {
     // 48 kHz; they degrade gracefully at other rates (slightly
     // faster/slower envelopes) so we don't bother rescaling by
     // sampleRate. envAttack/Release shape the signal follower;
-    // floorRate is deliberately glacial so a held note doesn't get
-    // mistaken for noise. gainAttack/Release shape the gain ramp.
+    // gainAttack/Release shape the gain ramp.
     this._envAttack = 0.01;
     this._envRelease = 0.0008;
-    this._floorRate = 0.0004;
+    // floorRate is the per-SAMPLE one-pole coefficient for the
+    // noise-floor follower. For a one-pole smoother `y += (x-y)*k` the
+    // time constant is tau = 1 / (k * fs). The previous value 0.0004 at
+    // 48 kHz gave tau = 1/(0.0004*48000) ~= 52 ms, so the floor caught
+    // up to active speech within ~100-200 ms and the gate threshold
+    // (floor * OPEN_MARGIN) climbed to meet the speech envelope —
+    // closing the gate mid-sentence and muting the speaker. We want the
+    // floor to be GLACIAL: it should learn steady room tone over several
+    // seconds but never react fast enough to chase a held note upward.
+    //   target tau ~= 6 s  ->  k = 1 / (tau * fs)
+    //                          = 1 / (6 * 48000) ~= 3.47e-6
+    // Rounded to 0.000003 (tau ~= 6.9 s @ 48 kHz). The follower updates
+    // once per input SAMPLE inside process() (not once per block), so
+    // this per-sample coefficient needs no per-quantum rescaling.
+    this._floorRate = 0.000003;
     this._gainAttack = 0.02;   // open quickly when speech starts
     this._gainRelease = 0.002; // close gently when it stops
   }

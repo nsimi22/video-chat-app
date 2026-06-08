@@ -71,10 +71,25 @@
       // Lock the graph to the capture sample rate where the track
       // exposes it, so MediaStreamAudioSourceNode doesn't resample on
       // the way in (a needless quality hit + a few ms of latency).
+      // Some devices report a sampleRate the AudioContext can't honour —
+      // virtual/aggregate devices and certain Chromium builds throw
+      // NotSupportedError when the requested rate isn't one the audio
+      // backend can open. In that case fall back to the default-rate
+      // context (which resamples) rather than failing the whole feature;
+      // a working denoiser at the wrong rate beats no denoiser at all.
       const settings = audioTrack.getSettings?.() || {};
-      const ctx = settings.sampleRate
-        ? new AudioContext({ sampleRate: settings.sampleRate })
-        : new AudioContext();
+      let ctx;
+      if (settings.sampleRate) {
+        try {
+          ctx = new AudioContext({ sampleRate: settings.sampleRate });
+        } catch (err) {
+          console.warn('[denoise] AudioContext @', settings.sampleRate,
+            'Hz unsupported, using default rate', err);
+          ctx = new AudioContext();
+        }
+      } else {
+        ctx = new AudioContext();
+      }
       this._ctx = ctx;
 
       // Register the noise-gate worklet from its same-origin module file
