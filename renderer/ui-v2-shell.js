@@ -342,7 +342,7 @@
     const leaveBtn = document.getElementById('btn-leave');
     if (!stage || !leaveBtn || document.querySelector('.huddle-call-dock')) return;
 
-    const dockIds = ['btn-mic', 'btn-cam', 'btn-blur', 'btn-share', 'btn-hand', 'btn-react', 'btn-cc', 'btn-leave'];
+    const dockIds = ['btn-mic', 'btn-cam', 'btn-blur', 'btn-share', 'btn-hand', 'btn-record', 'btn-react', 'btn-cc', 'btn-leave'];
     // Short labels rendered under each icon-only button per design
     // (CallControl widgets are icon-over-label). Map by id rather than
     // reusing each button's verbose `title` attr ("Toggle microphone"
@@ -354,6 +354,7 @@
       'btn-blur': 'Blur',
       'btn-share': 'Share',
       'btn-hand': 'Raise',
+      'btn-record': 'Record',
       'btn-react': 'React',
       'btn-cc': 'Captions',
     };

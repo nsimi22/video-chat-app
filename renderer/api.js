@@ -138,6 +138,15 @@
       // ready-promises wrapping the RealtimeChannel.
       this._lurkers = new Map();
       this._lurkerCounts = new Map(); // channel.id -> last seen count
+      // Cloud call recording. _recordingChannel is a postgres_changes
+      // subscription on public.call_recordings scoped to the active call's
+      // channel; it drives the shared "● Recording" indicator (every
+      // participant sees the same state) and lets the renderer react when a
+      // recording completes (post the Meeting Recap). _activeRecording is
+      // the latest row we've seen for the watched channel, or null.
+      this._recordingChannel = null;
+      this._recordingChannelId = null;
+      this._activeRecording = null;
     }
 
     async start() {
@@ -417,6 +426,10 @@
       ]);
       this._screenChannels.clear();
       this.remoteScreenLabels.clear();
+      // Drop the recording watcher too — the indicator is call-scoped.
+      // (App-level leaveCall re-establishes a watcher for the channel the
+      // user keeps viewing as a lurker, if it wants one.)
+      await this.unwatchCallRecordings();
       this.dispatchEvent(new CustomEvent('call-left', { detail: { channelId: wasIn } }));
     }
 
@@ -506,6 +519,125 @@
     // imperative reads (welcome payload + tile grid bootstrapping).
     get callPeerInfo() { return this._callPeerInfo; }
     get inCallChannelId() { return this._callChannelId; }
+
+    // --- Cloud call recording -------------------------------------------
+    //
+    // Recording is a server-side LiveKit egress (the renderer never touches
+    // LiveKit directly). The recording-egress Edge Function — gated by the
+    // same can_see_channel membership check as livekit-token — starts/stops
+    // the egress and owns every write to public.call_recordings (clients
+    // have SELECT only). The renderer's job is: (1) ask the function to
+    // start/stop, and (2) watch the table over realtime so EVERY participant
+    // sees the same "● Recording" state and the recording-row can drive the
+    // post-call recap.
+
+    // Latest call_recordings row we've seen for the watched channel, or null.
+    get activeRecording() { return this._activeRecording; }
+    // True when an egress is in-flight (starting/recording/stopping) for the
+    // channel currently being watched — what the Record button reflects.
+    isRecordingActive() {
+      const s = this._activeRecording?.status;
+      return s === 'starting' || s === 'recording' || s === 'stopping';
+    }
+
+    // Subscribe to call_recordings changes for `channelId` so the shared
+    // indicator stays live for all participants. Idempotent per channel.
+    // RLS scopes the rows to channel members, but we still filter by
+    // team_id+channel_id server-side to avoid waking on unrelated calls.
+    async watchCallRecordings(channelId) {
+      if (this._recordingChannelId === channelId && this._recordingChannel) return;
+      await this.unwatchCallRecordings();
+      this._recordingChannelId = channelId;
+      // Seed current state with a one-shot read so a participant who joins
+      // AFTER recording started still sees the indicator immediately
+      // (postgres_changes only delivers events from subscribe-time onward).
+      try {
+        const { data } = await this.supabase
+          .from('call_recordings')
+          .select('*')
+          .eq('team_id', this.team.id)
+          .eq('channel_id', channelId)
+          .in('status', ['starting', 'recording', 'stopping'])
+          .order('started_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (this._recordingChannelId === channelId && data) this._handleRecordingRow(data);
+      } catch (err) {
+        console.warn('[recording] initial fetch failed', err);
+      }
+      const ch = this.supabase.channel(`recordings:${this.team.id}:${channelId}`, {
+        config: { broadcast: { self: false } },
+      });
+      ch.on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'call_recordings',
+        filter: `channel_id=eq.${channelId}`,
+      }, ({ new: row }) => {
+        if (!row || row.team_id !== this.team.id) return;
+        this._handleRecordingRow(row);
+      });
+      await new Promise((resolve) => {
+        ch.subscribe((s) => {
+          if (s === 'SUBSCRIBED' || s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') resolve();
+        });
+      });
+      this._recordingChannel = ch;
+    }
+
+    async unwatchCallRecordings() {
+      const ch = this._recordingChannel;
+      this._recordingChannel = null;
+      this._recordingChannelId = null;
+      this._activeRecording = null;
+      if (ch) { try { await ch.unsubscribe(); } catch {} }
+    }
+
+    // Normalise a row into _activeRecording + emit a single
+    // 'recording-state' event the renderer listens on. We keep the most
+    // recent row by started_at so a stale UPDATE on an old (completed) row
+    // can't clobber the live one. 'completed' is surfaced too so the
+    // renderer can post the Meeting Recap exactly once.
+    _handleRecordingRow(row) {
+      const prev = this._activeRecording;
+      const prevTs = prev ? Date.parse(prev.started_at || 0) : -1;
+      const rowTs = Date.parse(row.started_at || 0);
+      // Always accept a newer row; for the same row accept any update.
+      if (prev && prev.id !== row.id && rowTs < prevTs) return;
+      this._activeRecording = row;
+      this.dispatchEvent(new CustomEvent('recording-state', {
+        detail: { recording: row, previous: prev },
+      }));
+    }
+
+    // Ask the edge function to start the egress. Returns the recording row
+    // (existing one if a recording was already active). Throws on failure so
+    // the renderer can surface a toast.
+    async startRecording(channelId) {
+      const { data, error } = await this.supabase.functions.invoke('recording-egress', {
+        body: { action: 'start', team_id: this.team.id, channel_id: channelId },
+      });
+      if (error) throw new Error(`recording start failed: ${error.message || error}`);
+      if (data?.recording) this._handleRecordingRow(data.recording);
+      return data?.recording || null;
+    }
+
+    async stopRecording(channelId) {
+      const { data, error } = await this.supabase.functions.invoke('recording-egress', {
+        body: { action: 'stop', team_id: this.team.id, channel_id: channelId },
+      });
+      if (error) throw new Error(`recording stop failed: ${error.message || error}`);
+      if (data?.recording) this._handleRecordingRow(data.recording);
+      return data?.recording || null;
+    }
+
+    // Public URL for a finished recording's MP4 (storage_path -> uploads
+    // bucket public URL). Null when the file hasn't landed yet.
+    recordingPublicUrl(storagePath) {
+      if (!storagePath) return null;
+      const { data } = this.supabase.storage.from('uploads').getPublicUrl(storagePath);
+      return data?.publicUrl || null;
+    }
 
     // --- Team channel: presence + signaling + typing + announcements -----
 

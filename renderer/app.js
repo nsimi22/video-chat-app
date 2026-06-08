@@ -95,6 +95,7 @@ const els = {
   btnLayout: $('#btn-layout'),
   btnFullscreen: $('#btn-fullscreen'),
   btnHand: $('#btn-hand'),
+  btnRecord: $('#btn-record'),
   btnReact: $('#btn-react'),
   reactPopover: $('#react-popover'),
   pinnedBtn: $('#pinned-btn'),
@@ -368,6 +369,11 @@ const state = {
     forChannelId: null,   // channel the buffer belongs to (for summary post)
     _finalizing: false,   // guards finalizeCallTranscript against re-entry
   },
+  // Transcript snapshotted when a cloud recording is stopped, so the
+  // post-recording Meeting Recap (postMeetingRecap) has the lines even if
+  // captions are torn down before the egress finishes uploading. Null
+  // except in the window between Stop and the recap posting.
+  recordingTranscriptSnapshot: null,
   // Meeting thread: anchored by the "📞 Call started" message posted
   // when startCall runs. Joiners pick the root up via the call-channel
   // 'meeting-root' broadcast or fetchActiveMeetingRoot as a fallback.
@@ -1817,6 +1823,9 @@ async function joinTeamAndStart(teamId) {
   huddle.addEventListener('chat-channel-removed', (e) => onChannelRemoved(e.detail.channelId));
   huddle.addEventListener('chat-channel-updated', (e) => onChannelUpdated(e.detail));
   huddle.addEventListener('call-presence', (e) => onCallPresence(e.detail));
+  // Shared call-recording state (the call_recordings realtime row). Drives
+  // the Record button for every participant and triggers the Meeting Recap.
+  huddle.addEventListener('recording-state', (e) => onRecordingState(e.detail));
   huddle.addEventListener('saved-message-added', (e) => onSavedMessageChange('add', e.detail.save));
   huddle.addEventListener('saved-message-updated', (e) => onSavedMessageChange('update', e.detail.save));
   huddle.addEventListener('saved-message-removed', (e) => onSavedMessageChange('remove', { messageId: e.detail.messageId }));
@@ -1969,6 +1978,12 @@ async function startCall(channelId) {
   // (state.cc.manager) is independent; CC button still controls
   // whether THIS peer transcribes.
   bindCallCaptionsListener();
+  // Watch call_recordings for this channel so the Record button reflects
+  // the shared recording state (a recording another participant already
+  // started shows as active here too) and so we can post the recap when it
+  // finishes. Fire-and-forget — the call is usable before the watcher
+  // subscribes, and onRecordingState repaints the button when it lands.
+  state.huddle?.watchCallRecordings(channelId).catch((err) => console.warn('[recording] watch failed', err));
   // Avatar stack switches from channel-roster to in-call-participants
   // now that a call is live here. peer-joined hooks keep it in sync
   // as participants arrive; this initial paint covers the bootstrap.
@@ -2575,6 +2590,15 @@ function finalizeCallTranscript() {
   // freshly-accumulating buffer.
   if (state.cc._finalizing) { console.log('[recap] skip: finalize already in flight'); return; }
   if (!state.cc.on && state.cc.lines.length === 0) { console.log('[recap] skip: captions off and no buffered lines'); return; }
+  // If this call was being recorded, the post-recording Meeting Recap
+  // (postMeetingRecap, fired from onRecordingState when the egress
+  // completes) already folds the transcript summary in alongside the
+  // recording link. Skip the standalone transcript-only "📞 Call recap"
+  // so the channel doesn't get two near-identical summaries.
+  if (state.huddle?.isRecordingActive()) {
+    console.log('[recap] skip: recording active — Meeting Recap will cover it');
+    return;
+  }
   state.cc._finalizing = true;
 
   // Snapshot + reset shared state synchronously so a follow-up
@@ -2810,6 +2834,10 @@ function renderCallHeader() {
   els.btnBlur?.classList.toggle('hidden', !inCallHere || !blurAvail);
   els.btnShare.classList.toggle('hidden', !inCallHere);
   els.btnHand?.classList.toggle('hidden', !inCallHere);
+  // Recording toggle: in-call only. Reflects the shared recording state
+  // (active for everyone, not just the starter) via syncRecordButtonState.
+  els.btnRecord?.classList.toggle('hidden', !inCallHere);
+  if (inCallHere) syncRecordButtonState();
   els.btnReact?.classList.toggle('hidden', !inCallHere);
   if (!inCallHere) els.reactPopover?.classList.add('hidden');
   els.btnJira.classList.toggle('hidden', !inCallHere);
@@ -5419,6 +5447,136 @@ function onLocalCameraStreamChanged({ stream }) {
   if (video) video.srcObject = stream;
 }
 
+// ---------------------------------------------------------------------------
+// Cloud call recording
+//
+// The server (LiveKit egress, via the recording-egress Edge Function) owns
+// the actual recording; the renderer toggles it and reflects the SHARED
+// state. The call_recordings realtime subscription (huddle.watchCallRecordings)
+// fires 'recording-state' on the huddle whenever the row changes, so every
+// participant — not just the starter — sees the same "● Recording" button +
+// banner. When a recording completes, the starter posts the Meeting Recap.
+// ---------------------------------------------------------------------------
+
+async function toggleRecording() {
+  if (!state.mesh || !state.huddle) return;
+  const channelId = state.inCallChannelId;
+  if (!channelId) return;
+  const active = state.huddle.isRecordingActive();
+  if (els.btnRecord) els.btnRecord.disabled = true;
+  try {
+    if (active) {
+      await state.huddle.stopRecording(channelId);
+      showToast('Stopping recording…');
+    } else {
+      await state.huddle.startRecording(channelId);
+      showToast('Recording started — everyone in the call is notified.');
+    }
+  } catch (err) {
+    console.warn('toggleRecording failed', err);
+    showToast('Could not toggle recording: ' + (err?.message || err));
+  } finally {
+    if (els.btnRecord) els.btnRecord.disabled = false;
+    syncRecordButtonState();
+  }
+}
+
+// Paint the Record button from the shared recording state. 'starting' and
+// 'stopping' are transient — show the button as active/pending so a second
+// click doesn't race a duplicate start/stop.
+function syncRecordButtonState() {
+  if (!els.btnRecord) return;
+  const active = !!state.huddle?.isRecordingActive();
+  els.btnRecord.classList.toggle('active', active);
+  els.btnRecord.setAttribute('aria-pressed', active ? 'true' : 'false');
+  els.btnRecord.title = active ? 'Stop recording this call' : 'Record this call';
+}
+
+// React to call_recordings changes. Keeps the button in sync for everyone
+// and, on completion, lets the recording starter post the Meeting Recap so
+// the link + AI summary land exactly once in the channel.
+function onRecordingState({ recording, previous }) {
+  // Only care about the channel we're actually in.
+  if (!state.inCallChannelId || recording?.channel_id !== state.inCallChannelId) {
+    syncRecordButtonState();
+    return;
+  }
+  syncRecordButtonState();
+
+  // The recording's starter is the single recap poster (avoids N duplicate
+  // recaps in an N-person call). started_by is the auth user id, which
+  // equals huddle.peerId for the local user.
+  const isStarter = recording.started_by === state.huddle?.peerId;
+
+  // Snapshot the transcript the moment Stop is clicked (status -> stopping).
+  // The egress takes a few seconds to finalise the MP4; by capturing the
+  // buffer now we guarantee the recap has the transcript even if captions
+  // get torn down before the 'completed' event arrives.
+  const becameStopping = recording.status === 'stopping'
+    && previous?.status !== 'stopping';
+  if (becameStopping && isStarter) {
+    state.recordingTranscriptSnapshot = (state.cc.lines || []).slice();
+  }
+
+  const becameCompleted = recording.status === 'completed'
+    && previous?.id === recording.id && previous?.status !== 'completed';
+  if (becameCompleted && isStarter) {
+    postMeetingRecap(recording).catch((err) => console.warn('[recap] post failed', err));
+  }
+}
+
+// Build + post the "Meeting Recap" message for a finished recording. Reuses
+// the call's transcript buffer (state.cc.lines) and the configured AI client
+// — the same pipeline finalizeCallTranscript uses — then prepends the
+// recording download link. Posts under the meeting thread when one exists.
+async function postMeetingRecap(recording) {
+  const channelId = recording.channel_id;
+  const link = state.huddle?.recordingPublicUrl(recording.storage_path);
+  const meetingThreadId = state.meeting?.threadRootChannelId === channelId
+    ? state.meeting.threadRootId
+    : null;
+
+  // Transcript-driven recap. Prefer the snapshot captured at Stop time
+  // (onRecordingState) so the recap is intact even if captions were torn
+  // down between Stop and the egress completing; fall back to the live
+  // buffer for the in-call completion path.
+  const buffer = state.recordingTranscriptSnapshot?.length
+    ? state.recordingTranscriptSnapshot
+    : (state.cc.lines || []);
+  state.recordingTranscriptSnapshot = null;
+  const lines = buffer.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  const ai = state.ai;
+  let summary = '';
+  if (ai?.isConfigured() && lines.length) {
+    const transcript = lines.map((l) => `${l.fromName || 'someone'}: ${l.text}`).join('\n');
+    const system = "You are summarising a recorded team call. Produce a concise meeting recap (under 200 words) in markdown: 2-3 bullets of key points, then a 'Decisions' section if any were made, then 'Action items' (with owners if you can infer them). The transcript is rough speech-to-text — fix obvious recognition errors silently and don't quote raw lines.";
+    try {
+      const result = await ai.chat({ system, messages: [{ role: 'user', content: transcript }] });
+      summary = result.text || '';
+    } catch (err) {
+      console.warn('[recap] AI summarise failed', err);
+    }
+  }
+
+  const parts = ['**🎥 Meeting Recap**', ''];
+  if (link) parts.push(`📼 [Recording](${link})`, '');
+  else parts.push('_Recording is still processing — the link will be available shortly._', '');
+  if (summary) parts.push(summary);
+  else if (!lines.length) parts.push('_No transcript was captured (turn on captions during the call for an AI recap)._');
+  const body = parts.join('\n');
+
+  try {
+    await state.huddle?.sendAiMessage({
+      channelId,
+      parentId: meetingThreadId || null,
+      text: body,
+      model: ai?.defaultModel,
+    });
+  } catch (err) {
+    console.warn('[recap] failed to POST Meeting Recap message', err);
+  }
+}
+
 // Cross-client identifier for a screen share. Mesh peers see the same
 // MediaStream.id on both sender + receiver because the stream propagates
 // over a PeerConnection, so stream.id works as the "share id" used for
@@ -5846,6 +6004,7 @@ function wireControls() {
     };
   }
   if (els.btnHand) els.btnHand.onclick = toggleSelfHand;
+  if (els.btnRecord) els.btnRecord.onclick = toggleRecording;
   if (els.pinnedBtn) els.pinnedBtn.onclick = () => state.chat?.openPinnedDrawer();
   if (els.pinnedClose) els.pinnedClose.onclick = closePinnedDrawer;
   if (els.openSaved) els.openSaved.onclick = openSavedDrawer;

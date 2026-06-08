@@ -2130,6 +2130,23 @@ body.has-fullscreen-tile { overflow: hidden; }
   color: white;
 }
 
+/* Record toggle: when a cloud recording is active (for ANY participant —
+   the state is shared via the call_recordings subscription) the button
+   glows red and its centre dot pulses, mirroring the familiar "REC"
+   indicator. The state is reflected, not owned, by this client. */
+#btn-record.active {
+  background: #e0245e;
+  color: white;
+  border-color: #e0245e;
+}
+#btn-record.active svg circle:last-child {
+  animation: rec-pulse 1.4s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 /* Chat — chat now lives inside .stage. The standalone column was
    removed when stage and chat merged. */
 .messages {
@@ -6434,6 +6451,10 @@ body.popout-call .popout-stage > .draw-toolbar {
 }
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock #btn-cc.active .huddle-call-dock-label {
   color: var(--bg-0);
+}
+/* Recording: red label to match the red active button (see #btn-record.active). */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock #btn-record.active .huddle-call-dock-label {
+  color: #fff;
 }
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .huddle-call-dock .ctrl.muted {
   background: var(--danger);
