@@ -10,10 +10,15 @@
 
 (function () {
   class ProfileCard {
-    constructor({ huddle, onMessage, onEditProfile }) {
+    constructor({ huddle, onMessage, onEditProfile, onKnock }) {
       this.huddle = huddle;
       this.onMessage = onMessage;
       this.onEditProfile = onEditProfile;
+      // Knock-to-huddle: fired when the user clicks "Knock" on a present
+      // teammate's card. The host (app.js) ensures the DM and sends the
+      // knock signal. Optional so the card degrades gracefully if a host
+      // doesn't wire it.
+      this.onKnock = onKnock;
       this.el = document.createElement('div');
       this.el.className = 'profile-card hidden';
       this.el.setAttribute('role', 'dialog');
@@ -94,6 +99,12 @@
       const labels = window.HUDDLE_PRESENCE_LABELS || {};
       const statusLabel = status ? (labels[status] || status) : 'Offline';
       const statusClass = status ? `status-${status}` : 'status-offline';
+      // Knock-to-huddle is only offered for a teammate (not self) who is
+      // present AND currently "Available" — knocking someone who's away /
+      // brb / unavailable / offline would just ring into the void. The
+      // host (app.js) only wires onKnock when the call client exists, so
+      // also hide the button if no handler is attached.
+      const canKnock = !isSelf && !!this.onKnock && status === 'active';
       const avatarHtml = p.avatar_url
         ? `<img class="profile-card-avatar" src="${escapeAttr(p.avatar_url)}" alt="">`
         : `<div class="profile-card-avatar fallback" style="background:${escapeAttr(p.color || '#888')}">${escapeText(initial)}</div>`;
@@ -113,7 +124,8 @@
         <div class="profile-card-actions">
           ${isSelf
             ? `<button class="profile-card-btn primary" data-act="edit">Edit profile</button>`
-            : `<button class="profile-card-btn primary" data-act="message">Message</button>`}
+            : `<button class="profile-card-btn" data-act="message">Message</button>
+               ${canKnock ? `<button class="profile-card-btn primary" data-act="knock" title="Start a huddle now">Knock 👋</button>` : ''}`}
         </div>
       `;
       this.el.querySelector('[data-act="message"]')?.addEventListener('click', () => {
@@ -123,6 +135,14 @@
         // when two teammates share a name.
         this.hide();
         this.onMessage?.(p);
+      });
+      this.el.querySelector('[data-act="knock"]')?.addEventListener('click', () => {
+        // Knock-to-huddle: hand the host the full profile (user_id +
+        // name + avatar) so it can ensure the DM and ring the teammate.
+        // Only rendered when `canKnock` (teammate is present + Available),
+        // so the host can assume the target is reachable.
+        this.hide();
+        this.onKnock?.(p);
       });
       this.el.querySelector('[data-act="edit"]')?.addEventListener('click', () => {
         this.hide();

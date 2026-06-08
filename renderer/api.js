@@ -121,6 +121,7 @@
       this.peerMediaState = new Map(); // peerId -> { micOn, camOn }
       this.url = _config.url;
       this._teamChannel = null;
+      this._knockChannel = null;            // private knock:<peerId> receive topic
       this._screenChannels = new Map();     // streamId -> RealtimeChannel
       this._whiteboardChannels = new Map(); // whiteboardId -> RealtimeChannel
       this._dbChannel = null;               // postgres_changes subscription
@@ -155,6 +156,10 @@
       // `welcome` event mirroring the old server's behaviour so the rest of
       // the renderer can boot exactly the same way.
       await this._joinTeamChannel();
+      // Knock signaling is an enhancement on top of core chat/presence, so a
+      // failure to subscribe to our private knock topic must not block boot —
+      // log and continue. Worst case the user can't receive knocks this session.
+      await this._joinKnockChannel().catch((err) => console.warn('[knock] subscribe failed', err));
       await this._subscribeToMessages();
       await this._loadInitialChannels();
       await this._loadRoster();
@@ -206,7 +211,7 @@
         document.removeEventListener('visibilitychange', this._onVisibilityChange);
         this._onVisibilityChange = null;
       }
-      const direct = [this._teamChannel, this._dbChannel, this._callChannel];
+      const direct = [this._teamChannel, this._knockChannel, this._dbChannel, this._callChannel];
       // Screen + whiteboard maps still store raw promise<RealtimeChannel>;
       // _lurkers values are now {channel, ready} pairs.
       const indirectPromises = [...this._screenChannels.values(), ...this._whiteboardChannels.values()];
@@ -218,6 +223,7 @@
         .concat(lurkerChannels.map((ch) => Promise.resolve().then(() => ch.unsubscribe()).catch(() => {})));
       await Promise.allSettled(work);
       this._teamChannel = null;
+      this._knockChannel = null;
       this._dbChannel = null;
       this._callChannel = null;
       this._callChannelId = null;
@@ -752,6 +758,62 @@
       });
     }
 
+    // --- Knock-to-huddle signaling (receive) ----------------------------
+    //
+    // A "knock" is a lightweight, Slack-Huddle-style call invite. It used to
+    // ride the shared team channel as a directed broadcast filtered client-side
+    // by a `to` field, but that let any team member forge a knock's `from` and
+    // ring-bomb arbitrary targets (the team topic's realtime write policy only
+    // checks team membership). Knocks now flow through the `knock-signal` edge
+    // function, which authenticates the sender, checks both parties share a
+    // team, stamps a TRUSTED server-side `from`, and relays onto a per-recipient
+    // private topic `knock:<user_id>` using the service role. The companion RLS
+    // migration forbids any client from writing `knock:*`, so the only way a
+    // message lands here is via that trusted server path — no spoofing possible.
+    //
+    // The receive side stays a plain subscription on our own knock topic; we no
+    // longer need a `to` filter because the topic itself is private to us (read
+    // RLS gates `knock:<id>` to the user whose id == <id>). There's no DB row:
+    // a knock is ephemeral (auto-expires in ~30s), so a broadcast is the right
+    // primitive. The renderer drives the caller-side "knocking…" UI locally.
+    //
+    // Three events flow through:
+    //   knock          caller → callee   "join my huddle?"
+    //   knock-response callee → caller   accept / decline
+    //   knock-cancel   caller → callee   caller bailed before an answer
+    async _joinKnockChannel() {
+      const topic = `knock:${this.peerId}`;
+      const ch = this.supabase.channel(topic, {
+        // Receive-only and private: we never .send() on this channel (sends go
+        // through the edge function), and `private: true` makes Realtime apply
+        // the RLS that scopes the topic to us.
+        config: { broadcast: { self: false, ack: false }, private: true },
+      });
+      this._knockChannel = ch;
+
+      // The server already addressed this topic to us, so every event here is
+      // ours — we re-dispatch each as the same CustomEvent the renderer's knock
+      // state machine already listens for, keeping app.js untouched.
+      ch.on('broadcast', { event: 'knock' }, ({ payload }) => {
+        this.dispatchEvent(new CustomEvent('knock', { detail: payload }));
+      });
+      ch.on('broadcast', { event: 'knock-response' }, ({ payload }) => {
+        this.dispatchEvent(new CustomEvent('knock-response', { detail: payload }));
+      });
+      ch.on('broadcast', { event: 'knock-cancel' }, ({ payload }) => {
+        this.dispatchEvent(new CustomEvent('knock-cancel', { detail: payload }));
+      });
+
+      await new Promise((resolve, reject) => {
+        ch.subscribe((status, err) => {
+          if (status === 'SUBSCRIBED') resolve();
+          else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            reject(err || new Error('realtime ' + status));
+          }
+        });
+      });
+    }
+
     // --- Postgres changes: live chat messages, channel additions ---------
 
     async _subscribeToMessages() {
@@ -1065,6 +1127,50 @@
         type: 'broadcast', event: 'typing',
         payload: { from: this.peerId, fromName: this.name, channelId, parentId: parentId || null },
       });
+    }
+
+    // --- Knock-to-huddle (outgoing) -------------------------------------
+    //
+    // All three now route through the `knock-signal` edge function instead of
+    // a direct client broadcast. The function authenticates us, verifies the
+    // target is a genuine teammate, stamps a TRUSTED server-side `from` (so a
+    // forged `from` is impossible), and relays onto the recipient's private
+    // `knock:<to>` topic with the service role — the one path RLS permits to
+    // write a knock. We deliberately send NO identity fields (no `from`,
+    // `fromName`, `fromColor`): the server stamps them, and the receiver
+    // anyway renders caller identity from its own trusted presence cache
+    // (peerInfo, see onIncomingKnock in app.js). A `knockId` ties a knock to
+    // its eventual response/cancel so the UI can ignore stale signals; the
+    // shared DM `channelId` lets the callee join the same call on accept.
+    //
+    // These are fire-and-forget like the old broadcasts — the renderer drives
+    // its UI optimistically and doesn't await delivery — but we surface invoke
+    // errors to the console so a misconfigured deploy is debuggable.
+    _invokeKnock(type, args) {
+      return this.supabase.functions
+        .invoke('knock-signal', { body: { type, team_id: this.team.id, ...args } })
+        .then(({ error }) => {
+          if (error) console.warn(`[knock] ${type} failed`, error.message || error);
+        })
+        .catch((err) => console.warn(`[knock] ${type} threw`, err));
+    }
+
+    // Invite `to` (user id) to a huddle on the shared DM `channelId`.
+    sendKnock({ to, knockId, channelId }) {
+      this._invokeKnock('knock', { to, knock_id: knockId, channel_id: channelId });
+    }
+
+    // Recipient's answer. `accepted` true → both sides join the call;
+    // false → the caller sees a "declined" toast and stops ringing.
+    sendKnockResponse({ to, knockId, channelId, accepted }) {
+      this._invokeKnock('knock-response', { to, knock_id: knockId, channel_id: channelId, accepted: !!accepted });
+    }
+
+    // Caller gave up before an answer (clicked Cancel, or the 30s
+    // timeout fired). Lets the recipient dismiss the knock card so it
+    // doesn't linger as a phantom invite.
+    sendKnockCancel({ to, knockId, channelId }) {
+      this._invokeKnock('knock-cancel', { to, knock_id: knockId, channel_id: channelId });
     }
 
     // Drawing strokes ride on a per-screen private channel so peers who
