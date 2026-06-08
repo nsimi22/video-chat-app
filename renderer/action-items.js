@@ -3,8 +3,8 @@
 // The AI recap (/summarize and the post-call recap) is asked to append a
 // machine-readable, fenced ```action-items block to its output — one JSON
 // object per line: {"text": "...", "owner": "..."}. (See
-// ACTION_ITEMS_PROMPT below; the summarizer in ai.js embeds an equivalent
-// string, and app.js's recap path appends window.ACTION_ITEMS_PROMPT.)
+// ACTION_ITEMS_PROMPT below; both ai.js's summarizer and app.js's recap
+// path append window.ACTION_ITEMS_PROMPT, so this is the single source.)
 //
 // This module does two things:
 //   1. parseActionItems(text) — pull that fenced block out of an AI message
@@ -24,8 +24,9 @@
   'use strict';
 
   // The instruction block we append to recap/summarize system prompts. Kept
-  // here (and mirrored in ai.js's ACTION_ITEMS_SUMMARIZE_PROMPT) so the
-  // expected shape lives next to the parser that consumes it.
+  // here — next to the parser that consumes it — and exported as
+  // window.ACTION_ITEMS_PROMPT so ai.js's summarizer and app.js's recap
+  // path both reference this one definition rather than duplicating it.
   const ACTION_ITEMS_PROMPT = [
     'After the recap, IF AND ONLY IF there are action items, append a fenced',
     'code block tagged `action-items` containing one JSON object per line, e.g.:',

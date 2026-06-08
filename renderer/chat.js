@@ -696,6 +696,12 @@ class ChatView {
     if (!this.els?.composer) return;
     this.els.composer.value = text || '';
     this._autoResizeComposer();
+    // A programmatic `.value =` doesn't fire the composer's `input`
+    // listener, so the per-channel draft is never persisted — switch
+    // channels and the seeded text (e.g. a `/gh issue …` command) is
+    // silently lost. Mirror what the input handler does and schedule
+    // the same debounced draft save so the prefill survives a switch.
+    if (this.currentChannel) this._scheduleDraftSave(this.currentChannel, this.els.composer.value);
     this.els.composer.focus();
     try {
       const end = this.els.composer.value.length;

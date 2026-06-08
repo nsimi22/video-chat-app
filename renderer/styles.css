@@ -887,7 +887,7 @@ input:focus, textarea:focus {
   display: flex; flex-direction: column; gap: 2px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--line);
-  border-left: 3px solid var(--accent-2);
+  border-left: 3px solid var(--accent);
   padding: 8px 10px;
   border-radius: var(--r-sm);
   margin-top: 6px;
@@ -928,7 +928,7 @@ input:focus, textarea:focus {
 }
 .action-item-create svg { width: 13px; height: 13px; display: block; }
 .action-item-create:hover {
-  color: var(--text); border-color: var(--accent-2);
+  color: var(--text); border-color: var(--accent);
   background: rgba(255, 255, 255, 0.05);
 }
 
