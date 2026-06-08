@@ -7636,6 +7636,42 @@ function showTicketStatus(msg, kind) {
   els.ticketStatus.classList.remove('hidden');
 }
 
+// True if an already-loaded thumbnail image is effectively all-black —
+// the state modern macOS returns for WINDOW captures (display captures are
+// fine). Sampled tiny + averaged; cheap and only runs once per tile.
+function thumbIsBlank(img) {
+  try {
+    const c = document.createElement('canvas');
+    c.width = 16; c.height = 10;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    const d = ctx.getImageData(0, 0, c.width, c.height).data;
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
+    return sum / (d.length / 4 * 3) < 8; // mean channel value, 0–255
+  } catch { return false; }
+}
+
+// Build the <img> for a source-picker tile. The actual share works on modern
+// macOS (ScreenCaptureKit), but window THUMBNAILS come back black — so when a
+// thumbnail loads blank, swap in the window's app icon (fetched via
+// fetchWindowIcons) so the tile stays recognizable. Falls back gracefully when
+// no icon is available (leaves the thumbnail as-is).
+function makeSourceThumb(s) {
+  const img = document.createElement('img');
+  img.alt = '';
+  img.src = s.thumbnail;
+  img.addEventListener('load', () => {
+    if (img.dataset.iconFallback) return; // already swapped (icon's own load)
+    if (s.appIcon && thumbIsBlank(img)) {
+      img.dataset.iconFallback = '1';
+      img.classList.add('src-thumb-icon');
+      img.src = s.appIcon;
+    }
+  });
+  return img;
+}
+
 async function openSourcePicker() {
   if (state.mesh && state.mesh.activeScreenCount >= window.MAX_CONCURRENT_SCREENS) {
     showCallError(`Only ${window.MAX_CONCURRENT_SCREENS} screens can be shared at once. Ask someone to stop sharing first.`);
@@ -7664,8 +7700,7 @@ async function openSourcePicker() {
   for (const s of sources) {
     const card = document.createElement('div');
     card.className = 'src';
-    const img = document.createElement('img');
-    img.src = s.thumbnail;
+    const img = makeSourceThumb(s);
     const name = document.createElement('div');
     name.className = 'src-name';
     name.textContent = s.name;
@@ -7721,8 +7756,7 @@ async function pickScreenSourceForClip() {
     for (const s of sources) {
       const card = document.createElement('div');
       card.className = 'src';
-      const img = document.createElement('img');
-      img.src = s.thumbnail;
+      const img = makeSourceThumb(s);
       const name = document.createElement('div');
       name.className = 'src-name';
       name.textContent = s.name;
