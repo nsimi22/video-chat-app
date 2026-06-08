@@ -91,6 +91,7 @@
       this._capTimer = null;      // auto-stop at MAX_DURATION_MS
       this._tickTimer = null;     // 1s timer updating the on-screen clock
       this._startedAt = 0;
+      this._recordedSecs = 0;     // measured at stop; survives the review phase
 
       this._wired = false;
     }
@@ -133,6 +134,17 @@
     }
 
     close() {
+      // If we're closed mid-recording (X button, backdrop click, or a
+      // team-switch teardown), the cap + tick timers and the live
+      // MediaRecorder are still running. _stopRecording() clears both timers
+      // and stops the recorder; without it the 1s tick setInterval would
+      // fire forever on the now-hidden modal and the cap timer could later
+      // resurrect review UI on a closed recorder.
+      this._stopRecording();
+      // The recorder's async onstop may still be queued (it would rebuild
+      // review state) — but the modal is going away, so drop our handler so
+      // it can't run against torn-down DOM.
+      if (this.recorder) { this.recorder.onstop = null; this.recorder = null; }
       this._teardownCapture();
       this._discardRecording();
       this.els.clipRecorder.classList.add('hidden');
@@ -160,15 +172,29 @@
         return;
       }
 
+      // Concurrency guard: toggling sources fires _refreshPreview again
+      // while this one is still awaiting getUserMedia / the screen picker.
+      // A newer run will have called _teardownCapture() and bumped the
+      // generation; when our awaited streams finally resolve we must stop
+      // them ourselves and bail, otherwise the orphaned camera handle keeps
+      // the camera light on.
+      const gen = (this._previewGen = (this._previewGen || 0) + 1);
+      const stale = () => gen !== this._previewGen;
+      const stopStream = (s) => { if (s) for (const t of s.getTracks()) { try { t.stop(); } catch {} } };
+
       try {
         if (wantCam) {
-          this.camStream = await navigator.mediaDevices.getUserMedia({
+          const cam = await navigator.mediaDevices.getUserMedia({
             video: { width: { ideal: 1280 }, height: { ideal: 720 } },
             audio: true,
           });
+          if (stale()) { stopStream(cam); return; }
+          this.camStream = cam;
         }
         if (wantScreen) {
-          this.screenStream = await this._captureScreen();
+          const screen = await this._captureScreen();
+          if (stale()) { stopStream(screen); return; }
+          this.screenStream = screen;
           // _captureScreen returns null when the user cancels the picker —
           // fall back to camera-only so the modal isn't left blank.
           if (!this.screenStream) {
@@ -181,6 +207,11 @@
           }
         }
       } catch (err) {
+        if (stale()) return;
+        // If the camera was already acquired before a later source (screen)
+        // failed, the camera handle is still live — tear everything down so
+        // the camera light doesn't stay on after an error.
+        this._teardownCapture();
         this._showCaptureError(err);
         this.els.clipRecord.disabled = true;
         return;
@@ -370,6 +401,17 @@
       // keep the camera/screen warm during review.
       this._teardownCapture();
 
+      // A zero-byte blob (instant stop, codec hiccup, or a track that never
+      // produced data) would upload + post a broken, unplayable attachment.
+      // Bail back to idle with an inline notice instead of entering review.
+      if (!this.recordedBlob.size) {
+        this.recordedBlob = null;
+        this._showError('Nothing was recorded — try again.');
+        this._setPhase('idle');
+        this._refreshPreview();
+        return;
+      }
+
       // Switch the preview <video> to play back the recorded blob with
       // controls. unmute so the user can hear their own audio on review.
       if (this.recordedUrl) URL.revokeObjectURL(this.recordedUrl);
@@ -382,9 +424,12 @@
       v.play().catch(() => {});
 
       this._setPhase('review');
-      const secs = Math.round((Date.now() - this._startedAt) / 1000);
+      // Freeze the recorded length now — _post() runs after an arbitrary
+      // review pause, so re-measuring against _startedAt there would fold
+      // the user's review time into the reported duration.
+      this._recordedSecs = Math.round((Date.now() - this._startedAt) / 1000);
       this.els.clipStatus.textContent =
-        `Recorded ${formatClock(secs)} · ${formatBytes(this.recordedBlob.size)}`;
+        `Recorded ${formatClock(this._recordedSecs)} · ${formatBytes(this.recordedBlob.size)}`;
     }
 
     _retake() {
@@ -396,7 +441,7 @@
     async _post() {
       if (!this.recordedBlob) return;
       const blob = this.recordedBlob;
-      const durationSecs = Math.round((Date.now() - this._startedAt) / 1000);
+      const durationSecs = this._recordedSecs;
       // Hand off to the caller; it owns upload + sendMessage. Close the
       // modal optimistically — the upload chip in the composer gives the
       // user their progress feedback.
@@ -424,6 +469,10 @@
     // Stop every live capture track + the compositing loop. Safe to call
     // repeatedly. Does NOT touch the recorded blob (that's _discardRecording).
     _teardownCapture() {
+      // Invalidate any in-flight _refreshPreview so a getUserMedia call that
+      // resolves *after* teardown (close/reset/re-toggle) stops its own
+      // stream instead of re-assigning it onto a torn-down recorder.
+      this._previewGen = (this._previewGen || 0) + 1;
       this._stopCompositingLoop();
       for (const s of [this.camStream, this.screenStream, this.compositeStream]) {
         if (s) for (const t of s.getTracks()) { try { t.stop(); } catch {} }
@@ -454,6 +503,7 @@
       if (this._capTimer) { clearTimeout(this._capTimer); this._capTimer = null; }
       if (this._tickTimer) { clearInterval(this._tickTimer); this._tickTimer = null; }
       this.recorder = null;
+      this._recordedSecs = 0;
       this.els.clipTimer.classList.add('hidden');
       this.els.clipTimer.textContent = '0:00';
       this.els.clipPost && (this.els.clipPost.disabled = false);
