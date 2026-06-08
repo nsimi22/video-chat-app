@@ -27,7 +27,7 @@
 // Then point the LiveKit project's egress webhook URL at this function.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { WebhookReceiver } from 'npm:livekit-server-sdk@2.9.0';
+import { EgressStatus, WebhookReceiver } from 'npm:livekit-server-sdk@2.9.0';
 import { json } from '../_shared/cors.ts';
 
 const receiver = new WebhookReceiver(
@@ -39,6 +39,17 @@ const admin = createClient(
   Deno.env.get('SUPABASE_URL')!,
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
 );
+
+// Resolve EgressInfo.status to its canonical enum NAME. The SDK deserialises
+// the protobuf, so `status` arrives as the numeric EgressStatus value (e.g.
+// 3) — not the "EGRESS_COMPLETE" string the proto-JSON wire format uses.
+// Map both: a number indexes the EgressStatus enum; a string is already the
+// name (defensive, in case a future SDK hands back the JSON name directly).
+function egressStatusName(status: unknown): string {
+  if (typeof status === 'number') return EgressStatus[status] ?? String(status);
+  if (typeof status === 'string') return status;
+  return String(status ?? '');
+}
 
 // LiveKit egress status enum values that mean the egress is finished.
 const TERMINAL_OK = 'EGRESS_COMPLETE';
@@ -68,10 +79,9 @@ Deno.serve(async (req) => {
 
   // Only act on a terminal status; egress_updated also fires for benign
   // progress transitions we don't persist.
-  const status = info?.status as unknown as string | undefined;
-  const statusName = typeof status === 'string' ? status : String(status ?? '');
-  const isOk = statusName.endsWith(TERMINAL_OK) || statusName === TERMINAL_OK;
-  const isFail = [...TERMINAL_FAIL].some((s) => statusName.endsWith(s) || statusName === s);
+  const statusName = egressStatusName(info?.status);
+  const isOk = statusName === TERMINAL_OK;
+  const isFail = TERMINAL_FAIL.has(statusName);
   if (!isOk && !isFail) return json({ ok: true, skipped: `non-terminal ${statusName}` });
 
   const update: Record<string, unknown> = {

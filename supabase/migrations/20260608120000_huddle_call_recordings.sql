@@ -24,9 +24,12 @@ create table if not exists public.call_recordings (
   id uuid primary key default gen_random_uuid(),
   team_id text not null references public.teams(id) on delete cascade,
   channel_id text not null,
-  -- The participant who toggled Record on. Kept even after they leave so
-  -- the recap can attribute "Recording started by …".
-  started_by uuid not null references auth.users(id) on delete set null,
+  -- The participant who toggled Record on. Nullable + ON DELETE SET NULL so
+  -- the row (and its recap link) survives the starter's account being
+  -- deleted — `not null` here would make `on delete set null` fail and block
+  -- the user delete. The recording-egress function always stamps it on
+  -- insert, so it's only ever null after an account deletion.
+  started_by uuid references auth.users(id) on delete set null,
   -- LiveKit's egress id — lets the stop path target the exact egress and
   -- lets webhooks (if wired) reconcile by id rather than by room name.
   egress_id text,
