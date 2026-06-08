@@ -291,11 +291,18 @@ ipcMain.handle('get-screen-sources', async () => {
   const sources = await desktopCapturer.getSources({
     types: ['screen', 'window'],
     thumbnailSize: { width: 320, height: 200 },
+    // Modern macOS (14+/Sequoia/Tahoe) returns BLACK thumbnails for window
+    // captures via desktopCapturer — display captures and the actual share
+    // (ScreenCaptureKit) work fine, but the preview is black. Fetch each
+    // window's app icon so the renderer can fall back to it when the
+    // thumbnail comes back blank. appIcon is null for screen sources.
+    fetchWindowIcons: true,
   });
   return sources.map((s) => ({
     id: s.id,
     name: s.name,
     thumbnail: s.thumbnail.toDataURL(),
+    appIcon: s.appIcon ? s.appIcon.toDataURL() : null,
     display_id: s.display_id,
   }));
 });
