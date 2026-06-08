@@ -585,10 +585,12 @@ input:focus, textarea:focus {
    link color instead. */
 .meeting-root-recap-body a,
 .saved-item-body a,
-.pinned-item-body a { color: var(--accent-2); text-decoration: none; }
+.pinned-item-body a,
+.meeting-note-body a { color: var(--accent-2); text-decoration: none; }
 .meeting-root-recap-body a:hover,
 .saved-item-body a:hover,
-.pinned-item-body a:hover { text-decoration: underline; }
+.pinned-item-body a:hover,
+.meeting-note-body a:hover { text-decoration: underline; }
 .msg-body blockquote {
   border-left: 3px solid var(--line-strong);
   margin: 6px 0;
@@ -3999,7 +4001,8 @@ body.popout-call .popout-stage > .draw-toolbar {
 [data-ui="v2"] .msg-body a,
 [data-ui="v2"] .meeting-root-recap-body a,
 [data-ui="v2"] .saved-item-body a,
-[data-ui="v2"] .pinned-item-body a {
+[data-ui="v2"] .pinned-item-body a,
+[data-ui="v2"] .meeting-note-body a {
   color: var(--accent-tx);
 }
 [data-ui="v2"] .msg-body code {
