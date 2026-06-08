@@ -562,6 +562,36 @@
         this.dispatchEvent(new CustomEvent('typing', { detail: payload }));
       });
 
+      // --- Knock-to-huddle signaling ------------------------------------
+      //
+      // A "knock" is a lightweight, Slack-Huddle-style call invite that
+      // rides the team channel as a directed broadcast. There's no DB row:
+      // a knock is ephemeral by nature (it auto-expires in ~30s) so a
+      // Realtime broadcast addressed to the target user id is the right
+      // primitive — same shape as `typing`, but with a `to` field that
+      // every recipient checks so only the intended user reacts. The team
+      // channel is { broadcast: { self: false } }, so the caller never
+      // hears its own knock echoed; the renderer drives the caller-side
+      // "knocking…" UI locally.
+      //
+      // Three events share the `to`-filtering convention:
+      //   knock          caller → callee   "join my huddle?"
+      //   knock-response callee → caller   accept / decline
+      //   knock-cancel   caller → callee   caller bailed before an answer
+      const forMe = (payload) => payload && payload.to === this.peerId;
+      ch.on('broadcast', { event: 'knock' }, ({ payload }) => {
+        if (!forMe(payload)) return;
+        this.dispatchEvent(new CustomEvent('knock', { detail: payload }));
+      });
+      ch.on('broadcast', { event: 'knock-response' }, ({ payload }) => {
+        if (!forMe(payload)) return;
+        this.dispatchEvent(new CustomEvent('knock-response', { detail: payload }));
+      });
+      ch.on('broadcast', { event: 'knock-cancel' }, ({ payload }) => {
+        if (!forMe(payload)) return;
+        this.dispatchEvent(new CustomEvent('knock-cancel', { detail: payload }));
+      });
+
       await new Promise((resolve, reject) => {
         ch.subscribe(async (status, err) => {
           if (status === 'SUBSCRIBED') {
@@ -886,6 +916,48 @@
       this._teamChannel?.send({
         type: 'broadcast', event: 'typing',
         payload: { from: this.peerId, fromName: this.name, channelId, parentId: parentId || null },
+      });
+    }
+
+    // --- Knock-to-huddle (outgoing) -------------------------------------
+    //
+    // All three ride the team channel as directed broadcasts (see the
+    // matching `ch.on('broadcast', ...)` handlers in _joinTeamChannel).
+    // A `knockId` ties a knock to its eventual response/cancel so the UI
+    // can ignore stale signals from a previous, already-expired knock to
+    // the same person. The caller passes the shared DM channel id so the
+    // callee can join the exact same call on accept without re-deriving it.
+
+    // Invite `toUserId` to a huddle on the shared DM `channelId`. Carries
+    // caller identity (name/color/avatar) so the recipient's knock card
+    // can render an avatar without a profile round-trip.
+    sendKnock({ to, knockId, channelId, avatarUrl }) {
+      this._teamChannel?.send({
+        type: 'broadcast', event: 'knock',
+        payload: {
+          to, knockId, channelId,
+          from: this.peerId, fromName: this.name, fromColor: this.color,
+          fromAvatar: avatarUrl || null,
+        },
+      });
+    }
+
+    // Recipient's answer. `accepted` true → both sides join the call;
+    // false → the caller sees a "declined" toast and stops ringing.
+    sendKnockResponse({ to, knockId, channelId, accepted }) {
+      this._teamChannel?.send({
+        type: 'broadcast', event: 'knock-response',
+        payload: { to, knockId, channelId, accepted: !!accepted, from: this.peerId, fromName: this.name },
+      });
+    }
+
+    // Caller gave up before an answer (clicked Cancel, or the 30s
+    // timeout fired). Lets the recipient dismiss the knock card so it
+    // doesn't linger as a phantom invite.
+    sendKnockCancel({ to, knockId, channelId }) {
+      this._teamChannel?.send({
+        type: 'broadcast', event: 'knock-cancel',
+        payload: { to, knockId, channelId, from: this.peerId, fromName: this.name },
       });
     }
 

@@ -1842,6 +1842,12 @@ async function joinTeamAndStart(teamId) {
   // the next call's backfill.
   huddle.addEventListener('chat-update', (e) => onUpdatedMessageForMeeting(e.detail?.message));
   huddle.addEventListener('chat-message-deleted', (e) => onDeletedMessageForMeeting(e.detail));
+  // Knock-to-huddle signaling (see api.js sendKnock/sendKnockResponse/
+  // sendKnockCancel). Inbound knock → ring the recipient with an
+  // Accept/Decline card; a response/cancel updates the matching side.
+  huddle.addEventListener('knock', (e) => onIncomingKnock(e.detail));
+  huddle.addEventListener('knock-response', (e) => onKnockResponse(e.detail));
+  huddle.addEventListener('knock-cancel', (e) => onKnockCancel(e.detail));
 
   // Construct ChatView + assign state BEFORE huddle.start(), because
   // start() dispatches `welcome` synchronously at the end of its
@@ -1862,6 +1868,9 @@ async function joinTeamAndStart(teamId) {
     huddle,
     onMessage: (profile) => openDmWith(profile.user_id, profile.name),
     onEditProfile: () => openSettingsToProfile(),
+    // Knock-to-huddle: clicking "Knock 👋" on a present teammate's card
+    // rings them with a lightweight call invite (see knockTeammate).
+    onKnock: (profile) => knockTeammate(profile),
   });
 
   state.chat = new ChatView({
@@ -1904,7 +1913,11 @@ async function joinTeamAndStart(teamId) {
 // User clicked "Start call" or "Join call". Construct the call client
 // first (so its event listeners are attached before huddle.joinCall
 // fires presence-sync events for everyone already in the call), then join.
-async function startCall(channelId) {
+//
+// `audioFirst` (used by knock-to-huddle) joins with the camera muted so
+// a spontaneous huddle is voice-only by default; the user can flip the
+// camera on with the existing cam toggle once in.
+async function startCall(channelId, { audioFirst = false } = {}) {
   if (!state.huddle || state.mesh) return; // already in a call or no team
   if (state.callStarting) return;          // double-click / re-entrancy guard
   state.callStarting = true;
@@ -1986,6 +1999,14 @@ async function startCall(channelId) {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, state.huddle.name);
     syncBlurButtonState();
+    // Audio-first huddles join with the camera off — flip it back down
+    // right after the tile is up so peers never see a video frame and
+    // the cam button reflects the muted state. toggleCam returns the new
+    // on/off, so only mute if it's currently on.
+    if (audioFirst && state.mesh) {
+      const on = state.mesh.toggleCam();
+      els.btnCam.classList.toggle('muted', !on);
+    }
   } catch (err) {
     console.warn('No camera/mic available', err);
     // The call itself is still alive (signaling + presence work) so
@@ -2678,6 +2699,13 @@ async function teardownTeam() {
   // per mousedown.
   state.profileCard?.destroy();
   state.profileCard = null;
+  // Dismiss any live knock cards + their timers — the team realtime
+  // channel that carries knock signals is going away, so a ringing
+  // card here would be a dead end. We don't bother sending a cancel/
+  // decline on the wire: the channel is being torn down anyway, and the
+  // other side's own 30s timeout will clear it.
+  _clearOutgoingKnock();
+  _clearIncomingKnock();
   // Drop a redemption hop that never finished (e.g. user signed out
   // mid-load). Otherwise the next sign-in's onWelcome would jump
   // somebody else's session into a stale channel.
@@ -3604,6 +3632,296 @@ async function openDmWith(userId, name) {
     console.warn('createDm failed', err);
     showCallError('Could not open DM: ' + (err?.message || err));
   }
+}
+
+// ===========================================================================
+// Knock-to-huddle — spontaneous, Slack-Huddle-style calls
+// ===========================================================================
+//
+// The flow rides the team channel as directed Realtime broadcasts (see
+// api.js sendKnock / sendKnockResponse / sendKnockCancel and the matching
+// `ch.on('broadcast', ...)` handlers). No DB rows: a knock is ephemeral
+// and auto-expires after KNOCK_TTL_MS.
+//
+//   Caller            Callee
+//   ─────────────────────────────────────────────
+//   sendKnock  ─────▶  onIncomingKnock (Accept/Decline card)
+//                        Accept  → sendKnockResponse(accepted) + startCall
+//                        Decline → sendKnockResponse(declined)
+//   onKnockResponse ◀──┘
+//     accepted → startCall on the shared DM channel
+//     declined → "X declined" toast
+//   (caller Cancel / 30s timeout) → sendKnockCancel ─▶ onKnockCancel
+//
+// We allow exactly one outgoing and one incoming knock at a time; a
+// second attempt while one is live is rejected with a toast. `knockId`
+// ties responses/cancels to their originating knock so a late signal
+// from an already-expired knock to the same person is ignored.
+
+// Auto-expire a knock after ~30s of silence — matches the spec and keeps
+// a ringing card from lingering forever if the other side went away.
+const KNOCK_TTL_MS = 30000;
+
+// Live knock state. `outgoing` = a knock WE sent that's still ringing;
+// `incoming` = a knock card WE'RE showing. Each holds { knockId,
+// channelId, peerId, peerName, timer, el }.
+const _knock = { outgoing: null, incoming: null };
+
+function _genKnockId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  return 'k_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+}
+
+// Caller side. Triggered from the profile card's "Knock 👋" button.
+// `profile` is the full target profile { user_id, name, avatar_url, ... }.
+async function knockTeammate(profile) {
+  const targetId = profile?.user_id;
+  if (!state.huddle || !targetId) return;
+  if (targetId === state.huddle.peerId) return; // can't knock yourself
+
+  // Guard rails before we ring:
+  if (state.mesh) { showToast('You’re already in a call.'); return; }
+  if (_knock.outgoing) { showToast('You’re already knocking someone.'); return; }
+  // Recipient must be present + Available; the button is only shown in
+  // that case, but presence can flip between render and click.
+  if (presenceStatusForUser(targetId) !== 'active') {
+    showToast(`${profile.name || 'They'} just went away.`);
+    return;
+  }
+
+  // Ensure the shared DM exists so the callee has a channel to join, and
+  // so we both land on the same room. createDm is idempotent.
+  let channel;
+  try {
+    channel = await state.huddle.createDm(targetId, profile.name);
+    onChannelAdded(channel);
+  } catch (err) {
+    console.warn('knock: createDm failed', err);
+    showCallError('Could not start huddle: ' + (err?.message || err));
+    return;
+  }
+  // Bail if something changed while the DM round-trip was in flight.
+  if (state.mesh || _knock.outgoing) return;
+
+  const knockId = _genKnockId();
+  state.huddle.sendKnock({
+    to: targetId,
+    knockId,
+    channelId: channel.id,
+    avatarUrl: state.huddle.profile?.avatar_url || null,
+  });
+
+  const card = _renderKnockingCard(profile.name || 'teammate');
+  const timer = setTimeout(() => {
+    // Timed out with no answer — cancel on the wire so the callee's
+    // card disappears, then clean up our own "knocking…" card.
+    if (!_knock.outgoing || _knock.outgoing.knockId !== knockId) return;
+    state.huddle.sendKnockCancel({ to: targetId, knockId, channelId: channel.id });
+    _clearOutgoingKnock();
+    showToast(`No answer from ${profile.name || 'them'}.`);
+  }, KNOCK_TTL_MS);
+  _knock.outgoing = { knockId, channelId: channel.id, peerId: targetId, peerName: profile.name, timer, el: card };
+}
+
+// Caller hit "Cancel" on their own "knocking…" card before an answer.
+function _cancelOutgoingKnock() {
+  const o = _knock.outgoing;
+  if (!o) return;
+  state.huddle.sendKnockCancel({ to: o.peerId, knockId: o.knockId, channelId: o.channelId });
+  _clearOutgoingKnock();
+}
+
+function _clearOutgoingKnock() {
+  const o = _knock.outgoing;
+  if (!o) return;
+  clearTimeout(o.timer);
+  o.el?.remove();
+  _knock.outgoing = null;
+}
+
+// Callee side. A teammate knocked us.
+function onIncomingKnock(payload) {
+  if (!payload || !state.huddle) return;
+  const { from, fromName, fromColor, fromAvatar, knockId, channelId } = payload;
+  if (!from || !knockId || !channelId) return;
+
+  // Auto-decline when we can't take it, so the caller gets a fast,
+  // honest "declined" rather than waiting out the 30s timeout:
+  //   - already in a call (busy)
+  //   - already showing another knock card (one at a time)
+  //   - our own presence is anything but Available (away/brb/etc.)
+  const busy = !!state.mesh || !!_knock.incoming;
+  const myStatus = state.huddle.presenceStatus || 'active';
+  if (busy || myStatus !== 'active') {
+    state.huddle.sendKnockResponse({ to: from, knockId, channelId, accepted: false });
+    return;
+  }
+
+  const el = _renderKnockCard({ from, fromName, fromColor, fromAvatar, knockId, channelId });
+  const timer = setTimeout(() => {
+    // Knock expired on our end without an answer — just dismiss; the
+    // caller's own timeout fires independently and notifies them.
+    if (_knock.incoming && _knock.incoming.knockId === knockId) _clearIncomingKnock();
+  }, KNOCK_TTL_MS);
+  _knock.incoming = { knockId, channelId, peerId: from, peerName: fromName, timer, el };
+
+  // A soft notification helps when Huddle is backgrounded.
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try { new Notification('Knock knock 👋', { body: `${fromName || 'A teammate'} wants to huddle` }); } catch {}
+  }
+}
+
+async function _acceptIncomingKnock() {
+  const inc = _knock.incoming;
+  if (!inc || !state.huddle) return;
+  state.huddle.sendKnockResponse({ to: inc.peerId, knockId: inc.knockId, channelId: inc.channelId, accepted: true });
+  const channelId = inc.channelId;
+  const peerName = inc.peerName;
+  const peerId = inc.peerId;
+  _clearIncomingKnock();
+  // Ensure the DM is in our sidebar/channelMeta before focusing it — the
+  // caller's createDm adds us as a member, but the realtime channel-added
+  // event can lag the knock. createDm is idempotent, so calling it here
+  // guarantees focusChannel (which no-ops on an unknown channel) lands on
+  // the right DM. The call itself only needs channelId and would connect
+  // regardless, but we want the chat panel to follow along.
+  try {
+    const channel = await state.huddle.createDm(peerId, peerName);
+    onChannelAdded(channel);
+  } catch (err) {
+    console.warn('knock accept: createDm failed', err);
+  }
+  // Surface the DM and jump straight into the (audio-first) call.
+  focusChannel(channelId);
+  startCall(channelId, { audioFirst: true });
+}
+
+function _declineIncomingKnock() {
+  const inc = _knock.incoming;
+  if (!inc || !state.huddle) return;
+  state.huddle.sendKnockResponse({ to: inc.peerId, knockId: inc.knockId, channelId: inc.channelId, accepted: false });
+  _clearIncomingKnock();
+}
+
+function _clearIncomingKnock() {
+  const inc = _knock.incoming;
+  if (!inc) return;
+  clearTimeout(inc.timer);
+  inc.el?.remove();
+  _knock.incoming = null;
+}
+
+// Caller side. The callee answered our knock.
+function onKnockResponse(payload) {
+  const o = _knock.outgoing;
+  // Ignore stale answers (e.g. from a previous, already-expired knock).
+  if (!o || !payload || payload.knockId !== o.knockId) return;
+  const channelId = o.channelId;
+  const peerName = o.peerName || payload.fromName || 'They';
+  _clearOutgoingKnock();
+  if (payload.accepted) {
+    focusChannel(channelId);
+    startCall(channelId, { audioFirst: true });
+  } else {
+    showToast(`${peerName} can’t huddle right now.`);
+  }
+}
+
+// Callee side. The caller cancelled (manual Cancel or their 30s timeout).
+function onKnockCancel(payload) {
+  const inc = _knock.incoming;
+  if (!inc || !payload || payload.knockId !== inc.knockId) return;
+  _clearIncomingKnock();
+}
+
+// ---- Knock UI -------------------------------------------------------------
+//
+// Both cards live in #toasts (already a fixed, top-of-stacking-context
+// container) but use .knock-card styling — bigger and persistent, unlike
+// auto-dismissing toasts. We build them with DOM APIs (not innerHTML) so
+// user-controlled names can't inject markup.
+
+function _knockAvatar({ name, color, avatarUrl }) {
+  const wrap = document.createElement('div');
+  wrap.className = 'knock-card-avatar';
+  if (avatarUrl) {
+    const img = document.createElement('img');
+    img.src = avatarUrl;
+    img.alt = '';
+    wrap.appendChild(img);
+  } else {
+    wrap.classList.add('fallback');
+    wrap.style.background = color || '#888';
+    wrap.textContent = (name || '?').slice(0, 1).toUpperCase();
+  }
+  return wrap;
+}
+
+// Incoming knock: Accept / Decline.
+function _renderKnockCard({ fromName, fromColor, fromAvatar }) {
+  const card = document.createElement('div');
+  card.className = 'knock-card incoming';
+  card.setAttribute('role', 'alertdialog');
+  card.setAttribute('aria-label', 'Incoming huddle knock');
+
+  card.appendChild(_knockAvatar({ name: fromName, color: fromColor, avatarUrl: fromAvatar }));
+
+  const body = document.createElement('div');
+  body.className = 'knock-card-body';
+  const title = document.createElement('div');
+  title.className = 'knock-card-title';
+  title.textContent = `${fromName || 'A teammate'} wants to huddle`;
+  const sub = document.createElement('div');
+  sub.className = 'knock-card-sub';
+  sub.textContent = 'Audio-first · camera off';
+  body.append(title, sub);
+  card.appendChild(body);
+
+  const actions = document.createElement('div');
+  actions.className = 'knock-card-actions';
+  const decline = document.createElement('button');
+  decline.className = 'knock-btn decline';
+  decline.textContent = 'Decline';
+  decline.onclick = () => _declineIncomingKnock();
+  const accept = document.createElement('button');
+  accept.className = 'knock-btn accept';
+  accept.textContent = 'Accept';
+  accept.onclick = () => _acceptIncomingKnock();
+  actions.append(decline, accept);
+  card.appendChild(actions);
+
+  els.toasts?.appendChild(card);
+  return card;
+}
+
+// Outgoing "knocking…" card: just a Cancel.
+function _renderKnockingCard(peerName) {
+  const card = document.createElement('div');
+  card.className = 'knock-card outgoing';
+  card.setAttribute('role', 'status');
+
+  const body = document.createElement('div');
+  body.className = 'knock-card-body';
+  const title = document.createElement('div');
+  title.className = 'knock-card-title';
+  title.textContent = `Knocking ${peerName}…`;
+  const sub = document.createElement('div');
+  sub.className = 'knock-card-sub';
+  sub.textContent = 'Waiting for an answer';
+  body.append(title, sub);
+  card.appendChild(body);
+
+  const actions = document.createElement('div');
+  actions.className = 'knock-card-actions';
+  const cancel = document.createElement('button');
+  cancel.className = 'knock-btn decline';
+  cancel.textContent = 'Cancel';
+  cancel.onclick = () => _cancelOutgoingKnock();
+  actions.appendChild(cancel);
+  card.appendChild(actions);
+
+  els.toasts?.appendChild(card);
+  return card;
 }
 
 // Wire any element to open the profile card for `userId` on click.
