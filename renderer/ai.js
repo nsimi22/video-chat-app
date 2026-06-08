@@ -232,7 +232,21 @@
     // throws RangeError, and this loop is too far from the API boundary to
     // want to crash on a malformed row.
     async summarize(channelMessages, { topicHint } = {}) {
-      const system = `You are a meeting / chat summarizer. Produce a tight, scannable summary of recent messages in a team chat. Use bullet points. Capture decisions, open questions, and any action items (with owners if you can infer them). Keep it under 250 words.`;
+      // The human-readable summary is unchanged; we *additionally* ask for
+      // a machine-readable action-items block at the very end so the
+      // renderer can turn each item into a one-click "Create ticket" row
+      // (see action-items.js). Keeping the prose intact means the message
+      // still reads fine even where the structured block isn't parsed
+      // (search, notifications, the mobile app).
+      //
+      // The structured action-items instruction is defined once, next to
+      // the parser that consumes it (action-items.js → window.ACTION_ITEMS_PROMPT).
+      // Reference it at runtime rather than keeping a duplicate literal here
+      // that could drift. action-items.js is loaded before any summarize()
+      // call, so the global is reliably present; fall back to '' defensively
+      // so a load-order surprise just drops the block instead of throwing.
+      const actionItemsPrompt = window.ACTION_ITEMS_PROMPT || '';
+      const system = `You are a meeting / chat summarizer. Produce a tight, scannable summary of recent messages in a team chat. Use bullet points. Capture decisions, open questions, and any action items (with owners if you can infer them). Keep it under 250 words.\n\n${actionItemsPrompt}`;
       const lines = (channelMessages || [])
         .filter((m) => m.text)
         .map((m) => {

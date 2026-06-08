@@ -686,6 +686,29 @@ class ChatView {
     this._hideSlashSuggest();
   }
 
+  // Drop `text` into the composer and focus it, caret at the end. Used by
+  // the action-items "Create ticket → GitHub issue" path to seed a
+  // `/gh issue …` command the user reviews and sends (which runs the
+  // existing _runSlashGh flow — no create logic is duplicated). Mirrors
+  // _fillSlashSuggest's manual auto-resize since a programmatic value
+  // assignment doesn't fire the composer's `input` listener.
+  _prefillComposer(text) {
+    if (!this.els?.composer) return;
+    this.els.composer.value = text || '';
+    this._autoResizeComposer();
+    // A programmatic `.value =` doesn't fire the composer's `input`
+    // listener, so the per-channel draft is never persisted — switch
+    // channels and the seeded text (e.g. a `/gh issue …` command) is
+    // silently lost. Mirror what the input handler does and schedule
+    // the same debounced draft save so the prefill survives a switch.
+    if (this.currentChannel) this._scheduleDraftSave(this.currentChannel, this.els.composer.value);
+    this.els.composer.focus();
+    try {
+      const end = this.els.composer.value.length;
+      this.els.composer.setSelectionRange(end, end);
+    } catch {}
+  }
+
   // --- @-mention autocomplete ---------------------------------------------
 
   // Record a message author in the mention directory. Keyed by
@@ -1626,6 +1649,18 @@ class ChatView {
 
     // Body: poll card, edit-mode textarea, or rendered markdown.
     let body;
+    // Action items: AI recaps (/summarize, post-call recap) embed a fenced
+    // ```action-items block of structured items. Parse it out of AI-message
+    // text so (a) the displayed markdown shows only the human-readable part
+    // and (b) we can render a "Create ticket" row per item below the body.
+    // Non-AI messages never carry the block, so we skip the parse for them.
+    let actionItems = [];
+    let displayText = m.text || '';
+    if (m.aiGenerated && window.HuddleActionItems) {
+      const parsed = window.HuddleActionItems.parseActionItems(m.text || '');
+      actionItems = parsed.items;
+      displayText = parsed.cleanText;
+    }
     if (m.meta?.poll) {
       // Polls render as an interactive card in place of the body. The
       // body text ("📊 Poll: …") still exists on the row for mobile,
@@ -1658,7 +1693,9 @@ class ChatView {
     } else {
       body = document.createElement('div');
       body.className = 'msg-body';
-      body.innerHTML = window.renderMarkdown(m.text || '', {
+      // displayText == m.text for normal messages; for AI recaps it's the
+      // text with the machine-readable action-items block stripped out.
+      body.innerHTML = window.renderMarkdown(displayText, {
         // The hot-loop callers (_render, refreshAllMessages) pre-compute
         // this once per pass and pass it through. Single-shot callers
         // (_appendIncremental, refreshMessageById → _replaceNodeById)
@@ -1804,6 +1841,25 @@ class ChatView {
 
     const children = [head, body];
     if (attachmentsEl) children.push(attachmentsEl);
+    // Action-items widget: one "Create ticket" row per parsed item, sitting
+    // directly under the recap text. Each row's button reuses the existing
+    // Jira create modal / `/gh issue` flow pre-filled — see action-items.js.
+    if (actionItems.length && window.HuddleActionItems) {
+      const widget = window.HuddleActionItems.renderActionItems(actionItems, {
+        // Provenance label for the ticket body — the recap is rendered in
+        // the channel it belongs to, so the current channel name is right.
+        channelName: this.hooks.getChannelName?.(this.currentChannel) || '',
+        getJira: () => this.hooks.getJira?.(),
+        getGitHub: () => this.hooks.getGitHub?.(),
+        getAiTicketRepo: () => this.hooks.getAiTicketRepo?.() || '',
+        openTicketModal: (preset) => this.hooks.openTicketModal?.(preset),
+        // Pre-fill the composer with the `/gh issue …` command so the
+        // existing slash flow creates the issue on send (no dup logic).
+        prefillComposer: (text) => this._prefillComposer(text),
+        toast: (msg) => this.hooks.toast?.(msg),
+      });
+      if (widget) children.push(widget);
+    }
     if (jiraEls.length) children.push(...jiraEls);
     if (ghEls.length) children.push(...ghEls);
     // AI message footer: "via @<asker> · <model>" sits below the

@@ -879,6 +879,80 @@ input:focus, textarea:focus {
 .unfurl-reload:hover { color: var(--text); }
 .unfurl-reload:disabled { opacity: 0.5; cursor: wait; }
 
+/* Action items widget — rendered under AI recaps (/summarize, post-call
+   recap). One row per parsed action item, each with a "Create ticket"
+   button that opens the existing Jira modal / GitHub issue flow. Styled
+   to read as a sibling of the jira/gh unfurl cards. */
+.action-items {
+  display: flex; flex-direction: column; gap: 2px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  margin-top: 6px;
+  max-width: 520px;
+}
+.action-items-head {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 600; letter-spacing: .03em;
+  text-transform: uppercase; color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.action-items-head svg { width: 13px; height: 13px; display: block; }
+.action-item-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 0;
+}
+.action-item-row + .action-item-row { border-top: 1px solid var(--line); }
+.action-item-text {
+  flex: 1; min-width: 0;
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+  font-size: 13px; color: var(--text);
+}
+.action-item-owner {
+  flex: none;
+  font-size: 11px; font-weight: 500;
+  padding: 1px 7px; border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.08); color: var(--text-dim);
+}
+.action-item-create {
+  flex: none;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; line-height: 1;
+  padding: 5px 9px; min-height: auto;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: transparent; color: var(--text-dim);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.action-item-create svg { width: 13px; height: 13px; display: block; }
+.action-item-create:hover {
+  color: var(--text); border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Jira/GitHub chooser popped from a "Create ticket" button when both
+   integrations are configured. Fixed-positioned next to the button. */
+.action-item-menu {
+  z-index: 1000;
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 160px; padding: 4px;
+  background: var(--surface, #1b1d22);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.action-item-menu-opt {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 7px 9px;
+  font-size: 13px; text-align: left;
+  background: transparent; border: none; border-radius: 5px;
+  color: var(--text); cursor: pointer;
+}
+.action-item-menu-opt svg { width: 15px; height: 15px; display: block; flex: none; }
+.action-item-menu-opt:hover { background: rgba(255, 255, 255, 0.07); }
+
 /* Settings accordion — each section is a <details>/<summary>. The
    summary is a button-like header; expanded sections show a body
    block beneath it. */
