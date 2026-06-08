@@ -29,82 +29,15 @@
 (function () {
   // The noise-gate runs as an AudioWorklet so the per-sample envelope
   // tracking happens on the realtime audio thread (no main-thread jank,
-  // no ScriptProcessorNode deprecation). The processor source is
-  // injected as a Blob URL rather than a separate vendored file — it's
-  // a few dozen lines and keeping it inline avoids another copy-vendor
-  // entry + an index.html <script>/asset reference for one worklet.
-  const WORKLET_SOURCE = `
-    // Per-sample noise gate with a slow noise-floor follower. Speech
-    // bursts well above the tracked floor pass at full gain; sustained
-    // low-level energy (room tone, fan) is pushed toward the floor and
-    // gated down. Gain changes are smoothed (attack/release) so we
-    // don't introduce zipper noise or chop word onsets.
-    class NoiseGateProcessor extends AudioWorkletProcessor {
-      constructor() {
-        super();
-        // Running estimates, all in linear amplitude (0..1-ish).
-        this._floor = 0.0;      // slow-moving noise-floor estimate
-        this._env = 0.0;        // fast envelope follower of the signal
-        this._gain = 1.0;       // current applied gain, smoothed
-        // Coefficients. These are per-sample smoothing factors tuned for
-        // 48 kHz; they degrade gracefully at other rates (slightly
-        // faster/slower envelopes) so we don't bother rescaling by
-        // sampleRate. envAttack/Release shape the signal follower;
-        // floorRate is deliberately glacial so a held note doesn't get
-        // mistaken for noise. gainAttack/Release shape the gain ramp.
-        this._envAttack = 0.01;
-        this._envRelease = 0.0008;
-        this._floorRate = 0.0004;
-        this._gainAttack = 0.02;   // open quickly when speech starts
-        this._gainRelease = 0.002; // close gently when it stops
-      }
-      process(inputs, outputs) {
-        const input = inputs[0];
-        const output = outputs[0];
-        // No input connected this quantum (e.g. track ended) — emit
-        // silence and keep the node alive.
-        if (!input || input.length === 0) return true;
-        const inCh = input[0];
-        const outCh = output[0];
-        if (!inCh || !outCh) return true;
-        // Open the gate when the fast envelope is a comfortable margin
-        // above the tracked floor (speech), close it when it sinks back
-        // toward the floor (silence/room tone). The 2x margin + small
-        // absolute offset avoids chattering on near-silent input.
-        const OPEN_MARGIN = 2.0;
-        const FLOOR_OFFSET = 0.0008;
-        for (let i = 0; i < inCh.length; i++) {
-          const x = inCh[i];
-          const ax = x < 0 ? -x : x;
-          // Fast envelope follower (asymmetric attack/release).
-          if (ax > this._env) {
-            this._env += (ax - this._env) * this._envAttack;
-          } else {
-            this._env += (ax - this._env) * this._envRelease;
-          }
-          // Noise floor only tracks slowly toward the envelope (so a
-          // newly-quiet room is learned) but never fast enough to chase
-          // speech up and gate it.
-          this._floor += (this._env - this._floor) * this._floorRate;
-          if (this._floor < 0) this._floor = 0;
-          const threshold = this._floor * OPEN_MARGIN + FLOOR_OFFSET;
-          const target = this._env > threshold ? 1.0 : 0.0;
-          // Smooth the gain toward the target (attack when opening,
-          // release when closing) to avoid clicks.
-          const rate = target > this._gain ? this._gainAttack : this._gainRelease;
-          this._gain += (target - this._gain) * rate;
-          outCh[i] = x * this._gain;
-        }
-        // Mirror mono output to any extra output channels so we don't
-        // silence one side of a stereo capture.
-        for (let c = 1; c < output.length; c++) {
-          if (output[c]) output[c].set(outCh);
-        }
-        return true;
-      }
-    }
-    registerProcessor('huddle-noise-gate', NoiseGateProcessor);
-  `;
+  // no ScriptProcessorNode deprecation). The processor source lives in a
+  // standalone same-origin file (renderer/denoise-worklet.js) loaded via
+  // addModule(). It is deliberately NOT injected as a `blob:` module: the
+  // renderer's CSP is `script-src 'self' 'wasm-unsafe-eval'` (no `blob:`)
+  // and addModule fetches the worklet through that same directive, so a
+  // blob URL would be CSP-blocked and reject on every enable. Resolving
+  // the path against document.baseURI keeps it correct in the popout
+  // window too (it loads the same index.html, only with a query string).
+  const WORKLET_URL = new URL('denoise-worklet.js', document.baseURI).href;
 
   class DenoisePipeline {
     constructor() {
@@ -115,7 +48,6 @@
       this._gate = null;         // AudioWorkletNode (noise gate)
       this._dest = null;         // MediaStreamAudioDestinationNode
       this._output = null;       // cleaned MediaStream we hand back
-      this._workletUrl = null;   // Blob URL for the worklet module
     }
 
     // Web Audio + AudioWorklet are the only requirements; both ship in
@@ -125,9 +57,7 @@
     // runtime and the toggle can hide itself rather than throw.
     static isAvailable() {
       return typeof window.AudioContext === 'function'
-        && typeof window.AudioWorkletNode === 'function'
-        && typeof Blob === 'function'
-        && typeof URL?.createObjectURL === 'function';
+        && typeof window.AudioWorkletNode === 'function';
     }
 
     async start(rawStream) {
@@ -147,11 +77,9 @@
         : new AudioContext();
       this._ctx = ctx;
 
-      // Register the noise-gate worklet from an inline Blob module.
-      this._workletUrl = URL.createObjectURL(
-        new Blob([WORKLET_SOURCE], { type: 'application/javascript' }),
-      );
-      await ctx.audioWorklet.addModule(this._workletUrl);
+      // Register the noise-gate worklet from its same-origin module file
+      // (CSP-safe — see WORKLET_URL note above).
+      await ctx.audioWorklet.addModule(WORKLET_URL);
 
       // Build the graph: source -> highpass -> gate -> destination.
       this._source = ctx.createMediaStreamSource(rawStream);
@@ -196,10 +124,6 @@
       if (this._ctx) {
         try { this._ctx.close(); } catch {}
         this._ctx = null;
-      }
-      if (this._workletUrl) {
-        try { URL.revokeObjectURL(this._workletUrl); } catch {}
-        this._workletUrl = null;
       }
       if (this._output) {
         // The destination's track is synthetic; stop it so the LK sender
