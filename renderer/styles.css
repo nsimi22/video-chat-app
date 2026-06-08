@@ -1229,6 +1229,10 @@ button.ctrl.muted.icon-only::after {
   transform: translateY(-50%) rotate(-20deg);
   pointer-events: none;
 }
+/* Denoise OFF state: red icon (the SVG inherits currentColor). Denoise is on
+   by default, so this marks the deliberate "suppression off" choice. */
+button.ctrl.denoise-off, #btn-denoise.denoise-off { color: var(--bad); }
+button.ctrl.denoise-off:not([disabled]):hover { color: #ff5c52; }
 /* When the tile grid is hidden the chat takes the full stage height. */
 .tiles.hidden { display: none !important; }
 

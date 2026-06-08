@@ -37,15 +37,22 @@
   // blob URL would be CSP-blocked and reject on every enable. Resolving
   // the path against document.baseURI keeps it correct in the popout
   // window too (it loads the same index.html, only with a query string).
-  const WORKLET_URL = new URL('denoise-worklet.js', document.baseURI).href;
+  // The denoiser runs RNNoise (a small recurrent-NN model) as an AudioWorklet
+  // so inference happens on the realtime audio thread. rnnoise-worklet.js is
+  // @jitsi/rnnoise-wasm's sync glue (wasm inlined as base64) + our processor —
+  // see renderer/rnnoise-processor.js for the regeneration command. It is a
+  // same-origin file loaded via addModule(), CSP-safe (script-src 'self'
+  // 'wasm-unsafe-eval' — the worklet instantiates wasm, which the directive
+  // permits; no blob: needed). Path resolved against document.baseURI so the
+  // popout window (same index.html + query string) loads it correctly too.
+  const WORKLET_URL = new URL('rnnoise-worklet.js', document.baseURI).href;
 
   class DenoisePipeline {
     constructor() {
       this._rawStream = null;
-      this._ctx = null;          // AudioContext
+      this._ctx = null;          // AudioContext (forced to 48 kHz for RNNoise)
       this._source = null;       // MediaStreamAudioSourceNode
-      this._highpass = null;     // BiquadFilterNode
-      this._gate = null;         // AudioWorkletNode (noise gate)
+      this._rnnoise = null;      // AudioWorkletNode (RNNoise denoiser)
       this._dest = null;         // MediaStreamAudioDestinationNode
       this._output = null;       // cleaned MediaStream we hand back
     }
@@ -68,45 +75,33 @@
       if (!audioTrack) throw new Error('denoise: input stream has no audio track');
       this._rawStream = rawStream;
 
-      // Lock the graph to the capture sample rate where the track
-      // exposes it, so MediaStreamAudioSourceNode doesn't resample on
-      // the way in (a needless quality hit + a few ms of latency).
-      // Some devices report a sampleRate the AudioContext can't honour —
-      // virtual/aggregate devices and certain Chromium builds throw
-      // NotSupportedError when the requested rate isn't one the audio
-      // backend can open. In that case fall back to the default-rate
-      // context (which resamples) rather than failing the whole feature;
-      // a working denoiser at the wrong rate beats no denoiser at all.
-      const settings = audioTrack.getSettings?.() || {};
+      // RNNoise REQUIRES 48 kHz mono — its 480-sample frames are 10 ms at
+      // 48k. Force the AudioContext to 48 kHz; Web Audio resamples the mic
+      // source into the context rate for us, so a 44.1 kHz device just gets
+      // resampled on the way in. If the backend can't open 48k (rare —
+      // virtual/aggregate devices), fall back to the default-rate context;
+      // RNNoise would then run at the wrong rate, so bail to passthrough by
+      // throwing rather than degrade silently.
       let ctx;
-      if (settings.sampleRate) {
-        try {
-          ctx = new AudioContext({ sampleRate: settings.sampleRate });
-        } catch (err) {
-          console.warn('[denoise] AudioContext @', settings.sampleRate,
-            'Hz unsupported, using default rate', err);
-          ctx = new AudioContext();
-        }
-      } else {
-        ctx = new AudioContext();
+      try {
+        ctx = new AudioContext({ sampleRate: 48000 });
+      } catch (err) {
+        console.warn('[denoise] AudioContext @48kHz unsupported', err);
+        throw new Error('denoise: 48 kHz AudioContext unavailable');
       }
       this._ctx = ctx;
 
-      // Register the noise-gate worklet from its same-origin module file
+      // Register the RNNoise worklet from its same-origin module file
       // (CSP-safe — see WORKLET_URL note above).
       await ctx.audioWorklet.addModule(WORKLET_URL);
 
-      // Build the graph: source -> highpass -> gate -> destination.
+      // Build the graph: source -> rnnoise -> destination. RNNoise handles
+      // low-frequency rumble itself, so no separate highpass stage.
       this._source = ctx.createMediaStreamSource(rawStream);
-      this._highpass = ctx.createBiquadFilter();
-      this._highpass.type = 'highpass';
-      this._highpass.frequency.value = 85;   // below the voice fundamental
-      this._highpass.Q.value = 0.707;        // Butterworth (flat passband)
-      this._gate = new AudioWorkletNode(ctx, 'huddle-noise-gate');
+      this._rnnoise = new AudioWorkletNode(ctx, 'huddle-rnnoise');
       this._dest = ctx.createMediaStreamDestination();
-      this._source.connect(this._highpass);
-      this._highpass.connect(this._gate);
-      this._gate.connect(this._dest);
+      this._source.connect(this._rnnoise);
+      this._rnnoise.connect(this._dest);
 
       // Some Electron/Chromium versions create the context suspended
       // until a user gesture; the toggle click that drives start()
@@ -129,12 +124,10 @@
       // guarded — stop() must be safe to call from teardown paths even
       // if start() half-failed.
       try { this._source?.disconnect(); } catch {}
-      try { this._highpass?.disconnect(); } catch {}
-      try { this._gate?.disconnect(); } catch {}
+      try { this._rnnoise?.disconnect(); } catch {}
       try { this._dest?.disconnect(); } catch {}
       this._source = null;
-      this._highpass = null;
-      this._gate = null;
+      this._rnnoise = null;
       this._dest = null;
       if (this._ctx) {
         try { this._ctx.close(); } catch {}

@@ -5965,7 +5965,11 @@ function applyPersistedNoiseSuppressionPreference() {
 
 function syncNoiseSuppressionButtonState() {
   if (!els.btnDenoise) return;
-  els.btnDenoise.classList.toggle('active', !!state.mesh?.noiseSuppressionOn);
+  const on = !!state.mesh?.noiseSuppressionOn;
+  els.btnDenoise.classList.toggle('active', on);
+  // Denoise is on by default, so flag the OFF state with a red icon — a
+  // clear "you've turned background-noise suppression off" signal.
+  els.btnDenoise.classList.toggle('denoise-off', !on);
 }
 
 // The mesh swaps the published MediaStream when blur is toggled
