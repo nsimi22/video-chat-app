@@ -61,6 +61,12 @@ class NoiseGateProcessor extends AudioWorkletProcessor {
     // absolute offset avoids chattering on near-silent input.
     const OPEN_MARGIN = 2.0;
     const FLOOR_OFFSET = 0.0008;
+    // When the gate is "closed" we attenuate to this floor instead of full
+    // silence. A hard mute (target 0.0) chopped speech in and out on pauses,
+    // breaths, and quiet passages — most noticeable on recorded clips. ~-18 dB
+    // still pushes room tone/fan well down while keeping the signal CONTINUOUS,
+    // i.e. a downward expander rather than a hard gate.
+    const GATE_FLOOR = 0.12; // ~-18 dB; 1.0 = fully open
     for (let i = 0; i < inCh.length; i++) {
       const x = inCh[i];
       const ax = x < 0 ? -x : x;
@@ -76,7 +82,7 @@ class NoiseGateProcessor extends AudioWorkletProcessor {
       this._floor += (this._env - this._floor) * this._floorRate;
       if (this._floor < 0) this._floor = 0;
       const threshold = this._floor * OPEN_MARGIN + FLOOR_OFFSET;
-      const target = this._env > threshold ? 1.0 : 0.0;
+      const target = this._env > threshold ? 1.0 : GATE_FLOOR;
       // Smooth the gain toward the target (attack when opening,
       // release when closing) to avoid clicks.
       const rate = target > this._gain ? this._gainAttack : this._gainRelease;
