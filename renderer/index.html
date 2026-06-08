@@ -492,6 +492,13 @@
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
           </button>
           <input id="file-input" type="file" multiple class="hidden" />
+          <!-- Huddle Clips: record a short cam+screen clip and post it
+               inline. Mirrors the attach/gif/emoji composer buttons; the
+               recorder UI itself lives in the #clip-recorder modal below
+               and is driven by renderer/clip-recorder.js. -->
+          <button id="clip-btn" class="icon-only ghost" title="Record a clip" aria-label="Record a clip">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="6.5" width="13" height="11" rx="2.5"/><path d="M15.5 10.5l5-3v9l-5-3z"/></svg>
+          </button>
           <button id="gif-btn" title="GIF">GIF</button>
           <button id="poll-btn" class="icon-only" title="Create a poll" aria-label="Create a poll">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
@@ -875,6 +882,52 @@
       </div>
     </div>
 
+    <!-- Huddle Clips recorder. The composer's #clip-btn opens this modal;
+         renderer/clip-recorder.js owns all the logic (getUserMedia for
+         cam+mic, the get-screen-sources picker for a screen, MediaRecorder,
+         the live preview, and the stop/re-record/discard controls). On
+         "Post" it hands a webm Blob back to chat.js, which uploads it via
+         the normal uploadFile path and posts it as a video attachment.
+         Markup only here — kept inert (.hidden) until opened so it never
+         holds a camera handle in the background. -->
+    <div id="clip-recorder" class="modal-backdrop hidden" aria-hidden="true">
+      <div class="modal clip-recorder">
+        <div class="clip-recorder-head">
+          <h2>Record a clip</h2>
+          <button id="clip-close" class="icon-only ghost" title="Close" aria-label="Close clip recorder">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
+        <!-- Source toggles — what to capture. Camera+mic on by default;
+             screen is opt-in (opens the existing source picker). -->
+        <div id="clip-sources" class="clip-sources">
+          <label class="clip-source-opt"><input id="clip-cam" type="checkbox" checked /> Camera + mic</label>
+          <label class="clip-source-opt"><input id="clip-screen" type="checkbox" /> Screen</label>
+        </div>
+
+        <!-- Live preview / playback surface. While recording or idle this
+             shows the camera (or screen) preview muted; after a take it
+             becomes the controls-enabled playback of the recorded clip. -->
+        <div class="clip-stage">
+          <video id="clip-preview" class="clip-preview" playsinline muted></video>
+          <div id="clip-timer" class="clip-timer hidden">0:00</div>
+        </div>
+
+        <div id="clip-error" class="clip-error hidden"></div>
+
+        <div class="clip-recorder-foot">
+          <span id="clip-status" class="clip-status">Camera + mic ready.</span>
+          <div class="clip-actions">
+            <button id="clip-record" class="primary" type="button">Record</button>
+            <button id="clip-stop" class="hidden" type="button">Stop</button>
+            <button id="clip-retake" class="ghost hidden" type="button">Re-record</button>
+            <button id="clip-post" class="primary hidden" type="button">Post clip</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Toast container — used for "Link copied" / "Joined …" feedback. -->
     <div id="toasts" class="toasts" aria-live="polite"></div>
 
@@ -1032,6 +1085,7 @@
     <script src="vendor/livekit.js"></script>
     <script src="livekit.js"></script>
     <script src="profile-card.js"></script>
+    <script src="clip-recorder.js"></script>
     <script src="chat.js"></script>
     <script src="calendar.js"></script>
     <script src="app.js"></script>

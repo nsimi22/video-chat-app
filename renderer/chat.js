@@ -280,6 +280,7 @@ class ChatView {
     this._initEmojiPicker();
     this._initGifPicker();
     this._initPollComposer();
+    this._initClipRecorder();
   }
 
   // --- Public API ---------------------------------------------------------
@@ -560,6 +561,10 @@ class ChatView {
     // switch never strands the user's last keystrokes in a
     // never-fired timer.
     this._flushDraftSave();
+    // Release any live camera/screen capture the clip recorder is holding
+    // (e.g. the modal was left open when the team switched).
+    try { this._clipRecorder?.close(); } catch {}
+    this._clipRecorder = null;
     this._listenerCtrl?.abort();
     this._listenerCtrl = null;
   }
@@ -1674,8 +1679,22 @@ class ChatView {
       attachmentsEl = document.createElement('div');
       attachmentsEl.className = 'msg-attachments';
       for (const a of m.attachments) {
-        const isImage = (a.contentType || '').startsWith('image/');
-        if (isImage) {
+        const ct = a.contentType || '';
+        const isImage = ct.startsWith('image/');
+        // Huddle Clips (and any other video upload) render as an inline
+        // player. We key off the MIME type so plain video uploads work too,
+        // not just clips recorded in-app (which also carry kind === 'clip').
+        const isVideo = ct.startsWith('video/') || a.kind === 'clip' || a.kind === 'video';
+        if (isVideo) {
+          const video = document.createElement('video');
+          video.src = a.url;
+          video.controls = true;
+          video.preload = 'metadata';
+          video.playsInline = true;
+          video.className = 'msg-video';
+          if (a.poster) video.poster = a.poster;
+          attachmentsEl.appendChild(video);
+        } else if (isImage) {
           const img = document.createElement('img');
           img.src = a.url;
           img.alt = a.name;
@@ -2019,6 +2038,71 @@ class ChatView {
       if (this.els.pollComposer.contains(e.target) || e.target === this.els.pollBtn) return;
       this.els.pollComposer.classList.add('hidden');
     });
+  }
+
+  // --- Huddle Clips -------------------------------------------------------
+
+  // Wire the composer's "Record a clip" button to the ClipRecorder modal.
+  // The recorder itself (camera/screen capture, MediaRecorder, preview,
+  // stop/re-record/discard) lives in renderer/clip-recorder.js; we only
+  // own the entry point and the "post the finished blob" hand-off.
+  _initClipRecorder() {
+    if (!this.els.clipBtn || !window.ClipRecorder) return;
+    this._clipRecorder = new window.ClipRecorder({
+      els: this.els,
+      signal: this._listenerCtrl.signal,
+      hooks: {
+        // Reuse the app's screen source picker (promise-returning variant).
+        pickScreenSource: this.hooks.pickScreenSource,
+        toast: (msg) => this.hooks.toast?.(msg),
+        // Finished clip → upload via the normal uploadFile path, then post
+        // it as a chat message with a video attachment in the *current*
+        // channel/thread (snapshotted so a mid-upload channel switch posts
+        // to the right place).
+        onPost: (blob, meta) => this._postClip(blob, meta),
+      },
+    });
+    this._on(this.els.clipBtn, 'click', (e) => {
+      e.stopPropagation();
+      this._clipRecorder.open();
+    });
+  }
+
+  // Upload a recorded clip Blob and post it as a video attachment. Mirrors
+  // the _beginUpload + _submit flow: the clip rides as a normal attachment
+  // (same JSONB shape) so no message-schema change is needed; rendering
+  // keys off the `video/*` contentType.
+  async _postClip(blob, meta) {
+    const channelId = this.currentChannel;
+    const parentId = this.threadParentId;
+    // uploadFile takes a File/Blob with a .name + .type; wrap the Blob in a
+    // File so the stored object gets a sensible filename + content type.
+    const file = new File([blob], meta.name, { type: meta.mimeType || blob.type });
+    let info;
+    try {
+      info = await this.mesh.uploadFile(file);
+    } catch (err) {
+      console.warn('clip upload failed', err);
+      this.hooks.toast?.('Clip upload failed — try again.');
+      return;
+    }
+    // Tag the attachment as a clip so the renderer can treat it specially
+    // (inline <video controls>) and so future features (transcripts) have a
+    // hook. `kind` is additive metadata; existing image/file attachments
+    // simply don't have it.
+    info.kind = 'clip';
+    if (meta.durationSecs) info.durationSecs = meta.durationSecs;
+    try {
+      await this.mesh.sendMessage({
+        channelId,
+        parentId,
+        text: '',
+        attachments: [info],
+      });
+    } catch (err) {
+      console.warn('clip post failed', err);
+      this.hooks.toast?.('Couldn’t post the clip.');
+    }
   }
 
   _openPollComposer() {
