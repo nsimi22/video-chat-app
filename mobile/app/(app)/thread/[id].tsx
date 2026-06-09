@@ -5,7 +5,9 @@ import {
   AppState,
   type AppStateStatus,
   FlatList,
+  Image,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Text,
   TextInput,
@@ -14,11 +16,13 @@ import {
 } from 'react-native';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useHeaderHeight } from '@react-navigation/elements';
+import { Paperclip } from 'lucide-react-native';
 import { fetchThread, listTeamProfiles, sendMessage, type Message, type Profile } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { AiMessageCard, Avatar, Markdown } from '@/components/ui';
 import { MessageUnfurls } from '@/components/Unfurl';
+import { ImageLightbox } from '@/components/ImageLightbox';
 import { PollCard } from '@/components/PollCard';
 import { colors, radius, space } from '@/theme';
 
@@ -35,6 +39,7 @@ export default function ThreadScreen() {
   const [loading, setLoading] = useState(true);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  const [lightboxUri, setLightboxUri] = useState<string | null>(null);
   const listRef = useRef<FlatList<Message>>(null);
 
   useEffect(() => {
@@ -171,6 +176,37 @@ export default function ThreadScreen() {
               {!!m.body && <MessageUnfurls body={m.body} viewerId={userId} />}
             </>
           )}
+          {(m.attachments ?? []).map((a, i) => {
+            const mime = a.type ?? a.contentType ?? '';
+            return mime.startsWith('image/') ? (
+              // Tap an image attachment to open the full-screen lightbox.
+              <TouchableOpacity
+                key={i}
+                activeOpacity={0.85}
+                onPress={() => setLightboxUri(a.url)}
+                accessibilityLabel={`Open image ${a.name ?? 'attachment'}`}
+              >
+                <Image source={{ uri: a.url }} style={{ width: 220, height: 160, borderRadius: radius.sm, marginTop: space(1.5), backgroundColor: colors.surfaceAlt }} resizeMode="cover" />
+              </TouchableOpacity>
+            ) : (
+              // Non-image attachment (zip, pdf, doc, …). Tap to open the public
+              // URL in the device browser — same behaviour as the channel screen.
+              <TouchableOpacity
+                key={i}
+                activeOpacity={0.7}
+                onPress={() =>
+                  Linking.openURL(a.url).catch(() =>
+                    Alert.alert('Could not open', a.name ?? 'attachment')
+                  )
+                }
+                style={{ flexDirection: 'row', alignItems: 'center', marginTop: space(1) }}
+                accessibilityLabel={`Open attachment ${a.name ?? ''}`}
+              >
+                <Paperclip size={14} color={colors.accent} style={{ marginRight: 6 }} />
+                <Text style={{ color: colors.accent }}>{a.name}</Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
       </View>
     );
@@ -243,6 +279,7 @@ export default function ThreadScreen() {
           <Text style={{ color: colors.accentTx, fontWeight: '600', fontSize: 15 }}>Send</Text>
         </TouchableOpacity>
       </View>
+      <ImageLightbox uri={lightboxUri} onClose={() => setLightboxUri(null)} />
     </KeyboardAvoidingView>
   );
 }
