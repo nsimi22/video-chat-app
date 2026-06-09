@@ -212,6 +212,8 @@
       this.editingNote = null;
       this.selectedNote = null;
       this.selectedFrame = null;
+      this._undoStack = [];     // inverse-action closures for Cmd/Ctrl+Z
+      this._undoing = false;    // true while an undo runs (suppresses re-push)
       this._paintedStrokeUuids = new Set();
       this._frameDrag = null;
       this._noteDrag = null;
@@ -547,17 +549,50 @@
       this._refreshToolButtons();
     }
 
+    // Pop + run the most recent inverse action (strokes, notes, frames —
+    // create/delete/move/resize/color all push one). The _undoing guard
+    // stops an undo action from pushing its own inverse back onto the stack.
     undo() {
-      // Pop the most recent local stroke, if any. The canvas owns its own
-      // undo stack of finished strokes — call it through removeStroke +
-      // a delete-stroke broadcast.
-      if (!this._localStrokeUuids || !this._localStrokeUuids.length) return;
-      const uuid = this._localStrokeUuids.pop();
-      this.canvas?.removeStroke(uuid);
-      this._paintedStrokeUuids.add(uuid);
-      this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'delete-stroke', uuid }, this.viewId);
-      this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid)
-        .catch((err) => console.warn('[wbv] undo persist-delete failed', err));
+      const fn = this._undoStack.pop();
+      if (!fn) return;
+      this._undoing = true;
+      try { fn(); } catch (err) { console.warn('[wbv] undo failed', err); }
+      finally { this._undoing = false; }
+    }
+    _pushUndo(fn) {
+      if (this._undoing) return;
+      this._undoStack.push(fn);
+      if (this._undoStack.length > 100) this._undoStack.shift();
+    }
+    // Undo helpers — restore geometry / recreate deleted objects.
+    _applyNoteGeom(id, geom) {
+      const entry = this.notes.get(id);
+      if (!entry) return;
+      Object.assign(entry.data, geom);
+      this._positionNote(entry);
+      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id, ...geom } }, this.viewId);
+      this.huddle.updateWhiteboardNote(id, geom).catch((e) => console.warn('[wbv] undo note geom failed', e));
+    }
+    _applyFrameGeom(id, geom) {
+      const entry = this.frames.get(id);
+      if (!entry) return;
+      Object.assign(entry.data, geom);
+      this._positionFrame(entry);
+      this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id, ...geom } }, this.viewId);
+      this.huddle.updateWhiteboardFrame(id, geom).catch((e) => console.warn('[wbv] undo frame geom failed', e));
+    }
+    _recreateNoteFromData(data) {
+      this._renderNote({ ...data });
+      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note: data }, this.viewId);
+      const persist = (data.color_key === TEXT_KIND)
+        ? { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h, text: data.text || '', color_key: TEXT_KIND }
+        : { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h, text: data.text || '', color: (STICKY[data.color_key]?.bg) || data.color, color_key: data.color_key };
+      this.huddle.createWhiteboardNote(this.whiteboardId, persist).catch((e) => console.warn('[wbv] undo recreate note failed', e));
+    }
+    _recreateFrameFromData(data) {
+      this._renderFrame({ ...data });
+      this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'create', frame: data }, this.viewId);
+      this.huddle.createWhiteboardFrame(this.whiteboardId, { ...data }).catch((e) => console.warn('[wbv] undo recreate frame failed', e));
     }
 
     async clearAll() {
@@ -584,9 +619,14 @@
     _persistFinishedStroke(polyline) {
       if (!polyline?.uuid) return;
       this._paintedStrokeUuids.add(polyline.uuid);
-      this._localStrokeUuids = this._localStrokeUuids || [];
-      this._localStrokeUuids.push(polyline.uuid);
-      if (this._localStrokeUuids.length > 50) this._localStrokeUuids.shift();
+      const uuid = polyline.uuid;
+      this._pushUndo(() => {
+        this.canvas?.removeStroke(uuid);
+        this._paintedStrokeUuids.add(uuid);
+        this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'delete-stroke', uuid }, this.viewId);
+        this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid)
+          .catch((e) => console.warn('[wbv] undo stroke delete failed', e));
+      });
       this.huddle.persistWhiteboardStroke(this.whiteboardId, polyline)
         .catch((err) => console.warn('[wbv] persist failed', err));
     }
@@ -649,6 +689,7 @@
       };
       this._renderNote(note, { focus: true });
       this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note }, this.viewId);
+      this._pushUndo(() => this._deleteNote(id));
       try {
         await this.huddle.createWhiteboardNote(this.whiteboardId, {
           id, x, y, w: NOTE_W, h: NOTE_H, text: '',
@@ -671,6 +712,7 @@
       };
       this._renderNote(note, { focus: true });
       this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note }, this.viewId);
+      this._pushUndo(() => this._deleteNote(id));
       try {
         await this.huddle.createWhiteboardNote(this.whiteboardId, {
           id, x, y, w: TEXT_W, h: TEXT_H, text: '',
@@ -928,6 +970,8 @@
           el.removeEventListener('pointerup', onUp);
           el.removeEventListener('pointercancel', onUp);
           if (this._noteDrag?.moved) {
+            const px = start.origX, py = start.origY;
+            this._pushUndo(() => this._applyNoteGeom(data.id, { x: px, y: py }));
             this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: data.id, x: data.x, y: data.y } }, this.viewId);
             this.huddle.updateWhiteboardNote(data.id, { x: data.x, y: data.y })
               .catch((err) => console.warn('[wbv] note move persist failed', err));
@@ -1006,6 +1050,10 @@
             handle.removeEventListener('pointermove', onMove);
             handle.removeEventListener('pointerup', onUp);
             handle.removeEventListener('pointercancel', onUp);
+            if (start.x !== data.x || start.y !== data.y || start.w !== data.w || start.h !== data.h) {
+              const g = { x: start.x, y: start.y, w: start.w, h: start.h };
+              this._pushUndo(() => this._applyNoteGeom(data.id, g));
+            }
             const patch = { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h };
             this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: patch }, this.viewId);
             this.huddle.updateWhiteboardNote(data.id, { x: data.x, y: data.y, w: data.w, h: data.h })
@@ -1084,6 +1132,8 @@
       if (!STICKY[slug]) return;
       const entry = this.notes.get(id);
       if (!entry) return;
+      const prevSlug = entry.data.color_key;
+      if (prevSlug !== slug) this._pushUndo(() => this._setNoteColor(id, prevSlug));
       entry.data.color_key = slug;
       const p = STICKY[slug];
       entry.el.style.setProperty('--wbv-note-bg', p.bg);
@@ -1107,8 +1157,11 @@
     }
 
     async _deleteNote(id) {
+      const entry = this.notes.get(id);
+      const snap = entry ? { ...entry.data } : null;
       this._removeNoteEl(id);
       this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'delete', id }, this.viewId);
+      if (snap) this._pushUndo(() => this._recreateNoteFromData(snap));
       try { await this.huddle.deleteWhiteboardNote(id); }
       catch (err) { console.warn('[wbv] note delete failed', err); }
     }
@@ -1175,6 +1228,7 @@
       };
       this._renderFrame(frame, { editTitle: true });
       this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'create', frame }, this.viewId);
+      this._pushUndo(() => this._deleteFrame(frame.id));
       try { await this.huddle.createWhiteboardFrame(this.whiteboardId, frame); }
       catch (err) { console.warn('[wbv] frame create failed', err); }
     }
@@ -1263,6 +1317,10 @@
           chipEl.removeEventListener('pointermove', onMove);
           chipEl.removeEventListener('pointerup', onUp);
           chipEl.removeEventListener('pointercancel', onUp);
+          if (start.origX !== data.x || start.origY !== data.y) {
+            const px = start.origX, py = start.origY;
+            this._pushUndo(() => this._applyFrameGeom(data.id, { x: px, y: py }));
+          }
           this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id: data.id, x: data.x, y: data.y } }, this.viewId);
           this.huddle.updateWhiteboardFrame(data.id, { x: data.x, y: data.y })
             .catch((err) => console.warn('[wbv] frame move persist failed', err));
@@ -1318,6 +1376,10 @@
             handle.removeEventListener('pointermove', onMove);
             handle.removeEventListener('pointerup', onUp);
             handle.removeEventListener('pointercancel', onUp);
+            if (start.x !== data.x || start.y !== data.y || start.w !== data.w || start.h !== data.h) {
+              const g = { x: start.x, y: start.y, w: start.w, h: start.h };
+              this._pushUndo(() => this._applyFrameGeom(data.id, g));
+            }
             const patch = { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h };
             this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: patch }, this.viewId);
             this.huddle.updateWhiteboardFrame(data.id, { x: data.x, y: data.y, w: data.w, h: data.h })
@@ -1375,6 +1437,8 @@
     _setFrameTint(id, tint) {
       const entry = this.frames.get(id);
       if (!entry || !FRAME_TINTS[tint]) return;
+      const prevTint = entry.data.tint;
+      if (prevTint !== tint) this._pushUndo(() => this._setFrameTint(id, prevTint));
       entry.data.tint = tint;
       entry.el.style.setProperty('--wbv-frame-tint', FRAME_TINTS[tint]);
       this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id, tint } }, this.viewId);
@@ -1384,8 +1448,11 @@
 
     async _deleteFrame(id) {
       if (this.selectedFrame === id) this.selectedFrame = null;
+      const entry = this.frames.get(id);
+      const snap = entry ? { ...entry.data } : null;
       this._removeFrameEl(id);
       this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'delete', id }, this.viewId);
+      if (snap) this._pushUndo(() => this._recreateFrameFromData(snap));
       try { await this.huddle.deleteWhiteboardFrame(id); }
       catch (err) { console.warn('[wbv] frame delete failed', err); }
     }
@@ -1586,7 +1653,11 @@
       else if (k === 'r') this.setTool('rect');
       else if (k === 'o') this.setTool('ellipse');
       else if (k === 'a') this.setTool('arrow');
-      else if ((e.metaKey || e.ctrlKey) && k === 'z') { e.preventDefault(); this.undo(); }
+      else if ((e.metaKey || e.ctrlKey) && k === 'z') {
+        if (this.editingNote || document.activeElement?.isContentEditable) return; // let native text undo run
+        e.preventDefault();
+        this.undo();
+      }
       else if (k === 'delete' || k === 'backspace') {
         if (this.selectedNote && !this.editingNote) { e.preventDefault(); this._deleteNote(this.selectedNote); }
         else if (this.selectedFrame && !document.activeElement?.isContentEditable) { e.preventDefault(); this._deleteFrame(this.selectedFrame); }
