@@ -427,29 +427,38 @@
 
     _renderSwatches() {
       this.swatchWrap.innerHTML = '';
-      if (this.tool === 'sticky') {
-        for (const k of STICKY_ORDER) {
-          const c = STICKY[k].dot;
-          const b = h('button', {
-            class: 'wbv-swatch wbv-swatch-sticky' + (k === this.stickyColor ? ' is-on' : ''),
-            style: { background: c },
-            attrs: { title: k, 'aria-label': `Sticky color: ${k}` },
+      const isSticky = this.tool === 'sticky';
+      const trigger = h('button', { class: 'wbv-toolbar-color wbv-palette-color', attrs: { title: 'Color', 'aria-label': 'Color' } });
+      const dot = h('span', { class: 'wbv-toolbar-color-dot' });
+      dot.style.background = isSticky ? (STICKY[this.stickyColor]?.dot || this.stickyColor) : resolveColor(this.drawColor);
+      trigger.appendChild(dot);
+      trigger.appendChild(h('span', { class: 'wbv-toolbar-color-caret' }));
+      trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (isSticky) {
+          this._openColorPopover(trigger, {
+            current: this.stickyColor,
+            items: STICKY_ORDER.map((k) => ({ key: k, color: STICKY[k].dot })),
+            onPick: (k) => { this.stickyColor = k; dot.style.background = STICKY[k].dot; this._refreshHintSwatch(); },
           });
-          b.addEventListener('click', () => { this.stickyColor = k; this._renderSwatches(); this._refreshHintSwatch(); });
-          this.swatchWrap.appendChild(b);
-        }
-      } else {
-        const colors = ['var(--accent)', 'var(--live, #2ec4b6)', 'var(--online, #34c759)', 'var(--away, #f5a524)'];
-        for (const c of colors) {
-          const b = h('button', {
-            class: 'wbv-swatch' + (c === this.drawColor ? ' is-on' : ''),
-            style: { background: c },
-            attrs: { 'aria-label': `Ink color ${c}` },
+        } else {
+          const inks = [
+            { key: 'var(--accent)', color: 'var(--accent)' },
+            { key: 'var(--live, #2ec4b6)', color: 'var(--live, #2ec4b6)' },
+            { key: 'var(--online, #34c759)', color: 'var(--online, #34c759)' },
+            { key: 'var(--away, #f5a524)', color: 'var(--away, #f5a524)' },
+            { key: '#ffffff', color: '#ffffff' },
+            { key: '#1a1a1a', color: '#1a1a1a' },
+          ];
+          this._openColorPopover(trigger, {
+            current: this.drawColor,
+            items: inks,
+            onPick: (c) => { this.drawColor = c; this.canvas.setColor(resolveColor(c)); dot.style.background = resolveColor(c); },
+            onCustom: (hex) => { this.drawColor = hex; this.canvas.setColor(resolveColor(hex)); dot.style.background = hex; },
           });
-          b.addEventListener('click', () => { this.drawColor = c; this.canvas.setColor(resolveColor(c)); this._renderSwatches(); });
-          this.swatchWrap.appendChild(b);
         }
-      }
+      });
+      this.swatchWrap.appendChild(trigger);
     }
 
     _refreshHintSwatch() {
@@ -807,18 +816,23 @@
 
       // Contextual color/delete toolbar (only when selected, not editing).
       const toolbar = h('div', { class: 'wbv-note-toolbar' });
-      for (const k of STICKY_ORDER) {
-        const sw = h('button', { class: 'wbv-note-toolbar-swatch', style: { background: STICKY[k].dot }, attrs: { title: k } });
-        sw.addEventListener('click', (e) => { e.stopPropagation(); this._setNoteColor(note.id, k); });
-        toolbar.appendChild(sw);
-      }
-      // Custom colour — rainbow swatch opens the OS colour picker.
-      const customWrap = h('button', { class: 'wbv-note-toolbar-custom', attrs: { title: 'Custom color', 'aria-label': 'Custom color' } });
-      const customInput = h('input', { attrs: { type: 'color' } });
-      customWrap.appendChild(customInput);
-      customWrap.addEventListener('click', (e) => { e.stopPropagation(); customInput.click(); });
-      customInput.addEventListener('input', (e) => { e.stopPropagation(); this._setNoteColorCustom(note.id, e.target.value); });
-      toolbar.appendChild(customWrap);
+      // Single colour dot → popover palette (FigJam-style).
+      const colorBtn = h('button', { class: 'wbv-toolbar-color', attrs: { title: 'Color', 'aria-label': 'Color' } });
+      const colorDot = h('span', { class: 'wbv-toolbar-color-dot' });
+      colorDot.style.background = notePalette(note.color_key, note.color).dot;
+      colorBtn.appendChild(colorDot);
+      colorBtn.appendChild(h('span', { class: 'wbv-toolbar-color-caret' }));
+      colorBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const cur = this.notes.get(note.id);
+        this._openColorPopover(colorBtn, {
+          current: cur?.data?.color_key,
+          items: STICKY_ORDER.map((k) => ({ key: k, color: STICKY[k].dot })),
+          onPick: (k) => { this._setNoteColor(note.id, k); colorDot.style.background = STICKY[k].dot; },
+          onCustom: (hex) => { this._setNoteColorCustom(note.id, hex); colorDot.style.background = hex; },
+        });
+      });
+      toolbar.appendChild(colorBtn);
       toolbar.appendChild(h('span', { class: 'wbv-note-toolbar-sep' }));
       const del = h('button', { class: 'wbv-note-toolbar-del', attrs: { title: 'Delete note' } });
       del.appendChild(iconEl('trash', 14));
@@ -1215,6 +1229,58 @@
         .catch((e) => console.warn('[wbv] custom color save failed', e));
     }
 
+    // FigJam-style colour popover: a single dot in the contextual toolbar
+    // opens this grid of swatches (+ optional custom picker). Anchored to
+    // the trigger, dismissed on outside-click / Escape.
+    _openColorPopover(anchorEl, opts) {
+      this._closeColorPopover();
+      const pop = h('div', { class: 'wbv-color-pop' });
+      const grid = h('div', { class: 'wbv-color-pop-grid' });
+      for (const it of opts.items) {
+        const b = h('button', {
+          class: 'wbv-color-pop-sw' + (it.key === opts.current ? ' is-on' : ''),
+          style: { background: it.color },
+          attrs: { title: it.key, 'aria-label': it.key },
+        });
+        b.addEventListener('click', (e) => { e.stopPropagation(); opts.onPick(it.key); this._closeColorPopover(); });
+        grid.appendChild(b);
+      }
+      pop.appendChild(grid);
+      if (opts.onCustom) {
+        const cw = h('button', { class: 'wbv-color-pop-custom', attrs: { title: 'Custom color' } });
+        const ci = h('input', { attrs: { type: 'color' } });
+        cw.appendChild(ci);
+        cw.appendChild(h('span', { class: 'wbv-color-pop-custom-rainbow' }));
+        cw.appendChild(h('span', { text: 'Custom' }));
+        cw.addEventListener('click', (e) => { e.stopPropagation(); ci.click(); });
+        ci.addEventListener('input', (e) => { e.stopPropagation(); opts.onCustom(e.target.value); });
+        ci.addEventListener('change', () => this._closeColorPopover());
+        pop.appendChild(cw);
+      }
+      document.body.appendChild(pop);
+      const r = anchorEl.getBoundingClientRect();
+      pop.style.left = Math.round(r.left) + 'px';
+      pop.style.top = Math.round(r.bottom + 8) + 'px';
+      const pr = pop.getBoundingClientRect();
+      if (pr.right > window.innerWidth - 8) pop.style.left = Math.max(8, window.innerWidth - 8 - pr.width) + 'px';
+      if (pr.bottom > window.innerHeight - 8) pop.style.top = Math.max(8, Math.round(r.top - pr.height - 8)) + 'px';
+      this._colorPop = pop;
+      const onDoc = (e) => { if (!pop.contains(e.target) && !anchorEl.contains(e.target)) this._closeColorPopover(); };
+      const onKey = (e) => { if (e.key === 'Escape') this._closeColorPopover(); };
+      setTimeout(() => {
+        document.addEventListener('pointerdown', onDoc, true);
+        document.addEventListener('keydown', onKey, true);
+      }, 0);
+      this._colorPopCleanup = () => {
+        document.removeEventListener('pointerdown', onDoc, true);
+        document.removeEventListener('keydown', onKey, true);
+      };
+    }
+    _closeColorPopover() {
+      if (this._colorPopCleanup) { this._colorPopCleanup(); this._colorPopCleanup = null; }
+      if (this._colorPop) { this._colorPop.remove(); this._colorPop = null; }
+    }
+
     _removeNoteEl(id) {
       const entry = this.notes.get(id);
       if (!entry) return;
@@ -1306,7 +1372,7 @@
 
     _renderFrame(frame, { editTitle = false } = {}) {
       if (this.frames.has(frame.id)) { this._applyFramePatch(frame); return; }
-      const tintVar = FRAME_TINTS[frame.tint] || FRAME_TINTS.accent;
+      const tintVar = FRAME_TINTS[frame.tint] || (isHex(frame.tint) ? frame.tint : FRAME_TINTS.accent);
       const el = h('div', { class: 'wbv-frame' + (frame.dashed ? ' wbv-frame-dashed' : ''), attrs: { 'data-frame-id': frame.id } });
       el.style.setProperty('--wbv-frame-tint', tintVar);
 
@@ -1321,13 +1387,25 @@
       chip.appendChild(del);
       el.appendChild(chip);
 
-      // Frame colour picker — shown at top-right while the frame is selected.
+      // Frame colour — a single dot opens the popover palette, like notes.
       const ftoolbar = h('div', { class: 'wbv-frame-toolbar' });
-      for (const k of Object.keys(FRAME_TINTS)) {
-        const sw = h('button', { class: 'wbv-frame-swatch', style: { background: FRAME_TINTS[k] }, attrs: { title: k, 'aria-label': `Frame color: ${k}` } });
-        sw.addEventListener('click', (e) => { e.stopPropagation(); this._selectFrame(frame.id); this._setFrameTint(frame.id, k); });
-        ftoolbar.appendChild(sw);
-      }
+      const fColorBtn = h('button', { class: 'wbv-toolbar-color', attrs: { title: 'Color', 'aria-label': 'Color' } });
+      const fDot = h('span', { class: 'wbv-toolbar-color-dot' });
+      fDot.style.background = FRAME_TINTS[frame.tint] || (isHex(frame.tint) ? frame.tint : FRAME_TINTS.accent);
+      fColorBtn.appendChild(fDot);
+      fColorBtn.appendChild(h('span', { class: 'wbv-toolbar-color-caret' }));
+      fColorBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._selectFrame(frame.id);
+        const cur = this.frames.get(frame.id);
+        this._openColorPopover(fColorBtn, {
+          current: cur?.data?.tint,
+          items: Object.keys(FRAME_TINTS).map((k) => ({ key: k, color: FRAME_TINTS[k] })),
+          onPick: (k) => { this._setFrameTint(frame.id, k); fDot.style.background = FRAME_TINTS[k]; },
+          onCustom: (hex) => { this._setFrameTint(frame.id, hex); fDot.style.background = hex; },
+        });
+      });
+      ftoolbar.appendChild(fColorBtn);
       el.appendChild(ftoolbar);
 
       // 8 resize handles (4 corners + 4 edges). Drag a corner to scale
@@ -1492,7 +1570,7 @@
       if (!entry) return;
       Object.assign(entry.data, patch);
       if (patch.title != null && document.activeElement !== entry.titleEl) entry.titleEl.textContent = patch.title;
-      if (patch.tint) entry.el.style.setProperty('--wbv-frame-tint', FRAME_TINTS[patch.tint] || FRAME_TINTS.accent);
+      if (patch.tint) entry.el.style.setProperty('--wbv-frame-tint', FRAME_TINTS[patch.tint] || (isHex(patch.tint) ? patch.tint : FRAME_TINTS.accent));
       if (patch.dashed != null) entry.el.classList.toggle('wbv-frame-dashed', !!patch.dashed);
       if (patch.x != null || patch.y != null || patch.w != null || patch.h != null) this._positionFrame(entry);
     }
@@ -1507,11 +1585,11 @@
 
     _setFrameTint(id, tint) {
       const entry = this.frames.get(id);
-      if (!entry || !FRAME_TINTS[tint]) return;
+      if (!entry || (!FRAME_TINTS[tint] && !isHex(tint))) return;
       const prevTint = entry.data.tint;
       if (prevTint !== tint) this._pushUndo(() => this._setFrameTint(id, prevTint));
       entry.data.tint = tint;
-      entry.el.style.setProperty('--wbv-frame-tint', FRAME_TINTS[tint]);
+      entry.el.style.setProperty('--wbv-frame-tint', FRAME_TINTS[tint] || tint);
       this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id, tint } }, this.viewId);
       this.huddle.updateWhiteboardFrame(id, { tint })
         .catch((err) => console.warn('[wbv] frame tint save failed', err));
