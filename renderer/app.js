@@ -2111,6 +2111,15 @@ async function leaveCall() {
   if (rec && rec.started_by === state.huddle?.peerId
     && ['starting', 'recording', 'stopping'].includes(rec.status)) {
     submitRecordingTranscriptSnapshot(rec.id, rec.channel_id);
+    // Stop the egress now too. Leaving without clicking Stop otherwise lets
+    // LiveKit's RoomComposite keep running until the room empties + its
+    // finalization grace, tacking ~20s of empty-room footage onto the file.
+    // Fire-and-forget (the webhook reconciles final status); idempotent if a
+    // Stop click already moved it to 'stopping'. Gated to the starter, so it
+    // never cuts a recording someone else owns.
+    if (rec.status !== 'stopping') {
+      state.huddle.stopRecording(rec.channel_id).catch((err) => console.warn('[recording] stop-on-leave failed', err));
+    }
   }
   // Snapshot + clear the captions buffer synchronously, then
   // dispatch the AI summary as a background task. We don't await
