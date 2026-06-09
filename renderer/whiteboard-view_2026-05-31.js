@@ -55,6 +55,29 @@
     away:   'var(--away, #f5a524)',
   };
 
+  // URL auto-linking for note/text display. Escapes HTML, then wraps bare
+  // http(s) URLs in an accent-coloured anchor. Newlines survive as-is (the
+  // note text uses white-space: pre-wrap), so we don't convert them.
+  const URL_RE = /(https?:\/\/[^\s<]+[^\s<.,;:!?)\]}'"])/g;
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+  function linkifyHtml(text) {
+    const src = String(text || '');
+    let out = '', last = 0;
+    src.replace(URL_RE, (url, _g1, idx) => {
+      out += escapeHtml(src.slice(last, idx));
+      const safe = escapeHtml(url);
+      out += `<a class="wbv-link" data-url="${safe}" href="${safe}">${safe}</a>`;
+      last = idx + url.length;
+      return url;
+    });
+    out += escapeHtml(src.slice(last));
+    return out;
+  }
+
   const TOOLS = [
     { id: 'cursor',  icon: 'cursor',     label: 'Select  ·  V' },
     { id: 'sticky',  icon: 'stickyNote', label: 'Sticky note  ·  S' },
@@ -730,6 +753,7 @@
       this._positionNote(entry);
       this._refreshVoteStyle(entry);
       this._resolveAuthor(entry);
+      this._renderNoteTextDisplay(entry);
       if (focus) {
         this._selectNote(note.id);
         this._beginEditNote(note.id);
@@ -741,7 +765,7 @@
       if (!entry) return;
       Object.assign(entry.data, patch);
       if (patch.text != null && entry.textEl && document.activeElement !== entry.textEl) {
-        entry.textEl.textContent = patch.text;
+        this._renderNoteTextDisplay(entry);
       }
       if (patch.color_key && STICKY[patch.color_key]) {
         const p = STICKY[patch.color_key];
@@ -776,6 +800,7 @@
       this.notes.set(note.id, entry);
       this._wireNoteHandlers(entry); // same drag handlers; text edits below
       this._positionNote(entry);
+      this._renderNoteTextDisplay(entry);
       if (focus) {
         this._selectNote(note.id);
         this._beginEditNote(note.id);
@@ -847,6 +872,15 @@
         e.stopPropagation();
         this._selectNote(data.id);
       });
+      // Open auto-linked URLs in the system browser; don't let the click
+      // bubble up to select/drag the note.
+      textEl.addEventListener('click', (e) => {
+        const a = e.target.closest('a.wbv-link');
+        if (!a || this.editingNote === data.id) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (a.dataset.url) window.open(a.dataset.url, '_blank', 'noopener');
+      });
       el.addEventListener('dblclick', (e) => {
         e.stopPropagation();
         this._selectNote(data.id);
@@ -860,7 +894,7 @@
         // (color swatches / delete), the vote pill, or a resize
         // handle — those have their own handlers and a tiny pointer
         // drift would otherwise burn a spurious "moved" persist.
-        if (e.target.closest('.wbv-note-toolbar, .wbv-note-vote, .wbv-resize-handle')) return;
+        if (e.target.closest('.wbv-note-toolbar, .wbv-note-vote, .wbv-resize-handle, a.wbv-link')) return;
         e.stopPropagation();
         e.preventDefault();
         const vp = this.canvas?.getViewport() || { scale: 1 };
@@ -997,12 +1031,23 @@
       if (id) this._selectNote(null);
     }
 
+    // Render a note's text either as plain text (while editing, so the
+    // caret + typing behave) or with clickable accent links (when idle).
+    _renderNoteTextDisplay(entry) {
+      if (!entry?.textEl) return;
+      const txt = entry.data.text || '';
+      if (this.editingNote === entry.data.id) entry.textEl.textContent = txt;
+      else entry.textEl.innerHTML = linkifyHtml(txt);
+    }
+
     _beginEditNote(id) {
       const entry = this.notes.get(id);
       if (!entry) return;
       this.editingNote = id;
       entry.el.classList.add('is-editing');
       entry.textEl.setAttribute('contenteditable', 'true');
+      // Swap any link markup back to plain text so the caret + typing behave.
+      entry.textEl.textContent = entry.data.text || '';
       entry.textEl.focus();
       // place caret at end
       const r = document.createRange(); r.selectNodeContents(entry.textEl); r.collapse(false);
@@ -1019,6 +1064,8 @@
       const text = entry.textEl.innerText.trim();
       if (!text) this._deleteNote(id);
       else {
+        entry.data.text = text;
+        this._renderNoteTextDisplay(entry); // re-linkify now that we're idle
         this.huddle.updateWhiteboardNote(id, { text })
           .catch((err) => console.warn('[wbv] final note text save failed', err));
       }

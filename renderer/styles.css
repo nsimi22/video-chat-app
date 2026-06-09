@@ -8117,6 +8117,16 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 }
 .wbv-frame-del:hover { background: var(--bg-2, rgba(255,255,255,0.06)); color: var(--danger, #ff453a); }
 
+/* Auto-linked URLs inside notes / text blocks — accent blue, clickable. */
+.wbv-link {
+  color: var(--accent, #0a84ff);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  word-break: break-all;
+}
+.wbv-link:hover { filter: brightness(1.15); }
+
 /* Ghost collaborator cursors ------------------------------------ */
 .wbv-cursor {
   position: absolute;
