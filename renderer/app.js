@@ -2111,6 +2111,15 @@ async function leaveCall() {
   if (rec && rec.started_by === state.huddle?.peerId
     && ['starting', 'recording', 'stopping'].includes(rec.status)) {
     submitRecordingTranscriptSnapshot(rec.id, rec.channel_id);
+    // Stop the egress now too. Leaving without clicking Stop otherwise lets
+    // LiveKit's RoomComposite keep running until the room empties + its
+    // finalization grace, tacking ~20s of empty-room footage onto the file.
+    // Fire-and-forget (the webhook reconciles final status); idempotent if a
+    // Stop click already moved it to 'stopping'. Gated to the starter, so it
+    // never cuts a recording someone else owns.
+    if (rec.status !== 'stopping') {
+      state.huddle.stopRecording(rec.channel_id).catch((err) => console.warn('[recording] stop-on-leave failed', err));
+    }
   }
   // Snapshot + clear the captions buffer synchronously, then
   // dispatch the AI summary as a background task. We don't await
@@ -2138,6 +2147,11 @@ async function leaveCall() {
   // already nulled state.cc.manager.
   state.cc.lineSub?.();
   state.cc.lineSub = null;
+  // Backstop: ensure the live-transcript panel is gone for every participant
+  // on leave, regardless of which path finalizeCallTranscript() took (it
+  // early-returns before stopCaptions() when a recap is already in flight).
+  hideCaptionsPanel();
+  if (els.captionsList) els.captionsList.replaceChildren();
   // Drop the meeting-thread anchor + replies for this call.
   // finalizeCallTranscript above runs in the background and reads
   // state.meeting.threadRootId BEFORE we tear it down here — it
@@ -2690,6 +2704,13 @@ function finalizeCallTranscript() {
   // near-identical summaries. (This legacy suppression is intentionally kept.)
   if (state.huddle?.isRecordingActive()) {
     console.log('[recap] skip: recording active — Meeting Recap will cover it');
+    // Only the standalone RECAP is skipped (the server posts the Meeting
+    // Recap). We must STILL tear captions down — stop the local SR engine,
+    // clear + hide the panel — otherwise the live-transcript panel stayed
+    // stuck on screen after leaving a recorded call (and an enabler's speech
+    // recognition kept running). The transcript snapshot was already
+    // submitted to the server in leaveCall(), so clearing the buffer is safe.
+    stopCaptions();
     return;
   }
   state.cc._finalizing = true;
@@ -5965,7 +5986,11 @@ function applyPersistedNoiseSuppressionPreference() {
 
 function syncNoiseSuppressionButtonState() {
   if (!els.btnDenoise) return;
-  els.btnDenoise.classList.toggle('active', !!state.mesh?.noiseSuppressionOn);
+  const on = !!state.mesh?.noiseSuppressionOn;
+  els.btnDenoise.classList.toggle('active', on);
+  // Denoise is on by default, so flag the OFF state with a red icon — a
+  // clear "you've turned background-noise suppression off" signal.
+  els.btnDenoise.classList.toggle('denoise-off', !on);
 }
 
 // The mesh swaps the published MediaStream when blur is toggled
@@ -6454,7 +6479,11 @@ function wireControls() {
   // transcribed and broadcast" mode.
   const toggleCaptions = () => (state.cc.on ? stopCaptions() : startCaptions());
   els.btnCc && (els.btnCc.onclick = toggleCaptions);
-  els.captionsClose && (els.captionsClose.onclick = () => stopCaptions());
+  // The panel's X is "hide the transcript", not "discard the meeting
+  // transcript" — keep the buffer so a still-running recording's recap (and
+  // the post-call AI summary) isn't wiped when the user dismisses the panel.
+  // Full stop + clear is what the CC toggle button is for.
+  els.captionsClose && (els.captionsClose.onclick = () => stopCaptions({ keepBuffer: true }));
 
   // Jira board: in-call "what we're working on" overlay (call header)
   // and the full Kanban drawer (opened from the v2 nav rail).

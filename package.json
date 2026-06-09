@@ -1,6 +1,6 @@
 {
   "name": "video-chat-app",
-  "version": "0.38.2",
+  "version": "0.39.0",
   "description": "Desktop video + multi-screen-share + Slack-style chat, on Supabase",
   "main": "main.js",
   "scripts": {
@@ -25,6 +25,7 @@
   },
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
+    "@jitsi/rnnoise-wasm": "^0.2.1",
     "electron": "^31.0.0",
     "electron-builder": "^24.13.3"
   },

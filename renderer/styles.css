@@ -585,10 +585,12 @@ input:focus, textarea:focus {
    link color instead. */
 .meeting-root-recap-body a,
 .saved-item-body a,
-.pinned-item-body a { color: var(--accent-2); text-decoration: none; }
+.pinned-item-body a,
+.meeting-note-body a { color: var(--accent-2); text-decoration: none; }
 .meeting-root-recap-body a:hover,
 .saved-item-body a:hover,
-.pinned-item-body a:hover { text-decoration: underline; }
+.pinned-item-body a:hover,
+.meeting-note-body a:hover { text-decoration: underline; }
 .msg-body blockquote {
   border-left: 3px solid var(--line-strong);
   margin: 6px 0;
@@ -1229,6 +1231,10 @@ button.ctrl.muted.icon-only::after {
   transform: translateY(-50%) rotate(-20deg);
   pointer-events: none;
 }
+/* Denoise OFF state: red icon (the SVG inherits currentColor). Denoise is on
+   by default, so this marks the deliberate "suppression off" choice. */
+button.ctrl.denoise-off, #btn-denoise.denoise-off { color: var(--bad); }
+button.ctrl.denoise-off:not([disabled]):hover { color: #ff5c52; }
 /* When the tile grid is hidden the chat takes the full stage height. */
 .tiles.hidden { display: none !important; }
 
@@ -3995,7 +4001,8 @@ body.popout-call .popout-stage > .draw-toolbar {
 [data-ui="v2"] .msg-body a,
 [data-ui="v2"] .meeting-root-recap-body a,
 [data-ui="v2"] .saved-item-body a,
-[data-ui="v2"] .pinned-item-body a {
+[data-ui="v2"] .pinned-item-body a,
+[data-ui="v2"] .meeting-note-body a {
   color: var(--accent-tx);
 }
 [data-ui="v2"] .msg-body code {
@@ -6726,10 +6733,12 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   flex: 1 1 auto;
   max-height: none;
   padding-bottom: 96px; /* leave room for the dock */
-  /* The ONE right-side reservation. Each dock (captions / meeting notes)
-     contributes its width via a --dock-* var set on .stage below; any
-     combination composes by summation — no stacked margin+padding rules. */
-  padding-right: calc(var(--dock-captions, 0px) + var(--dock-notes, 0px));
+  /* The ONE right-side reservation. The leading 14px matches the base
+     .tiles padding-left so the grid stays symmetric when no dock is open
+     (without it the rightmost tile sat flush against the window edge while
+     the left kept its 14px gap). Each dock (captions / meeting notes) adds
+     its width via a --dock-* var set on .stage below; combinations sum. */
+  padding-right: calc(14px + var(--dock-captions, 0px) + var(--dock-notes, 0px));
 }
 
 /* Captions panel docks to the right side during a call. Uses
