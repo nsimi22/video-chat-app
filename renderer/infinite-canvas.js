@@ -23,7 +23,7 @@
 (function () {
   const MIN_SCALE = 0.1;
   const MAX_SCALE = 8;
-  const ZOOM_STEP = 1.2;
+  const ZOOM_STEP = 1.4;
   // Motion-fluidity tuning (FigJam-like feel).
   const FRICTION = 0.92;        // momentum velocity decay per ~16ms frame
   const MIN_FLING_SPEED = 0.04; // client px/ms below which a release doesn't fling
@@ -836,7 +836,7 @@
         // gestures Just Work).
         if (e.ctrlKey || e.metaKey) {
           e.preventDefault();
-          const factor = Math.exp(-e.deltaY * 0.001);
+          const factor = Math.exp(-e.deltaY * 0.0025);
           this._zoomBy(factor, { clientX: e.clientX, clientY: e.clientY });
           return;
         }

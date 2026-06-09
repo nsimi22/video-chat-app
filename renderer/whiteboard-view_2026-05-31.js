@@ -245,13 +245,8 @@
       header.appendChild(editorCount);
       this.editorCountEl = editorCount;
 
-      // "+ Frame" affordance — the design seeds frames as mock data; in
-      // prod we let session leads stamp one with a click.
-      const addFrameBtn = h('button', { class: 'wbv-btn wbv-btn-ghost', attrs: { title: 'Add a titled frame to organise notes' } });
-      addFrameBtn.appendChild(iconEl('frame', 14));
-      addFrameBtn.appendChild(h('span', { text: 'Frame' }));
-      addFrameBtn.addEventListener('click', () => this._addFrameAtViewportCenter());
-      header.appendChild(addFrameBtn);
+      // Frame creation now lives in the left tool palette (FigJam-style),
+      // not the header — see _buildToolPalette.
 
       const exportBtn = h('button', { class: 'wbv-btn wbv-btn-solid', attrs: { title: 'Export as PNG' } });
       exportBtn.appendChild(iconEl('download', 14));
@@ -357,6 +352,13 @@
         this.toolButtons.set(t.id, b);
       }
       palette.appendChild(h('div', { class: 'wbv-palette-sep' }));
+
+      // Frame creation lives in the palette (FigJam-style) as a one-shot
+      // action rather than a persistent tool mode.
+      const frameBtn = h('button', { class: 'wbv-tool', attrs: { title: 'Add a frame', 'aria-label': 'Add a frame' } });
+      frameBtn.appendChild(iconEl('frame', 18));
+      frameBtn.addEventListener('click', () => this._addFrameAtViewportCenter());
+      palette.appendChild(frameBtn);
 
       const swatchWrap = h('div', { class: 'wbv-swatches' });
       palette.appendChild(swatchWrap);
@@ -1187,6 +1189,15 @@
       chip.appendChild(del);
       el.appendChild(chip);
 
+      // Frame colour picker — shown at top-right while the frame is selected.
+      const ftoolbar = h('div', { class: 'wbv-frame-toolbar' });
+      for (const k of Object.keys(FRAME_TINTS)) {
+        const sw = h('button', { class: 'wbv-frame-swatch', style: { background: FRAME_TINTS[k] }, attrs: { title: k, 'aria-label': `Frame color: ${k}` } });
+        sw.addEventListener('click', (e) => { e.stopPropagation(); this._selectFrame(frame.id); this._setFrameTint(frame.id, k); });
+        ftoolbar.appendChild(sw);
+      }
+      el.appendChild(ftoolbar);
+
       // 8 resize handles (4 corners + 4 edges). Drag a corner to scale
       // both dimensions, an edge to scale one. The frame body itself
       // stays click-through (pointer-events:none in CSS) so drawing
@@ -1352,6 +1363,16 @@
       entry.el.remove();
       this.frames.delete(id);
       this._scheduleMinimapRender();
+    }
+
+    _setFrameTint(id, tint) {
+      const entry = this.frames.get(id);
+      if (!entry || !FRAME_TINTS[tint]) return;
+      entry.data.tint = tint;
+      entry.el.style.setProperty('--wbv-frame-tint', FRAME_TINTS[tint]);
+      this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id, tint } }, this.viewId);
+      this.huddle.updateWhiteboardFrame(id, { tint })
+        .catch((err) => console.warn('[wbv] frame tint save failed', err));
     }
 
     async _deleteFrame(id) {
