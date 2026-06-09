@@ -836,7 +836,7 @@
         // gestures Just Work).
         if (e.ctrlKey || e.metaKey) {
           e.preventDefault();
-          const factor = Math.exp(-e.deltaY * 0.0025);
+          const factor = Math.exp(-e.deltaY * 0.005);
           this._zoomBy(factor, { clientX: e.clientX, clientY: e.clientY });
           return;
         }
