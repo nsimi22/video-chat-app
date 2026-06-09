@@ -1291,7 +1291,7 @@ async function startPopoutCall(channelId) {
     // Engage persisted noise suppression AFTER setCamera so the mic
     // publication exists and the pipeline actually starts on the live
     // track (idempotent — early-returns if already on).
-    applyPersistedNoiseSuppressionPreference();
+    await applyPersistedNoiseSuppressionPreference();
     syncBlurButtonState();
     syncNoiseSuppressionButtonState();
   } catch (err) {
@@ -2066,7 +2066,7 @@ async function startCall(channelId, { audioFirst = false } = {}) {
     // flag (audio published raw, button looked active, first user click
     // no-op'd). setNoiseSuppression is idempotent — it early-returns when
     // the state already matches — so this won't double-start.
-    applyPersistedNoiseSuppressionPreference();
+    await applyPersistedNoiseSuppressionPreference();
     syncBlurButtonState();
     syncNoiseSuppressionButtonState();
     // Audio-first huddles join with the camera off — flip it back down
@@ -5975,11 +5975,15 @@ async function toggleNoiseSuppression() {
 // which left audio published raw while the button showed active and made
 // the first user toggle a no-op.) Safe to call unconditionally: it bails
 // when the pref is off and setNoiseSuppression is idempotent.
+// Returns the in-flight setNoiseSuppression promise so callers can await
+// it before syncing the button — otherwise the button reads the not-yet-
+// updated mesh state (noiseSuppressionOn still false) and flashes the
+// red OFF style on every call start even though denoise is engaging.
 function applyPersistedNoiseSuppressionPreference() {
-  if (!state.mesh) return;
-  if (!getNoiseSuppressionPreference()) return;
-  if (!window.DenoisePipeline?.isAvailable()) return;
-  state.mesh.setNoiseSuppression(true).catch((err) => {
+  if (!state.mesh) return Promise.resolve();
+  if (!getNoiseSuppressionPreference()) return Promise.resolve();
+  if (!window.DenoisePipeline?.isAvailable()) return Promise.resolve();
+  return state.mesh.setNoiseSuppression(true).catch((err) => {
     console.warn('applyPersistedNoiseSuppressionPreference failed', err);
   });
 }
