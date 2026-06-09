@@ -49,10 +49,17 @@
   const TEXT_KIND = '_text';
 
   const FRAME_TINTS = {
+    // Original four keys kept so existing frames keep their colour.
     accent: 'var(--accent)',
     live:   'var(--live, #2ec4b6)',
     online: 'var(--online, #34c759)',
     away:   'var(--away, #f5a524)',
+    // Extra colours for a fuller FigJam-like palette.
+    yellow: '#f5c542',
+    red:    '#ff5a5f',
+    purple: '#a06bff',
+    pink:   '#ff6bd6',
+    gray:   '#9aa0a6',
   };
 
   // URL auto-linking for note/text display. Escapes HTML, then wraps bare

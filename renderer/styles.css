@@ -8126,30 +8126,30 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   transform: translateX(-50%);
   display: none;
   align-items: center;
-  gap: 9px;
-  padding: 8px 13px;
-  border-radius: 13px;
-  background: var(--bg-0, #15171c);
-  border: 1px solid var(--line, rgba(255,255,255,0.12));
-  box-shadow: 0 10px 28px rgba(0,0,0,0.45);
-  z-index: 6;
+  gap: 8px;
+  padding: 6px 9px;
+  border-radius: 11px;
+  background: var(--bg-1, #1a1d22);
+  border: 1px solid var(--line, rgba(255,255,255,0.1));
+  box-shadow: var(--sh-pop, 0 18px 48px -16px rgba(0,0,0,0.6));
   white-space: nowrap;
+  z-index: 6;
 }
 .wbv-frame.is-selected .wbv-frame-toolbar { display: inline-flex; }
 .wbv-frame-swatch {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   flex: 0 0 auto;
   border-radius: 50%;
-  border: 0;
-  box-shadow: 0 0 0 1px rgba(255,255,255,0.2);
+  border: 2px solid transparent;
+  box-shadow: 0 0 0 1px var(--line, rgba(255,255,255,0.1));
   padding: 0;
   appearance: none;
   -webkit-appearance: none;
   cursor: pointer;
   transition: transform .1s ease;
 }
-.wbv-frame-swatch:hover { transform: scale(1.15); }
+.wbv-frame-swatch:hover { transform: scale(1.08); }
 
 /* Auto-linked URLs inside notes / text blocks — accent blue, clickable. */
 .wbv-link {
