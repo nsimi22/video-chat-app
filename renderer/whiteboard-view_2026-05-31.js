@@ -202,9 +202,9 @@
       // ── Header ─────────────────────────────────────────────────
       const header = h('div', { class: 'wbv-header' });
       header.appendChild(iconEl('board', 19));
-      const titleEl = h('span', { class: 'wbv-title', text: this.boardTitle });
+      const titleEl = h('span', { class: 'wbv-title', text: this.boardTitle, attrs: { spellcheck: 'false' } });
       titleEl.title = 'Click to rename the board';
-      titleEl.addEventListener('click', () => this._renameBoard());
+      titleEl.addEventListener('click', () => this._beginRenameBoard());
       header.appendChild(titleEl);
       this.titleEl = titleEl;
 
@@ -1498,15 +1498,39 @@
     // ────────────────────────────────────────────────────────────
     // Header bits
     // ────────────────────────────────────────────────────────────
-    async _renameBoard() {
-      const next = prompt('Rename whiteboard', this.boardTitle);
-      if (next == null) return;
-      const trimmed = next.trim() || 'Whiteboard';
-      this.boardTitle = trimmed;
+    // Inline board-title rename (contenteditable), mirroring the frame
+    // title editor — replaces the old browser prompt() dialog so the flow
+    // stays on-canvas and FigJam-like.
+    _beginRenameBoard() {
+      const el = this.titleEl;
+      if (el.getAttribute('contenteditable') === 'true') return;
+      el.setAttribute('contenteditable', 'true');
+      el.classList.add('is-editing');
+      el.focus();
+      const r = document.createRange(); r.selectNodeContents(el);
+      const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      const finish = (commit) => {
+        el.removeEventListener('blur', onBlur);
+        el.removeEventListener('keydown', onKey);
+        el.setAttribute('contenteditable', 'false');
+        el.classList.remove('is-editing');
+        if (commit) this._commitRenameBoard(el.textContent);
+        else el.textContent = this.boardTitle;
+      };
+      const onBlur = () => finish(true);
+      const onKey = (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+        else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      };
+      el.addEventListener('blur', onBlur);
+      el.addEventListener('keydown', onKey);
+    }
+    async _commitRenameBoard(raw) {
+      const trimmed = (raw || '').replace(/\s+/g, ' ').trim() || 'Whiteboard';
       this.titleEl.textContent = trimmed;
-      // Persist if the API supports it; not in scope to add a column,
-      // so we just emit through realtime so peers in this session see
-      // the change.
+      if (trimmed === this.boardTitle) return;
+      this.boardTitle = trimmed;
+      // Persist if the API supports it; peers see it via realtime regardless.
       try {
         if (this.huddle.updateWhiteboardTitle) await this.huddle.updateWhiteboardTitle(this.whiteboardId, trimmed);
       } catch (err) { console.warn('[wbv] rename persist failed', err); }
