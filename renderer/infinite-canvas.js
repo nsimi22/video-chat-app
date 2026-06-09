@@ -38,6 +38,10 @@
   // nib, so you can see what you're about to delete (FigJam does this).
   const ERASER_CURSOR =
     "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='30' height='30'><circle cx='15' cy='15' r='14' fill='none' stroke='%23999' stroke-width='1.5'/></svg>\") 15 15, crosshair";
+  // Pencil cursor for the pen tool — tip at the bottom-left (hotspot 6,23)
+  // so the nib sits where the ink lands, instead of the generic crosshair.
+  const PENCIL_CURSOR =
+    "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'><g transform='translate(3 1)'><path d='M3 23 L3 19 L16 6 L20 10 L7 23 Z' fill='%23ffd866' stroke='%23222' stroke-width='1.4' stroke-linejoin='round'/><path d='M16 6 L18.5 3.5 a2.6 2.6 0 0 1 3.7 3.7 L20 10 Z' fill='%23f5a524' stroke='%23222' stroke-width='1.4' stroke-linejoin='round'/><path d='M3 23 L3 19 L7 23 Z' fill='%23222'/></g></svg>\") 6 23, crosshair";
 
   // Shortest distance from point (px,py) to the segment (ax,ay)→(bx,by).
   function distToSeg(px, py, ax, ay, bx, by) {
@@ -138,6 +142,7 @@
     // Idle cursor for the current tool (pan gestures override this while active).
     _toolCursor() {
       if (this.tool === 'eraser') return ERASER_CURSOR;
+      if (this.tool === 'pen') return PENCIL_CURSOR;
       if (this.tool === 'select') return 'default';
       return 'crosshair';
     }

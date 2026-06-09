@@ -195,7 +195,7 @@
         ? crypto.randomUUID()
         : `${this.huddle.peerId}-${Math.random().toString(36).slice(2)}`;
 
-      this.tool = 'sticky';     // matches the design's default
+      this.tool = 'cursor';     // default to select/cursor, like FigJam
       this.drawColor = 'var(--accent)';
       this.stickyColor = 'butter';
 
