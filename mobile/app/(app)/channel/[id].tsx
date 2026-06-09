@@ -12,6 +12,7 @@ import {
   Image,
   Alert,
   ActivityIndicator,
+  Linking,
 } from 'react-native';
 import { Stack, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useHeaderHeight } from '@react-navigation/elements';
@@ -513,10 +514,23 @@ export default function ChannelScreen() {
                         <Image source={{ uri: a.url }} style={{ width: 220, height: 160, borderRadius: radius.sm, marginTop: space(1.5), backgroundColor: colors.surfaceAlt }} resizeMode="cover" />
                       </TouchableOpacity>
                     ) : (
-                      <View key={i} style={{ flexDirection: 'row', alignItems: 'center', marginTop: space(1) }}>
+                      // Non-image attachment (zip, pdf, doc, …). Tap to open the
+                      // public URL in the device browser — the mobile equivalent
+                      // of the desktop renderer's <a href> download link.
+                      <TouchableOpacity
+                        key={i}
+                        activeOpacity={0.7}
+                        onPress={() =>
+                          Linking.openURL(a.url).catch(() =>
+                            Alert.alert('Could not open', a.name ?? 'attachment')
+                          )
+                        }
+                        style={{ flexDirection: 'row', alignItems: 'center', marginTop: space(1) }}
+                        accessibilityLabel={`Open attachment ${a.name ?? ''}`}
+                      >
                         <Paperclip size={14} color={colors.accent} style={{ marginRight: 6 }} />
                         <Text style={{ color: colors.accent }}>{a.name}</Text>
-                      </View>
+                      </TouchableOpacity>
                     );
                   })}
                   {(replyCounts.get(item.id) ?? 0) > 0 && (
