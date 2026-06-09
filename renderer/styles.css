@@ -7961,6 +7961,29 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   padding: 0;
 }
 .wbv-note-toolbar-swatch:hover { transform: scale(1.08); }
+.wbv-note-toolbar-custom {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  background: conic-gradient(red, orange, yellow, lime, aqua, blue, magenta, red);
+  box-shadow: 0 0 0 1px var(--line, rgba(255,255,255,0.1));
+  transition: transform .1s ease;
+}
+.wbv-note-toolbar-custom:hover { transform: scale(1.08); }
+.wbv-note-toolbar-custom input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
 .wbv-note-toolbar-sep { width: 1px; height: 18px; background: var(--line, rgba(255,255,255,0.1)); }
 .wbv-note-toolbar-del {
   display: inline-flex;

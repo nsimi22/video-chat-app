@@ -32,13 +32,18 @@
 
 (function () {
   const STICKY = {
-    butter: { bg: '#f0cf78', tx: '#3c2e08', fold: '#dcb95f', dot: '#e7c25f' },
-    rose:   { bg: '#eea7ba', tx: '#421421', fold: '#dd93a7', dot: '#e58fa6' },
-    sky:    { bg: '#a3cbef', tx: '#10283f', fold: '#8db8de', dot: '#86bbe6' },
-    mint:   { bg: '#9ed7b3', tx: '#0d2c1c', fold: '#89c6a0', dot: '#81cd9c' },
-    lilac:  { bg: '#c2b2ee', tx: '#251a45', fold: '#ad9ce0', dot: '#b3a2ec' },
+    butter:    { bg: '#f0cf78', tx: '#3c2e08', fold: '#dcb95f', dot: '#e7c25f' },
+    rose:      { bg: '#eea7ba', tx: '#421421', fold: '#dd93a7', dot: '#e58fa6' },
+    sky:       { bg: '#a3cbef', tx: '#10283f', fold: '#8db8de', dot: '#86bbe6' },
+    mint:      { bg: '#9ed7b3', tx: '#0d2c1c', fold: '#89c6a0', dot: '#81cd9c' },
+    lilac:     { bg: '#c2b2ee', tx: '#251a45', fold: '#ad9ce0', dot: '#b3a2ec' },
+    coral:     { bg: '#f0a3a3', tx: '#421616', fold: '#de9090', dot: '#e88f8f' },
+    tangerine: { bg: '#f4c489', tx: '#3f2708', fold: '#e2b075', dot: '#ecb06f' },
+    teal:      { bg: '#93d4d0', tx: '#0c2e2c', fold: '#7fc4c0', dot: '#79ccc7' },
+    grape:     { bg: '#d3a7e0', tx: '#2e1640', fold: '#c194d0', dot: '#c894d8' },
+    slate:     { bg: '#b4c0cc', tx: '#18222c', fold: '#a0aebb', dot: '#9fb0bf' },
   };
-  const STICKY_ORDER = ['butter', 'rose', 'sky', 'mint', 'lilac'];
+  const STICKY_ORDER = ['butter', 'rose', 'sky', 'mint', 'lilac', 'coral', 'tangerine', 'teal', 'grape', 'slate'];
   const NOTE_W = 154;
   const NOTE_H = 134;
   const TEXT_W = 220;
@@ -47,6 +52,36 @@
   // whiteboard_notes table without a schema change. Anything not in
   // STICKY_ORDER renders as plain text.
   const TEXT_KIND = '_text';
+  // Sentinel color_key for an arbitrary (picker-chosen) sticky colour; the
+  // actual hex rides in the note's `color` field.
+  const CUSTOM_KIND = '_custom';
+
+  // ── Colour helpers (custom sticky colours) ──
+  const isHex = (s) => typeof s === 'string' && /^#?[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(s.trim());
+  function hexToRgb(hex) {
+    const h = hex.replace('#', '');
+    const v = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+    const n = parseInt(v, 16);
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+  }
+  const clamp8 = (n) => Math.max(0, Math.min(255, Math.round(n)));
+  function rgbToHex(r, g, b) {
+    return '#' + [r, g, b].map((x) => clamp8(x).toString(16).padStart(2, '0')).join('');
+  }
+  function readableText(hex) {
+    const { r, g, b } = hexToRgb(hex);
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6 ? '#1a1a1a' : '#ffffff';
+  }
+  function shadeHex(hex, f) {
+    const { r, g, b } = hexToRgb(hex);
+    return rgbToHex(r + f * 255, g + f * 255, b + f * 255);
+  }
+  // Resolve a note's swatch palette from either a named slug or a custom hex.
+  function notePalette(colorKey, colorHex) {
+    if (STICKY[colorKey]) return STICKY[colorKey];
+    const bg = isHex(colorHex) ? (colorHex[0] === '#' ? colorHex : '#' + colorHex) : STICKY.butter.bg;
+    return { bg, tx: readableText(bg), fold: shadeHex(bg, -0.1), dot: bg };
+  }
 
   const FRAME_TINTS = {
     // Original four keys kept so existing frames keep their colour.
@@ -519,12 +554,15 @@
       // mapping to a default pastel.
       const slug = row.color_key === TEXT_KIND
         ? TEXT_KIND
-        : (row.color_key && STICKY[row.color_key] ? row.color_key : (this._slugFromHex(row.color) || 'butter'));
+        : (STICKY[row.color_key]
+            ? row.color_key
+            : (isHex(row.color) ? CUSTOM_KIND : (this._slugFromHex(row.color) || 'butter')));
       return {
         id: row.id,
         x: row.x, y: row.y, w: row.w || NOTE_W, h: row.h || NOTE_H,
         text: row.text || '',
         color_key: slug,
+        color: row.color,
         author_id: row.author_id,
         votes: row.votes || 0,
         mine: voted,
@@ -729,8 +767,7 @@
       // corner, no vote pill. Route them to a separate path so the
       // sticky path stays simple.
       if (note.color_key === TEXT_KIND) return this._renderTextBlock(note, { focus });
-      const slug = note.color_key && STICKY[note.color_key] ? note.color_key : 'butter';
-      const palette = STICKY[slug];
+      const palette = notePalette(note.color_key, note.color);
       const rot = rotFromId(note.id);
       const el = h('div', { class: 'wbv-note', attrs: { 'data-note-id': note.id, tabindex: '0' } });
       el.style.setProperty('--wbv-note-bg', palette.bg);
@@ -775,6 +812,13 @@
         sw.addEventListener('click', (e) => { e.stopPropagation(); this._setNoteColor(note.id, k); });
         toolbar.appendChild(sw);
       }
+      // Custom colour — rainbow swatch opens the OS colour picker.
+      const customWrap = h('button', { class: 'wbv-note-toolbar-custom', attrs: { title: 'Custom color', 'aria-label': 'Custom color' } });
+      const customInput = h('input', { attrs: { type: 'color' } });
+      customWrap.appendChild(customInput);
+      customWrap.addEventListener('click', (e) => { e.stopPropagation(); customInput.click(); });
+      customInput.addEventListener('input', (e) => { e.stopPropagation(); this._setNoteColorCustom(note.id, e.target.value); });
+      toolbar.appendChild(customWrap);
       toolbar.appendChild(h('span', { class: 'wbv-note-toolbar-sep' }));
       const del = h('button', { class: 'wbv-note-toolbar-del', attrs: { title: 'Delete note' } });
       del.appendChild(iconEl('trash', 14));
@@ -818,8 +862,8 @@
       if (patch.text != null && entry.textEl && document.activeElement !== entry.textEl) {
         this._renderNoteTextDisplay(entry);
       }
-      if (patch.color_key && STICKY[patch.color_key]) {
-        const p = STICKY[patch.color_key];
+      if (patch.color_key != null || patch.color != null) {
+        const p = notePalette(entry.data.color_key, entry.data.color);
         entry.el.style.setProperty('--wbv-note-bg', p.bg);
         entry.el.style.setProperty('--wbv-note-tx', p.tx);
         entry.el.style.setProperty('--wbv-note-fold', p.fold);
@@ -1132,8 +1176,11 @@
       if (!STICKY[slug]) return;
       const entry = this.notes.get(id);
       if (!entry) return;
-      const prevSlug = entry.data.color_key;
-      if (prevSlug !== slug) this._pushUndo(() => this._setNoteColor(id, prevSlug));
+      const prevSlug = entry.data.color_key, prevColor = entry.data.color;
+      if (prevSlug !== slug) this._pushUndo(() => {
+        if (STICKY[prevSlug]) this._setNoteColor(id, prevSlug);
+        else this._setNoteColorCustom(id, prevColor);
+      });
       entry.data.color_key = slug;
       const p = STICKY[slug];
       entry.el.style.setProperty('--wbv-note-bg', p.bg);
@@ -1142,6 +1189,30 @@
       this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id, color_key: slug } }, this.viewId);
       this.huddle.updateWhiteboardNote(id, { color_key: slug, color: p.bg })
         .catch((err) => console.warn('[wbv] color save failed', err));
+    }
+
+    // Arbitrary picker-chosen sticky colour. Stored as color_key='_custom'
+    // + a hex in `color`; text colour is derived for contrast.
+    _setNoteColorCustom(id, hex) {
+      const entry = this.notes.get(id);
+      if (!entry || entry.kind === 'text' || !isHex(hex)) return;
+      const norm = hex[0] === '#' ? hex : '#' + hex;
+      const prevKey = entry.data.color_key, prevColor = entry.data.color;
+      if (prevKey !== CUSTOM_KIND || prevColor !== norm) {
+        this._pushUndo(() => {
+          if (STICKY[prevKey]) this._setNoteColor(id, prevKey);
+          else this._setNoteColorCustom(id, prevColor);
+        });
+      }
+      entry.data.color_key = CUSTOM_KIND;
+      entry.data.color = norm;
+      const p = notePalette(CUSTOM_KIND, norm);
+      entry.el.style.setProperty('--wbv-note-bg', p.bg);
+      entry.el.style.setProperty('--wbv-note-tx', p.tx);
+      entry.el.style.setProperty('--wbv-note-fold', p.fold);
+      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id, color_key: CUSTOM_KIND, color: norm } }, this.viewId);
+      this.huddle.updateWhiteboardNote(id, { color_key: CUSTOM_KIND, color: norm })
+        .catch((e) => console.warn('[wbv] custom color save failed', e));
     }
 
     _removeNoteEl(id) {
