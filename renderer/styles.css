@@ -7980,12 +7980,20 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .wbv-frame {
   position: absolute;
   border-radius: 16px;
-  border: 1.5px solid var(--line, rgba(255,255,255,0.1));
-  background: rgba(255,255,255,0.02);
+  /* Soft tinted fill + border (FigJam-style), derived from the frame's
+   * tint so each frame reads as its own coloured region. */
+  border: 1.5px solid color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 30%, transparent);
+  background: color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 7%, transparent);
+  transition: border-color .12s ease, box-shadow .12s ease, background .12s ease;
   /* Frame body is click-through so drawing / sticky-dropping inside a
    * frame still works. Children (chip, delete button, resize handles)
    * re-enable pointer-events individually below. */
   pointer-events: none;
+}
+.wbv-frame.is-selected {
+  border-color: color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 70%, transparent);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 55%, transparent),
+              0 10px 30px rgba(0,0,0,0.25);
 }
 .wbv-frame-dashed { border-style: dashed; }
 .wbv-frame > * { pointer-events: auto; }
@@ -8030,31 +8038,42 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .wbv-frame-handle.is-sw::after {
   content: "";
   position: absolute;
-  inset: 4px;
-  border-radius: 50%;
-  background: var(--wbv-frame-tint, var(--accent, #0a84ff));
+  inset: 2px;
+  border-radius: 3px;
+  background: #fff;
+  border: 1.5px solid color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 80%, transparent);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
   opacity: 0;
   transition: opacity .12s ease;
 }
 .wbv-frame:hover .wbv-frame-handle.is-nw::after,
 .wbv-frame:hover .wbv-frame-handle.is-ne::after,
 .wbv-frame:hover .wbv-frame-handle.is-se::after,
-.wbv-frame:hover .wbv-frame-handle.is-sw::after {
-  opacity: 0.6;
+.wbv-frame:hover .wbv-frame-handle.is-sw::after,
+.wbv-frame.is-selected .wbv-frame-handle.is-nw::after,
+.wbv-frame.is-selected .wbv-frame-handle.is-ne::after,
+.wbv-frame.is-selected .wbv-frame-handle.is-se::after,
+.wbv-frame.is-selected .wbv-frame-handle.is-sw::after {
+  opacity: 1;
 }
 .wbv-frame-chip {
   position: absolute;
-  top: -13px;
-  left: 16px;
+  top: -15px;
+  left: 14px;
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 3px 12px;
-  border-radius: 8px;
-  background: var(--bg-1, #1a1d22);
-  border: 1px solid var(--line, rgba(255,255,255,0.1));
+  padding: 4px 12px;
+  border-radius: 9px;
+  /* Tinted label tab so the frame's title pill reads as its colour. */
+  background: color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 20%, var(--bg-1, #1a1d22));
+  border: 1px solid color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 45%, transparent);
   cursor: grab;
-  max-width: calc(100% - 32px);
+  max-width: calc(100% - 28px);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+}
+.wbv-frame.is-selected .wbv-frame-chip {
+  background: color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 32%, var(--bg-1, #1a1d22));
 }
 .wbv-frame-chip:active { cursor: grabbing; }
 .wbv-frame-dot {
@@ -8065,9 +8084,9 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   flex-shrink: 0;
 }
 .wbv-frame-title {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 700;
-  color: var(--tx-mid, #c8ccd0);
+  color: var(--tx-hi, #eef0f2);
   letter-spacing: -0.01em;
   outline: none;
   min-width: 60px;

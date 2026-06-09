@@ -181,6 +181,7 @@
       this.cursors = new Map(); // peerId -> { data, el }
       this.editingNote = null;
       this.selectedNote = null;
+      this.selectedFrame = null;
       this._paintedStrokeUuids = new Set();
       this._frameDrag = null;
       this._noteDrag = null;
@@ -975,12 +976,25 @@
     }
 
     _selectNote(id) {
+      if (id && this.selectedFrame) this._selectFrame(null);
       if (this.selectedNote === id) return;
       const prev = this.selectedNote && this.notes.get(this.selectedNote);
       if (prev) prev.el.classList.remove('is-selected');
       this.selectedNote = id;
       const next = id && this.notes.get(id);
       if (next) next.el.classList.add('is-selected');
+    }
+
+    // Frame selection — mutually exclusive with note selection. Drives the
+    // .is-selected ring + solid resize handles in CSS.
+    _selectFrame(id) {
+      if (this.selectedFrame === id) return;
+      const prev = this.selectedFrame && this.frames.get(this.selectedFrame);
+      if (prev) prev.el.classList.remove('is-selected');
+      this.selectedFrame = id;
+      const next = id && this.frames.get(id);
+      if (next) next.el.classList.add('is-selected');
+      if (id) this._selectNote(null);
     }
 
     _beginEditNote(id) {
@@ -1165,8 +1179,10 @@
 
       // Drag the title chip to move the whole frame.
       chipEl.addEventListener('pointerdown', (e) => {
-        if (e.target === titleEl && titleEl.getAttribute('contenteditable') === 'true') return;
+        // Clicking the title is for renaming, never dragging.
+        if (e.target === titleEl) return;
         if (e.target.closest('.wbv-frame-del')) return;
+        this._selectFrame(data.id);
         e.stopPropagation();
         e.preventDefault();
         const vp = this.canvas?.getViewport() || { scale: 1 };
@@ -1248,7 +1264,17 @@
         });
       });
 
-      titleEl.addEventListener('dblclick', () => { titleEl.setAttribute('contenteditable', 'true'); titleEl.focus(); });
+      // Click the title to rename it at any time (single click); the frame
+      // gets selected too. Drag-to-move lives on the rest of the chip.
+      const beginTitleEdit = () => {
+        this._selectFrame(data.id);
+        if (titleEl.getAttribute('contenteditable') === 'true') return;
+        titleEl.setAttribute('contenteditable', 'true');
+        titleEl.focus();
+        const r = document.createRange(); r.selectNodeContents(titleEl);
+        const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      };
+      titleEl.addEventListener('click', (e) => { e.stopPropagation(); beginTitleEdit(); });
       titleEl.addEventListener('blur', () => {
         titleEl.setAttribute('contenteditable', 'false');
         const newTitle = titleEl.textContent.trim() || 'Untitled frame';
@@ -1282,6 +1308,7 @@
     }
 
     async _deleteFrame(id) {
+      if (this.selectedFrame === id) this.selectedFrame = null;
       this._removeFrameEl(id);
       this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'delete', id }, this.viewId);
       try { await this.huddle.deleteWhiteboardFrame(id); }
@@ -1487,10 +1514,11 @@
       else if ((e.metaKey || e.ctrlKey) && k === 'z') { e.preventDefault(); this.undo(); }
       else if (k === 'delete' || k === 'backspace') {
         if (this.selectedNote && !this.editingNote) { e.preventDefault(); this._deleteNote(this.selectedNote); }
+        else if (this.selectedFrame && !document.activeElement?.isContentEditable) { e.preventDefault(); this._deleteFrame(this.selectedFrame); }
       }
       else if (k === 'escape') {
         if (this.editingNote) this._endEditNote(this.editingNote);
-        else this._selectNote(null);
+        else { this._selectNote(null); this._selectFrame(null); }
       }
     }
     _onKeyDown() { /* board-level — currently inert; doc handler covers everything */ }
