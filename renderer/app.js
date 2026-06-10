@@ -1279,18 +1279,13 @@ async function startPopoutCall(channelId) {
   if (els.btnShare) els.btnShare.disabled = false;
   if (els.btnHand) els.btnHand.disabled = false;
   if (els.btnReact) els.btnReact.disabled = false;
-  // Pre-apply the persisted blur preference before setCamera so the
-  // very first frame peers receive is already blurred — toggling
-  // after the fact briefly publishes a sharp frame.
-  applyPersistedBlurPreference();
-  // NOTE: blur stays pre-setCamera here too and likely shares the same
-  // latent ordering issue noise suppression had — follow-up pass.
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, huddle.name);
-    // Engage persisted noise suppression AFTER setCamera so the mic
-    // publication exists and the pipeline actually starts on the live
-    // track (idempotent — early-returns if already on).
+    // Engage persisted blur + noise suppression AFTER setCamera so the
+    // camera/mic publications exist and the pipelines actually start on
+    // the live tracks (both idempotent — early-return if already on).
+    await applyPersistedBlurPreference();
     await applyPersistedNoiseSuppressionPreference();
     syncBlurButtonState();
     syncNoiseSuppressionButtonState();
@@ -2047,25 +2042,17 @@ async function startCall(channelId, { audioFirst = false } = {}) {
   // guard). Posts the "📞 Call started" anchor message and broadcasts
   // its id so other participants pick the same thread root.
   setupMeetingThreadAsStarter(channelId);
-  // Pre-apply the persisted blur preference before setCamera so the
-  // very first frame peers receive is already blurred — toggling
-  // after the fact briefly publishes a sharp frame.
-  applyPersistedBlurPreference();
-  // NOTE: blur is still applied before setCamera (above). It likely has
-  // the same latent ordering issue noise suppression had — if the blur
-  // pipeline also needs the live publication, applying it pre-setCamera
-  // may only stash the flag. Left as-is for this pass; worth a follow-up
-  // to verify and reorder blur the same way we did noise suppression.
   try {
     const cam = await mesh.setCamera({ video: true, audio: true });
     addLocalCameraTile(cam, state.huddle.name);
-    // Engage the persisted noise-suppression preference AFTER setCamera
-    // resolves: only now does the mic publication exist, so
-    // setNoiseSuppression(true) can clone the live mic track and actually
-    // start the pipeline. Called before setCamera it merely stashed the
-    // flag (audio published raw, button looked active, first user click
-    // no-op'd). setNoiseSuppression is idempotent — it early-returns when
-    // the state already matches — so this won't double-start.
+    // Engage the persisted blur + noise-suppression preferences AFTER
+    // setCamera resolves: only now do the camera/mic publications exist,
+    // so setBlurBackground/setNoiseSuppression can clone the live tracks
+    // and actually start their pipelines. Called before setCamera they
+    // merely stashed the flag (media published raw, button looked active,
+    // first user click no-op'd). Both are idempotent — they early-return
+    // when the state already matches — so this won't double-start.
+    await applyPersistedBlurPreference();
     await applyPersistedNoiseSuppressionPreference();
     syncBlurButtonState();
     syncNoiseSuppressionButtonState();
@@ -5903,14 +5890,20 @@ async function toggleBackgroundBlur() {
   }
 }
 
-// Called from startCall / startPopoutCall before setCamera so the
-// pipeline is initialised as part of camera setup. setBlurBackground
-// with no live raw stream just stashes the preference.
+// Called from startCall / startPopoutCall AFTER setCamera resolves, so
+// the camera publication already exists and setBlurBackground(true) can
+// snapshot the live camera track and start the pipeline. (Calling it
+// before setCamera only stashed the preference — no publication to act
+// on yet — which left the camera published raw while the button showed
+// active and made the first user toggle a no-op, exactly the bug noise
+// suppression had.) Safe to call unconditionally: it bails when the pref
+// is off and setBlurBackground is idempotent. Returns the in-flight
+// promise so callers can await it before syncing the button.
 function applyPersistedBlurPreference() {
-  if (!state.mesh) return;
-  if (!getBlurPreference()) return;
-  if (!window.BlurPipeline?.isAvailable()) return;
-  state.mesh.setBlurBackground(true).catch((err) => {
+  if (!state.mesh) return Promise.resolve();
+  if (!getBlurPreference()) return Promise.resolve();
+  if (!window.BlurPipeline?.isAvailable()) return Promise.resolve();
+  return state.mesh.setBlurBackground(true).catch((err) => {
     console.warn('applyPersistedBlurPreference failed', err);
   });
 }
@@ -7812,6 +7805,14 @@ window.huddleApp = {
   getAi: () => state.ai,
   getMe: () => state.me,
   getCalendar: () => state.calendar,
+  // Integration clients + AI-ticket repo for the AI panel's tool loop —
+  // the same surface the chat `/ai` and `/ai-ticket` paths use to wire
+  // Jira tools and the repo-scoped GitHub read tools. Without these the
+  // panel answered from memory / refused, despite its subtitle and Jira
+  // suggestion chips promising it reads Jira & GitHub.
+  getJira: () => state.jira,
+  getGitHub: () => state.github,
+  getAiTicketRepo: () => state.settings?.aiTicket?.githubRepo || '',
   getActiveChannelId: () => state.chat?.currentChannel,
   // True in-call participant count straight from the LiveKit room
   // (remote participants + self). The DOM-tile census the v2 header used

@@ -90,15 +90,18 @@
   // chat order. Capped at the last 20 messages so a huge channel
   // backscroll doesn't churn through hundreds of nodes on every chip
   // re-render.
-  const JIRA_KEY_RE = /\b([A-Z][A-Z0-9_]{1,9})-(\d{1,6})\b/;
   function findRecentJiraKey() {
     const bodies = document.querySelectorAll('#messages .msg .msg-body');
     if (!bodies.length) return null;
     const start = Math.max(0, bodies.length - 20);
     for (let i = bodies.length - 1; i >= start; i--) {
       const txt = bodies[i]?.textContent || '';
-      const m = JIRA_KEY_RE.exec(txt);
-      if (m) return m[0];
+      // Reuse jira.js's extractor so we honor the same KEY_BLOCKLIST it
+      // uses for unfurls — otherwise tokens that match the key shape but
+      // aren't tickets (GPT-4, UTF-8, SHA-256, HTTP-2, …) get surfaced as
+      // bogus "What's the latest on GPT-4?" Jira suggestions.
+      const keys = window.jiraExtractKeys ? window.jiraExtractKeys(txt) : null;
+      if (keys && keys.length) return keys[0].key;
     }
     return null;
   }
@@ -273,9 +276,27 @@
     sendBtn.disabled = true;
 
     try {
+      // Wire any configured integrations as read tools so the panel can
+      // actually fetch the Jira/GitHub data its subtitle + suggestion chips
+      // reference — matching the chat `/ai` and `/ai-ticket` paths. Without
+      // this the panel claimed to "read your Jira & GitHub" but answered
+      // from memory / refused. Jira tools need only a configured client;
+      // GitHub tools are repo-scoped to the configured AI-ticket repo
+      // (buildGithubTicketTools returns [] when the repo/client is unset).
+      const T = window.HuddleAiTools;
+      const jiraTools = T ? T.buildJiraTools(window.huddleApp?.getJira?.()) : [];
+      const githubTools = T
+        ? T.buildGithubTicketTools(window.huddleApp?.getGitHub?.(), (window.huddleApp?.getAiTicketRepo?.() || '').trim())
+        : [];
+      const tools = [...jiraTools, ...githubTools];
+      const caps = [jiraTools.length && 'Jira', githubTools.length && 'GitHub'].filter(Boolean).join(' and ');
+      const system = tools.length
+        ? `You are Huddle AI, a concise, helpful assistant inside a team chat. You have read access to the user's connected ${caps} via tools — when the user names a Jira ticket key (e.g. "DAP-135"), a file/issue/PR in the configured GitHub repo, or asks anything you could answer by reading them, CALL the tools to fetch the real data first, then answer. Never claim you cannot access ${caps}. Respond clearly. Use markdown for emphasis (**bold**, \`code\`).`
+        : 'You are Huddle AI, a concise, helpful assistant inside a team chat. Respond clearly. Use markdown for emphasis (**bold**, `code`).';
       const res = await ai.chat({
-        system: 'You are Huddle AI, a concise, helpful assistant inside a team chat. Respond clearly. Use markdown for emphasis (**bold**, `code`).',
+        system,
         messages: conversation.slice(),
+        tools: tools.length ? tools : undefined,
       });
       const text = res?.text || '(no response)';
       conversation.push({ role: 'assistant', content: text });
