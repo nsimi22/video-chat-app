@@ -2044,7 +2044,7 @@
     async fetchWhiteboardNotes(whiteboardId) {
       const { data, error } = await this.supabase
         .from('whiteboard_notes')
-        .select('id, x, y, w, h, text, color, color_key, votes, voted_by, author_id, updated_at')
+        .select('id, x, y, w, h, text, color, color_key, shape, meta, votes, voted_by, author_id, updated_at')
         .eq('whiteboard_id', whiteboardId)
         .order('created_at', { ascending: true });
       if (error) throw error;

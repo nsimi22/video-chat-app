@@ -248,6 +248,7 @@
       this.notes = new Map();   // id -> { data, el, textarea, handle, ... }
       this.frames = new Map();  // id -> { data, el, titleEl, ... }
       this.cursors = new Map(); // peerId -> { data, el }
+      this._boundObjIds = new Set(); // object ids that have ≥1 bound connector (reflow only these)
       this.editingNote = null;
       this.selectedNote = null;
       this.selectedFrame = null;
@@ -560,6 +561,7 @@
         for (const f of frameRows) this._renderFrame(f);
       } catch (err) { console.warn('[wbv] frames fetch failed', err); }
 
+      this._reflowAll(); // re-attach bound connectors now that notes+frames exist
       this._onViewportChange();
     }
 
@@ -662,6 +664,8 @@
       const persist = (data.color_key === TEXT_KIND)
         ? { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h, text: data.text || '', color_key: TEXT_KIND }
         : { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h, text: data.text || '', color: (STICKY[data.color_key]?.bg) || data.color, color_key: data.color_key };
+      if (data.shape) persist.shape = data.shape;   // recreate shapes/tables as themselves, not blank stickies
+      if (data.meta != null) persist.meta = data.meta;
       this.huddle.createWhiteboardNote(this.whiteboardId, persist).catch((e) => console.warn('[wbv] undo recreate note failed', e));
     }
     _recreateFrameFromData(data) {
@@ -767,14 +771,22 @@
         if (persist) this.huddle.persistWhiteboardStroke(this.whiteboardId, s).catch(() => {});
       }
     }
+    // Rebuild the set of object ids that have at least one bound connector.
+    // Cheap O(strokes) scan, run only when binds change — so the per-move /
+    // per-viewport hot path can skip _reflowFor (an O(strokes) scan itself)
+    // for the vast majority of objects that have no connectors.
+    _rebuildBindIndex() {
+      const set = new Set();
+      for (const s of (this.canvas?.strokes || [])) {
+        if (s.bind?.from?.id) set.add(s.bind.from.id);
+        if (s.bind?.to?.id) set.add(s.bind.to.id);
+      }
+      this._boundObjIds = set;
+    }
     _reflowAll() {
       if (!this.canvas?.strokes) return;
-      const ids = new Set();
-      for (const s of this.canvas.strokes) {
-        if (s.bind?.from?.id) ids.add(s.bind.from.id);
-        if (s.bind?.to?.id) ids.add(s.bind.to.id);
-      }
-      for (const id of ids) this._reflowFor(id, false);
+      this._rebuildBindIndex();
+      for (const id of this._boundObjIds) this._reflowFor(id, false);
     }
     // Auto-bind a freshly-drawn arrow/line whose ends land on objects.
     _autoBindStroke(stroke) {
@@ -791,6 +803,7 @@
       const eps = this._connectorEndpoints(stroke);
       stroke.points = eps;
       this.canvas.updateStrokePoints(stroke.uuid, eps);
+      this._rebuildBindIndex();
       return true;
     }
     // Drag from a note's edge handle to another object → bound connector
@@ -832,6 +845,7 @@
           return;
         }
         stroke.bind = { from: sourceRef, to: target };
+        this._rebuildBindIndex();
         const eps = this._connectorEndpoints(stroke);
         stroke.points = eps;
         this.canvas.updateStrokePoints(uuid, eps);
@@ -866,6 +880,7 @@
     }
     _recreateConnector(c) {
       this.canvas.addPersistedStroke(c);
+      if (c.bind) this._rebuildBindIndex();
       const eps = c.bind ? this._connectorEndpoints(c) : c.points;
       c.points = eps;
       this.canvas.updateStrokePoints(c.uuid, eps);
@@ -940,6 +955,7 @@
         const s = (this.canvas.strokes || []).find((x) => x.uuid === stroke.uuid);
         if (s) {
           s.bind = stroke.bind;
+          this._rebuildBindIndex();
           if (s.bind?.from?.id) this._reflowFor(s.bind.from.id, false);
           if (s.bind?.to?.id) this._reflowFor(s.bind.to.id, false);
         }
@@ -1039,7 +1055,7 @@
       const grid = h('div', { class: 'wbv-table-grid' });
       el.appendChild(grid);
       this.worldLayer.appendChild(el);
-      const entry = { data: { ...note }, el, kind: 'table' };
+      const entry = { data: { ...note }, el, kind: 'table', _grid: grid };
       this.notes.set(note.id, entry);
       entry._renderCells = () => {
         grid.innerHTML = '';
@@ -1274,7 +1290,25 @@
       if (!entry) return;
       if (entry.kind === 'table') {
         Object.assign(entry.data, patch);
-        if (patch.meta && entry._renderCells) entry._renderCells();
+        if (patch.meta && entry._renderCells) {
+          // If the local user is editing a cell, rebuilding the grid would
+          // destroy their caret/focus on every remote keystroke. When the
+          // grid shape is unchanged, patch other cells' text in place and
+          // leave the focused cell alone; otherwise do a full rebuild.
+          const m = entry.data.meta || { rows: 0, cols: 0, cells: [] };
+          const grid = entry._grid;
+          const editingInside = grid && grid.contains(document.activeElement);
+          if (editingInside && grid.children.length === m.rows * m.cols) {
+            let i = 0;
+            for (let r = 0; r < m.rows; r++) for (let c = 0; c < m.cols; c++) {
+              const cell = grid.children[i++];
+              const v = (m.cells[r] && m.cells[r][c]) || '';
+              if (cell !== document.activeElement && cell.innerText !== v) cell.textContent = v;
+            }
+          } else {
+            entry._renderCells();
+          }
+        }
         if (patch.x != null || patch.y != null || patch.w != null || patch.h != null) this._positionNote(entry);
         return;
       }
@@ -1366,7 +1400,7 @@
           el.style.setProperty('--wbv-note-font', fontPx.toFixed(1) + 'px');
         }
       }
-      this._reflowFor(entry.data.id, false); // keep bound connectors attached
+      if (this._boundObjIds.has(entry.data.id)) this._reflowFor(entry.data.id, false); // keep bound connectors attached
     }
 
     _refreshVoteStyle(entry) {
@@ -1764,9 +1798,11 @@
       this.editingNote = null;
       entry.el.classList.remove('is-editing');
       entry.textEl.setAttribute('contenteditable', 'false');
-      // Empty notes get auto-deleted to match Miro/FigJam behavior.
+      // Empty notes get auto-deleted to match Miro/FigJam behavior — but
+      // shapes (rect/ellipse/diamond) are legitimately label-less, so an
+      // empty shape must survive being edited and blurred.
       const text = entry.textEl.innerText.trim();
-      if (!text) this._deleteNote(id);
+      if (!text && !entry.data.shape) this._deleteNote(id);
       else {
         entry.data.text = text;
         this._renderNoteTextDisplay(entry); // re-linkify now that we're idle
@@ -1842,8 +1878,11 @@
         cw.appendChild(h('span', { class: 'wbv-color-pop-custom-rainbow' }));
         cw.appendChild(h('span', { text: 'Custom' }));
         cw.addEventListener('click', (e) => { e.stopPropagation(); ci.click(); });
-        ci.addEventListener('input', (e) => { e.stopPropagation(); opts.onCustom(e.target.value); });
-        ci.addEventListener('change', () => this._closeColorPopover());
+        // Commit once on `change` (final value) — not on every `input`
+        // drag-step, which otherwise floods the undo stack and fires a
+        // broadcast + DB write per intermediate colour.
+        ci.addEventListener('input', (e) => e.stopPropagation());
+        ci.addEventListener('change', (e) => { e.stopPropagation(); opts.onCustom(e.target.value); this._closeColorPopover(); });
         pop.appendChild(cw);
       }
       document.body.appendChild(pop);
@@ -1933,7 +1972,7 @@
     _onRemoteVote(payload) {
       if (payload.from === this.viewId) return;
       const entry = this.notes.get(payload.id);
-      if (!entry) return;
+      if (!entry || !entry.voteCountEl) return; // tables/text blocks have no vote pill
       entry.data.votes = payload.votes ?? entry.data.votes;
       entry.voteCountEl.textContent = String(entry.data.votes);
       // `mine` from a peer doesn't apply to me — leave my own flag alone.
@@ -2029,7 +2068,7 @@
       el.style.top = ((data.y - vp.y) * vp.scale) + 'px';
       el.style.width = (data.w * vp.scale) + 'px';
       el.style.height = (data.h * vp.scale) + 'px';
-      this._reflowFor(entry.data.id, false); // keep bound connectors attached
+      if (this._boundObjIds.has(entry.data.id)) this._reflowFor(entry.data.id, false); // keep bound connectors attached
     }
 
     _wireFrameHandlers(entry) {
