@@ -832,6 +832,29 @@
       document.addEventListener('pointermove', onMove, true);
       document.addEventListener('pointerup', onUp, true);
     }
+    // Remove (and return snapshots of) all connectors bound to an object —
+    // used when the object is deleted so links don't dangle.
+    _detachConnectors(objId) {
+      const out = [];
+      if (!this.canvas?.strokesBoundTo) return out;
+      for (const s of this.canvas.strokesBoundTo(objId)) {
+        out.push({ ...s, bind: s.bind ? { ...s.bind } : undefined, points: (s.points || []).map((p) => [...p]) });
+        this.canvas.removeStroke(s.uuid);
+        this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'delete-stroke', uuid: s.uuid }, this.viewId);
+        this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, s.uuid).catch(() => {});
+      }
+      return out;
+    }
+    _recreateConnector(c) {
+      this.canvas.addPersistedStroke(c);
+      const eps = c.bind ? this._connectorEndpoints(c) : c.points;
+      c.points = eps;
+      this.canvas.updateStrokePoints(c.uuid, eps);
+      this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'begin', uuid: c.uuid, x: eps[0][0], y: eps[0][1], tool: c.tool, color: c.color, size: c.size }, this.viewId);
+      this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'end', uuid: c.uuid, x: eps[1][0], y: eps[1][1], tool: c.tool, color: c.color, size: c.size }, this.viewId);
+      if (c.bind) this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'bind', uuid: c.uuid, bind: c.bind }, this.viewId);
+      this.huddle.persistWhiteboardStroke(this.whiteboardId, c).catch(() => {});
+    }
 
     async clearAll() {
       if (!confirm('Clear the whiteboard for everyone? This cannot be undone.')) return;
@@ -1676,9 +1699,10 @@
     async _deleteNote(id) {
       const entry = this.notes.get(id);
       const snap = entry ? { ...entry.data } : null;
+      const conns = this._detachConnectors(id);
       this._removeNoteEl(id);
       this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'delete', id }, this.viewId);
-      if (snap) this._pushUndo(() => this._recreateNoteFromData(snap));
+      if (snap) this._pushUndo(() => { this._recreateNoteFromData(snap); for (const c of conns) this._recreateConnector(c); });
       try { await this.huddle.deleteWhiteboardNote(id); }
       catch (err) { console.warn('[wbv] note delete failed', err); }
     }
@@ -2014,9 +2038,10 @@
       if (this.selectedFrame === id) this.selectedFrame = null;
       const entry = this.frames.get(id);
       const snap = entry ? { ...entry.data } : null;
+      const conns = this._detachConnectors(id);
       this._removeFrameEl(id);
       this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'delete', id }, this.viewId);
-      if (snap) this._pushUndo(() => this._recreateFrameFromData(snap));
+      if (snap) this._pushUndo(() => { this._recreateFrameFromData(snap); for (const c of conns) this._recreateConnector(c); });
       try { await this.huddle.deleteWhiteboardFrame(id); }
       catch (err) { console.warn('[wbv] frame delete failed', err); }
     }
