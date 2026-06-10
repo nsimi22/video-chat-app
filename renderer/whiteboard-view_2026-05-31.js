@@ -943,6 +943,10 @@
         // Cap the inner-text scale so a deeply zoomed-out note still
         // reads, but a zoomed-in note feels bigger.
         el.style.setProperty('--wbv-note-zoom', vp.scale.toFixed(2));
+        // Text auto-resizes with the note: a bigger sticky gets bigger text
+        // (FigJam-like), scaled off its width vs the default and the zoom.
+        const fontPx = Math.max(11, Math.min(30, 13 * (data.w / NOTE_W))) * vp.scale;
+        el.style.setProperty('--wbv-note-font', fontPx.toFixed(1) + 'px');
       }
     }
 
@@ -1043,6 +1047,7 @@
 
       // Text edits — broadcast immediately, debounce DB.
       textEl.addEventListener('input', () => {
+        this._maybeAutoBullet(textEl);
         data.text = textEl.innerText.trim();
         this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: data.id, text: data.text } }, this.viewId);
         clearTimeout(this._noteSaveTimers.get(data.id));
@@ -1054,7 +1059,8 @@
       });
       textEl.addEventListener('blur', () => this._endEditNote(data.id));
       textEl.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') { e.preventDefault(); this._endEditNote(data.id); }
+        if (e.key === 'Escape') { e.preventDefault(); this._endEditNote(data.id); return; }
+        if (e.key === 'Enter' && !e.shiftKey) this._maybeContinueBullet(textEl, e);
       });
 
       // Wire any resize handles the renderer attached (stickies have 4
@@ -1153,6 +1159,39 @@
       const txt = entry.data.text || '';
       if (this.editingNote === entry.data.id) entry.textEl.textContent = txt;
       else entry.textEl.innerHTML = linkifyHtml(txt);
+    }
+
+    // Plain text from the start of the contenteditable up to the caret,
+    // sliced to the current line — used for auto-bullet detection.
+    _caretLinePrefix(el) {
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount) return '';
+      const r = sel.getRangeAt(0).cloneRange();
+      r.setStart(el, 0);
+      const text = r.toString();
+      return text.slice(text.lastIndexOf('\n') + 1);
+    }
+    // Typing "- " or "* " at the start of a line becomes a "• " bullet.
+    _maybeAutoBullet(el) {
+      if (/^[-*]\s$/.test(this._caretLinePrefix(el))) {
+        document.execCommand('delete');
+        document.execCommand('delete');
+        document.execCommand('insertText', false, '• ');
+      }
+    }
+    // Enter on a bullet line continues the list; Enter on an empty bullet
+    // exits it.
+    _maybeContinueBullet(el, e) {
+      const m = this._caretLinePrefix(el).match(/^([•\-*])\s+(.*)$/);
+      if (!m) return;
+      e.preventDefault();
+      if (!m[2].trim()) {
+        document.execCommand('delete');
+        document.execCommand('delete');
+        document.execCommand('insertText', false, '\n');
+      } else {
+        document.execCommand('insertText', false, '\n• ');
+      }
     }
 
     _beginEditNote(id) {

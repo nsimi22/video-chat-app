@@ -7864,7 +7864,7 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 }
 .wbv-note-text {
   flex: 1 1 auto;
-  font-size: 13px;
+  font-size: var(--wbv-note-font, 13px);
   line-height: 1.32;
   font-weight: 600;
   letter-spacing: -0.01em;
