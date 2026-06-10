@@ -7858,7 +7858,7 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   /* Auto-grow with content. The outer .wbv-note has its own
    * min-height (set by _positionNote in world coords × zoom) so a
    * brand-new sticky still matches the design's seed size. */
-  min-height: 100%;
+  min-height: var(--wbv-note-h, 100px);
   box-sizing: border-box;
   padding: 14px 15px 12px;
   background: var(--wbv-note-bg, #f0cf78);

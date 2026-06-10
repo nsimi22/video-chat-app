@@ -736,13 +736,15 @@
       return null;
     }
     // Point on a box border along the ray from its centre toward (tx,ty).
+    // Anchor a connector at the MIDPOINT of the box side facing (tx,ty) —
+    // so the arrow exits cleanly from a side (left/right/top/bottom), like
+    // FigJam, instead of a diagonal point or the centre.
     _anchorOnBox(box, tx, ty) {
       const dx = tx - box.cx, dy = ty - box.cy;
-      if (dx === 0 && dy === 0) return [box.cx, box.cy];
-      const sx = dx === 0 ? Infinity : (box.w / 2) / Math.abs(dx);
-      const sy = dy === 0 ? Infinity : (box.h / 2) / Math.abs(dy);
-      const s = Math.min(sx, sy);
-      return [box.cx + dx * s, box.cy + dy * s];
+      if (Math.abs(dx) * box.h >= Math.abs(dy) * box.w) {
+        return dx >= 0 ? [box.x + box.w, box.cy] : [box.x, box.cy]; // right / left
+      }
+      return dy >= 0 ? [box.cx, box.y + box.h] : [box.cx, box.y];   // bottom / top
     }
     _connectorEndpoints(stroke) {
       const fromBox = this._objBox(stroke.bind?.from);
@@ -1337,7 +1339,11 @@
           el.style.minHeight = '';
         } else {
           el.style.height = '';
-          el.style.minHeight = (data.h * vp.scale) + 'px';
+          el.style.minHeight = '';
+          // Drive the CARD's min-height with a real px value (a % min-height
+          // against an auto-height wrapper doesn't resolve, which is why
+          // sticky resize only grew width). Still auto-grows past it on type.
+          el.style.setProperty('--wbv-note-h', (data.h * vp.scale) + 'px');
           // Cap the inner-text scale so a deeply zoomed-out note still
           // reads, but a zoomed-in note feels bigger.
           el.style.setProperty('--wbv-note-zoom', vp.scale.toFixed(2));
