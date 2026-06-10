@@ -6268,11 +6268,15 @@ function onScreenAnnounce(detail) {
   if (pending) {
     clearTimeout(pending.timer);
     state.pendingStreams.delete(detail.streamId);
-    renderRemoteScreen(pending.stream, { label: detail.label, fromName: detail.fromName });
+    // Forward the publisher id — renderRemoteScreen stamps it on the
+    // tile as dataset.fromId, which removePersonFromCall walks when
+    // that peer leaves. Dropping it left the dead peer's screen tile
+    // on the stage forever.
+    renderRemoteScreen(pending.stream, { label: detail.label, fromName: detail.fromName, from: pending.fromId });
     return;
   }
   const tile = state.tilesByKey.get(`screen:${detail.streamId}`);
-  if (tile) tile.querySelector('.tile-label').textContent = `${detail.label} — ${detail.fromName}`;
+  if (tile) setScreenTileLabel(tile, `${detail.fromName}'s`, detail.label);
 }
 
 function onScreenStop({ streamId }) {

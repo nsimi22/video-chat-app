@@ -1073,7 +1073,10 @@ class ChatView {
     this.composerAttachments = [];
     this._renderAttachmentChips();
     try {
-      await this.mesh.sendMessage({
+      // Strict variant — the lenient sendMessage swallows failures,
+      // which would make this whole catch (restore text + alert) dead
+      // code and silently eat messages sent while offline.
+      await this.mesh.sendMessageStrict({
         channelId,
         parentId,
         text: window.replaceShortcodes(text),
@@ -1098,10 +1101,18 @@ class ChatView {
     this._replaceNodeById(messageId);
   }
 
-  _saveEdit(messageId, newText) {
-    this.mesh.editMessage(messageId, newText);
+  async _saveEdit(messageId, newText) {
     this.editingMessageId = null;
-    // Realtime postgres_changes will fire chat-update; render happens then.
+    try {
+      await this.mesh.editMessage(messageId, newText);
+      // Realtime postgres_changes will fire chat-update; render happens then.
+    } catch (err) {
+      // Put the row back into edit mode — the textarea (with the user's
+      // text) is still in the DOM since we only re-render on chat-update,
+      // so they can retry Save or copy their changes out.
+      this.editingMessageId = messageId;
+      alert("Couldn't save your edit: " + (err?.message || err));
+    }
   }
 
   _cancelEdit() {
@@ -1119,15 +1130,25 @@ class ChatView {
     // for ai_generated rows). The handler below is idempotent so a
     // late DELETE event reaching us after the optimistic prune is a
     // safe no-op.
+    let removedArr = null, removedIdx = -1, removed = null;
     for (const arr of this.byChannel.values()) {
       const idx = arr.findIndex((x) => x.id === messageId);
-      if (idx >= 0) { arr.splice(idx, 1); break; }
+      if (idx >= 0) { removedArr = arr; removedIdx = idx; removed = arr[idx]; arr.splice(idx, 1); break; }
     }
     const node = this.nodeById.get(messageId);
     if (node) { node.remove(); this.nodeById.delete(messageId); }
     this._render();
     try { await this.mesh.deleteMessage(messageId); }
-    catch (err) { console.warn('deleteMessage failed', err); }
+    catch (err) {
+      // Roll back the optimistic removal — the row still exists
+      // server-side (and for everyone else), so leaving it hidden
+      // locally just desyncs this client until the next reload.
+      if (removedArr && removed) {
+        removedArr.splice(Math.min(removedIdx, removedArr.length), 0, removed);
+        this._render();
+      }
+      alert("Couldn't delete the message: " + (err?.message || err));
+    }
   }
 
   // --- Pinning + permalinks -----------------------------------------------
@@ -2156,7 +2177,9 @@ class ChatView {
     info.kind = 'clip';
     if (meta.durationSecs) info.durationSecs = meta.durationSecs;
     try {
-      await this.mesh.sendMessage({
+      // Strict variant — lenient sendMessage never throws, which would
+      // leave this catch dead and discard the take on a failed post.
+      await this.mesh.sendMessageStrict({
         channelId,
         parentId,
         text: '',
@@ -2955,7 +2978,7 @@ class ChatView {
     return p;
   }
 
-  _postGif(url, result) {
+  async _postGif(url, result) {
     // The same GIF URL re-clicked within a few seconds is a "didn't see
     // it post, clicked again" double-post (the realtime echo hasn't
     // landed yet), not intent to post it twice — swallow it.
@@ -2968,18 +2991,26 @@ class ChatView {
     this._lastGifAt = now;
     const images = result?.images || {};
     const size = parseInt(images.original?.size, 10) || 0;
-    this.mesh.sendMessage({
-      channelId: this.currentChannel,
-      parentId: this.threadParentId,
-      text: '',
-      attachments: [{
-        url,
-        name: (result?.title || 'giphy.gif').slice(0, 80),
-        contentType: 'image/gif',
-        size,
-      }],
-    });
     this.els.gifPicker.classList.add('hidden');
+    try {
+      await this.mesh.sendMessageStrict({
+        channelId: this.currentChannel,
+        parentId: this.threadParentId,
+        text: '',
+        attachments: [{
+          url,
+          name: (result?.title || 'giphy.gif').slice(0, 80),
+          contentType: 'image/gif',
+          size,
+        }],
+      });
+    } catch (err) {
+      // Reset the re-click debounce so an immediate retry of the same
+      // GIF isn't swallowed as a double-post.
+      this._lastGifUrl = null;
+      this._lastGifAt = 0;
+      alert("Couldn't post the GIF: " + (err?.message || err));
+    }
   }
 }
 

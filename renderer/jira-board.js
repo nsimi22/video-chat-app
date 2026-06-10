@@ -501,7 +501,10 @@
   function matches(t) {
     const f = board.filter;
     const myEmail = (ctx.getSettings()?.jira?.email || '').toLowerCase();
-    if (f === 'mine' && !t.assignees.some((a) => (a.email || '').toLowerCase() === myEmail && myEmail)) return false;
+    // Gate on myEmail OUTSIDE the some() — with the `&& myEmail` inside
+    // the callback, an unconfigured Jira email made every ticket fail
+    // the match and "My issues" rendered an inexplicably empty board.
+    if (f === 'mine' && myEmail && !t.assignees.some((a) => (a.email || '').toLowerCase() === myEmail)) return false;
     if (f !== 'all' && f !== 'mine' && !t.assignees.some((a) => a.id === f)) return false;
     if (board.query) {
       const hay = (t.key + ' ' + t.summary + ' ' + t.labels.join(' ')).toLowerCase();

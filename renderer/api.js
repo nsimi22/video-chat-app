@@ -1260,9 +1260,10 @@
 
     // Strict variant — throws on supabase error instead of swallowing.
     // Use when the caller has a UI-visible action to take on failure
-    // (restore typed text, show a banner, retry). The lenient
-    // sendMessage above stays in place for the main chat composer so a
-    // backgrounded keystroke doesn't surface every transient blip.
+    // (restore typed text, show a banner, retry) — the composer, clip
+    // post, and GIF post all do. The lenient sendMessage above stays in
+    // place for fire-and-forget sites (slash-command echoes, system
+    // posts) where there's nothing for the user to recover.
     async sendMessageStrict(args) {
       await this._insertMessage(args);
     }
@@ -1383,12 +1384,17 @@
       const { error } = await this.supabase.from('messages').update({
         body: text, edited_ts: new Date().toISOString(), mentions,
       }).eq('id', messageId);
-      if (error) console.warn('editMessage failed', error);
+      // Throw so chat.js can keep the row in edit mode and tell the
+      // user — swallowing this left the edit textarea stuck forever
+      // with the message silently unedited server-side.
+      if (error) throw error;
     }
 
     async deleteMessage(messageId) {
       const { error } = await this.supabase.from('messages').delete().eq('id', messageId);
-      if (error) console.warn('deleteMessage failed', error);
+      // Throw so chat.js can roll back its optimistic removal — the row
+      // still exists for everyone else when the delete fails.
+      if (error) throw error;
     }
 
     // Pin / unpin a message. Routed through a security-definer RPC so any
