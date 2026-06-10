@@ -1036,11 +1036,6 @@
       el.appendChild(head);
       const grid = h('div', { class: 'wbv-table-grid' });
       el.appendChild(grid);
-      for (const side of ['n', 'e', 's', 'w']) {
-        const ch = h('span', { class: `wbv-conn-handle is-${side}`, attrs: { 'data-side': side, 'aria-hidden': 'true' } });
-        ch.addEventListener('pointerdown', (ev) => this._startConnectorDrag({ type: 'note', id: note.id }, ev));
-        el.appendChild(ch);
-      }
       this.worldLayer.appendChild(el);
       const entry = { data: { ...note }, el, kind: 'table' };
       this.notes.set(note.id, entry);
@@ -1070,12 +1065,13 @@
         this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: note.id, meta: entry.data.meta } }, this.viewId);
         this.huddle.updateWhiteboardNote(note.id, { meta: entry.data.meta }).catch(() => {});
       };
-      const addRow = h('button', { class: 'wbv-table-add', text: '+ Row', attrs: { title: 'Add row' } });
-      addRow.addEventListener('click', (e) => { e.stopPropagation(); const m = entry.data.meta; m.cells.push(new Array(m.cols).fill('')); m.rows = m.cells.length; entry._renderCells(); persistMeta(); });
-      const addCol = h('button', { class: 'wbv-table-add', text: '+ Col', attrs: { title: 'Add column' } });
+      // FigJam-style edge buttons: '+' on the right edge adds a column,
+      // '+' on the bottom edge adds a row (shown on hover/select).
+      const addCol = h('button', { class: 'wbv-table-edge wbv-table-edge-col', text: '+', attrs: { title: 'Add column', 'aria-label': 'Add column' } });
       addCol.addEventListener('click', (e) => { e.stopPropagation(); const m = entry.data.meta; m.cells.forEach((r) => r.push('')); m.cols += 1; entry._renderCells(); persistMeta(); });
-      head.insertBefore(addCol, head.firstChild);
-      head.insertBefore(addRow, head.firstChild);
+      const addRow = h('button', { class: 'wbv-table-edge wbv-table-edge-row', text: '+', attrs: { title: 'Add row', 'aria-label': 'Add row' } });
+      addRow.addEventListener('click', (e) => { e.stopPropagation(); const m = entry.data.meta; m.cells.push(new Array(m.cols).fill('')); m.rows = m.cells.length; entry._renderCells(); persistMeta(); });
+      el.appendChild(addCol); el.appendChild(addRow);
       // SE handle to scale the whole table.
       const rh = h('span', { class: 'wbv-resize-handle is-se wbv-resize-corner', attrs: { 'aria-hidden': 'true' } });
       el.appendChild(rh);

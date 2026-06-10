@@ -8243,14 +8243,29 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .wbv-table-del:hover { color: var(--danger, #ff453a); }
 .wbv-table-grid {
   flex: 1; display: grid; gap: 1px;
+  grid-auto-rows: 1fr; /* rows share the box height evenly so it fills */
   background: var(--line, rgba(255, 255, 255, 0.14));
 }
 .wbv-table-cell {
   background: var(--bg-1, #1a1d22); color: var(--tx-hi, #eef0f2);
-  font-size: 12px; line-height: 1.3; padding: 5px 7px; min-height: 26px;
-  outline: none; overflow-wrap: anywhere;
+  font-size: 12px; line-height: 1.3; padding: 5px 7px; min-height: 24px;
+  outline: none; overflow-wrap: anywhere; display: flex; align-items: center;
 }
 .wbv-table-cell:focus { background: var(--bg-2, rgba(255, 255, 255, 0.06)); }
+/* Edge add-buttons (FigJam-style): right = +column, bottom = +row. */
+.wbv-table-edge {
+  position: absolute; z-index: 3; border: 0; cursor: pointer;
+  opacity: 0; transition: opacity .1s ease;
+  background: var(--bg-2, rgba(255, 255, 255, 0.1)); color: var(--tx-mid, #c8ccd0);
+  font-size: 14px; font-weight: 700; line-height: 1;
+  display: flex; align-items: center; justify-content: center; border-radius: 5px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+.wbv-note.wbv-table:hover .wbv-table-edge,
+.wbv-note.wbv-table.is-selected .wbv-table-edge { opacity: 1; }
+.wbv-table-edge:hover { background: var(--accent, #0a84ff); color: #fff; }
+.wbv-table-edge-col { right: -15px; top: 50%; transform: translateY(-50%); width: 13px; height: 30px; }
+.wbv-table-edge-row { bottom: -15px; left: 50%; transform: translateX(-50%); width: 30px; height: 13px; }
 
 /* Connector handles — 4 mid-edge dots on a note; drag to link to another. */
 .wbv-conn-handle {
