@@ -249,7 +249,9 @@
       this.selectedFrame = null;
       this._multi = [];         // [{type:'note'|'frame', id}] for multi-select
       this._undoStack = [];     // inverse-action closures for Cmd/Ctrl+Z
-      this._undoing = false;    // true while an undo runs (suppresses re-push)
+      this._redoStack = [];     // inverse-of-inverse closures for redo
+      this._undoing = false;    // true while an undo runs (routes pushes -> redo)
+      this._redoing = false;    // true while a redo runs (routes pushes -> undo)
       this._paintedStrokeUuids = new Set();
       this._frameDrag = null;
       this._noteDrag = null;
@@ -607,15 +609,29 @@
       try { fn(); } catch (err) { console.warn('[wbv] undo failed', err); }
       finally { this._undoing = false; }
     }
+    redo() {
+      const fn = this._redoStack.pop();
+      if (!fn) return;
+      this._redoing = true;
+      try { fn(); } catch (err) { console.warn('[wbv] redo failed', err); }
+      finally { this._redoing = false; }
+    }
+    // While undoing, an action's freshly-pushed inverse becomes a redo entry
+    // (and vice-versa). A brand-new user action clears the redo stack.
     _pushUndo(fn) {
-      if (this._undoing) return;
+      if (this._undoing) { this._redoStack.push(fn); if (this._redoStack.length > 100) this._redoStack.shift(); return; }
+      if (this._redoing) { this._undoStack.push(fn); if (this._undoStack.length > 100) this._undoStack.shift(); return; }
       this._undoStack.push(fn);
       if (this._undoStack.length > 100) this._undoStack.shift();
+      this._redoStack = [];
     }
     // Undo helpers — restore geometry / recreate deleted objects.
     _applyNoteGeom(id, geom) {
       const entry = this.notes.get(id);
       if (!entry) return;
+      const prior = {};
+      for (const k of Object.keys(geom)) prior[k] = entry.data[k];
+      this._pushUndo(() => this._applyNoteGeom(id, prior)); // enables redo
       Object.assign(entry.data, geom);
       this._positionNote(entry);
       this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id, ...geom } }, this.viewId);
@@ -624,6 +640,9 @@
     _applyFrameGeom(id, geom) {
       const entry = this.frames.get(id);
       if (!entry) return;
+      const prior = {};
+      for (const k of Object.keys(geom)) prior[k] = entry.data[k];
+      this._pushUndo(() => this._applyFrameGeom(id, prior)); // enables redo
       Object.assign(entry.data, geom);
       this._positionFrame(entry);
       this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id, ...geom } }, this.viewId);
@@ -632,6 +651,7 @@
     _recreateNoteFromData(data) {
       this._renderNote({ ...data });
       this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note: data }, this.viewId);
+      this._pushUndo(() => this._deleteNote(data.id)); // enables redo of the delete
       const persist = (data.color_key === TEXT_KIND)
         ? { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h, text: data.text || '', color_key: TEXT_KIND }
         : { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h, text: data.text || '', color: (STICKY[data.color_key]?.bg) || data.color, color_key: data.color_key };
@@ -640,6 +660,7 @@
     _recreateFrameFromData(data) {
       this._renderFrame({ ...data });
       this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'create', frame: data }, this.viewId);
+      this._pushUndo(() => this._deleteFrame(data.id)); // enables redo of the delete
       this.huddle.createWhiteboardFrame(this.whiteboardId, { ...data }).catch((e) => console.warn('[wbv] undo recreate frame failed', e));
     }
 
@@ -1990,9 +2011,14 @@
       else if (k === 'o') this.setTool('ellipse');
       else if (k === 'a') this.setTool('arrow');
       else if ((e.metaKey || e.ctrlKey) && k === 'z') {
-        if (this.editingNote || document.activeElement?.isContentEditable) return; // let native text undo run
+        if (this.editingNote || document.activeElement?.isContentEditable) return; // let native text undo/redo run
         e.preventDefault();
-        this.undo();
+        if (e.shiftKey) this.redo(); else this.undo();
+      }
+      else if ((e.metaKey || e.ctrlKey) && k === 'y') {
+        if (this.editingNote || document.activeElement?.isContentEditable) return;
+        e.preventDefault();
+        this.redo();
       }
       else if (k === 'delete' || k === 'backspace') {
         if (this._multi.length && !this.editingNote && !document.activeElement?.isContentEditable) {
