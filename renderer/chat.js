@@ -222,6 +222,7 @@ class ChatView {
     this.nodeById = new Map();
     this.typingUsers = new Map();
     this.editingMessageId = null;
+    this._savingMessageId = null; // edit-save in flight (re-entrancy guard)
     this.composerAttachments = []; // [{file, status, info?}] where info = {url, name, contentType, size}
     // Session cache for Jira lookups: key -> { issue | null, error?, host? }.
     // null = lookup failed but completed (don't retry within session).
@@ -1102,6 +1103,11 @@ class ChatView {
   }
 
   async _saveEdit(messageId, newText) {
+    // Re-entrancy guard: the Save button stays clickable while the
+    // update is in flight (the row only re-renders on chat-update), so
+    // a double-click would fire duplicate concurrent requests.
+    if (this._savingMessageId === messageId) return;
+    this._savingMessageId = messageId;
     this.editingMessageId = null;
     try {
       await this.mesh.editMessage(messageId, newText);
@@ -1112,6 +1118,8 @@ class ChatView {
       // so they can retry Save or copy their changes out.
       this.editingMessageId = messageId;
       alert("Couldn't save your edit: " + (err?.message || err));
+    } finally {
+      if (this._savingMessageId === messageId) this._savingMessageId = null;
     }
   }
 
