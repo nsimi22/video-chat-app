@@ -32,13 +32,18 @@
 
 (function () {
   const STICKY = {
-    butter: { bg: '#f0cf78', tx: '#3c2e08', fold: '#dcb95f', dot: '#e7c25f' },
-    rose:   { bg: '#eea7ba', tx: '#421421', fold: '#dd93a7', dot: '#e58fa6' },
-    sky:    { bg: '#a3cbef', tx: '#10283f', fold: '#8db8de', dot: '#86bbe6' },
-    mint:   { bg: '#9ed7b3', tx: '#0d2c1c', fold: '#89c6a0', dot: '#81cd9c' },
-    lilac:  { bg: '#c2b2ee', tx: '#251a45', fold: '#ad9ce0', dot: '#b3a2ec' },
+    butter:    { bg: '#f0cf78', tx: '#3c2e08', fold: '#dcb95f', dot: '#e7c25f' },
+    rose:      { bg: '#eea7ba', tx: '#421421', fold: '#dd93a7', dot: '#e58fa6' },
+    sky:       { bg: '#a3cbef', tx: '#10283f', fold: '#8db8de', dot: '#86bbe6' },
+    mint:      { bg: '#9ed7b3', tx: '#0d2c1c', fold: '#89c6a0', dot: '#81cd9c' },
+    lilac:     { bg: '#c2b2ee', tx: '#251a45', fold: '#ad9ce0', dot: '#b3a2ec' },
+    coral:     { bg: '#f0a3a3', tx: '#421616', fold: '#de9090', dot: '#e88f8f' },
+    tangerine: { bg: '#f4c489', tx: '#3f2708', fold: '#e2b075', dot: '#ecb06f' },
+    teal:      { bg: '#93d4d0', tx: '#0c2e2c', fold: '#7fc4c0', dot: '#79ccc7' },
+    grape:     { bg: '#d3a7e0', tx: '#2e1640', fold: '#c194d0', dot: '#c894d8' },
+    slate:     { bg: '#b4c0cc', tx: '#18222c', fold: '#a0aebb', dot: '#9fb0bf' },
   };
-  const STICKY_ORDER = ['butter', 'rose', 'sky', 'mint', 'lilac'];
+  const STICKY_ORDER = ['butter', 'rose', 'sky', 'mint', 'lilac', 'coral', 'tangerine', 'teal', 'grape', 'slate'];
   const NOTE_W = 154;
   const NOTE_H = 134;
   const TEXT_W = 220;
@@ -47,13 +52,73 @@
   // whiteboard_notes table without a schema change. Anything not in
   // STICKY_ORDER renders as plain text.
   const TEXT_KIND = '_text';
+  // Sentinel color_key for an arbitrary (picker-chosen) sticky colour; the
+  // actual hex rides in the note's `color` field.
+  const CUSTOM_KIND = '_custom';
+
+  // ── Colour helpers (custom sticky colours) ──
+  const isHex = (s) => typeof s === 'string' && /^#?[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(s.trim());
+  function hexToRgb(hex) {
+    const h = hex.replace('#', '');
+    const v = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+    const n = parseInt(v, 16);
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+  }
+  const clamp8 = (n) => Math.max(0, Math.min(255, Math.round(n)));
+  function rgbToHex(r, g, b) {
+    return '#' + [r, g, b].map((x) => clamp8(x).toString(16).padStart(2, '0')).join('');
+  }
+  function readableText(hex) {
+    const { r, g, b } = hexToRgb(hex);
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6 ? '#1a1a1a' : '#ffffff';
+  }
+  function shadeHex(hex, f) {
+    const { r, g, b } = hexToRgb(hex);
+    return rgbToHex(r + f * 255, g + f * 255, b + f * 255);
+  }
+  // Resolve a note's swatch palette from either a named slug or a custom hex.
+  function notePalette(colorKey, colorHex) {
+    if (STICKY[colorKey]) return STICKY[colorKey];
+    const bg = isHex(colorHex) ? (colorHex[0] === '#' ? colorHex : '#' + colorHex) : STICKY.butter.bg;
+    return { bg, tx: readableText(bg), fold: shadeHex(bg, -0.1), dot: bg };
+  }
 
   const FRAME_TINTS = {
+    // Original four keys kept so existing frames keep their colour.
     accent: 'var(--accent)',
     live:   'var(--live, #2ec4b6)',
     online: 'var(--online, #34c759)',
     away:   'var(--away, #f5a524)',
+    // Extra colours for a fuller FigJam-like palette.
+    yellow: '#f5c542',
+    red:    '#ff5a5f',
+    purple: '#a06bff',
+    pink:   '#ff6bd6',
+    gray:   '#9aa0a6',
   };
+
+  // URL auto-linking for note/text display. Escapes HTML, then wraps bare
+  // http(s) URLs in an accent-coloured anchor. Newlines survive as-is (the
+  // note text uses white-space: pre-wrap), so we don't convert them.
+  const URL_RE = /(https?:\/\/[^\s<]+[^\s<.,;:!?)\]}'"])/g;
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+  function linkifyHtml(text) {
+    const src = String(text || '');
+    let out = '', last = 0;
+    src.replace(URL_RE, (url, _g1, idx) => {
+      out += escapeHtml(src.slice(last, idx));
+      const safe = escapeHtml(url);
+      out += `<a class="wbv-link" data-url="${safe}" href="${safe}">${safe}</a>`;
+      last = idx + url.length;
+      return url;
+    });
+    out += escapeHtml(src.slice(last));
+    return out;
+  }
 
   const TOOLS = [
     { id: 'cursor',  icon: 'cursor',     label: 'Select  ·  V' },
@@ -172,7 +237,7 @@
         ? crypto.randomUUID()
         : `${this.huddle.peerId}-${Math.random().toString(36).slice(2)}`;
 
-      this.tool = 'sticky';     // matches the design's default
+      this.tool = 'cursor';     // default to select/cursor, like FigJam
       this.drawColor = 'var(--accent)';
       this.stickyColor = 'butter';
 
@@ -181,6 +246,12 @@
       this.cursors = new Map(); // peerId -> { data, el }
       this.editingNote = null;
       this.selectedNote = null;
+      this.selectedFrame = null;
+      this._multi = [];         // [{type:'note'|'frame', id}] for multi-select
+      this._undoStack = [];     // inverse-action closures for Cmd/Ctrl+Z
+      this._redoStack = [];     // inverse-of-inverse closures for redo
+      this._undoing = false;    // true while an undo runs (routes pushes -> redo)
+      this._redoing = false;    // true while a redo runs (routes pushes -> undo)
       this._paintedStrokeUuids = new Set();
       this._frameDrag = null;
       this._noteDrag = null;
@@ -202,9 +273,9 @@
       // ── Header ─────────────────────────────────────────────────
       const header = h('div', { class: 'wbv-header' });
       header.appendChild(iconEl('board', 19));
-      const titleEl = h('span', { class: 'wbv-title', text: this.boardTitle });
+      const titleEl = h('span', { class: 'wbv-title', text: this.boardTitle, attrs: { spellcheck: 'false' } });
       titleEl.title = 'Click to rename the board';
-      titleEl.addEventListener('click', () => this._renameBoard());
+      titleEl.addEventListener('click', () => this._beginRenameBoard());
       header.appendChild(titleEl);
       this.titleEl = titleEl;
 
@@ -221,13 +292,8 @@
       header.appendChild(editorCount);
       this.editorCountEl = editorCount;
 
-      // "+ Frame" affordance — the design seeds frames as mock data; in
-      // prod we let session leads stamp one with a click.
-      const addFrameBtn = h('button', { class: 'wbv-btn wbv-btn-ghost', attrs: { title: 'Add a titled frame to organise notes' } });
-      addFrameBtn.appendChild(iconEl('frame', 14));
-      addFrameBtn.appendChild(h('span', { text: 'Frame' }));
-      addFrameBtn.addEventListener('click', () => this._addFrameAtViewportCenter());
-      header.appendChild(addFrameBtn);
+      // Frame creation now lives in the left tool palette (FigJam-style),
+      // not the header — see _buildToolPalette.
 
       const exportBtn = h('button', { class: 'wbv-btn wbv-btn-solid', attrs: { title: 'Export as PNG' } });
       exportBtn.appendChild(iconEl('download', 14));
@@ -285,6 +351,7 @@
       this.canvas.onStrokeFinished((p) => this._persistFinishedStroke(p));
       this.canvas.onStrokeErased((uuid) => this._eraseStroke(uuid));
       this.canvas.onStrokeMoved((uuid, p) => this._moveStroke(uuid, p));
+      this.canvas.onMarquee((rect) => this._selectInRect(rect));
       this.canvas.onViewportChange(() => this._onViewportChange());
       this.canvas.setColor(resolveColor(this.drawColor));
       this.canvas.setTool(TOOL_TO_CANVAS[this.tool]);
@@ -334,6 +401,13 @@
       }
       palette.appendChild(h('div', { class: 'wbv-palette-sep' }));
 
+      // Frame creation lives in the palette (FigJam-style) as a one-shot
+      // action rather than a persistent tool mode.
+      const frameBtn = h('button', { class: 'wbv-tool', attrs: { title: 'Add a frame', 'aria-label': 'Add a frame' } });
+      frameBtn.appendChild(iconEl('frame', 18));
+      frameBtn.addEventListener('click', () => this._addFrameAtViewportCenter());
+      palette.appendChild(frameBtn);
+
       const swatchWrap = h('div', { class: 'wbv-swatches' });
       palette.appendChild(swatchWrap);
       this.swatchWrap = swatchWrap;
@@ -357,29 +431,38 @@
 
     _renderSwatches() {
       this.swatchWrap.innerHTML = '';
-      if (this.tool === 'sticky') {
-        for (const k of STICKY_ORDER) {
-          const c = STICKY[k].dot;
-          const b = h('button', {
-            class: 'wbv-swatch wbv-swatch-sticky' + (k === this.stickyColor ? ' is-on' : ''),
-            style: { background: c },
-            attrs: { title: k, 'aria-label': `Sticky color: ${k}` },
+      const isSticky = this.tool === 'sticky';
+      const trigger = h('button', { class: 'wbv-toolbar-color wbv-palette-color', attrs: { title: 'Color', 'aria-label': 'Color' } });
+      const dot = h('span', { class: 'wbv-toolbar-color-dot' });
+      dot.style.background = isSticky ? (STICKY[this.stickyColor]?.dot || this.stickyColor) : resolveColor(this.drawColor);
+      trigger.appendChild(dot);
+      trigger.appendChild(h('span', { class: 'wbv-toolbar-color-caret' }));
+      trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (isSticky) {
+          this._openColorPopover(trigger, {
+            current: this.stickyColor,
+            items: STICKY_ORDER.map((k) => ({ key: k, color: STICKY[k].dot })),
+            onPick: (k) => { this.stickyColor = k; dot.style.background = STICKY[k].dot; this._refreshHintSwatch(); },
           });
-          b.addEventListener('click', () => { this.stickyColor = k; this._renderSwatches(); this._refreshHintSwatch(); });
-          this.swatchWrap.appendChild(b);
-        }
-      } else {
-        const colors = ['var(--accent)', 'var(--live, #2ec4b6)', 'var(--online, #34c759)', 'var(--away, #f5a524)'];
-        for (const c of colors) {
-          const b = h('button', {
-            class: 'wbv-swatch' + (c === this.drawColor ? ' is-on' : ''),
-            style: { background: c },
-            attrs: { 'aria-label': `Ink color ${c}` },
+        } else {
+          const inks = [
+            { key: 'var(--accent)', color: 'var(--accent)' },
+            { key: 'var(--live, #2ec4b6)', color: 'var(--live, #2ec4b6)' },
+            { key: 'var(--online, #34c759)', color: 'var(--online, #34c759)' },
+            { key: 'var(--away, #f5a524)', color: 'var(--away, #f5a524)' },
+            { key: '#ffffff', color: '#ffffff' },
+            { key: '#1a1a1a', color: '#1a1a1a' },
+          ];
+          this._openColorPopover(trigger, {
+            current: this.drawColor,
+            items: inks,
+            onPick: (c) => { this.drawColor = c; this.canvas.setColor(resolveColor(c)); dot.style.background = resolveColor(c); },
+            onCustom: (hex) => { this.drawColor = hex; this.canvas.setColor(resolveColor(hex)); dot.style.background = hex; },
           });
-          b.addEventListener('click', () => { this.drawColor = c; this.canvas.setColor(resolveColor(c)); this._renderSwatches(); });
-          this.swatchWrap.appendChild(b);
         }
-      }
+      });
+      this.swatchWrap.appendChild(trigger);
     }
 
     _refreshHintSwatch() {
@@ -484,12 +567,15 @@
       // mapping to a default pastel.
       const slug = row.color_key === TEXT_KIND
         ? TEXT_KIND
-        : (row.color_key && STICKY[row.color_key] ? row.color_key : (this._slugFromHex(row.color) || 'butter'));
+        : (STICKY[row.color_key]
+            ? row.color_key
+            : (isHex(row.color) ? CUSTOM_KIND : (this._slugFromHex(row.color) || 'butter')));
       return {
         id: row.id,
         x: row.x, y: row.y, w: row.w || NOTE_W, h: row.h || NOTE_H,
         text: row.text || '',
         color_key: slug,
+        color: row.color,
         author_id: row.author_id,
         votes: row.votes || 0,
         mine: voted,
@@ -514,17 +600,119 @@
       this._refreshToolButtons();
     }
 
+    // Pop + run the most recent inverse action (strokes, notes, frames —
+    // create/delete/move/resize/color all push one). The _undoing guard
+    // stops an undo action from pushing its own inverse back onto the stack.
     undo() {
-      // Pop the most recent local stroke, if any. The canvas owns its own
-      // undo stack of finished strokes — call it through removeStroke +
-      // a delete-stroke broadcast.
-      if (!this._localStrokeUuids || !this._localStrokeUuids.length) return;
-      const uuid = this._localStrokeUuids.pop();
-      this.canvas?.removeStroke(uuid);
-      this._paintedStrokeUuids.add(uuid);
-      this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'delete-stroke', uuid }, this.viewId);
-      this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid)
-        .catch((err) => console.warn('[wbv] undo persist-delete failed', err));
+      const fn = this._undoStack.pop();
+      if (!fn) return;
+      this._undoing = true;
+      try { fn(); } catch (err) { console.warn('[wbv] undo failed', err); }
+      finally { this._undoing = false; }
+    }
+    redo() {
+      const fn = this._redoStack.pop();
+      if (!fn) return;
+      this._redoing = true;
+      try { fn(); } catch (err) { console.warn('[wbv] redo failed', err); }
+      finally { this._redoing = false; }
+    }
+    // While undoing, an action's freshly-pushed inverse becomes a redo entry
+    // (and vice-versa). A brand-new user action clears the redo stack.
+    _pushUndo(fn) {
+      if (this._undoing) { this._redoStack.push(fn); if (this._redoStack.length > 100) this._redoStack.shift(); return; }
+      if (this._redoing) { this._undoStack.push(fn); if (this._undoStack.length > 100) this._undoStack.shift(); return; }
+      this._undoStack.push(fn);
+      if (this._undoStack.length > 100) this._undoStack.shift();
+      this._redoStack = [];
+    }
+    // Undo helpers — restore geometry / recreate deleted objects.
+    _applyNoteGeom(id, geom) {
+      const entry = this.notes.get(id);
+      if (!entry) return;
+      const prior = {};
+      for (const k of Object.keys(geom)) prior[k] = entry.data[k];
+      this._pushUndo(() => this._applyNoteGeom(id, prior)); // enables redo
+      Object.assign(entry.data, geom);
+      this._positionNote(entry);
+      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id, ...geom } }, this.viewId);
+      this.huddle.updateWhiteboardNote(id, geom).catch((e) => console.warn('[wbv] undo note geom failed', e));
+    }
+    _applyFrameGeom(id, geom) {
+      const entry = this.frames.get(id);
+      if (!entry) return;
+      const prior = {};
+      for (const k of Object.keys(geom)) prior[k] = entry.data[k];
+      this._pushUndo(() => this._applyFrameGeom(id, prior)); // enables redo
+      Object.assign(entry.data, geom);
+      this._positionFrame(entry);
+      this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id, ...geom } }, this.viewId);
+      this.huddle.updateWhiteboardFrame(id, geom).catch((e) => console.warn('[wbv] undo frame geom failed', e));
+    }
+    _recreateNoteFromData(data) {
+      this._renderNote({ ...data });
+      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note: data }, this.viewId);
+      this._pushUndo(() => this._deleteNote(data.id)); // enables redo of the delete
+      const persist = (data.color_key === TEXT_KIND)
+        ? { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h, text: data.text || '', color_key: TEXT_KIND }
+        : { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h, text: data.text || '', color: (STICKY[data.color_key]?.bg) || data.color, color_key: data.color_key };
+      this.huddle.createWhiteboardNote(this.whiteboardId, persist).catch((e) => console.warn('[wbv] undo recreate note failed', e));
+    }
+    _recreateFrameFromData(data) {
+      this._renderFrame({ ...data });
+      this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'create', frame: data }, this.viewId);
+      this._pushUndo(() => this._deleteFrame(data.id)); // enables redo of the delete
+      this.huddle.createWhiteboardFrame(this.whiteboardId, { ...data }).catch((e) => console.warn('[wbv] undo recreate frame failed', e));
+    }
+
+    // ── Snapping + alignment guides ──
+    // Given a moving object's proposed world box, snap its nearest edge or
+    // centre to another object's edge/centre within ~6 screen px, and report
+    // the guide line position(s) to draw. Considers notes + frames.
+    _applySnap(excludeId, x, y, w, h) {
+      const vp = this.canvas?.getViewport() || { scale: 1 };
+      const TH = 6 / (vp.scale || 1); // threshold in world units
+      const mX = [x, x + w / 2, x + w];
+      const mY = [y, y + h / 2, y + h];
+      let snapX = null, dX = TH, guideX = null;
+      let snapY = null, dY = TH, guideY = null;
+      const consider = (o) => {
+        if (!o || o.id === excludeId) return;
+        const tX = [o.x, o.x + o.w / 2, o.x + o.w];
+        const tY = [o.y, o.y + o.h / 2, o.y + o.h];
+        for (let i = 0; i < 3; i++) for (const t of tX) {
+          const d = Math.abs(mX[i] - t);
+          if (d < dX) { dX = d; snapX = x + (t - mX[i]); guideX = t; }
+        }
+        for (let i = 0; i < 3; i++) for (const t of tY) {
+          const d = Math.abs(mY[i] - t);
+          if (d < dY) { dY = d; snapY = y + (t - mY[i]); guideY = t; }
+        }
+      };
+      for (const e of this.notes.values()) consider(e.data);
+      for (const e of this.frames.values()) consider(e.data);
+      return { x: snapX != null ? snapX : x, y: snapY != null ? snapY : y, guideX, guideY };
+    }
+    _ensureGuides() {
+      if (this._vGuide) return;
+      this._vGuide = h('div', { class: 'wbv-guide wbv-guide-v' });
+      this._hGuide = h('div', { class: 'wbv-guide wbv-guide-h' });
+      this._vGuide.style.display = 'none';
+      this._hGuide.style.display = 'none';
+      this.boardEl.appendChild(this._vGuide);
+      this.boardEl.appendChild(this._hGuide);
+    }
+    _showSnapGuides(guideX, guideY) {
+      this._ensureGuides();
+      const vp = this.canvas?.getViewport() || { x: 0, y: 0, scale: 1 };
+      if (guideX != null) { this._vGuide.style.display = 'block'; this._vGuide.style.left = ((guideX - vp.x) * vp.scale) + 'px'; }
+      else this._vGuide.style.display = 'none';
+      if (guideY != null) { this._hGuide.style.display = 'block'; this._hGuide.style.top = ((guideY - vp.y) * vp.scale) + 'px'; }
+      else this._hGuide.style.display = 'none';
+    }
+    _clearSnapGuides() {
+      if (this._vGuide) this._vGuide.style.display = 'none';
+      if (this._hGuide) this._hGuide.style.display = 'none';
     }
 
     async clearAll() {
@@ -551,9 +739,14 @@
     _persistFinishedStroke(polyline) {
       if (!polyline?.uuid) return;
       this._paintedStrokeUuids.add(polyline.uuid);
-      this._localStrokeUuids = this._localStrokeUuids || [];
-      this._localStrokeUuids.push(polyline.uuid);
-      if (this._localStrokeUuids.length > 50) this._localStrokeUuids.shift();
+      const uuid = polyline.uuid;
+      this._pushUndo(() => {
+        this.canvas?.removeStroke(uuid);
+        this._paintedStrokeUuids.add(uuid);
+        this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'delete-stroke', uuid }, this.viewId);
+        this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid)
+          .catch((e) => console.warn('[wbv] undo stroke delete failed', e));
+      });
       this.huddle.persistWhiteboardStroke(this.whiteboardId, polyline)
         .catch((err) => console.warn('[wbv] persist failed', err));
     }
@@ -616,6 +809,7 @@
       };
       this._renderNote(note, { focus: true });
       this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note }, this.viewId);
+      this._pushUndo(() => this._deleteNote(id));
       try {
         await this.huddle.createWhiteboardNote(this.whiteboardId, {
           id, x, y, w: NOTE_W, h: NOTE_H, text: '',
@@ -638,6 +832,7 @@
       };
       this._renderNote(note, { focus: true });
       this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note }, this.viewId);
+      this._pushUndo(() => this._deleteNote(id));
       try {
         await this.huddle.createWhiteboardNote(this.whiteboardId, {
           id, x, y, w: TEXT_W, h: TEXT_H, text: '',
@@ -654,8 +849,7 @@
       // corner, no vote pill. Route them to a separate path so the
       // sticky path stays simple.
       if (note.color_key === TEXT_KIND) return this._renderTextBlock(note, { focus });
-      const slug = note.color_key && STICKY[note.color_key] ? note.color_key : 'butter';
-      const palette = STICKY[slug];
+      const palette = notePalette(note.color_key, note.color);
       const rot = rotFromId(note.id);
       const el = h('div', { class: 'wbv-note', attrs: { 'data-note-id': note.id, tabindex: '0' } });
       el.style.setProperty('--wbv-note-bg', palette.bg);
@@ -695,11 +889,23 @@
 
       // Contextual color/delete toolbar (only when selected, not editing).
       const toolbar = h('div', { class: 'wbv-note-toolbar' });
-      for (const k of STICKY_ORDER) {
-        const sw = h('button', { class: 'wbv-note-toolbar-swatch', style: { background: STICKY[k].dot }, attrs: { title: k } });
-        sw.addEventListener('click', (e) => { e.stopPropagation(); this._setNoteColor(note.id, k); });
-        toolbar.appendChild(sw);
-      }
+      // Single colour dot → popover palette (FigJam-style).
+      const colorBtn = h('button', { class: 'wbv-toolbar-color', attrs: { title: 'Color', 'aria-label': 'Color' } });
+      const colorDot = h('span', { class: 'wbv-toolbar-color-dot' });
+      colorDot.style.background = notePalette(note.color_key, note.color).dot;
+      colorBtn.appendChild(colorDot);
+      colorBtn.appendChild(h('span', { class: 'wbv-toolbar-color-caret' }));
+      colorBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const cur = this.notes.get(note.id);
+        this._openColorPopover(colorBtn, {
+          current: cur?.data?.color_key,
+          items: STICKY_ORDER.map((k) => ({ key: k, color: STICKY[k].dot })),
+          onPick: (k) => { this._setNoteColor(note.id, k); colorDot.style.background = STICKY[k].dot; },
+          onCustom: (hex) => { this._setNoteColorCustom(note.id, hex); colorDot.style.background = hex; },
+        });
+      });
+      toolbar.appendChild(colorBtn);
       toolbar.appendChild(h('span', { class: 'wbv-note-toolbar-sep' }));
       const del = h('button', { class: 'wbv-note-toolbar-del', attrs: { title: 'Delete note' } });
       del.appendChild(iconEl('trash', 14));
@@ -729,6 +935,7 @@
       this._positionNote(entry);
       this._refreshVoteStyle(entry);
       this._resolveAuthor(entry);
+      this._renderNoteTextDisplay(entry);
       if (focus) {
         this._selectNote(note.id);
         this._beginEditNote(note.id);
@@ -740,10 +947,10 @@
       if (!entry) return;
       Object.assign(entry.data, patch);
       if (patch.text != null && entry.textEl && document.activeElement !== entry.textEl) {
-        entry.textEl.textContent = patch.text;
+        this._renderNoteTextDisplay(entry);
       }
-      if (patch.color_key && STICKY[patch.color_key]) {
-        const p = STICKY[patch.color_key];
+      if (patch.color_key != null || patch.color != null) {
+        const p = notePalette(entry.data.color_key, entry.data.color);
         entry.el.style.setProperty('--wbv-note-bg', p.bg);
         entry.el.style.setProperty('--wbv-note-tx', p.tx);
         entry.el.style.setProperty('--wbv-note-fold', p.fold);
@@ -775,6 +982,7 @@
       this.notes.set(note.id, entry);
       this._wireNoteHandlers(entry); // same drag handlers; text edits below
       this._positionNote(entry);
+      this._renderNoteTextDisplay(entry);
       if (focus) {
         this._selectNote(note.id);
         this._beginEditNote(note.id);
@@ -808,6 +1016,10 @@
         // Cap the inner-text scale so a deeply zoomed-out note still
         // reads, but a zoomed-in note feels bigger.
         el.style.setProperty('--wbv-note-zoom', vp.scale.toFixed(2));
+        // Text auto-resizes with the note: a bigger sticky gets bigger text
+        // (FigJam-like), scaled off its width vs the default and the zoom.
+        const fontPx = Math.max(11, Math.min(30, 13 * (data.w / NOTE_W))) * vp.scale;
+        el.style.setProperty('--wbv-note-font', fontPx.toFixed(1) + 'px');
       }
     }
 
@@ -844,7 +1056,18 @@
       el.addEventListener('click', (e) => {
         if (this.editingNote === data.id) return; // editing text — ignore
         e.stopPropagation();
+        if (e.shiftKey) { this._multiToggle('note', data.id); return; } // add/remove from selection
+        this._multiClear();
         this._selectNote(data.id);
+      });
+      // Open auto-linked URLs in the system browser; don't let the click
+      // bubble up to select/drag the note.
+      textEl.addEventListener('click', (e) => {
+        const a = e.target.closest('a.wbv-link');
+        if (!a || this.editingNote === data.id) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (a.dataset.url) window.open(a.dataset.url, '_blank', 'noopener');
       });
       el.addEventListener('dblclick', (e) => {
         e.stopPropagation();
@@ -859,7 +1082,7 @@
         // (color swatches / delete), the vote pill, or a resize
         // handle — those have their own handlers and a tiny pointer
         // drift would otherwise burn a spurious "moved" persist.
-        if (e.target.closest('.wbv-note-toolbar, .wbv-note-vote, .wbv-resize-handle')) return;
+        if (e.target.closest('.wbv-note-toolbar, .wbv-note-vote, .wbv-resize-handle, a.wbv-link')) return;
         e.stopPropagation();
         e.preventDefault();
         const vp = this.canvas?.getViewport() || { scale: 1 };
@@ -868,14 +1091,29 @@
           origX: data.x, origY: data.y,
           scale: vp.scale,
         };
-        this._noteDrag = { id: data.id, start, moved: false };
+        // If this note is in a multi-selection, drag the whole group.
+        const group = (this._multiHas(data.id) && this._multi.length > 1)
+          ? this._multi.map((m) => { const en = this._multiEntry(m); return en ? { entry: en, type: m.type, ox: en.data.x, oy: en.data.y } : null; }).filter(Boolean)
+          : null;
+        this._noteDrag = { id: data.id, start, moved: false, group };
         el.setPointerCapture?.(e.pointerId);
         const onMove = (ev) => {
           const dx = (ev.clientX - start.clientX) / start.scale;
           const dy = (ev.clientY - start.clientY) / start.scale;
           if (Math.abs(dx) + Math.abs(dy) > 1) this._noteDrag.moved = true;
+          if (group) {
+            for (const g of group) {
+              g.entry.data.x = g.ox + dx; g.entry.data.y = g.oy + dy;
+              if (g.type === 'frame') this._positionFrame(g.entry); else this._positionNote(g.entry);
+            }
+            this._scheduleMinimapRender();
+            return;
+          }
           data.x = start.origX + dx;
           data.y = start.origY + dy;
+          const snap = this._applySnap(data.id, data.x, data.y, data.w, data.h);
+          data.x = snap.x; data.y = snap.y;
+          this._showSnapGuides(snap.guideX, snap.guideY);
           this._positionNote(entry);
           this._scheduleMinimapRender();
         };
@@ -883,7 +1121,25 @@
           el.removeEventListener('pointermove', onMove);
           el.removeEventListener('pointerup', onUp);
           el.removeEventListener('pointercancel', onUp);
+          this._clearSnapGuides();
+          if (group && this._noteDrag?.moved) {
+            this._pushUndo(() => { for (const g of group) { const p = { x: g.ox, y: g.oy }; if (g.type === 'frame') this._applyFrameGeom(g.entry.data.id, p); else this._applyNoteGeom(g.entry.data.id, p); } });
+            for (const g of group) {
+              const gid = g.entry.data.id, gx = g.entry.data.x, gy = g.entry.data.y;
+              if (g.type === 'frame') {
+                this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id: gid, x: gx, y: gy } }, this.viewId);
+                this.huddle.updateWhiteboardFrame(gid, { x: gx, y: gy }).catch(() => {});
+              } else {
+                this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: gid, x: gx, y: gy } }, this.viewId);
+                this.huddle.updateWhiteboardNote(gid, { x: gx, y: gy }).catch(() => {});
+              }
+            }
+            this._noteDrag = null;
+            return;
+          }
           if (this._noteDrag?.moved) {
+            const px = start.origX, py = start.origY;
+            this._pushUndo(() => this._applyNoteGeom(data.id, { x: px, y: py }));
             this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: data.id, x: data.x, y: data.y } }, this.viewId);
             this.huddle.updateWhiteboardNote(data.id, { x: data.x, y: data.y })
               .catch((err) => console.warn('[wbv] note move persist failed', err));
@@ -897,6 +1153,7 @@
 
       // Text edits — broadcast immediately, debounce DB.
       textEl.addEventListener('input', () => {
+        this._maybeAutoBullet(textEl);
         data.text = textEl.innerText.trim();
         this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: data.id, text: data.text } }, this.viewId);
         clearTimeout(this._noteSaveTimers.get(data.id));
@@ -908,7 +1165,8 @@
       });
       textEl.addEventListener('blur', () => this._endEditNote(data.id));
       textEl.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') { e.preventDefault(); this._endEditNote(data.id); }
+        if (e.key === 'Escape') { e.preventDefault(); this._endEditNote(data.id); return; }
+        if (e.key === 'Enter' && !e.shiftKey) this._maybeContinueBullet(textEl, e);
       });
 
       // Wire any resize handles the renderer attached (stickies have 4
@@ -962,6 +1220,10 @@
             handle.removeEventListener('pointermove', onMove);
             handle.removeEventListener('pointerup', onUp);
             handle.removeEventListener('pointercancel', onUp);
+            if (start.x !== data.x || start.y !== data.y || start.w !== data.w || start.h !== data.h) {
+              const g = { x: start.x, y: start.y, w: start.w, h: start.h };
+              this._pushUndo(() => this._applyNoteGeom(data.id, g));
+            }
             const patch = { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h };
             this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: patch }, this.viewId);
             this.huddle.updateWhiteboardNote(data.id, { x: data.x, y: data.y, w: data.w, h: data.h })
@@ -975,6 +1237,8 @@
     }
 
     _selectNote(id) {
+      if (id) this._multiClear();
+      if (id && this.selectedFrame) this._selectFrame(null);
       if (this.selectedNote === id) return;
       const prev = this.selectedNote && this.notes.get(this.selectedNote);
       if (prev) prev.el.classList.remove('is-selected');
@@ -983,12 +1247,165 @@
       if (next) next.el.classList.add('is-selected');
     }
 
+    // Frame selection — mutually exclusive with note selection. Drives the
+    // .is-selected ring + solid resize handles in CSS.
+    _selectFrame(id) {
+      if (id) this._multiClear();
+      if (this.selectedFrame === id) return;
+      const prev = this.selectedFrame && this.frames.get(this.selectedFrame);
+      if (prev) prev.el.classList.remove('is-selected');
+      this.selectedFrame = id;
+      const next = id && this.frames.get(id);
+      if (next) next.el.classList.add('is-selected');
+      if (id) this._selectNote(null);
+    }
+
+    // ── Multi-select (shift-click): a flat list of {type, id}. Shares the
+    // .is-selected highlight; group move + group delete operate on it. ──
+    _multiEntry(m) { return m.type === 'note' ? this.notes.get(m.id) : this.frames.get(m.id); }
+    _multiHas(id) { return this._multi.some((m) => m.id === id); }
+    _multiClear() {
+      for (const m of this._multi) { const e = this._multiEntry(m); if (e) e.el.classList.remove('is-selected'); }
+      this._multi = [];
+    }
+    _multiToggle(type, id) {
+      // Fold any existing single selection into the multi set first.
+      if (this.selectedNote) { this._multiAdd('note', this.selectedNote); this.selectedNote = null; }
+      if (this.selectedFrame) { this._multiAdd('frame', this.selectedFrame); this.selectedFrame = null; }
+      const i = this._multi.findIndex((m) => m.id === id);
+      if (i >= 0) {
+        this._multi.splice(i, 1);
+        const e = type === 'note' ? this.notes.get(id) : this.frames.get(id);
+        if (e) e.el.classList.remove('is-selected');
+      } else {
+        this._multiAdd(type, id);
+      }
+    }
+    _multiAdd(type, id) {
+      if (this._multi.some((m) => m.id === id)) return;
+      this._multi.push({ type, id });
+      const e = type === 'note' ? this.notes.get(id) : this.frames.get(id);
+      if (e) e.el.classList.add('is-selected');
+    }
+    // Marquee result: select every note/frame whose box intersects the rect.
+    _selectInRect(rect) {
+      this._selectNote(null); this._selectFrame(null); this._multiClear();
+      const hit = (o) => !(o.x > rect.x + rect.w || o.x + o.w < rect.x || o.y > rect.y + rect.h || o.y + o.h < rect.y);
+      for (const [id, e] of this.notes) if (hit(e.data)) this._multiAdd('note', id);
+      for (const [id, e] of this.frames) if (hit(e.data)) this._multiAdd('frame', id);
+    }
+
+    // Render a note's text either as plain text (while editing, so the
+    // caret + typing behave) or with clickable accent links (when idle).
+    _renderNoteTextDisplay(entry) {
+      if (!entry?.textEl) return;
+      const txt = entry.data.text || '';
+      if (this.editingNote === entry.data.id) entry.textEl.textContent = txt;
+      else entry.textEl.innerHTML = linkifyHtml(txt);
+      this._renderNoteLinkPreview(entry);
+    }
+
+    _noteFirstUrl(text) {
+      const m = String(text || '').match(/https?:\/\/[^\s<]+[^\s<.,;:!?)\]}'"]/);
+      return m ? m[0] : null;
+    }
+    // Fetch + cache OpenGraph metadata for a URL via the fetch-proxy.
+    _fetchLinkMeta(url) {
+      this._linkMetaCache = this._linkMetaCache || new Map();
+      if (this._linkMetaCache.has(url)) return this._linkMetaCache.get(url);
+      const p = (async () => {
+        try {
+          const res = await window.huddle.fetchProxy({ url, method: 'GET' });
+          if (!res || !res.ok || !res.body) return null;
+          const doc = new DOMParser().parseFromString(res.body, 'text/html');
+          const c = (sel) => doc.querySelector(sel)?.getAttribute('content')?.trim() || '';
+          const title = c('meta[property="og:title"]') || c('meta[name="twitter:title"]') || doc.querySelector('title')?.textContent?.trim() || url;
+          const image = c('meta[property="og:image"]') || c('meta[name="twitter:image"]') || '';
+          const desc = c('meta[property="og:description"]') || c('meta[name="description"]') || '';
+          let domain = url; try { domain = new URL(url).hostname.replace(/^www\./, ''); } catch {}
+          return { url, title, image, desc, domain };
+        } catch { return null; }
+      })();
+      this._linkMetaCache.set(url, p);
+      return p;
+    }
+    // Link display toggle: a "Show preview" chip under a note's text that
+    // expands an OG preview card (thumbnail + title + domain). Session-only.
+    _renderNoteLinkPreview(entry) {
+      const host = entry.el.querySelector('.wbv-note-card') || entry.el;
+      const existing = host.querySelector(':scope > .wbv-note-linkbox');
+      if (existing) existing.remove();
+      if (this.editingNote === entry.data.id) return;
+      const url = this._noteFirstUrl(entry.data.text || '');
+      if (!url) return;
+      const box = h('div', { class: 'wbv-note-linkbox' });
+      const toggle = h('button', { class: 'wbv-linkbox-toggle', text: entry.showPreview ? 'Hide preview' : 'Show preview' });
+      toggle.addEventListener('click', (e) => { e.stopPropagation(); entry.showPreview = !entry.showPreview; this._renderNoteLinkPreview(entry); });
+      box.appendChild(toggle);
+      if (entry.showPreview) {
+        const card = h('a', { class: 'wbv-link-card', attrs: { title: url } });
+        card.appendChild(h('div', { class: 'wbv-link-card-body', text: 'Loading preview…' }));
+        card.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); window.open(url, '_blank', 'noopener'); });
+        box.appendChild(card);
+        this._fetchLinkMeta(url).then((meta) => {
+          if (this._destroyed) return;
+          card.innerHTML = '';
+          if (!meta) { card.appendChild(h('div', { class: 'wbv-link-card-body', text: url })); return; }
+          if (meta.image && /^https?:\/\//.test(meta.image)) {
+            const img = h('img', { class: 'wbv-link-card-img', attrs: { src: meta.image, loading: 'lazy' } });
+            img.addEventListener('error', () => img.remove());
+            card.appendChild(img);
+          }
+          const body = h('div', { class: 'wbv-link-card-body' });
+          body.appendChild(h('div', { class: 'wbv-link-card-title', text: meta.title || url }));
+          body.appendChild(h('div', { class: 'wbv-link-card-domain', text: meta.domain || '' }));
+          card.appendChild(body);
+        }).catch(() => {});
+      }
+      host.appendChild(box);
+    }
+
+    // Plain text from the start of the contenteditable up to the caret,
+    // sliced to the current line — used for auto-bullet detection.
+    _caretLinePrefix(el) {
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount) return '';
+      const r = sel.getRangeAt(0).cloneRange();
+      r.setStart(el, 0);
+      const text = r.toString();
+      return text.slice(text.lastIndexOf('\n') + 1);
+    }
+    // Typing "- " or "* " at the start of a line becomes a "• " bullet.
+    _maybeAutoBullet(el) {
+      if (/^[-*]\s$/.test(this._caretLinePrefix(el))) {
+        document.execCommand('delete');
+        document.execCommand('delete');
+        document.execCommand('insertText', false, '• ');
+      }
+    }
+    // Enter on a bullet line continues the list; Enter on an empty bullet
+    // exits it.
+    _maybeContinueBullet(el, e) {
+      const m = this._caretLinePrefix(el).match(/^([•\-*])\s+(.*)$/);
+      if (!m) return;
+      e.preventDefault();
+      if (!m[2].trim()) {
+        document.execCommand('delete');
+        document.execCommand('delete');
+        document.execCommand('insertText', false, '\n');
+      } else {
+        document.execCommand('insertText', false, '\n• ');
+      }
+    }
+
     _beginEditNote(id) {
       const entry = this.notes.get(id);
       if (!entry) return;
       this.editingNote = id;
       entry.el.classList.add('is-editing');
       entry.textEl.setAttribute('contenteditable', 'true');
+      // Swap any link markup back to plain text so the caret + typing behave.
+      entry.textEl.textContent = entry.data.text || '';
       entry.textEl.focus();
       // place caret at end
       const r = document.createRange(); r.selectNodeContents(entry.textEl); r.collapse(false);
@@ -1005,6 +1422,8 @@
       const text = entry.textEl.innerText.trim();
       if (!text) this._deleteNote(id);
       else {
+        entry.data.text = text;
+        this._renderNoteTextDisplay(entry); // re-linkify now that we're idle
         this.huddle.updateWhiteboardNote(id, { text })
           .catch((err) => console.warn('[wbv] final note text save failed', err));
       }
@@ -1014,6 +1433,11 @@
       if (!STICKY[slug]) return;
       const entry = this.notes.get(id);
       if (!entry) return;
+      const prevSlug = entry.data.color_key, prevColor = entry.data.color;
+      if (prevSlug !== slug) this._pushUndo(() => {
+        if (STICKY[prevSlug]) this._setNoteColor(id, prevSlug);
+        else this._setNoteColorCustom(id, prevColor);
+      });
       entry.data.color_key = slug;
       const p = STICKY[slug];
       entry.el.style.setProperty('--wbv-note-bg', p.bg);
@@ -1022,6 +1446,82 @@
       this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id, color_key: slug } }, this.viewId);
       this.huddle.updateWhiteboardNote(id, { color_key: slug, color: p.bg })
         .catch((err) => console.warn('[wbv] color save failed', err));
+    }
+
+    // Arbitrary picker-chosen sticky colour. Stored as color_key='_custom'
+    // + a hex in `color`; text colour is derived for contrast.
+    _setNoteColorCustom(id, hex) {
+      const entry = this.notes.get(id);
+      if (!entry || entry.kind === 'text' || !isHex(hex)) return;
+      const norm = hex[0] === '#' ? hex : '#' + hex;
+      const prevKey = entry.data.color_key, prevColor = entry.data.color;
+      if (prevKey !== CUSTOM_KIND || prevColor !== norm) {
+        this._pushUndo(() => {
+          if (STICKY[prevKey]) this._setNoteColor(id, prevKey);
+          else this._setNoteColorCustom(id, prevColor);
+        });
+      }
+      entry.data.color_key = CUSTOM_KIND;
+      entry.data.color = norm;
+      const p = notePalette(CUSTOM_KIND, norm);
+      entry.el.style.setProperty('--wbv-note-bg', p.bg);
+      entry.el.style.setProperty('--wbv-note-tx', p.tx);
+      entry.el.style.setProperty('--wbv-note-fold', p.fold);
+      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id, color_key: CUSTOM_KIND, color: norm } }, this.viewId);
+      this.huddle.updateWhiteboardNote(id, { color_key: CUSTOM_KIND, color: norm })
+        .catch((e) => console.warn('[wbv] custom color save failed', e));
+    }
+
+    // FigJam-style colour popover: a single dot in the contextual toolbar
+    // opens this grid of swatches (+ optional custom picker). Anchored to
+    // the trigger, dismissed on outside-click / Escape.
+    _openColorPopover(anchorEl, opts) {
+      this._closeColorPopover();
+      const pop = h('div', { class: 'wbv-color-pop' });
+      const grid = h('div', { class: 'wbv-color-pop-grid' });
+      for (const it of opts.items) {
+        const b = h('button', {
+          class: 'wbv-color-pop-sw' + (it.key === opts.current ? ' is-on' : ''),
+          style: { background: it.color },
+          attrs: { title: it.key, 'aria-label': it.key },
+        });
+        b.addEventListener('click', (e) => { e.stopPropagation(); opts.onPick(it.key); this._closeColorPopover(); });
+        grid.appendChild(b);
+      }
+      pop.appendChild(grid);
+      if (opts.onCustom) {
+        const cw = h('button', { class: 'wbv-color-pop-custom', attrs: { title: 'Custom color' } });
+        const ci = h('input', { attrs: { type: 'color' } });
+        cw.appendChild(ci);
+        cw.appendChild(h('span', { class: 'wbv-color-pop-custom-rainbow' }));
+        cw.appendChild(h('span', { text: 'Custom' }));
+        cw.addEventListener('click', (e) => { e.stopPropagation(); ci.click(); });
+        ci.addEventListener('input', (e) => { e.stopPropagation(); opts.onCustom(e.target.value); });
+        ci.addEventListener('change', () => this._closeColorPopover());
+        pop.appendChild(cw);
+      }
+      document.body.appendChild(pop);
+      const r = anchorEl.getBoundingClientRect();
+      pop.style.left = Math.round(r.left) + 'px';
+      pop.style.top = Math.round(r.bottom + 8) + 'px';
+      const pr = pop.getBoundingClientRect();
+      if (pr.right > window.innerWidth - 8) pop.style.left = Math.max(8, window.innerWidth - 8 - pr.width) + 'px';
+      if (pr.bottom > window.innerHeight - 8) pop.style.top = Math.max(8, Math.round(r.top - pr.height - 8)) + 'px';
+      this._colorPop = pop;
+      const onDoc = (e) => { if (!pop.contains(e.target) && !anchorEl.contains(e.target)) this._closeColorPopover(); };
+      const onKey = (e) => { if (e.key === 'Escape') this._closeColorPopover(); };
+      setTimeout(() => {
+        document.addEventListener('pointerdown', onDoc, true);
+        document.addEventListener('keydown', onKey, true);
+      }, 0);
+      this._colorPopCleanup = () => {
+        document.removeEventListener('pointerdown', onDoc, true);
+        document.removeEventListener('keydown', onKey, true);
+      };
+    }
+    _closeColorPopover() {
+      if (this._colorPopCleanup) { this._colorPopCleanup(); this._colorPopCleanup = null; }
+      if (this._colorPop) { this._colorPop.remove(); this._colorPop = null; }
     }
 
     _removeNoteEl(id) {
@@ -1037,8 +1537,11 @@
     }
 
     async _deleteNote(id) {
+      const entry = this.notes.get(id);
+      const snap = entry ? { ...entry.data } : null;
       this._removeNoteEl(id);
       this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'delete', id }, this.viewId);
+      if (snap) this._pushUndo(() => this._recreateNoteFromData(snap));
       try { await this.huddle.deleteWhiteboardNote(id); }
       catch (err) { console.warn('[wbv] note delete failed', err); }
     }
@@ -1105,13 +1608,14 @@
       };
       this._renderFrame(frame, { editTitle: true });
       this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'create', frame }, this.viewId);
+      this._pushUndo(() => this._deleteFrame(frame.id));
       try { await this.huddle.createWhiteboardFrame(this.whiteboardId, frame); }
       catch (err) { console.warn('[wbv] frame create failed', err); }
     }
 
     _renderFrame(frame, { editTitle = false } = {}) {
       if (this.frames.has(frame.id)) { this._applyFramePatch(frame); return; }
-      const tintVar = FRAME_TINTS[frame.tint] || FRAME_TINTS.accent;
+      const tintVar = FRAME_TINTS[frame.tint] || (isHex(frame.tint) ? frame.tint : FRAME_TINTS.accent);
       const el = h('div', { class: 'wbv-frame' + (frame.dashed ? ' wbv-frame-dashed' : ''), attrs: { 'data-frame-id': frame.id } });
       el.style.setProperty('--wbv-frame-tint', tintVar);
 
@@ -1125,6 +1629,27 @@
       del.addEventListener('click', (e) => { e.stopPropagation(); this._deleteFrame(frame.id); });
       chip.appendChild(del);
       el.appendChild(chip);
+
+      // Frame colour — a single dot opens the popover palette, like notes.
+      const ftoolbar = h('div', { class: 'wbv-frame-toolbar' });
+      const fColorBtn = h('button', { class: 'wbv-toolbar-color', attrs: { title: 'Color', 'aria-label': 'Color' } });
+      const fDot = h('span', { class: 'wbv-toolbar-color-dot' });
+      fDot.style.background = FRAME_TINTS[frame.tint] || (isHex(frame.tint) ? frame.tint : FRAME_TINTS.accent);
+      fColorBtn.appendChild(fDot);
+      fColorBtn.appendChild(h('span', { class: 'wbv-toolbar-color-caret' }));
+      fColorBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._selectFrame(frame.id);
+        const cur = this.frames.get(frame.id);
+        this._openColorPopover(fColorBtn, {
+          current: cur?.data?.tint,
+          items: Object.keys(FRAME_TINTS).map((k) => ({ key: k, color: FRAME_TINTS[k] })),
+          onPick: (k) => { this._setFrameTint(frame.id, k); fDot.style.background = FRAME_TINTS[k]; },
+          onCustom: (hex) => { this._setFrameTint(frame.id, hex); fDot.style.background = hex; },
+        });
+      });
+      ftoolbar.appendChild(fColorBtn);
+      el.appendChild(ftoolbar);
 
       // 8 resize handles (4 corners + 4 edges). Drag a corner to scale
       // both dimensions, an edge to scale one. The frame body itself
@@ -1165,16 +1690,37 @@
 
       // Drag the title chip to move the whole frame.
       chipEl.addEventListener('pointerdown', (e) => {
-        if (e.target === titleEl && titleEl.getAttribute('contenteditable') === 'true') return;
+        // Clicking the title is for renaming, never dragging.
+        if (e.target === titleEl) return;
         if (e.target.closest('.wbv-frame-del')) return;
+        if (e.shiftKey) { e.stopPropagation(); e.preventDefault(); this._multiToggle('frame', data.id); return; }
+        this._selectFrame(data.id);
         e.stopPropagation();
         e.preventDefault();
         const vp = this.canvas?.getViewport() || { scale: 1 };
         const start = { clientX: e.clientX, clientY: e.clientY, origX: data.x, origY: data.y, scale: vp.scale };
+        const group = (this._multiHas(data.id) && this._multi.length > 1)
+          ? this._multi.map((m) => { const en = this._multiEntry(m); return en ? { entry: en, type: m.type, ox: en.data.x, oy: en.data.y } : null; }).filter(Boolean)
+          : null;
+        let moved = false;
         chipEl.setPointerCapture?.(e.pointerId);
         const onMove = (ev) => {
-          data.x = start.origX + (ev.clientX - start.clientX) / start.scale;
-          data.y = start.origY + (ev.clientY - start.clientY) / start.scale;
+          const dx = (ev.clientX - start.clientX) / start.scale;
+          const dy = (ev.clientY - start.clientY) / start.scale;
+          if (Math.abs(dx) + Math.abs(dy) > 1) moved = true;
+          if (group) {
+            for (const g of group) {
+              g.entry.data.x = g.ox + dx; g.entry.data.y = g.oy + dy;
+              if (g.type === 'frame') this._positionFrame(g.entry); else this._positionNote(g.entry);
+            }
+            this._scheduleMinimapRender();
+            return;
+          }
+          data.x = start.origX + dx;
+          data.y = start.origY + dy;
+          const snap = this._applySnap(data.id, data.x, data.y, data.w, data.h);
+          data.x = snap.x; data.y = snap.y;
+          this._showSnapGuides(snap.guideX, snap.guideY);
           this._positionFrame(entry);
           this._scheduleMinimapRender();
         };
@@ -1182,6 +1728,25 @@
           chipEl.removeEventListener('pointermove', onMove);
           chipEl.removeEventListener('pointerup', onUp);
           chipEl.removeEventListener('pointercancel', onUp);
+          this._clearSnapGuides();
+          if (group && moved) {
+            this._pushUndo(() => { for (const g of group) { const p = { x: g.ox, y: g.oy }; if (g.type === 'frame') this._applyFrameGeom(g.entry.data.id, p); else this._applyNoteGeom(g.entry.data.id, p); } });
+            for (const g of group) {
+              const gid = g.entry.data.id, gx = g.entry.data.x, gy = g.entry.data.y;
+              if (g.type === 'frame') {
+                this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id: gid, x: gx, y: gy } }, this.viewId);
+                this.huddle.updateWhiteboardFrame(gid, { x: gx, y: gy }).catch(() => {});
+              } else {
+                this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: gid, x: gx, y: gy } }, this.viewId);
+                this.huddle.updateWhiteboardNote(gid, { x: gx, y: gy }).catch(() => {});
+              }
+            }
+            return;
+          }
+          if (start.origX !== data.x || start.origY !== data.y) {
+            const px = start.origX, py = start.origY;
+            this._pushUndo(() => this._applyFrameGeom(data.id, { x: px, y: py }));
+          }
           this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id: data.id, x: data.x, y: data.y } }, this.viewId);
           this.huddle.updateWhiteboardFrame(data.id, { x: data.x, y: data.y })
             .catch((err) => console.warn('[wbv] frame move persist failed', err));
@@ -1237,6 +1802,10 @@
             handle.removeEventListener('pointermove', onMove);
             handle.removeEventListener('pointerup', onUp);
             handle.removeEventListener('pointercancel', onUp);
+            if (start.x !== data.x || start.y !== data.y || start.w !== data.w || start.h !== data.h) {
+              const g = { x: start.x, y: start.y, w: start.w, h: start.h };
+              this._pushUndo(() => this._applyFrameGeom(data.id, g));
+            }
             const patch = { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h };
             this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: patch }, this.viewId);
             this.huddle.updateWhiteboardFrame(data.id, { x: data.x, y: data.y, w: data.w, h: data.h })
@@ -1248,7 +1817,17 @@
         });
       });
 
-      titleEl.addEventListener('dblclick', () => { titleEl.setAttribute('contenteditable', 'true'); titleEl.focus(); });
+      // Click the title to rename it at any time (single click); the frame
+      // gets selected too. Drag-to-move lives on the rest of the chip.
+      const beginTitleEdit = () => {
+        this._selectFrame(data.id);
+        if (titleEl.getAttribute('contenteditable') === 'true') return;
+        titleEl.setAttribute('contenteditable', 'true');
+        titleEl.focus();
+        const r = document.createRange(); r.selectNodeContents(titleEl);
+        const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      };
+      titleEl.addEventListener('click', (e) => { e.stopPropagation(); beginTitleEdit(); });
       titleEl.addEventListener('blur', () => {
         titleEl.setAttribute('contenteditable', 'false');
         const newTitle = titleEl.textContent.trim() || 'Untitled frame';
@@ -1268,7 +1847,7 @@
       if (!entry) return;
       Object.assign(entry.data, patch);
       if (patch.title != null && document.activeElement !== entry.titleEl) entry.titleEl.textContent = patch.title;
-      if (patch.tint) entry.el.style.setProperty('--wbv-frame-tint', FRAME_TINTS[patch.tint] || FRAME_TINTS.accent);
+      if (patch.tint) entry.el.style.setProperty('--wbv-frame-tint', FRAME_TINTS[patch.tint] || (isHex(patch.tint) ? patch.tint : FRAME_TINTS.accent));
       if (patch.dashed != null) entry.el.classList.toggle('wbv-frame-dashed', !!patch.dashed);
       if (patch.x != null || patch.y != null || patch.w != null || patch.h != null) this._positionFrame(entry);
     }
@@ -1281,9 +1860,25 @@
       this._scheduleMinimapRender();
     }
 
+    _setFrameTint(id, tint) {
+      const entry = this.frames.get(id);
+      if (!entry || (!FRAME_TINTS[tint] && !isHex(tint))) return;
+      const prevTint = entry.data.tint;
+      if (prevTint !== tint) this._pushUndo(() => this._setFrameTint(id, prevTint));
+      entry.data.tint = tint;
+      entry.el.style.setProperty('--wbv-frame-tint', FRAME_TINTS[tint] || tint);
+      this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id, tint } }, this.viewId);
+      this.huddle.updateWhiteboardFrame(id, { tint })
+        .catch((err) => console.warn('[wbv] frame tint save failed', err));
+    }
+
     async _deleteFrame(id) {
+      if (this.selectedFrame === id) this.selectedFrame = null;
+      const entry = this.frames.get(id);
+      const snap = entry ? { ...entry.data } : null;
       this._removeFrameEl(id);
       this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'delete', id }, this.viewId);
+      if (snap) this._pushUndo(() => this._recreateFrameFromData(snap));
       try { await this.huddle.deleteWhiteboardFrame(id); }
       catch (err) { console.warn('[wbv] frame delete failed', err); }
     }
@@ -1484,13 +2079,28 @@
       else if (k === 'r') this.setTool('rect');
       else if (k === 'o') this.setTool('ellipse');
       else if (k === 'a') this.setTool('arrow');
-      else if ((e.metaKey || e.ctrlKey) && k === 'z') { e.preventDefault(); this.undo(); }
+      else if ((e.metaKey || e.ctrlKey) && k === 'z') {
+        if (this.editingNote || document.activeElement?.isContentEditable) return; // let native text undo/redo run
+        e.preventDefault();
+        if (e.shiftKey) this.redo(); else this.undo();
+      }
+      else if ((e.metaKey || e.ctrlKey) && k === 'y') {
+        if (this.editingNote || document.activeElement?.isContentEditable) return;
+        e.preventDefault();
+        this.redo();
+      }
       else if (k === 'delete' || k === 'backspace') {
-        if (this.selectedNote && !this.editingNote) { e.preventDefault(); this._deleteNote(this.selectedNote); }
+        if (this._multi.length && !this.editingNote && !document.activeElement?.isContentEditable) {
+          e.preventDefault();
+          for (const m of [...this._multi]) { if (m.type === 'note') this._deleteNote(m.id); else this._deleteFrame(m.id); }
+          this._multi = [];
+        }
+        else if (this.selectedNote && !this.editingNote) { e.preventDefault(); this._deleteNote(this.selectedNote); }
+        else if (this.selectedFrame && !document.activeElement?.isContentEditable) { e.preventDefault(); this._deleteFrame(this.selectedFrame); }
       }
       else if (k === 'escape') {
         if (this.editingNote) this._endEditNote(this.editingNote);
-        else this._selectNote(null);
+        else { this._selectNote(null); this._selectFrame(null); this._multiClear(); }
       }
     }
     _onKeyDown() { /* board-level — currently inert; doc handler covers everything */ }
@@ -1498,15 +2108,39 @@
     // ────────────────────────────────────────────────────────────
     // Header bits
     // ────────────────────────────────────────────────────────────
-    async _renameBoard() {
-      const next = prompt('Rename whiteboard', this.boardTitle);
-      if (next == null) return;
-      const trimmed = next.trim() || 'Whiteboard';
-      this.boardTitle = trimmed;
+    // Inline board-title rename (contenteditable), mirroring the frame
+    // title editor — replaces the old browser prompt() dialog so the flow
+    // stays on-canvas and FigJam-like.
+    _beginRenameBoard() {
+      const el = this.titleEl;
+      if (el.getAttribute('contenteditable') === 'true') return;
+      el.setAttribute('contenteditable', 'true');
+      el.classList.add('is-editing');
+      el.focus();
+      const r = document.createRange(); r.selectNodeContents(el);
+      const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      const finish = (commit) => {
+        el.removeEventListener('blur', onBlur);
+        el.removeEventListener('keydown', onKey);
+        el.setAttribute('contenteditable', 'false');
+        el.classList.remove('is-editing');
+        if (commit) this._commitRenameBoard(el.textContent);
+        else el.textContent = this.boardTitle;
+      };
+      const onBlur = () => finish(true);
+      const onKey = (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+        else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      };
+      el.addEventListener('blur', onBlur);
+      el.addEventListener('keydown', onKey);
+    }
+    async _commitRenameBoard(raw) {
+      const trimmed = (raw || '').replace(/\s+/g, ' ').trim() || 'Whiteboard';
       this.titleEl.textContent = trimmed;
-      // Persist if the API supports it; not in scope to add a column,
-      // so we just emit through realtime so peers in this session see
-      // the change.
+      if (trimmed === this.boardTitle) return;
+      this.boardTitle = trimmed;
+      // Persist if the API supports it; peers see it via realtime regardless.
       try {
         if (this.huddle.updateWhiteboardTitle) await this.huddle.updateWhiteboardTitle(this.whiteboardId, trimmed);
       } catch (err) { console.warn('[wbv] rename persist failed', err); }

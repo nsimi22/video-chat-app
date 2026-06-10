@@ -23,13 +23,25 @@
 (function () {
   const MIN_SCALE = 0.1;
   const MAX_SCALE = 8;
-  const ZOOM_STEP = 1.2;
+  const ZOOM_STEP = 1.4;
+  // Motion-fluidity tuning (FigJam-like feel).
+  const FRICTION = 0.92;        // momentum velocity decay per ~16ms frame
+  const MIN_FLING_SPEED = 0.04; // client px/ms below which a release doesn't fling
+  const STOP_SPEED = 0.015;     // client px/ms at which momentum halts
+  const ZOOM_ANIM_MS = 160;     // eased button zoom duration
+  const VIEW_ANIM_MS = 240;     // eased reset / zoom-to-fit duration
+  const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+  const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
   // Eraser nib radius in *screen* pixels, so it feels the same at any zoom.
   const ERASER_PX = 14;
   // Cursor shown while the eraser tool is active — a ring the size of the
   // nib, so you can see what you're about to delete (FigJam does this).
   const ERASER_CURSOR =
     "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='30' height='30'><circle cx='15' cy='15' r='14' fill='none' stroke='%23999' stroke-width='1.5'/></svg>\") 15 15, crosshair";
+  // Pencil cursor for the pen tool — tip at the bottom-left (hotspot 6,23)
+  // so the nib sits where the ink lands, instead of the generic crosshair.
+  const PENCIL_CURSOR =
+    "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'><g transform='translate(3 1)'><path d='M3 23 L3 19 L16 6 L20 10 L7 23 Z' fill='%23ffd866' stroke='%23222' stroke-width='1.4' stroke-linejoin='round'/><path d='M16 6 L18.5 3.5 a2.6 2.6 0 0 1 3.7 3.7 L20 10 Z' fill='%23f5a524' stroke='%23222' stroke-width='1.4' stroke-linejoin='round'/><path d='M3 23 L3 19 L7 23 Z' fill='%23222'/></g></svg>\") 6 23, crosshair";
 
   // Shortest distance from point (px,py) to the segment (ax,ay)→(bx,by).
   function distToSeg(px, py, ax, ay, bx, by) {
@@ -95,6 +107,10 @@
       this._bboxCache = new WeakMap(); // stroke -> [minX,minY,maxX,maxY], for the eraser's cheap reject
       this._selected = null;  // stroke object currently selected by the select tool, or null
       this._selDrag = null;   // { lastX, lastY, moved } while dragging the selection
+      this._marquee = null;   // { x0,y0,x1,y1,moved } while rubber-band selecting empty space
+      this._renderRaf = null; // coalesced full-render handle (one repaint per frame)
+      this._momentum = null;  // { vx, vy, last, raf } while flinging after a pan release
+      this._anim = null;      // { raf } for an in-flight eased zoom / viewport tween
 
       this.canvas = document.createElement('canvas');
       this.canvas.className = 'infinite-canvas';
@@ -127,6 +143,7 @@
     // Idle cursor for the current tool (pan gestures override this while active).
     _toolCursor() {
       if (this.tool === 'eraser') return ERASER_CURSOR;
+      if (this.tool === 'pen') return PENCIL_CURSOR;
       if (this.tool === 'select') return 'default';
       return 'crosshair';
     }
@@ -144,24 +161,17 @@
     // ignore it — the canvas only needs to wipe local strokes.
 
     // Viewport mutators called by the toolbar buttons.
-    zoomIn(centerClient) { this._zoomBy(ZOOM_STEP, centerClient); }
-    zoomOut(centerClient) { this._zoomBy(1 / ZOOM_STEP, centerClient); }
-    resetViewport() {
-      this.viewport = { x: 0, y: 0, scale: 1 };
-      this._render();
-      this._dispatchViewport();
-    }
+    // Button zoom eases to the new scale (the wheel/pinch path stays
+    // instant via _zoomBy so trackpad gestures feel direct).
+    zoomIn(centerClient) { this._animateZoom(this.viewport.scale * ZOOM_STEP, centerClient); }
+    zoomOut(centerClient) { this._animateZoom(this.viewport.scale / ZOOM_STEP, centerClient); }
+    resetViewport() { this._animateViewport({ x: 0, y: 0, scale: 1 }); }
     // Hard-set the viewport (used by the redesigned whiteboard view's
     // "zoom to fit content" action — it computes a target rect and
     // hands the canvas the new (x, y, scale) in one shot rather than
     // pinch-zooming there). Clamps scale to the same bounds the wheel
     // path uses.
-    setViewport({ x, y, scale }) {
-      const s = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale ?? this.viewport.scale));
-      this.viewport = { x: x ?? this.viewport.x, y: y ?? this.viewport.y, scale: s };
-      this._render();
-      this._dispatchViewport();
-    }
+    setViewport({ x, y, scale }) { this._animateViewport({ x, y, scale }); }
     onViewportChange(cb) { this._viewportCb = cb; }
 
     getViewport() { return { ...this.viewport }; }
@@ -171,7 +181,8 @@
     // are not painted onto the canvas, so they don't appear — a richer
     // export is a follow-up).
     toDataURL(type = 'image/png') {
-      try { return this.canvas.toDataURL(type); } catch { return null; }
+      // Flush any coalesced render so the exported bitmap is current.
+      try { this._flushRender(); return this.canvas.toDataURL(type); } catch { return null; }
     }
 
     // Apply a remote stroke event from another peer. Same shape as
@@ -184,7 +195,7 @@
         if (s) {
           for (const pt of s.points) { pt[0] += stroke.dx; pt[1] += stroke.dy; }
           this._bboxCache.delete(s);
-          this._render();
+          this._invalidate();
         }
         return;
       }
@@ -203,7 +214,7 @@
           // Line/arrow: the live endpoint replaces the previous one.
           if (cur.points.length < 2) cur.points.push([stroke.x, stroke.y]);
           else cur.points[1] = [stroke.x, stroke.y];
-          this._render();
+          this._invalidate();
           return;
         }
         cur.points.push([stroke.x, stroke.y]);
@@ -222,7 +233,7 @@
         }
         this._remoteStrokes.delete(stroke.uuid);
         this.strokes.push(cur);
-        this._render();
+        this._invalidate();
       }
     }
 
@@ -231,7 +242,8 @@
     // WhiteboardSession.start when fetching history rows.
     addPersistedStroke(stroke) {
       this.strokes.push(stroke);
-      this._render();
+      // Coalesce — history replay adds many strokes back-to-back.
+      this._invalidate();
     }
 
     // Drop a stroke by uuid (used by undo). Falls back gracefully
@@ -272,6 +284,23 @@
       this._render();
     }
 
+    // Coalesce repaint requests to one full render per animation frame.
+    // High-frequency callers (pan, zoom, drag, history replay) use this
+    // instead of _render() directly, so a burst of events repaints once.
+    _invalidate() {
+      if (this._renderRaf) return;
+      this._renderRaf = requestAnimationFrame(() => {
+        this._renderRaf = null;
+        this._render();
+      });
+    }
+    // Run any pending coalesced render immediately (e.g. before export,
+    // which needs the bitmap current).
+    _flushRender() {
+      if (this._renderRaf) { cancelAnimationFrame(this._renderRaf); this._renderRaf = null; }
+      this._render();
+    }
+
     _render() {
       const r = this.canvas.getBoundingClientRect();
       this.ctx.clearRect(0, 0, r.width, r.height);
@@ -293,6 +322,20 @@
     // line width stay a constant size at any zoom. Drops a stale
     // selection if the stroke has since been removed (e.g. remotely).
     _drawSelectionOverlay() {
+      if (this._marquee) {
+        const m = this._marquee, vp = this.viewport;
+        const x = (Math.min(m.x0, m.x1) - vp.x) * vp.scale;
+        const y = (Math.min(m.y0, m.y1) - vp.y) * vp.scale;
+        const w = Math.abs(m.x1 - m.x0) * vp.scale;
+        const h = Math.abs(m.y1 - m.y0) * vp.scale;
+        this.ctx.save();
+        this.ctx.fillStyle = 'rgba(10, 132, 255, 0.12)';
+        this.ctx.strokeStyle = 'rgba(10, 132, 255, 0.9)';
+        this.ctx.lineWidth = 1;
+        this.ctx.fillRect(x, y, w, h);
+        this.ctx.strokeRect(x, y, w, h);
+        this.ctx.restore();
+      }
       if (!this._selected) return;
       if (!this.strokes.includes(this._selected)) { this._selected = null; return; }
       const bb = this._strokeBbox(this._selected);
@@ -428,6 +471,9 @@
 
     _wirePointerEvents() {
       this.canvas.addEventListener('pointerdown', (e) => {
+        // Any new touch on the board stops a coasting pan or zoom tween.
+        this._cancelMomentum();
+        this._cancelAnim();
         const lineish = isTwoPoint(this.tool);
         // Pan via space-hold, middle mouse, or shift-drag — but Shift on a
         // line/arrow means "constrain to 45°", so don't hijack it then.
@@ -451,12 +497,17 @@
         // a drag-to-move on it); clicking empty space deselects.
         if (this.tool === 'select') {
           const hit = this._hitTopStroke(p.x, p.y);
-          this._selected = hit;
           if (hit) {
+            this._selected = hit;
             this._selDrag = { lastX: p.x, lastY: p.y, moved: false };
             this.canvas.setPointerCapture(e.pointerId);
           } else {
+            // Empty space → begin a marquee. A plain click (no drag)
+            // deselects on pointerup; a drag selects the enclosed area.
+            this._selected = null;
             this._selDrag = null;
+            this._marquee = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, moved: false };
+            this.canvas.setPointerCapture(e.pointerId);
           }
           this._render();
           return;
@@ -481,6 +532,12 @@
           this._lastErasePt = [p.x, p.y];
           return;
         }
+        if (this._marquee) {
+          const p = this._clientToWorld(e.clientX, e.clientY);
+          this._marquee.x1 = p.x; this._marquee.y1 = p.y; this._marquee.moved = true;
+          this._invalidate();
+          return;
+        }
         if (this._selDrag) {
           if (!this._selected || !this.strokes.includes(this._selected)) { this._selDrag = null; return; }
           const p = this._clientToWorld(e.clientX, e.clientY);
@@ -489,7 +546,7 @@
             this._selDrag.lastX = p.x; this._selDrag.lastY = p.y; this._selDrag.moved = true;
             for (const pt of this._selected.points) { pt[0] += dx; pt[1] += dy; }
             this._bboxCache.delete(this._selected);
-            this._render();
+            this._invalidate();
             this.send?.({ action: 'move-stroke', uuid: this._selected.uuid, dx, dy });
           }
           return;
@@ -500,7 +557,7 @@
           const s = this._currentStroke.points[0];
           const end = e.shiftKey ? constrainEnd(this._currentStroke.tool, s[0], s[1], p.x, p.y) : [p.x, p.y];
           this._currentStroke.points = [s, end];
-          this._render();
+          this._invalidate();
           this.send?.({
             action: 'move', uuid: this._currentStroke.uuid,
             x: end[0], y: end[1], tool: this._currentStroke.tool, color: this.color, size: this.size,
@@ -520,6 +577,17 @@
           this._erasing = false;
           this._lastErasePt = null;
           if (e?.pointerId != null) { try { this.canvas.releasePointerCapture(e.pointerId); } catch {} }
+          return;
+        }
+        if (this._marquee) {
+          const m = this._marquee;
+          this._marquee = null;
+          if (e?.pointerId != null) { try { this.canvas.releasePointerCapture(e.pointerId); } catch {} }
+          this._render();
+          if (m.moved) {
+            const rect = { x: Math.min(m.x0, m.x1), y: Math.min(m.y0, m.y1), w: Math.abs(m.x1 - m.x0), h: Math.abs(m.y1 - m.y0) };
+            this._marqueeCb?.(rect);
+          }
           return;
         }
         if (this._selDrag) {
@@ -574,6 +642,9 @@
     onStrokeFinished(cb) { this._strokeFinished = cb; }
     onStrokeErased(cb) { this._strokeErased = cb; }
     onStrokeMoved(cb) { this._strokeMoved = cb; }
+    // Report a rubber-band selection rect (world coords) so the host can
+    // select the notes/frames inside it.
+    onMarquee(cb) { this._marqueeCb = cb; }
 
     // Topmost stroke under the world point, or null. Iterates back-to-
     // front (last drawn sits on top) and allows a small screen-px slop so
@@ -669,9 +740,13 @@
     }
 
     _startPan(e) {
+      this._cancelMomentum();
+      this._cancelAnim();
       this._panning = {
         startX: e.clientX, startY: e.clientY,
         origX: this.viewport.x, origY: this.viewport.y,
+        // Velocity tracking (client px/ms) for fling-on-release.
+        lastX: e.clientX, lastY: e.clientY, lastT: nowMs(), vx: 0, vy: 0,
       };
       this.canvas.setPointerCapture(e.pointerId);
       this.canvas.style.cursor = 'grabbing';
@@ -682,15 +757,56 @@
       const dy = (e.clientY - this._panning.startY) / this.viewport.scale;
       this.viewport.x = this._panning.origX - dx;
       this.viewport.y = this._panning.origY - dy;
-      this._render();
+      // Smoothed instantaneous velocity so one jittery sample can't dominate.
+      const t = nowMs();
+      const dt = t - this._panning.lastT;
+      if (dt > 0) {
+        const ivx = (e.clientX - this._panning.lastX) / dt;
+        const ivy = (e.clientY - this._panning.lastY) / dt;
+        this._panning.vx = this._panning.vx * 0.6 + ivx * 0.4;
+        this._panning.vy = this._panning.vy * 0.6 + ivy * 0.4;
+        this._panning.lastX = e.clientX; this._panning.lastY = e.clientY; this._panning.lastT = t;
+      }
+      this._invalidate();
       this._dispatchViewport();
     }
     _endPan(e) {
+      const fling = this._panning ? { vx: this._panning.vx, vy: this._panning.vy } : null;
       this._panning = null;
       this.canvas.style.cursor = this._panMode ? 'grab' : this._toolCursor();
       if (e?.pointerId != null) {
         try { this.canvas.releasePointerCapture(e.pointerId); } catch {}
       }
+      if (fling && Math.hypot(fling.vx, fling.vy) > MIN_FLING_SPEED) {
+        this._startMomentum(fling.vx, fling.vy);
+      }
+    }
+
+    // Coast the viewport after a flick, decaying velocity each frame until
+    // it falls below STOP_SPEED. Sign convention matches _continuePan:
+    // dragging right (vx > 0) keeps decreasing viewport.x.
+    _startMomentum(vx, vy) {
+      this._cancelMomentum();
+      this._momentum = { vx, vy, last: nowMs() };
+      const step = () => {
+        const m = this._momentum;
+        if (!m) return;
+        const t = nowMs();
+        const dt = Math.max(1, t - m.last); m.last = t;
+        const decay = Math.pow(FRICTION, dt / 16.67); // frame-rate independent
+        m.vx *= decay; m.vy *= decay;
+        this.viewport.x -= (m.vx * dt) / this.viewport.scale;
+        this.viewport.y -= (m.vy * dt) / this.viewport.scale;
+        this._invalidate();
+        this._dispatchViewport();
+        if (Math.hypot(m.vx, m.vy) < STOP_SPEED) { this._momentum = null; return; }
+        m.raf = requestAnimationFrame(step);
+      };
+      this._momentum.raf = requestAnimationFrame(step);
+    }
+    _cancelMomentum() {
+      if (this._momentum?.raf) cancelAnimationFrame(this._momentum.raf);
+      this._momentum = null;
     }
 
     _wireKeyboardPan() {
@@ -751,12 +867,16 @@
 
     _wireWheelZoom() {
       this.canvas.addEventListener('wheel', (e) => {
+        // A deliberate wheel/trackpad gesture overrides any coasting pan
+        // or in-flight zoom tween.
+        this._cancelMomentum();
+        this._cancelAnim();
         // Plain wheel pans; Ctrl/⌘+wheel zooms (matches the
         // browser/macOS pinch-to-zoom convention so trackpad
         // gestures Just Work).
         if (e.ctrlKey || e.metaKey) {
           e.preventDefault();
-          const factor = Math.exp(-e.deltaY * 0.001);
+          const factor = Math.exp(-e.deltaY * 0.005);
           this._zoomBy(factor, { clientX: e.clientX, clientY: e.clientY });
           return;
         }
@@ -766,7 +886,7 @@
         // perceived distance regardless of zoom level.
         this.viewport.x += e.deltaX / this.viewport.scale;
         this.viewport.y += e.deltaY / this.viewport.scale;
-        this._render();
+        this._invalidate();
         this._dispatchViewport();
       }, { passive: false });
     }
@@ -786,8 +906,69 @@
         this.viewport.x += (before.x - after.x);
         this.viewport.y += (before.y - after.y);
       }
-      this._render();
+      this._invalidate();
       this._dispatchViewport();
+    }
+
+    // Client coords of the canvas centre — the default zoom anchor when a
+    // toolbar button doesn't pass a cursor position.
+    _canvasCenterClient() {
+      const r = this.canvas.getBoundingClientRect();
+      return { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    }
+
+    // Eased zoom toward targetScale, keeping the world point under the
+    // anchor pinned the whole way (FigJam-style zoom-to-cursor with easing).
+    _animateZoom(targetScale, centerClient) {
+      this._cancelMomentum();
+      this._cancelAnim();
+      const target = Math.max(MIN_SCALE, Math.min(MAX_SCALE, targetScale));
+      const from = this.viewport.scale;
+      if (Math.abs(target - from) < 1e-4) return;
+      const center = centerClient || this._canvasCenterClient();
+      const world = this._clientToWorld(center.clientX, center.clientY);
+      const t0 = nowMs();
+      const step = () => {
+        const k = Math.min(1, (nowMs() - t0) / ZOOM_ANIM_MS);
+        this.viewport.scale = from + (target - from) * easeOut(k);
+        const after = this._clientToWorld(center.clientX, center.clientY);
+        this.viewport.x += world.x - after.x;
+        this.viewport.y += world.y - after.y;
+        this._invalidate();
+        this._dispatchViewport();
+        this._anim = k < 1 ? { raf: requestAnimationFrame(step) } : null;
+      };
+      this._anim = { raf: requestAnimationFrame(step) };
+    }
+
+    // Eased tween of the whole viewport (used by reset / zoom-to-fit).
+    _animateViewport(target, ms = VIEW_ANIM_MS) {
+      this._cancelMomentum();
+      this._cancelAnim();
+      const from = { ...this.viewport };
+      const to = {
+        x: target.x ?? from.x,
+        y: target.y ?? from.y,
+        scale: Math.max(MIN_SCALE, Math.min(MAX_SCALE, target.scale ?? from.scale)),
+      };
+      const t0 = nowMs();
+      const step = () => {
+        const k = Math.min(1, (nowMs() - t0) / ms);
+        const e = easeOut(k);
+        this.viewport = {
+          x: from.x + (to.x - from.x) * e,
+          y: from.y + (to.y - from.y) * e,
+          scale: from.scale + (to.scale - from.scale) * e,
+        };
+        this._invalidate();
+        this._dispatchViewport();
+        this._anim = k < 1 ? { raf: requestAnimationFrame(step) } : null;
+      };
+      this._anim = { raf: requestAnimationFrame(step) };
+    }
+    _cancelAnim() {
+      if (this._anim?.raf) cancelAnimationFrame(this._anim.raf);
+      this._anim = null;
     }
 
     _dispatchViewport() {
@@ -797,6 +978,9 @@
     destroy() {
       this._resizeObs?.disconnect();
       if (this._fitRaf) cancelAnimationFrame(this._fitRaf);
+      if (this._renderRaf) cancelAnimationFrame(this._renderRaf);
+      this._cancelMomentum();
+      this._cancelAnim();
       if (this._keyDown) document.removeEventListener('keydown', this._keyDown);
       if (this._keyUp) document.removeEventListener('keyup', this._keyUp);
       this.canvas.remove();

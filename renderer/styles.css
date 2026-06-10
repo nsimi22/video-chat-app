@@ -7864,7 +7864,7 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 }
 .wbv-note-text {
   flex: 1 1 auto;
-  font-size: 13px;
+  font-size: var(--wbv-note-font, 13px);
   line-height: 1.32;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -7961,6 +7961,29 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   padding: 0;
 }
 .wbv-note-toolbar-swatch:hover { transform: scale(1.08); }
+.wbv-note-toolbar-custom {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  background: conic-gradient(red, orange, yellow, lime, aqua, blue, magenta, red);
+  box-shadow: 0 0 0 1px var(--line, rgba(255,255,255,0.1));
+  transition: transform .1s ease;
+}
+.wbv-note-toolbar-custom:hover { transform: scale(1.08); }
+.wbv-note-toolbar-custom input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
 .wbv-note-toolbar-sep { width: 1px; height: 18px; background: var(--line, rgba(255,255,255,0.1)); }
 .wbv-note-toolbar-del {
   display: inline-flex;
@@ -7980,12 +8003,20 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .wbv-frame {
   position: absolute;
   border-radius: 16px;
-  border: 1.5px solid var(--line, rgba(255,255,255,0.1));
-  background: rgba(255,255,255,0.02);
+  /* Soft tinted fill + border (FigJam-style), derived from the frame's
+   * tint so each frame reads as its own coloured region. */
+  border: 1.5px solid color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 30%, transparent);
+  background: color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 7%, transparent);
+  transition: border-color .12s ease, box-shadow .12s ease, background .12s ease;
   /* Frame body is click-through so drawing / sticky-dropping inside a
    * frame still works. Children (chip, delete button, resize handles)
    * re-enable pointer-events individually below. */
   pointer-events: none;
+}
+.wbv-frame.is-selected {
+  border-color: color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 70%, transparent);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 55%, transparent),
+              0 10px 30px rgba(0,0,0,0.25);
 }
 .wbv-frame-dashed { border-style: dashed; }
 .wbv-frame > * { pointer-events: auto; }
@@ -8030,31 +8061,42 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .wbv-frame-handle.is-sw::after {
   content: "";
   position: absolute;
-  inset: 4px;
-  border-radius: 50%;
-  background: var(--wbv-frame-tint, var(--accent, #0a84ff));
+  inset: 2px;
+  border-radius: 3px;
+  background: #fff;
+  border: 1.5px solid color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 80%, transparent);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
   opacity: 0;
   transition: opacity .12s ease;
 }
 .wbv-frame:hover .wbv-frame-handle.is-nw::after,
 .wbv-frame:hover .wbv-frame-handle.is-ne::after,
 .wbv-frame:hover .wbv-frame-handle.is-se::after,
-.wbv-frame:hover .wbv-frame-handle.is-sw::after {
-  opacity: 0.6;
+.wbv-frame:hover .wbv-frame-handle.is-sw::after,
+.wbv-frame.is-selected .wbv-frame-handle.is-nw::after,
+.wbv-frame.is-selected .wbv-frame-handle.is-ne::after,
+.wbv-frame.is-selected .wbv-frame-handle.is-se::after,
+.wbv-frame.is-selected .wbv-frame-handle.is-sw::after {
+  opacity: 1;
 }
 .wbv-frame-chip {
   position: absolute;
-  top: -13px;
-  left: 16px;
+  top: -15px;
+  left: 14px;
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 3px 12px;
-  border-radius: 8px;
-  background: var(--bg-1, #1a1d22);
-  border: 1px solid var(--line, rgba(255,255,255,0.1));
+  padding: 4px 12px;
+  border-radius: 9px;
+  /* Tinted label tab so the frame's title pill reads as its colour. */
+  background: color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 20%, var(--bg-1, #1a1d22));
+  border: 1px solid color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 45%, transparent);
   cursor: grab;
-  max-width: calc(100% - 32px);
+  max-width: calc(100% - 28px);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+}
+.wbv-frame.is-selected .wbv-frame-chip {
+  background: color-mix(in srgb, var(--wbv-frame-tint, #0a84ff) 32%, var(--bg-1, #1a1d22));
 }
 .wbv-frame-chip:active { cursor: grabbing; }
 .wbv-frame-dot {
@@ -8065,9 +8107,9 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   flex-shrink: 0;
 }
 .wbv-frame-title {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 700;
-  color: var(--tx-mid, #c8ccd0);
+  color: var(--tx-hi, #eef0f2);
   letter-spacing: -0.01em;
   outline: none;
   min-width: 60px;
@@ -8097,6 +8139,181 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   margin-left: 2px;
 }
 .wbv-frame-del:hover { background: var(--bg-2, rgba(255,255,255,0.06)); color: var(--danger, #ff453a); }
+
+/* Frame colour picker — FigJam-style dark pill toolbar, centered above the
+ * frame while it's selected. */
+.wbv-frame-toolbar {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border-radius: 11px;
+  background: var(--bg-1, #1a1d22);
+  border: 1px solid var(--line, rgba(255,255,255,0.1));
+  box-shadow: var(--sh-pop, 0 18px 48px -16px rgba(0,0,0,0.6));
+  white-space: nowrap;
+  z-index: 6;
+}
+.wbv-frame.is-selected .wbv-frame-toolbar { display: inline-flex; }
+.wbv-frame-swatch {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  box-shadow: 0 0 0 1px var(--line, rgba(255,255,255,0.1));
+  padding: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  transition: transform .1s ease;
+}
+.wbv-frame-swatch:hover { transform: scale(1.08); }
+
+/* Alignment guides shown while dragging a note/frame near another. */
+.wbv-guide {
+  position: absolute;
+  pointer-events: none;
+  z-index: 50;
+  background: #ff3b6b;
+}
+.wbv-guide-v { top: 0; bottom: 0; width: 1px; }
+.wbv-guide-h { left: 0; right: 0; height: 1px; }
+
+/* Unified colour control — a dot+caret button (in any contextual toolbar
+ * or the palette) that opens the .wbv-color-pop popover. FigJam-style. */
+.wbv-toolbar-color {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 5px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+}
+.wbv-toolbar-color:hover { background: var(--bg-2, rgba(255,255,255,0.06)); }
+.wbv-toolbar-color-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.25), inset 0 0 0 1px rgba(0,0,0,0.12);
+}
+.wbv-toolbar-color-caret {
+  width: 0;
+  height: 0;
+  border-left: 3.5px solid transparent;
+  border-right: 3.5px solid transparent;
+  border-top: 4px solid var(--tx-lo, #8a8e96);
+}
+.wbv-color-pop {
+  position: fixed;
+  z-index: 9999;
+  padding: 10px;
+  border-radius: 12px;
+  background: var(--bg-1, #1a1d22);
+  border: 1px solid var(--line, rgba(255,255,255,0.12));
+  box-shadow: 0 16px 40px rgba(0,0,0,0.5);
+}
+.wbv-color-pop-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+}
+.wbv-color-pop-sw {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.18);
+  transition: transform .1s ease;
+}
+.wbv-color-pop-sw:hover { transform: scale(1.12); }
+.wbv-color-pop-sw.is-on { box-shadow: 0 0 0 2px var(--accent, #0a84ff); }
+.wbv-color-pop-custom {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 10px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--bg-2, rgba(255,255,255,0.06));
+  color: var(--tx-mid, #c8ccd0);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.wbv-color-pop-custom:hover { background: var(--bg-3, rgba(255,255,255,0.1)); }
+.wbv-color-pop-custom-rainbow {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: conic-gradient(red, orange, yellow, lime, aqua, blue, magenta, red);
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.2);
+}
+.wbv-color-pop-custom input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  border: 0;
+  cursor: pointer;
+}
+
+/* Auto-linked URLs inside notes / text blocks — accent blue, clickable. */
+.wbv-link {
+  color: var(--accent, #0a84ff);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  word-break: break-all;
+}
+.wbv-link:hover { filter: brightness(1.15); }
+
+/* Link preview card + toggle inside a note. */
+.wbv-note-linkbox { margin-top: 6px; }
+.wbv-linkbox-toggle {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent, #0a84ff);
+  background: transparent;
+  border: 0;
+  padding: 2px 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.wbv-link-card {
+  display: block;
+  margin-top: 5px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  text-decoration: none;
+  cursor: pointer;
+}
+.wbv-link-card-img { display: block; width: 100%; height: 88px; object-fit: cover; }
+.wbv-link-card-body { padding: 6px 8px; }
+.wbv-link-card-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--tx-hi, #eef0f2);
+  line-height: 1.25;
+  max-height: 2.5em;
+  overflow: hidden;
+}
+.wbv-link-card-domain { font-size: 10px; color: var(--tx-lo, #8a8e96); margin-top: 2px; }
 
 /* Ghost collaborator cursors ------------------------------------ */
 .wbv-cursor {
