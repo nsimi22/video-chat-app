@@ -96,66 +96,11 @@ You have read-only access to the GitHub repo \`${repoSlug}\` via tools (search_c
 const AI_SYSTEM_PROMPT = 'You are a helpful, general-purpose AI assistant inside a team chat app. Answer whatever the user asks. Be concise.';
 const AI_SYSTEM_PROMPT_WITH_JIRA = 'You are a helpful, general-purpose AI assistant inside a team chat app. Answer whatever the user asks — questions, jokes, explanations, brainstorming, code, anything — like any capable chat assistant would; never refuse or redirect a request just because it is not about Jira. You also have Jira tools available: when the user names a Jira ticket key (e.g. "FOO-123") or asks to read / comment on / update / transition a ticket, call those tools to fetch context first and then act. Be concise — bullet points for summaries, and for any ticket changes give a single-line confirmation stating the ticket key plus a one-line summary of what you did.';
 
-// Tool definitions for the /ai-ticket loop. Built only when both a
-// GitHubClient and a configured repo slug are available; otherwise the
-// AI call stays a single-shot prompt with no tool surface. Each tool
-// caps its own output (limits, snippet/body slicing, line caps in
-// readFile) so the iteration budget translates to a bounded token cost.
-function buildGithubTicketTools(github, repoSlug) {
-  return [
-    {
-      name: 'search_code',
-      description: 'Search code in the configured GitHub repo by keyword or phrase. Returns up to 8 file matches with the path and a short snippet. Use this to find files relevant to the ticket BEFORE calling read_file. The query is a raw GitHub code-search expression — quote phrases for literal matches.',
-      input_schema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Code search query, e.g. "channel_members upsert" or "function buildTicketSystemPrompt".' },
-        },
-        required: ['query'],
-      },
-      run: async ({ query }) => github.searchCode(repoSlug, query, { limit: 8 }),
-    },
-    {
-      name: 'read_file',
-      description: 'Read a file from the configured GitHub repo. Returns up to 200 lines (or the requested line range). Pair with search_code: search first to find the right path, then read.',
-      input_schema: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Path relative to the repo root, e.g. "renderer/chat.js".' },
-          line_start: { type: 'integer', description: 'Optional 1-based line to start reading from.' },
-          line_end: { type: 'integer', description: 'Optional 1-based last line to include. Capped at line_start + 199 regardless.' },
-        },
-        required: ['path'],
-      },
-      run: async ({ path, line_start, line_end }) =>
-        github.readFile(repoSlug, path, { lineStart: line_start, lineEnd: line_end }),
-    },
-    {
-      name: 'search_issues',
-      description: 'Search issues and pull requests in the configured GitHub repo. Useful for spotting duplicate or related tickets before drafting a new one. Returns up to 8 results with title, state, and a body snippet.',
-      input_schema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Issue/PR search query, e.g. "RLS dm policy" or "is:open author:nsimi22".' },
-        },
-        required: ['query'],
-      },
-      run: async ({ query }) => github.searchIssues(repoSlug, query, { limit: 8 }),
-    },
-    {
-      name: 'list_recent_commits',
-      description: 'List recent commit titles for the configured GitHub repo. Useful to see what has changed lately or to scope by a specific path.',
-      input_schema: {
-        type: 'object',
-        properties: {
-          limit: { type: 'integer', description: 'How many commits to return (default 10, max 25).' },
-          path: { type: 'string', description: 'Optional repo-relative path filter, e.g. "renderer/chat.js".' },
-        },
-      },
-      run: async ({ limit, path }) => github.listRecentCommits(repoSlug, { limit, path }),
-    },
-  ];
-}
+// Tool definitions for the /ai-ticket loop live in ai-tools.js
+// (window.HuddleAiTools.buildGithubTicketTools) so the AI panel can reuse
+// the same repo-scoped GitHub read tools. Built only when both a
+// GitHubClient and a configured repo slug are available; otherwise the AI
+// call stays a single-shot prompt with no tool surface.
 
 // Tolerant JSON extractor: tries plain JSON.parse, then looks for
 // the first {...} block (in case the AI wrapped the JSON in
@@ -2604,7 +2549,9 @@ class ChatView {
     const repoSlug = (this.hooks.getAiTicketRepo?.() || '').trim();
     const github = this.hooks.getGitHub?.();
     const useTools = !!(repoSlug && github?.isConfigured());
-    const tools = useTools ? buildGithubTicketTools(github, repoSlug) : null;
+    const tools = useTools && window.HuddleAiTools
+      ? window.HuddleAiTools.buildGithubTicketTools(github, repoSlug)
+      : null;
     let aiResult;
     try {
       aiResult = await ai.chat({

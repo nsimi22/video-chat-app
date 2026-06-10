@@ -277,13 +277,21 @@
 
     try {
       // Wire any configured integrations as read tools so the panel can
-      // actually fetch the Jira tickets its suggestion chips reference —
-      // matching the chat `/ai` path (chat.js). Without this the panel
-      // claimed to "read your Jira" but answered from memory / refused.
-      const jira = window.huddleApp?.getJira?.();
-      const tools = window.HuddleAiTools ? window.HuddleAiTools.buildJiraTools(jira) : [];
+      // actually fetch the Jira/GitHub data its subtitle + suggestion chips
+      // reference — matching the chat `/ai` and `/ai-ticket` paths. Without
+      // this the panel claimed to "read your Jira & GitHub" but answered
+      // from memory / refused. Jira tools need only a configured client;
+      // GitHub tools are repo-scoped to the configured AI-ticket repo
+      // (buildGithubTicketTools returns [] when the repo/client is unset).
+      const T = window.HuddleAiTools;
+      const jiraTools = T ? T.buildJiraTools(window.huddleApp?.getJira?.()) : [];
+      const githubTools = T
+        ? T.buildGithubTicketTools(window.huddleApp?.getGitHub?.(), (window.huddleApp?.getAiTicketRepo?.() || '').trim())
+        : [];
+      const tools = [...jiraTools, ...githubTools];
+      const caps = [jiraTools.length && 'Jira', githubTools.length && 'GitHub'].filter(Boolean).join(' and ');
       const system = tools.length
-        ? 'You are Huddle AI, a concise, helpful assistant inside a team chat. You have read access to the user\'s connected Jira via tools — when the user names a ticket key (e.g. "DAP-135") or asks something you could answer by reading Jira, CALL the tools to fetch the real data first, then answer. Never claim you cannot access Jira. Respond clearly. Use markdown for emphasis (**bold**, `code`).'
+        ? `You are Huddle AI, a concise, helpful assistant inside a team chat. You have read access to the user's connected ${caps} via tools — when the user names a Jira ticket key (e.g. "DAP-135"), a file/issue/PR in the configured GitHub repo, or asks anything you could answer by reading them, CALL the tools to fetch the real data first, then answer. Never claim you cannot access ${caps}. Respond clearly. Use markdown for emphasis (**bold**, \`code\`).`
         : 'You are Huddle AI, a concise, helpful assistant inside a team chat. Respond clearly. Use markdown for emphasis (**bold**, `code`).';
       const res = await ai.chat({
         system,

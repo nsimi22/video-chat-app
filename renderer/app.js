@@ -7805,12 +7805,14 @@ window.huddleApp = {
   getAi: () => state.ai,
   getMe: () => state.me,
   getCalendar: () => state.calendar,
-  // Integration clients for the AI panel's tool loop — same clients the
-  // chat `/ai` path wires as Jira tools, so the panel can actually read
-  // Jira tickets (its suggestion chips + "Reads your Jira" subtitle promise
-  // this; without them the panel answered from memory or refused).
+  // Integration clients + AI-ticket repo for the AI panel's tool loop —
+  // the same surface the chat `/ai` and `/ai-ticket` paths use to wire
+  // Jira tools and the repo-scoped GitHub read tools. Without these the
+  // panel answered from memory / refused, despite its subtitle and Jira
+  // suggestion chips promising it reads Jira & GitHub.
   getJira: () => state.jira,
   getGitHub: () => state.github,
+  getAiTicketRepo: () => state.settings?.aiTicket?.githubRepo || '',
   getActiveChannelId: () => state.chat?.currentChannel,
   // True in-call participant count straight from the LiveKit room
   // (remote participants + self). The DOM-tile census the v2 header used
