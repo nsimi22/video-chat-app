@@ -2952,13 +2952,16 @@ async function signOutFully() {
 
 const MINI_CALL_POS_KEY = 'huddle.miniCallPos';
 const MINI_CALL_MARGIN = 12; // keep this far from any viewport edge
+// Mini-panel footprint — must match the width/height in styles.css
+// (body.huddle-call-minimized #tiles). Used as constants so the
+// pointermove clamp doesn't force a synchronous reflow each frame.
+const MINI_CALL_W = 260;
+const MINI_CALL_H = 184;
 
-// Clamp the panel's top-left so it stays fully on-screen. Reads the
-// panel's measured size; falls back to a nominal size before layout.
+// Clamp the panel's top-left so it stays fully on-screen.
 function clampMiniCallPos(x, y) {
-  const el = els.tiles;
-  const w = el?.offsetWidth || 300;
-  const h = el?.offsetHeight || 200;
+  const w = MINI_CALL_W;
+  const h = MINI_CALL_H;
   const maxX = Math.max(MINI_CALL_MARGIN, window.innerWidth - w - MINI_CALL_MARGIN);
   const maxY = Math.max(MINI_CALL_MARGIN, window.innerHeight - h - MINI_CALL_MARGIN);
   return {
@@ -3019,7 +3022,11 @@ function setCallMinimized(on) {
 // grip drag is intentional.
 function wireMiniCallDrag() {
   const grip = els.miniCallGrip;
-  if (!grip) return;
+  // wireControls() can run again on team switch / re-auth; guard so the
+  // grip + window listeners are only registered once (matches the
+  // dataset.dragWired pattern used by setupDraggableDrawToolbar).
+  if (!grip || grip.dataset.dragWired) return;
+  grip.dataset.dragWired = '1';
   let dragging = false;
   let startX = 0, startY = 0, baseX = 0, baseY = 0;
   const onMove = (e) => {

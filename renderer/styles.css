@@ -1522,6 +1522,8 @@ body.huddle-call-minimized #tiles {
 body.huddle-call-minimized #tiles .tile { min-height: 0; border-radius: 0; }
 body.huddle-call-minimized #tiles .tile-actions,
 body.huddle-call-minimized #tiles .draw-toolbar,
+body.huddle-call-minimized #tiles .tile-hand,
+body.huddle-call-minimized #tiles .tile-speaker-bars,
 body.huddle-call-minimized #tiles .draw-canvas { display: none !important; }
 /* No pan/zoom or spotlight remaps at panel scale — keep it view-only. */
 body.huddle-call-minimized #tiles .tile-content { transform: none !important; }
