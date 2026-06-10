@@ -1488,6 +1488,99 @@ body.has-fullscreen-tile { overflow: hidden; }
 [data-ui="v2"] body.has-fullscreen-tile .stage > #reconnect-banner {
   display: none;
 }
+
+/* ── Minimized call: draggable floating mini panel ──────────────────
+   Collapse #tiles out of the stage flow into a small fixed panel the
+   user drags anywhere (JS sets left/top). The stage's chat siblings
+   reflow to full height on their own once #tiles leaves the flow. */
+.mini-call-bar { display: none; }
+
+body.huddle-call-minimized #tiles {
+  position: fixed;
+  /* left/top set inline by applyMiniCallPos; this is the pre-paint
+     fallback before the first clamp runs. */
+  right: auto;
+  bottom: auto;
+  width: 260px;
+  height: 184px;
+  max-height: 184px;
+  z-index: 60;            /* above stage + dock, below modals */
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  /* Single-cell: show the lead tile filling the panel; extra tiles are
+     clipped by overflow:hidden rather than shrunk to slivers. */
+  grid-template-columns: 1fr;
+  grid-auto-rows: 1fr;
+}
+
+/* Lead tile fills the panel; chrome that assumes full size is muted. */
+body.huddle-call-minimized #tiles .tile { min-height: 0; border-radius: 0; }
+body.huddle-call-minimized #tiles .tile-actions,
+body.huddle-call-minimized #tiles .draw-toolbar,
+body.huddle-call-minimized #tiles .draw-canvas { display: none !important; }
+/* No pan/zoom or spotlight remaps at panel scale — keep it view-only. */
+body.huddle-call-minimized #tiles .tile-content { transform: none !important; }
+
+/* The mini control bar overlays the top of the panel. */
+body.huddle-call-minimized .mini-call-bar {
+  display: flex;
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 2;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.6), rgba(0,0,0,0));
+}
+.mini-call-grip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  cursor: grab;
+  user-select: none;
+}
+.mini-call-grip.dragging { cursor: grabbing; }
+.mini-call-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+.mini-call-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mini-call-actions { display: flex; gap: 4px; flex: 0 0 auto; }
+.mini-call-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.16);
+  cursor: pointer;
+}
+.mini-call-btn:hover { background: rgba(255, 255, 255, 0.28); }
+.mini-call-btn.danger { background: var(--danger, #d64545); }
+.mini-call-btn.danger:hover { filter: brightness(1.1); }
+.mini-call-btn.muted { background: var(--danger, #d64545); }
+
 /* Active speaker: soft accent ring driven by JS audio-level polling.
    Transitions ease in/out so quick volume bursts don't strobe. */
 .tile.speaking {
