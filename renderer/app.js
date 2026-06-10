@@ -393,8 +393,9 @@ const state = {
   // Cleared when the call ends (post-finalizeCallTranscript so the AI
   // summary can attach as a reply).
   meeting: {
-    threadRootId: null,
+    threadRootId: null,        // canonical root where NEW notes anchor
     threadRootChannelId: null,
+    roots: [],                 // ALL known root ids for this call (join race → >1)
     panelOpen: false,
     replies: [],          // [marshaledMessage] — populated on panel open + via chat-message events
     unsubReplyHandler: null,
@@ -2367,6 +2368,19 @@ function shouldDedupeCaption(line) {
 // still a tiny race window between the fetch and the insert (two
 // peers both miss + both insert), but it's bounded by the fetch
 // roundtrip, much narrower than the presence-sync window.
+// Track a known meeting-thread root. The canonical root (where NEW notes
+// anchor) is the deterministic min-id across all known roots, so peers
+// converge on one parent once their root sets match; notes anchored to ANY
+// known root are still surfaced. Returns true if this id was new.
+function meetingAddRoot(id) {
+  if (!id) return false;
+  state.meeting.roots = state.meeting.roots || [];
+  if (state.meeting.roots.includes(id)) return false;
+  state.meeting.roots.push(id);
+  state.meeting.threadRootId = [...state.meeting.roots].sort()[0];
+  return true;
+}
+
 async function setupMeetingThreadAsStarter(channelId) {
   if (!state.huddle || !channelId) return;
   // Already wired for this channel? No-op (covers reconnect / popout
@@ -2380,10 +2394,10 @@ async function setupMeetingThreadAsStarter(channelId) {
     const handler = (e) => {
       const d = e.detail || {};
       if (d.channelId !== state.inCallChannelId) return;
-      if (state.meeting.threadRootId) return; // already resolved
-      state.meeting.threadRootId = d.messageId;
       state.meeting.threadRootChannelId = d.channelId;
-      onMeetingThreadResolved();
+      // Collect every peer's root (don't ignore once we have our own) so a
+      // multi-root join race converges and no notes are stranded.
+      if (meetingAddRoot(d.messageId)) onMeetingThreadResolved();
     };
     state.huddle.addEventListener('meeting-root', handler);
     state.meeting._unsubRoot = () => state.huddle.removeEventListener('meeting-root', handler);
@@ -2393,15 +2407,18 @@ async function setupMeetingThreadAsStarter(channelId) {
   //    older row is from a previous call, not this one). If found,
   //    everyone — first peer or twelfth — anchors on the same row.
   try {
-    const row = await state.huddle.fetchActiveMeetingRoot(channelId, { withinMs: 5 * 60 * 1000 });
+    const rows = await state.huddle.fetchActiveMeetingRoots(channelId, { withinMs: 5 * 60 * 1000 });
     // Race guard: the user may have left the call while the fetch
     // was in flight. Discard the result if so — teardownMeetingThread
     // already cleared state.meeting.
     if (state.inCallChannelId !== channelId) return;
-    if (row && !state.meeting.threadRootId) {
-      state.meeting.threadRootId = row.id;
+    if (rows && rows.length) {
       state.meeting.threadRootChannelId = channelId;
-      onMeetingThreadResolved();
+      let added = false;
+      for (const r of rows) added = meetingAddRoot(r.id) || added;
+      // Announce our canonical so peers holding a different root converge.
+      state.huddle.sendCallMeetingRoot(channelId, state.meeting.threadRootId);
+      if (added) onMeetingThreadResolved();
       return;
     }
     // Listener may have resolved while we awaited — exit cleanly.
@@ -2432,8 +2449,8 @@ async function setupMeetingThreadAsStarter(channelId) {
     // already cleared it and the next call shouldn't reuse this
     // anchor.
     if (state.inCallChannelId !== channelId) return;
-    state.meeting.threadRootId = row.id;
     state.meeting.threadRootChannelId = channelId;
+    meetingAddRoot(row.id);
     state.huddle.sendCallMeetingRoot(channelId, row.id);
     onMeetingThreadResolved();
   } catch (err) {
@@ -2455,15 +2472,22 @@ function formatCallStartedTimestamp(iso) {
 // posted it, received the broadcast, or resolved via the fallback
 // fetch). Pre-loads existing replies + refreshes the Notes panel.
 async function onMeetingThreadResolved() {
-  if (!state.meeting.threadRootId) return;
+  const roots = state.meeting.roots || [];
+  if (!roots.length || !state.meeting.threadRootChannelId) return;
   try {
-    state.meeting.replies = await state.huddle.fetchThreadReplies(
-      state.meeting.threadRootChannelId,
-      state.meeting.threadRootId,
-    );
+    // Merge replies across every known root (a join race can split a call
+    // across more than one) so the panel shows all notes regardless of
+    // which root they were anchored to.
+    const seen = new Set();
+    const merged = [];
+    for (const r of roots) {
+      const reps = await state.huddle.fetchThreadReplies(state.meeting.threadRootChannelId, r);
+      for (const m of (reps || [])) if (!seen.has(m.id)) { seen.add(m.id); merged.push(m); }
+    }
+    merged.sort((a, b) => new Date(a.ts) - new Date(b.ts));
+    state.meeting.replies = merged;
   } catch (err) {
     console.warn('[meeting] backfill replies failed', err);
-    state.meeting.replies = [];
   }
   renderMeetingNotesPanel();
 }
@@ -2476,13 +2500,13 @@ async function onMeetingThreadResolved() {
 // surviving a race could otherwise let cross-channel replies leak in.
 function onIncomingMessageForMeeting(message) {
   if (!message) return;
-  if (!state.meeting.threadRootId) return;
-  if (message.parentId !== state.meeting.threadRootId) return;
+  if (!(state.meeting.roots || []).includes(message.parentId)) return; // any known root
   if (state.meeting.threadRootChannelId && message.channelId !== state.meeting.threadRootChannelId) return;
   // Dedupe by id — the originator's own send echoes through here as
   // well as the realtime postgres_changes INSERT.
   if (state.meeting.replies.some((m) => m.id === message.id)) return;
   state.meeting.replies.push(message);
+  state.meeting.replies.sort((a, b) => new Date(a.ts) - new Date(b.ts));
   renderMeetingNotesPanel();
 }
 
@@ -2490,8 +2514,7 @@ function onIncomingMessageForMeeting(message) {
 // through 'chat-update' in api.js's _subscribeToMessages.
 function onUpdatedMessageForMeeting(message) {
   if (!message) return;
-  if (!state.meeting.threadRootId) return;
-  if (message.parentId !== state.meeting.threadRootId) return;
+  if (!(state.meeting.roots || []).includes(message.parentId)) return;
   if (state.meeting.threadRootChannelId && message.channelId !== state.meeting.threadRootChannelId) return;
   const idx = state.meeting.replies.findIndex((m) => m.id === message.id);
   if (idx === -1) return;
@@ -2516,6 +2539,7 @@ function teardownMeetingThread() {
   state.meeting._unsubRoot = null;
   state.meeting.threadRootId = null;
   state.meeting.threadRootChannelId = null;
+  state.meeting.roots = [];
   state.meeting.replies = [];
   // panelOpen intentionally NOT reset — the user's panel preference
   // survives between calls in the same session.
