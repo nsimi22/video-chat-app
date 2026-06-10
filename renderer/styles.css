@@ -1515,7 +1515,7 @@ body.huddle-call-minimized #tiles {
   /* Single-cell: show the lead tile filling the panel; extra tiles are
      clipped by overflow:hidden rather than shrunk to slivers. */
   grid-template-columns: 1fr;
-  grid-auto-rows: 1fr;
+  grid-auto-rows: 100%;
 }
 
 /* Lead tile fills the panel; chrome that assumes full size is muted. */

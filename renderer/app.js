@@ -3054,10 +3054,12 @@ function wireMiniCallDrag() {
     e.preventDefault();
   });
   // Re-clamp into view if the window shrinks under a parked panel.
+  // Don't persist here — resize fires rapidly, and initialMiniCallPos
+  // already clamps a saved position back on-screen at open time.
   window.addEventListener('resize', () => {
     if (!state.callMinimized) return;
     const r = els.tiles.getBoundingClientRect();
-    applyMiniCallPos(r.left, r.top, true);
+    applyMiniCallPos(r.left, r.top, false);
   });
 }
 
