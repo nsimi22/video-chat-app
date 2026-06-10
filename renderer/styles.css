@@ -8198,6 +8198,7 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 /* Shape objects (rect/ellipse/diamond) — a CSS skin over the sticky note. */
 .wbv-note.wbv-shape { --wbv-note-rot: 0deg; }
 .wbv-note.wbv-shape .wbv-note-card {
+  height: 100%; box-sizing: border-box;
   background: color-mix(in srgb, var(--wbv-note-bg) 16%, transparent);
   border: 2px solid var(--wbv-note-bg);
   border-radius: 10px;

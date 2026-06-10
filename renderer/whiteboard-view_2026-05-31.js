@@ -1333,15 +1333,23 @@
         // to min-height so the card matches the design's seed size when
         // empty but auto-expands as the user types.
         el.style.width = (data.w * vp.scale) + 'px';
-        el.style.height = '';
-        el.style.minHeight = (data.h * vp.scale) + 'px';
-        // Cap the inner-text scale so a deeply zoomed-out note still
-        // reads, but a zoomed-in note feels bigger.
-        el.style.setProperty('--wbv-note-zoom', vp.scale.toFixed(2));
-        // Text auto-resizes with the note: a bigger sticky gets bigger text
-        // (FigJam-like), scaled off its width vs the default and the zoom.
-        const fontPx = Math.max(11, Math.min(30, 13 * (data.w / NOTE_W))) * vp.scale;
-        el.style.setProperty('--wbv-note-font', fontPx.toFixed(1) + 'px');
+        if (data.shape) {
+          // Shapes + tables are fixed-size resizable boxes — explicit height
+          // so dragging a corner actually grows them vertically (the card /
+          // grid fills it). Sticky notes keep min-height (grow with content).
+          el.style.height = (data.h * vp.scale) + 'px';
+          el.style.minHeight = '';
+        } else {
+          el.style.height = '';
+          el.style.minHeight = (data.h * vp.scale) + 'px';
+          // Cap the inner-text scale so a deeply zoomed-out note still
+          // reads, but a zoomed-in note feels bigger.
+          el.style.setProperty('--wbv-note-zoom', vp.scale.toFixed(2));
+          // Text auto-resizes with the note: a bigger sticky gets bigger text
+          // (FigJam-like), scaled off its width vs the default and the zoom.
+          const fontPx = Math.max(11, Math.min(30, 13 * (data.w / NOTE_W))) * vp.scale;
+          el.style.setProperty('--wbv-note-font', fontPx.toFixed(1) + 'px');
+        }
       }
       this._reflowFor(entry.data.id, false); // keep bound connectors attached
     }
