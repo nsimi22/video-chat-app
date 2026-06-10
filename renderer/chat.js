@@ -2350,7 +2350,8 @@ class ChatView {
     }
     for (const r of results) {
       const images = r.images || {};
-      const preview = images.fixed_height_small?.url
+      const preview = images.fixed_width?.url
+        || images.fixed_height_small?.url
         || images.preview_gif?.url
         || images.original?.url;
       const full = images.original?.url || preview;
