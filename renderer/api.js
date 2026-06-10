@@ -2050,7 +2050,7 @@
     async fetchWhiteboardNotes(whiteboardId) {
       const { data, error } = await this.supabase
         .from('whiteboard_notes')
-        .select('id, x, y, w, h, text, color, color_key, votes, voted_by, author_id, updated_at')
+        .select('id, x, y, w, h, text, color, color_key, shape, meta, votes, voted_by, author_id, updated_at')
         .eq('whiteboard_id', whiteboardId)
         .order('created_at', { ascending: true });
       if (error) throw error;
@@ -2073,6 +2073,8 @@
         color: note.color || '#ffd866',
       };
       if (note.color_key) row.color_key = note.color_key;
+      if (note.shape) row.shape = note.shape;       // rect/ellipse/diamond/table
+      if (note.meta != null) row.meta = note.meta;  // shape fill / table cells
       const { error } = await this.supabase.from('whiteboard_notes').insert(row);
       if (error) throw error;
     }

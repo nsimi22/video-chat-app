@@ -603,8 +603,10 @@
           this._marquee = null;
           if (e?.pointerId != null) { try { this.canvas.releasePointerCapture(e.pointerId); } catch {} }
           this._render();
-          if (m.moved) {
-            const rect = { x: Math.min(m.x0, m.x1), y: Math.min(m.y0, m.y1), w: Math.abs(m.x1 - m.x0), h: Math.abs(m.y1 - m.y0) };
+          // Only treat it as a marquee if it covers a real area — a click
+          // with sub-pixel drift shouldn't fire an empty-rect selection.
+          const rect = { x: Math.min(m.x0, m.x1), y: Math.min(m.y0, m.y1), w: Math.abs(m.x1 - m.x0), h: Math.abs(m.y1 - m.y0) };
+          if (m.moved && (rect.w * this.viewport.scale > 3 || rect.h * this.viewport.scale > 3)) {
             this._marqueeCb?.(rect);
           }
           return;
@@ -817,7 +819,7 @@
         this.viewport.x -= (m.vx * dt) / this.viewport.scale;
         this.viewport.y -= (m.vy * dt) / this.viewport.scale;
         this._invalidate();
-        this._dispatchViewport();
+        this._dispatchViewportNow();
         if (Math.hypot(m.vx, m.vy) < STOP_SPEED) { this._momentum = null; return; }
         m.raf = requestAnimationFrame(step);
       };
@@ -954,7 +956,7 @@
         this.viewport.x += world.x - after.x;
         this.viewport.y += world.y - after.y;
         this._invalidate();
-        this._dispatchViewport();
+        this._dispatchViewportNow();
         this._anim = k < 1 ? { raf: requestAnimationFrame(step) } : null;
       };
       this._anim = { raf: requestAnimationFrame(step) };
@@ -980,7 +982,7 @@
           scale: from.scale + (to.scale - from.scale) * e,
         };
         this._invalidate();
-        this._dispatchViewport();
+        this._dispatchViewportNow();
         this._anim = k < 1 ? { raf: requestAnimationFrame(step) } : null;
       };
       this._anim = { raf: requestAnimationFrame(step) };
@@ -990,14 +992,27 @@
       this._anim = null;
     }
 
-    _dispatchViewport() {
+    _dispatchViewportNow() {
       this._viewportCb?.(this.getViewport());
+    }
+    _dispatchViewport() {
+      // Coalesce to one reproject per frame. Wheel/pan events fire far faster
+      // than the screen repaints; the canvas redraw is already rAF-throttled
+      // via _invalidate, so the DOM-overlay reproject should be too. Calls
+      // already inside an rAF step (momentum/zoom animations) use
+      // _dispatchViewportNow so the overlay stays in lockstep with the canvas.
+      if (this._vpRaf) return;
+      this._vpRaf = requestAnimationFrame(() => {
+        this._vpRaf = null;
+        this._dispatchViewportNow();
+      });
     }
 
     destroy() {
       this._resizeObs?.disconnect();
       if (this._fitRaf) cancelAnimationFrame(this._fitRaf);
       if (this._renderRaf) cancelAnimationFrame(this._renderRaf);
+      if (this._vpRaf) cancelAnimationFrame(this._vpRaf);
       this._cancelMomentum();
       this._cancelAnim();
       if (this._keyDown) document.removeEventListener('keydown', this._keyDown);

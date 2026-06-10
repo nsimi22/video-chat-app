@@ -127,6 +127,8 @@
     { id: 'arrow',   icon: 'arrowTool',  label: 'Arrow' },
     { id: 'rect',    icon: 'square',     label: 'Rectangle' },
     { id: 'ellipse', icon: 'circle',     label: 'Ellipse' },
+    { id: 'diamond', icon: 'diamond',    label: 'Diamond' },
+    { id: 'table',   icon: 'table',      label: 'Table' },
     { id: 'text',    icon: 'text',       label: 'Text (coming soon)' },
     { id: 'eraser',  icon: 'eraser',     label: 'Eraser' },
   ];
@@ -139,8 +141,10 @@
     sticky: 'select', // sticky doesn't touch the ink layer
     pen: 'pen',
     arrow: 'arrow',
-    rect: 'rect',
-    ellipse: 'ellipse',
+    rect: 'select',     // shapes are objects (DOM notes), not ink
+    ellipse: 'select',
+    diamond: 'select',
+    table: 'select',
     text: 'select',
     eraser: 'eraser',
   };
@@ -244,6 +248,7 @@
       this.notes = new Map();   // id -> { data, el, textarea, handle, ... }
       this.frames = new Map();  // id -> { data, el, titleEl, ... }
       this.cursors = new Map(); // peerId -> { data, el }
+      this._boundObjIds = new Set(); // object ids that have ≥1 bound connector (reflow only these)
       this.editingNote = null;
       this.selectedNote = null;
       this.selectedFrame = null;
@@ -556,6 +561,7 @@
         for (const f of frameRows) this._renderFrame(f);
       } catch (err) { console.warn('[wbv] frames fetch failed', err); }
 
+      this._reflowAll(); // re-attach bound connectors now that notes+frames exist
       this._onViewportChange();
     }
 
@@ -576,6 +582,8 @@
         text: row.text || '',
         color_key: slug,
         color: row.color,
+        shape: row.shape || null,
+        meta: row.meta || null,
         author_id: row.author_id,
         votes: row.votes || 0,
         mine: voted,
@@ -656,6 +664,8 @@
       const persist = (data.color_key === TEXT_KIND)
         ? { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h, text: data.text || '', color_key: TEXT_KIND }
         : { id: data.id, x: data.x, y: data.y, w: data.w, h: data.h, text: data.text || '', color: (STICKY[data.color_key]?.bg) || data.color, color_key: data.color_key };
+      if (data.shape) persist.shape = data.shape;   // recreate shapes/tables as themselves, not blank stickies
+      if (data.meta != null) persist.meta = data.meta;
       this.huddle.createWhiteboardNote(this.whiteboardId, persist).catch((e) => console.warn('[wbv] undo recreate note failed', e));
     }
     _recreateFrameFromData(data) {
@@ -730,13 +740,15 @@
       return null;
     }
     // Point on a box border along the ray from its centre toward (tx,ty).
+    // Anchor a connector at the MIDPOINT of the box side facing (tx,ty) —
+    // so the arrow exits cleanly from a side (left/right/top/bottom), like
+    // FigJam, instead of a diagonal point or the centre.
     _anchorOnBox(box, tx, ty) {
       const dx = tx - box.cx, dy = ty - box.cy;
-      if (dx === 0 && dy === 0) return [box.cx, box.cy];
-      const sx = dx === 0 ? Infinity : (box.w / 2) / Math.abs(dx);
-      const sy = dy === 0 ? Infinity : (box.h / 2) / Math.abs(dy);
-      const s = Math.min(sx, sy);
-      return [box.cx + dx * s, box.cy + dy * s];
+      if (Math.abs(dx) * box.h >= Math.abs(dy) * box.w) {
+        return dx >= 0 ? [box.x + box.w, box.cy] : [box.x, box.cy]; // right / left
+      }
+      return dy >= 0 ? [box.cx, box.y + box.h] : [box.cx, box.y];   // bottom / top
     }
     _connectorEndpoints(stroke) {
       const fromBox = this._objBox(stroke.bind?.from);
@@ -759,14 +771,22 @@
         if (persist) this.huddle.persistWhiteboardStroke(this.whiteboardId, s).catch(() => {});
       }
     }
+    // Rebuild the set of object ids that have at least one bound connector.
+    // Cheap O(strokes) scan, run only when binds change — so the per-move /
+    // per-viewport hot path can skip _reflowFor (an O(strokes) scan itself)
+    // for the vast majority of objects that have no connectors.
+    _rebuildBindIndex() {
+      const set = new Set();
+      for (const s of (this.canvas?.strokes || [])) {
+        if (s.bind?.from?.id) set.add(s.bind.from.id);
+        if (s.bind?.to?.id) set.add(s.bind.to.id);
+      }
+      this._boundObjIds = set;
+    }
     _reflowAll() {
       if (!this.canvas?.strokes) return;
-      const ids = new Set();
-      for (const s of this.canvas.strokes) {
-        if (s.bind?.from?.id) ids.add(s.bind.from.id);
-        if (s.bind?.to?.id) ids.add(s.bind.to.id);
-      }
-      for (const id of ids) this._reflowFor(id, false);
+      this._rebuildBindIndex();
+      for (const id of this._boundObjIds) this._reflowFor(id, false);
     }
     // Auto-bind a freshly-drawn arrow/line whose ends land on objects.
     _autoBindStroke(stroke) {
@@ -783,6 +803,7 @@
       const eps = this._connectorEndpoints(stroke);
       stroke.points = eps;
       this.canvas.updateStrokePoints(stroke.uuid, eps);
+      this._rebuildBindIndex();
       return true;
     }
     // Drag from a note's edge handle to another object → bound connector
@@ -824,6 +845,7 @@
           return;
         }
         stroke.bind = { from: sourceRef, to: target };
+        this._rebuildBindIndex();
         const eps = this._connectorEndpoints(stroke);
         stroke.points = eps;
         this.canvas.updateStrokePoints(uuid, eps);
@@ -858,6 +880,7 @@
     }
     _recreateConnector(c) {
       this.canvas.addPersistedStroke(c);
+      if (c.bind) this._rebuildBindIndex();
       const eps = c.bind ? this._connectorEndpoints(c) : c.points;
       c.points = eps;
       this.canvas.updateStrokePoints(c.uuid, eps);
@@ -932,6 +955,7 @@
         const s = (this.canvas.strokes || []).find((x) => x.uuid === stroke.uuid);
         if (s) {
           s.bind = stroke.bind;
+          this._rebuildBindIndex();
           if (s.bind?.from?.id) this._reflowFor(s.bind.from.id, false);
           if (s.bind?.to?.id) this._reflowFor(s.bind.to.id, false);
         }
@@ -948,13 +972,16 @@
       // Capture-phase. Intervene for tools that stamp something at the
       // click point (sticky, text). Ignore clicks on existing widgets so
       // the user can still select / drag / use the toolbar / etc.
-      if (this.tool !== 'sticky' && this.tool !== 'text') return;
+      const STAMP = ['sticky', 'text', 'rect', 'ellipse', 'diamond', 'table'];
+      if (!STAMP.includes(this.tool)) return;
       if (e.target.closest('.wbv-note, .wbv-text, .wbv-frame, .wbv-palette, .wbv-cluster, .wbv-hint-pill, .wbv-header, .wbv-cursor, .wbv-note-toolbar')) return;
       e.stopPropagation();
       e.preventDefault();
       const w = this._clientToWorld(e.clientX, e.clientY);
       if (this.tool === 'sticky') this._addNoteAt(w.x - NOTE_W / 2, w.y - NOTE_H / 2);
-      else this._addTextAt(w.x - TEXT_W / 2, w.y - TEXT_H / 2);
+      else if (this.tool === 'text') this._addTextAt(w.x - TEXT_W / 2, w.y - TEXT_H / 2);
+      else if (this.tool === 'table') this._addTableAt(w.x - 150, w.y - 55);
+      else this._addShapeAt(w.x - 80, w.y - 50, this.tool); // rect | ellipse | diamond
     }
 
     _onBoardPointerMove() {
@@ -986,6 +1013,148 @@
       this.setTool('cursor');
     }
 
+    // Shape object (rect/ellipse/diamond) — a note with `shape`. Reuses the
+    // sticky note's drag/resize/select/colour/connectors/undo entirely.
+    async _addShapeAt(x, y, shape) {
+      const id = crypto.randomUUID();
+      const W = 160, H = 100, color = '#a3cbef';
+      const note = { id, x, y, w: W, h: H, text: '', color_key: CUSTOM_KIND, color, shape, author_id: this.huddle.peerId, votes: 0, mine: false };
+      // Don't auto-enter text edit — a new shape should be selected and
+      // resizable right away (double-click it to add a label).
+      this._renderNote(note, { focus: false });
+      this._selectNote(id);
+      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note }, this.viewId);
+      this._pushUndo(() => this._deleteNote(id));
+      try { await this.huddle.createWhiteboardNote(this.whiteboardId, { id, x, y, w: W, h: H, text: '', color, color_key: CUSTOM_KIND, shape }); }
+      catch (err) { console.warn('[wbv] shape create failed', err); }
+      this.setTool('cursor');
+    }
+
+    // Table object — a note with shape='table' and a cell grid in meta.
+    async _addTableAt(x, y) {
+      const id = crypto.randomUUID();
+      const meta = { rows: 3, cols: 3, cells: [['', '', ''], ['', '', ''], ['', '', '']] };
+      const W = 300, H = 110, color = '#11151b';
+      const note = { id, x, y, w: W, h: H, text: '', color_key: CUSTOM_KIND, color, shape: 'table', meta, author_id: this.huddle.peerId, votes: 0, mine: false };
+      this._renderNote(note, { focus: false });
+      this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note }, this.viewId);
+      this._pushUndo(() => this._deleteNote(id));
+      try { await this.huddle.createWhiteboardNote(this.whiteboardId, { id, x, y, w: W, h: H, text: '', color, color_key: CUSTOM_KIND, shape: 'table', meta }); }
+      catch (err) { console.warn('[wbv] table create failed', err); }
+      this.setTool('cursor');
+    }
+
+    _renderTableNote(note, { focus = false } = {}) {
+      const el = h('div', { class: 'wbv-note wbv-table', attrs: { 'data-note-id': note.id, tabindex: '0' } });
+      const head = h('div', { class: 'wbv-table-head' });
+      const del = h('button', { class: 'wbv-table-del', attrs: { title: 'Delete table', 'aria-label': 'Delete table' } });
+      del.appendChild(iconEl('x', 12));
+      del.addEventListener('click', (e) => { e.stopPropagation(); this._deleteNote(note.id); });
+      head.appendChild(del);
+      el.appendChild(head);
+      const grid = h('div', { class: 'wbv-table-grid' });
+      el.appendChild(grid);
+      this.worldLayer.appendChild(el);
+      const entry = { data: { ...note }, el, kind: 'table', _grid: grid };
+      this.notes.set(note.id, entry);
+      entry._renderCells = () => {
+        grid.innerHTML = '';
+        const m = entry.data.meta || { rows: 1, cols: 1, cells: [['']] };
+        grid.style.gridTemplateColumns = `repeat(${m.cols}, minmax(0, 1fr))`;
+        for (let r = 0; r < m.rows; r++) for (let c = 0; c < m.cols; c++) {
+          const cell = h('div', { class: 'wbv-table-cell', attrs: { contenteditable: 'true', spellcheck: 'false' } });
+          cell.textContent = (m.cells[r] && m.cells[r][c]) || '';
+          cell.addEventListener('pointerdown', (e) => e.stopPropagation()); // edit, not drag
+          cell.addEventListener('input', () => {
+            (entry.data.meta.cells[r] ||= [])[c] = cell.innerText;
+            this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: note.id, meta: entry.data.meta } }, this.viewId);
+            clearTimeout(this._noteSaveTimers.get(note.id));
+            const t = setTimeout(() => this.huddle.updateWhiteboardNote(note.id, { meta: entry.data.meta }).catch(() => {}), 500);
+            this._noteSaveTimers.set(note.id, t);
+          });
+          grid.appendChild(cell);
+        }
+      };
+      entry._renderCells();
+      this._positionNote(entry);
+      this._reflowFor(note.id, false);
+      // Add-row / add-column controls + persist.
+      // Persist meta + size together (adding a row/col grows the table).
+      const persistTable = () => {
+        this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: note.id, meta: entry.data.meta, w: entry.data.w, h: entry.data.h } }, this.viewId);
+        this.huddle.updateWhiteboardNote(note.id, { meta: entry.data.meta, w: entry.data.w, h: entry.data.h }).catch(() => {});
+      };
+      // FigJam-style edge buttons: '+' on the right edge adds a column,
+      // '+' on the bottom edge adds a row (shown on hover/select).
+      const addCol = h('button', { class: 'wbv-table-edge wbv-table-edge-col', text: '+', attrs: { title: 'Add column', 'aria-label': 'Add column' } });
+      addCol.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const m = entry.data.meta;
+        entry.data.w += entry.data.w / m.cols; // grow by one column's width
+        m.cells.forEach((r) => r.push('')); m.cols += 1;
+        entry._renderCells(); this._positionNote(entry); persistTable();
+      });
+      const addRow = h('button', { class: 'wbv-table-edge wbv-table-edge-row', text: '+', attrs: { title: 'Add row', 'aria-label': 'Add row' } });
+      addRow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const m = entry.data.meta;
+        entry.data.h += (entry.data.h - 18) / m.rows; // grow by one row's height
+        m.cells.push(new Array(m.cols).fill('')); m.rows = m.cells.length;
+        entry._renderCells(); this._positionNote(entry); persistTable();
+      });
+      el.appendChild(addCol); el.appendChild(addRow);
+      // SE handle to scale the whole table.
+      const rh = h('span', { class: 'wbv-resize-handle is-se wbv-resize-corner', attrs: { 'aria-hidden': 'true' } });
+      el.appendChild(rh);
+      rh.addEventListener('pointerdown', (e) => {
+        e.stopPropagation(); e.preventDefault();
+        const vp = this.canvas?.getViewport() || { scale: 1 };
+        const start = { cx: e.clientX, cy: e.clientY, w: entry.data.w, h: entry.data.h, scale: vp.scale };
+        rh.setPointerCapture?.(e.pointerId);
+        const onMove = (ev) => {
+          entry.data.w = Math.max(120, start.w + (ev.clientX - start.cx) / start.scale);
+          entry.data.h = Math.max(60, start.h + (ev.clientY - start.cy) / start.scale);
+          this._positionNote(entry);
+        };
+        const onUp = () => {
+          rh.removeEventListener('pointermove', onMove); rh.removeEventListener('pointerup', onUp); rh.removeEventListener('pointercancel', onUp);
+          this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: note.id, w: entry.data.w, h: entry.data.h } }, this.viewId);
+          this.huddle.updateWhiteboardNote(note.id, { w: entry.data.w, h: entry.data.h }).catch(() => {});
+        };
+        rh.addEventListener('pointermove', onMove); rh.addEventListener('pointerup', onUp); rh.addEventListener('pointercancel', onUp);
+      });
+      // Drag the whole table via its header (snap + reflow + undo).
+      head.addEventListener('pointerdown', (e) => {
+        if (e.target.closest('.wbv-table-del')) return;
+        e.stopPropagation(); e.preventDefault();
+        this._selectNote(note.id);
+        const vp = this.canvas?.getViewport() || { scale: 1 };
+        const start = { clientX: e.clientX, clientY: e.clientY, origX: entry.data.x, origY: entry.data.y, scale: vp.scale };
+        head.setPointerCapture?.(e.pointerId);
+        let moved = false;
+        const onMove = (ev) => {
+          const dx = (ev.clientX - start.clientX) / start.scale, dy = (ev.clientY - start.clientY) / start.scale;
+          if (Math.abs(dx) + Math.abs(dy) > 1) moved = true;
+          entry.data.x = start.origX + dx; entry.data.y = start.origY + dy;
+          const snap = this._applySnap(note.id, entry.data.x, entry.data.y, entry.data.w, entry.data.h);
+          entry.data.x = snap.x; entry.data.y = snap.y;
+          this._showSnapGuides(snap.guideX, snap.guideY);
+          this._positionNote(entry);
+        };
+        const onUp = () => {
+          head.removeEventListener('pointermove', onMove); head.removeEventListener('pointerup', onUp); head.removeEventListener('pointercancel', onUp);
+          this._clearSnapGuides();
+          if (moved) {
+            const px = start.origX, py = start.origY;
+            this._pushUndo(() => this._applyNoteGeom(note.id, { x: px, y: py }));
+            this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: note.id, x: entry.data.x, y: entry.data.y } }, this.viewId);
+            this.huddle.updateWhiteboardNote(note.id, { x: entry.data.x, y: entry.data.y }).catch(() => {});
+          }
+        };
+        head.addEventListener('pointermove', onMove); head.addEventListener('pointerup', onUp); head.addEventListener('pointercancel', onUp);
+      });
+    }
+
     async _addTextAt(x, y) {
       const id = crypto.randomUUID();
       const note = {
@@ -1013,9 +1182,13 @@
       // corner, no vote pill. Route them to a separate path so the
       // sticky path stays simple.
       if (note.color_key === TEXT_KIND) return this._renderTextBlock(note, { focus });
+      if (note.shape === 'table') return this._renderTableNote(note, { focus });
       const palette = notePalette(note.color_key, note.color);
       const rot = rotFromId(note.id);
       const el = h('div', { class: 'wbv-note', attrs: { 'data-note-id': note.id, tabindex: '0' } });
+      // Shape objects (rect/ellipse/diamond) reuse the sticky note entirely
+      // — a CSS skin makes the card an outline+centered-text shape.
+      if (note.shape) el.classList.add('wbv-shape', 'wbv-shape-' + note.shape);
       el.style.setProperty('--wbv-note-bg', palette.bg);
       el.style.setProperty('--wbv-note-tx', palette.tx);
       el.style.setProperty('--wbv-note-fold', palette.fold);
@@ -1115,6 +1288,30 @@
     _applyNotePatch(patch) {
       const entry = this.notes.get(patch.id);
       if (!entry) return;
+      if (entry.kind === 'table') {
+        Object.assign(entry.data, patch);
+        if (patch.meta && entry._renderCells) {
+          // If the local user is editing a cell, rebuilding the grid would
+          // destroy their caret/focus on every remote keystroke. When the
+          // grid shape is unchanged, patch other cells' text in place and
+          // leave the focused cell alone; otherwise do a full rebuild.
+          const m = entry.data.meta || { rows: 0, cols: 0, cells: [] };
+          const grid = entry._grid;
+          const editingInside = grid && grid.contains(document.activeElement);
+          if (editingInside && grid.children.length === m.rows * m.cols) {
+            let i = 0;
+            for (let r = 0; r < m.rows; r++) for (let c = 0; c < m.cols; c++) {
+              const cell = grid.children[i++];
+              const v = (m.cells[r] && m.cells[r][c]) || '';
+              if (cell !== document.activeElement && cell.innerText !== v) cell.textContent = v;
+            }
+          } else {
+            entry._renderCells();
+          }
+        }
+        if (patch.x != null || patch.y != null || patch.w != null || patch.h != null) this._positionNote(entry);
+        return;
+      }
       Object.assign(entry.data, patch);
       if (patch.text != null && entry.textEl && document.activeElement !== entry.textEl) {
         this._renderNoteTextDisplay(entry);
@@ -1181,17 +1378,29 @@
         // to min-height so the card matches the design's seed size when
         // empty but auto-expands as the user types.
         el.style.width = (data.w * vp.scale) + 'px';
-        el.style.height = '';
-        el.style.minHeight = (data.h * vp.scale) + 'px';
-        // Cap the inner-text scale so a deeply zoomed-out note still
-        // reads, but a zoomed-in note feels bigger.
-        el.style.setProperty('--wbv-note-zoom', vp.scale.toFixed(2));
-        // Text auto-resizes with the note: a bigger sticky gets bigger text
-        // (FigJam-like), scaled off its width vs the default and the zoom.
-        const fontPx = Math.max(11, Math.min(30, 13 * (data.w / NOTE_W))) * vp.scale;
-        el.style.setProperty('--wbv-note-font', fontPx.toFixed(1) + 'px');
+        if (data.shape) {
+          // Shapes + tables are fixed-size resizable boxes — explicit height
+          // so dragging a corner actually grows them vertically (the card /
+          // grid fills it). Sticky notes keep min-height (grow with content).
+          el.style.height = (data.h * vp.scale) + 'px';
+          el.style.minHeight = '';
+        } else {
+          el.style.height = '';
+          el.style.minHeight = '';
+          // Drive the CARD's min-height with a real px value (a % min-height
+          // against an auto-height wrapper doesn't resolve, which is why
+          // sticky resize only grew width). Still auto-grows past it on type.
+          el.style.setProperty('--wbv-note-h', (data.h * vp.scale) + 'px');
+          // Cap the inner-text scale so a deeply zoomed-out note still
+          // reads, but a zoomed-in note feels bigger.
+          el.style.setProperty('--wbv-note-zoom', vp.scale.toFixed(2));
+          // Text auto-resizes with the note: a bigger sticky gets bigger text
+          // (FigJam-like), scaled off its width vs the default and the zoom.
+          const fontPx = Math.max(11, Math.min(30, 13 * (data.w / NOTE_W))) * vp.scale;
+          el.style.setProperty('--wbv-note-font', fontPx.toFixed(1) + 'px');
+        }
       }
-      this._reflowFor(entry.data.id, false); // keep bound connectors attached
+      if (this._boundObjIds.has(entry.data.id)) this._reflowFor(entry.data.id, false); // keep bound connectors attached
     }
 
     _refreshVoteStyle(entry) {
@@ -1589,9 +1798,11 @@
       this.editingNote = null;
       entry.el.classList.remove('is-editing');
       entry.textEl.setAttribute('contenteditable', 'false');
-      // Empty notes get auto-deleted to match Miro/FigJam behavior.
+      // Empty notes get auto-deleted to match Miro/FigJam behavior — but
+      // shapes (rect/ellipse/diamond) are legitimately label-less, so an
+      // empty shape must survive being edited and blurred.
       const text = entry.textEl.innerText.trim();
-      if (!text) this._deleteNote(id);
+      if (!text && !entry.data.shape) this._deleteNote(id);
       else {
         entry.data.text = text;
         this._renderNoteTextDisplay(entry); // re-linkify now that we're idle
@@ -1667,8 +1878,11 @@
         cw.appendChild(h('span', { class: 'wbv-color-pop-custom-rainbow' }));
         cw.appendChild(h('span', { text: 'Custom' }));
         cw.addEventListener('click', (e) => { e.stopPropagation(); ci.click(); });
-        ci.addEventListener('input', (e) => { e.stopPropagation(); opts.onCustom(e.target.value); });
-        ci.addEventListener('change', () => this._closeColorPopover());
+        // Commit once on `change` (final value) — not on every `input`
+        // drag-step, which otherwise floods the undo stack and fires a
+        // broadcast + DB write per intermediate colour.
+        ci.addEventListener('input', (e) => e.stopPropagation());
+        ci.addEventListener('change', (e) => { e.stopPropagation(); opts.onCustom(e.target.value); this._closeColorPopover(); });
         pop.appendChild(cw);
       }
       document.body.appendChild(pop);
@@ -1758,7 +1972,7 @@
     _onRemoteVote(payload) {
       if (payload.from === this.viewId) return;
       const entry = this.notes.get(payload.id);
-      if (!entry) return;
+      if (!entry || !entry.voteCountEl) return; // tables/text blocks have no vote pill
       entry.data.votes = payload.votes ?? entry.data.votes;
       entry.voteCountEl.textContent = String(entry.data.votes);
       // `mine` from a peer doesn't apply to me — leave my own flag alone.
@@ -1854,7 +2068,7 @@
       el.style.top = ((data.y - vp.y) * vp.scale) + 'px';
       el.style.width = (data.w * vp.scale) + 'px';
       el.style.height = (data.h * vp.scale) + 'px';
-      this._reflowFor(entry.data.id, false); // keep bound connectors attached
+      if (this._boundObjIds.has(entry.data.id)) this._reflowFor(entry.data.id, false); // keep bound connectors attached
     }
 
     _wireFrameHandlers(entry) {
