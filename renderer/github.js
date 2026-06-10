@@ -151,10 +151,13 @@
       const slice = lines.slice(start - 1, end).join('\n');
       // truncated = "we omitted content the caller might have wanted".
       // A user-supplied range is intentional, so leading/trailing skip
-      // there isn't truncation. Only flag when the cap actually hit OR
-      // when the file extends past the end we returned without an
-      // explicit lineEnd request.
-      const truncated = end < lines.length && lineEnd == null;
+      // there isn't truncation. Flag when the maxLines cap actually
+      // clipped the range — either there was no explicit lineEnd (we
+      // stopped short of the file) OR an explicit lineEnd was requested
+      // past the line we could return. Without the second case an
+      // oversized explicit range got silently clipped while reporting
+      // truncated:false, so the model believed it had the full range.
+      const truncated = end < lines.length && (lineEnd == null || lineEnd > end);
       return {
         path: json.path,
         sha: json.sha,

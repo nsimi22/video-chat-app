@@ -75,8 +75,26 @@ const OPENROUTER_DEFAULT_MODEL = 'anthropic/claude-opus-4-7';
 
 // Same prompt the renderer used for postMeetingRecap, so recaps read the same
 // whether posted by the (now removed) client path or here.
+//
+// The machine-readable ACTION_ITEMS instruction is appended so the recap emits
+// the same fenced ```action-items block the client recap / /summarize paths do
+// (renderer/action-items.js → window.ACTION_ITEMS_PROMPT). The renderer parses
+// that block out of any ai_generated message and renders one-click "Create
+// ticket" rows; without it, recorded-call recaps silently lost the action-items
+// widget that non-recorded recaps still get. Kept as a literal here (this Deno
+// function can't reach the renderer global) — mirror action-items.js if its
+// format changes.
+const ACTION_ITEMS_INSTRUCTION =
+  'After the recap, IF AND ONLY IF there are action items, append a fenced code block tagged `action-items` containing one JSON object per line, e.g.:\n' +
+  '```action-items\n' +
+  '{"text": "Write the migration for the new column", "owner": "Dana"}\n' +
+  '{"text": "Follow up with the vendor about pricing"}\n' +
+  '```\n' +
+  'Rules: "text" is the action phrased as an imperative task title (concise, no owner prefix). "owner" is the person responsible if you can infer one, otherwise omit it. Do not wrap the block in extra prose, and omit the block entirely when there are no action items.';
+
 const RECAP_SYSTEM =
-  "You are summarising a recorded team call. Produce a concise meeting recap (under 200 words) in markdown: 2-3 bullets of key points, then a 'Decisions' section if any were made, then 'Action items' (with owners if you can infer them). The transcript is rough speech-to-text — fix obvious recognition errors silently and don't quote raw lines.";
+  "You are summarising a recorded team call. Produce a concise meeting recap (under 200 words) in markdown: 2-3 bullets of key points, then a 'Decisions' section if any were made, then 'Action items' (with owners if you can infer them). The transcript is rough speech-to-text — fix obvious recognition errors silently and don't quote raw lines."
+  + '\n\n' + ACTION_ITEMS_INSTRUCTION;
 
 // Resolve EgressInfo.status to its canonical enum NAME. The SDK deserialises
 // the protobuf, so `status` arrives as the numeric EgressStatus value (e.g.

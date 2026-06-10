@@ -90,15 +90,18 @@
   // chat order. Capped at the last 20 messages so a huge channel
   // backscroll doesn't churn through hundreds of nodes on every chip
   // re-render.
-  const JIRA_KEY_RE = /\b([A-Z][A-Z0-9_]{1,9})-(\d{1,6})\b/;
   function findRecentJiraKey() {
     const bodies = document.querySelectorAll('#messages .msg .msg-body');
     if (!bodies.length) return null;
     const start = Math.max(0, bodies.length - 20);
     for (let i = bodies.length - 1; i >= start; i--) {
       const txt = bodies[i]?.textContent || '';
-      const m = JIRA_KEY_RE.exec(txt);
-      if (m) return m[0];
+      // Reuse jira.js's extractor so we honor the same KEY_BLOCKLIST it
+      // uses for unfurls — otherwise tokens that match the key shape but
+      // aren't tickets (GPT-4, UTF-8, SHA-256, HTTP-2, …) get surfaced as
+      // bogus "What's the latest on GPT-4?" Jira suggestions.
+      const keys = window.jiraExtractKeys ? window.jiraExtractKeys(txt) : null;
+      if (keys && keys.length) return keys[0].key;
     }
     return null;
   }
@@ -273,9 +276,19 @@
     sendBtn.disabled = true;
 
     try {
+      // Wire any configured integrations as read tools so the panel can
+      // actually fetch the Jira tickets its suggestion chips reference —
+      // matching the chat `/ai` path (chat.js). Without this the panel
+      // claimed to "read your Jira" but answered from memory / refused.
+      const jira = window.huddleApp?.getJira?.();
+      const tools = window.HuddleAiTools ? window.HuddleAiTools.buildJiraTools(jira) : [];
+      const system = tools.length
+        ? 'You are Huddle AI, a concise, helpful assistant inside a team chat. You have read access to the user\'s connected Jira via tools — when the user names a ticket key (e.g. "DAP-135") or asks something you could answer by reading Jira, CALL the tools to fetch the real data first, then answer. Never claim you cannot access Jira. Respond clearly. Use markdown for emphasis (**bold**, `code`).'
+        : 'You are Huddle AI, a concise, helpful assistant inside a team chat. Respond clearly. Use markdown for emphasis (**bold**, `code`).';
       const res = await ai.chat({
-        system: 'You are Huddle AI, a concise, helpful assistant inside a team chat. Respond clearly. Use markdown for emphasis (**bold**, `code`).',
+        system,
         messages: conversation.slice(),
+        tools: tools.length ? tools : undefined,
       });
       const text = res?.text || '(no response)';
       conversation.push({ role: 'assistant', content: text });
