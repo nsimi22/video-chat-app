@@ -247,6 +247,7 @@
       this.editingNote = null;
       this.selectedNote = null;
       this.selectedFrame = null;
+      this._multi = [];         // [{type:'note'|'frame', id}] for multi-select
       this._undoStack = [];     // inverse-action closures for Cmd/Ctrl+Z
       this._undoing = false;    // true while an undo runs (suppresses re-push)
       this._paintedStrokeUuids = new Set();
@@ -1033,6 +1034,8 @@
       el.addEventListener('click', (e) => {
         if (this.editingNote === data.id) return; // editing text — ignore
         e.stopPropagation();
+        if (e.shiftKey) { this._multiToggle('note', data.id); return; } // add/remove from selection
+        this._multiClear();
         this._selectNote(data.id);
       });
       // Open auto-linked URLs in the system browser; don't let the click
@@ -1066,12 +1069,24 @@
           origX: data.x, origY: data.y,
           scale: vp.scale,
         };
-        this._noteDrag = { id: data.id, start, moved: false };
+        // If this note is in a multi-selection, drag the whole group.
+        const group = (this._multiHas(data.id) && this._multi.length > 1)
+          ? this._multi.map((m) => { const en = this._multiEntry(m); return en ? { entry: en, type: m.type, ox: en.data.x, oy: en.data.y } : null; }).filter(Boolean)
+          : null;
+        this._noteDrag = { id: data.id, start, moved: false, group };
         el.setPointerCapture?.(e.pointerId);
         const onMove = (ev) => {
           const dx = (ev.clientX - start.clientX) / start.scale;
           const dy = (ev.clientY - start.clientY) / start.scale;
           if (Math.abs(dx) + Math.abs(dy) > 1) this._noteDrag.moved = true;
+          if (group) {
+            for (const g of group) {
+              g.entry.data.x = g.ox + dx; g.entry.data.y = g.oy + dy;
+              if (g.type === 'frame') this._positionFrame(g.entry); else this._positionNote(g.entry);
+            }
+            this._scheduleMinimapRender();
+            return;
+          }
           data.x = start.origX + dx;
           data.y = start.origY + dy;
           const snap = this._applySnap(data.id, data.x, data.y, data.w, data.h);
@@ -1085,6 +1100,21 @@
           el.removeEventListener('pointerup', onUp);
           el.removeEventListener('pointercancel', onUp);
           this._clearSnapGuides();
+          if (group && this._noteDrag?.moved) {
+            this._pushUndo(() => { for (const g of group) { const p = { x: g.ox, y: g.oy }; if (g.type === 'frame') this._applyFrameGeom(g.entry.data.id, p); else this._applyNoteGeom(g.entry.data.id, p); } });
+            for (const g of group) {
+              const gid = g.entry.data.id, gx = g.entry.data.x, gy = g.entry.data.y;
+              if (g.type === 'frame') {
+                this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id: gid, x: gx, y: gy } }, this.viewId);
+                this.huddle.updateWhiteboardFrame(gid, { x: gx, y: gy }).catch(() => {});
+              } else {
+                this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: gid, x: gx, y: gy } }, this.viewId);
+                this.huddle.updateWhiteboardNote(gid, { x: gx, y: gy }).catch(() => {});
+              }
+            }
+            this._noteDrag = null;
+            return;
+          }
           if (this._noteDrag?.moved) {
             const px = start.origX, py = start.origY;
             this._pushUndo(() => this._applyNoteGeom(data.id, { x: px, y: py }));
@@ -1185,6 +1215,7 @@
     }
 
     _selectNote(id) {
+      if (id) this._multiClear();
       if (id && this.selectedFrame) this._selectFrame(null);
       if (this.selectedNote === id) return;
       const prev = this.selectedNote && this.notes.get(this.selectedNote);
@@ -1197,6 +1228,7 @@
     // Frame selection — mutually exclusive with note selection. Drives the
     // .is-selected ring + solid resize handles in CSS.
     _selectFrame(id) {
+      if (id) this._multiClear();
       if (this.selectedFrame === id) return;
       const prev = this.selectedFrame && this.frames.get(this.selectedFrame);
       if (prev) prev.el.classList.remove('is-selected');
@@ -1204,6 +1236,34 @@
       const next = id && this.frames.get(id);
       if (next) next.el.classList.add('is-selected');
       if (id) this._selectNote(null);
+    }
+
+    // ── Multi-select (shift-click): a flat list of {type, id}. Shares the
+    // .is-selected highlight; group move + group delete operate on it. ──
+    _multiEntry(m) { return m.type === 'note' ? this.notes.get(m.id) : this.frames.get(m.id); }
+    _multiHas(id) { return this._multi.some((m) => m.id === id); }
+    _multiClear() {
+      for (const m of this._multi) { const e = this._multiEntry(m); if (e) e.el.classList.remove('is-selected'); }
+      this._multi = [];
+    }
+    _multiToggle(type, id) {
+      // Fold any existing single selection into the multi set first.
+      if (this.selectedNote) { this._multiAdd('note', this.selectedNote); this.selectedNote = null; }
+      if (this.selectedFrame) { this._multiAdd('frame', this.selectedFrame); this.selectedFrame = null; }
+      const i = this._multi.findIndex((m) => m.id === id);
+      if (i >= 0) {
+        this._multi.splice(i, 1);
+        const e = type === 'note' ? this.notes.get(id) : this.frames.get(id);
+        if (e) e.el.classList.remove('is-selected');
+      } else {
+        this._multiAdd(type, id);
+      }
+    }
+    _multiAdd(type, id) {
+      if (this._multi.some((m) => m.id === id)) return;
+      this._multi.push({ type, id });
+      const e = type === 'note' ? this.notes.get(id) : this.frames.get(id);
+      if (e) e.el.classList.add('is-selected');
     }
 
     // Render a note's text either as plain text (while editing, so the
@@ -1543,15 +1603,31 @@
         // Clicking the title is for renaming, never dragging.
         if (e.target === titleEl) return;
         if (e.target.closest('.wbv-frame-del')) return;
+        if (e.shiftKey) { e.stopPropagation(); e.preventDefault(); this._multiToggle('frame', data.id); return; }
         this._selectFrame(data.id);
         e.stopPropagation();
         e.preventDefault();
         const vp = this.canvas?.getViewport() || { scale: 1 };
         const start = { clientX: e.clientX, clientY: e.clientY, origX: data.x, origY: data.y, scale: vp.scale };
+        const group = (this._multiHas(data.id) && this._multi.length > 1)
+          ? this._multi.map((m) => { const en = this._multiEntry(m); return en ? { entry: en, type: m.type, ox: en.data.x, oy: en.data.y } : null; }).filter(Boolean)
+          : null;
+        let moved = false;
         chipEl.setPointerCapture?.(e.pointerId);
         const onMove = (ev) => {
-          data.x = start.origX + (ev.clientX - start.clientX) / start.scale;
-          data.y = start.origY + (ev.clientY - start.clientY) / start.scale;
+          const dx = (ev.clientX - start.clientX) / start.scale;
+          const dy = (ev.clientY - start.clientY) / start.scale;
+          if (Math.abs(dx) + Math.abs(dy) > 1) moved = true;
+          if (group) {
+            for (const g of group) {
+              g.entry.data.x = g.ox + dx; g.entry.data.y = g.oy + dy;
+              if (g.type === 'frame') this._positionFrame(g.entry); else this._positionNote(g.entry);
+            }
+            this._scheduleMinimapRender();
+            return;
+          }
+          data.x = start.origX + dx;
+          data.y = start.origY + dy;
           const snap = this._applySnap(data.id, data.x, data.y, data.w, data.h);
           data.x = snap.x; data.y = snap.y;
           this._showSnapGuides(snap.guideX, snap.guideY);
@@ -1563,6 +1639,20 @@
           chipEl.removeEventListener('pointerup', onUp);
           chipEl.removeEventListener('pointercancel', onUp);
           this._clearSnapGuides();
+          if (group && moved) {
+            this._pushUndo(() => { for (const g of group) { const p = { x: g.ox, y: g.oy }; if (g.type === 'frame') this._applyFrameGeom(g.entry.data.id, p); else this._applyNoteGeom(g.entry.data.id, p); } });
+            for (const g of group) {
+              const gid = g.entry.data.id, gx = g.entry.data.x, gy = g.entry.data.y;
+              if (g.type === 'frame') {
+                this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'update', frame: { id: gid, x: gx, y: gy } }, this.viewId);
+                this.huddle.updateWhiteboardFrame(gid, { x: gx, y: gy }).catch(() => {});
+              } else {
+                this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: gid, x: gx, y: gy } }, this.viewId);
+                this.huddle.updateWhiteboardNote(gid, { x: gx, y: gy }).catch(() => {});
+              }
+            }
+            return;
+          }
           if (start.origX !== data.x || start.origY !== data.y) {
             const px = start.origX, py = start.origY;
             this._pushUndo(() => this._applyFrameGeom(data.id, { x: px, y: py }));
@@ -1905,12 +1995,17 @@
         this.undo();
       }
       else if (k === 'delete' || k === 'backspace') {
-        if (this.selectedNote && !this.editingNote) { e.preventDefault(); this._deleteNote(this.selectedNote); }
+        if (this._multi.length && !this.editingNote && !document.activeElement?.isContentEditable) {
+          e.preventDefault();
+          for (const m of [...this._multi]) { if (m.type === 'note') this._deleteNote(m.id); else this._deleteFrame(m.id); }
+          this._multi = [];
+        }
+        else if (this.selectedNote && !this.editingNote) { e.preventDefault(); this._deleteNote(this.selectedNote); }
         else if (this.selectedFrame && !document.activeElement?.isContentEditable) { e.preventDefault(); this._deleteFrame(this.selectedFrame); }
       }
       else if (k === 'escape') {
         if (this.editingNote) this._endEditNote(this.editingNote);
-        else { this._selectNote(null); this._selectFrame(null); }
+        else { this._selectNote(null); this._selectFrame(null); this._multiClear(); }
       }
     }
     _onKeyDown() { /* board-level — currently inert; doc handler covers everything */ }
