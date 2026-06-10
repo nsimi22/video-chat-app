@@ -2064,8 +2064,9 @@ class ChatView {
     };
     if (!f) section('Recently used', this._getRecentEmoji());
     for (const group of window.EMOJI_GROUPS) {
-      const items = group.list.filter(([code]) => !f || code.toLowerCase().includes(f) || group.name.toLowerCase().includes(f));
-      section(group.name, items.map(([, char]) => char));
+      const items = group.list.filter((e) =>
+        !f || e[0].toLowerCase().includes(f) || (e[2] || '').toLowerCase().includes(f) || group.name.toLowerCase().includes(f));
+      section(group.name, items.map((e) => e[1]));
     }
     if (!scroll.children.length) {
       const empty = document.createElement('div');
