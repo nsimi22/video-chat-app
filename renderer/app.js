@@ -93,7 +93,14 @@ const els = {
   btnDenoise: $('#btn-denoise'),
   btnShare: $('#btn-share'),
   btnLeave: $('#btn-leave'),
+  btnMinimizeCall: $('#btn-minimize-call'),
   btnPopoutCall: $('#btn-popout-call'),
+  miniCallBar: $('#mini-call-bar'),
+  miniCallGrip: $('#mini-call-grip'),
+  miniCallTitle: $('#mini-call-title'),
+  miniBtnMic: $('#mini-btn-mic'),
+  miniBtnLeave: $('#mini-btn-leave'),
+  miniBtnExpand: $('#mini-btn-expand'),
   btnLayout: $('#btn-layout'),
   btnFullscreen: $('#btn-fullscreen'),
   btnHand: $('#btn-hand'),
@@ -367,6 +374,9 @@ const state = {
   // rejoin in the main window and become a duplicate participant.
   // Cleared when the corresponding popout-closed event arrives.
   poppedOutCalls: new Set(),
+  // True while the active call is collapsed into the draggable mini
+  // panel (body.huddle-call-minimized). Reset on leaveCall.
+  callMinimized: false,
   // Share ids whose screen-share tile is currently popped out into its
   // own BrowserWindow (subscribe-only LK identity). Used to render the
   // source tile's Pop out button as "active" while the popout exists,
@@ -2130,6 +2140,9 @@ async function leaveCall() {
   state.mesh.disconnect();
   state.mesh = null;
   state.inCallChannelId = null;
+  // Restore the stage if we left while minimized, so the next call
+  // opens full-size and the body class doesn't linger.
+  if (state.callMinimized) setCallMinimized(false);
   // Drop the call-wide captions listener — receivers shouldn't keep
   // rendering lines after the call ends. stopCaptions() (if CC was on)
   // already nulled state.cc.manager.
@@ -2931,6 +2944,125 @@ async function signOutFully() {
   showStep('email');
 }
 
+// ── Minimized-call mini panel ──────────────────────────────────────
+// Collapse the in-stage tile grid into a small floating panel the user
+// can drag anywhere, freeing the whole stage for chat while staying in
+// the call. Pure presentation: media + the LiveKit room are untouched,
+// only #tiles' layout changes via body.huddle-call-minimized.
+
+const MINI_CALL_POS_KEY = 'huddle.miniCallPos';
+const MINI_CALL_MARGIN = 12; // keep this far from any viewport edge
+// Mini-panel footprint — must match the width/height in styles.css
+// (body.huddle-call-minimized #tiles). Used as constants so the
+// pointermove clamp doesn't force a synchronous reflow each frame.
+const MINI_CALL_W = 260;
+const MINI_CALL_H = 184;
+
+// Clamp the panel's top-left so it stays fully on-screen.
+function clampMiniCallPos(x, y) {
+  const w = MINI_CALL_W;
+  const h = MINI_CALL_H;
+  const maxX = Math.max(MINI_CALL_MARGIN, window.innerWidth - w - MINI_CALL_MARGIN);
+  const maxY = Math.max(MINI_CALL_MARGIN, window.innerHeight - h - MINI_CALL_MARGIN);
+  return {
+    x: Math.min(Math.max(x, MINI_CALL_MARGIN), maxX),
+    y: Math.min(Math.max(y, MINI_CALL_MARGIN), maxY),
+  };
+}
+
+// Apply a clamped position to #tiles (only meaningful while minimized,
+// where #tiles is position:fixed). Persists so it reopens in place.
+function applyMiniCallPos(x, y, persist = true) {
+  const pos = clampMiniCallPos(x, y);
+  els.tiles.style.left = pos.x + 'px';
+  els.tiles.style.top = pos.y + 'px';
+  if (persist) {
+    try { localStorage.setItem(MINI_CALL_POS_KEY, JSON.stringify(pos)); } catch {}
+  }
+  return pos;
+}
+
+// Restore the saved corner, or default to bottom-right.
+function initialMiniCallPos() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(MINI_CALL_POS_KEY) || 'null');
+    if (saved && typeof saved.x === 'number' && typeof saved.y === 'number') return saved;
+  } catch {}
+  return { x: window.innerWidth, y: window.innerHeight }; // clamp pulls it to bottom-right
+}
+
+function toggleMinimizeCall() {
+  setCallMinimized(!state.callMinimized);
+}
+
+function setCallMinimized(on) {
+  if (!state.mesh && on) return; // nothing to minimize
+  state.callMinimized = on;
+  document.body.classList.toggle('huddle-call-minimized', on);
+  els.miniCallBar?.setAttribute('aria-hidden', on ? 'false' : 'true');
+  if (on) {
+    // Label the panel with the call's channel name.
+    const ch = state.channelMeta.get(state.inCallChannelId);
+    if (els.miniCallTitle) els.miniCallTitle.textContent = ch?.name || 'Call';
+    // Reflect the current mute state on the mini mic button.
+    els.miniBtnMic?.classList.toggle('muted', els.btnMic.classList.contains('muted'));
+    const p = initialMiniCallPos();
+    applyMiniCallPos(p.x, p.y, false);
+  } else {
+    // Drop inline fixed coords so the grid reflows back into the stage.
+    els.tiles.style.left = '';
+    els.tiles.style.top = '';
+  }
+  // Keep the header's Minimize/Expand affordance in sync.
+  renderCallHeader();
+}
+
+// Pointer-drag the panel by its grip. A threshold isn't needed since the
+// grip is a dedicated handle (buttons live in a separate cluster), so any
+// grip drag is intentional.
+function wireMiniCallDrag() {
+  const grip = els.miniCallGrip;
+  // wireControls() can run again on team switch / re-auth; guard so the
+  // grip + window listeners are only registered once (matches the
+  // dataset.dragWired pattern used by setupDraggableDrawToolbar).
+  if (!grip || grip.dataset.dragWired) return;
+  grip.dataset.dragWired = '1';
+  let dragging = false;
+  let startX = 0, startY = 0, baseX = 0, baseY = 0;
+  const onMove = (e) => {
+    if (!dragging) return;
+    applyMiniCallPos(baseX + (e.clientX - startX), baseY + (e.clientY - startY), false);
+  };
+  const onUp = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    grip.classList.remove('dragging');
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    // Persist final resting place.
+    applyMiniCallPos(baseX + (e.clientX - startX), baseY + (e.clientY - startY), true);
+  };
+  grip.addEventListener('pointerdown', (e) => {
+    if (!state.callMinimized) return;
+    dragging = true;
+    grip.classList.add('dragging');
+    startX = e.clientX; startY = e.clientY;
+    const r = els.tiles.getBoundingClientRect();
+    baseX = r.left; baseY = r.top;
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    e.preventDefault();
+  });
+  // Re-clamp into view if the window shrinks under a parked panel.
+  // Don't persist here — resize fires rapidly, and initialMiniCallPos
+  // already clamps a saved position back on-screen at open time.
+  window.addEventListener('resize', () => {
+    if (!state.callMinimized) return;
+    const r = els.tiles.getBoundingClientRect();
+    applyMiniCallPos(r.left, r.top, false);
+  });
+}
+
 // Re-render the call-controls header for the active channel + mesh
 // state. Three modes:
 //   not in call, no one's in call here  -> Start call
@@ -2992,6 +3124,7 @@ function renderCallHeader() {
   els.btnCc?.classList.toggle('hidden', !inCallHere || !ccSupported);
   els.btnNotes?.classList.toggle('hidden', !inCallHere);
   els.btnBoard?.classList.toggle('hidden', !inCallHere);
+  els.btnMinimizeCall?.classList.toggle('hidden', !inCallHere);
   els.btnPopoutCall.classList.toggle('hidden', !inCallHere);
   els.btnFullscreen?.classList.toggle('hidden', !inCallHere);
   // Layout switcher visibility is driven by refreshLayoutSwitcherUi
@@ -6542,6 +6675,18 @@ function wireControls() {
   // Leave the call (drop media + tile grid, keep chat). Held-down "Leave
   // team" is in the sidebar's sign-out menu.
   els.btnLeave.onclick = leaveCall;
+  els.btnMinimizeCall && (els.btnMinimizeCall.onclick = toggleMinimizeCall);
+  // Mini-panel controls: reuse the header handlers so mic/leave behave
+  // identically whether the call is minimized or full-size. Expand just
+  // un-minimizes.
+  els.miniBtnExpand && (els.miniBtnExpand.onclick = () => setCallMinimized(false));
+  els.miniBtnLeave && (els.miniBtnLeave.onclick = leaveCall);
+  els.miniBtnMic && (els.miniBtnMic.onclick = () => {
+    els.btnMic.onclick?.();
+    // Mirror the header button's muted state onto the mini button.
+    els.miniBtnMic.classList.toggle('muted', els.btnMic.classList.contains('muted'));
+  });
+  wireMiniCallDrag();
   els.btnPopoutCall.onclick = popOutCurrentCall;
   if (els.btnLayout) els.btnLayout.onclick = toggleForceGridLayout;
   if (els.btnFullscreen) {

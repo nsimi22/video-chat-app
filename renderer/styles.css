@@ -1488,6 +1488,101 @@ body.has-fullscreen-tile { overflow: hidden; }
 [data-ui="v2"] body.has-fullscreen-tile .stage > #reconnect-banner {
   display: none;
 }
+
+/* ── Minimized call: draggable floating mini panel ──────────────────
+   Collapse #tiles out of the stage flow into a small fixed panel the
+   user drags anywhere (JS sets left/top). The stage's chat siblings
+   reflow to full height on their own once #tiles leaves the flow. */
+.mini-call-bar { display: none; }
+
+body.huddle-call-minimized #tiles {
+  position: fixed;
+  /* JS (applyMiniCallPos) sets inline left/top, which win over this.
+     This bottom-right anchor is the fallback so the panel never falls
+     back to its in-flow top-left slot if JS hasn't positioned it yet. */
+  inset: auto 16px 16px auto;
+  width: 260px;
+  height: 184px;
+  max-height: 184px;
+  z-index: 60;            /* above stage + dock, below modals */
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  /* Single-cell: show the lead tile filling the panel; extra tiles are
+     clipped by overflow:hidden rather than shrunk to slivers. */
+  grid-template-columns: 1fr;
+  grid-auto-rows: 100%;
+}
+
+/* Lead tile fills the panel; chrome that assumes full size is muted. */
+body.huddle-call-minimized #tiles .tile { min-height: 0; border-radius: 0; }
+body.huddle-call-minimized #tiles .tile-actions,
+body.huddle-call-minimized #tiles .draw-toolbar,
+body.huddle-call-minimized #tiles .tile-hand,
+body.huddle-call-minimized #tiles .tile-speaker-bars,
+body.huddle-call-minimized #tiles .draw-canvas { display: none !important; }
+/* No pan/zoom or spotlight remaps at panel scale — keep it view-only. */
+body.huddle-call-minimized #tiles .tile-content { transform: none !important; }
+
+/* The mini control bar overlays the top of the panel. */
+body.huddle-call-minimized .mini-call-bar {
+  display: flex;
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 2;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.6), rgba(0,0,0,0));
+}
+.mini-call-grip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  cursor: grab;
+  user-select: none;
+}
+.mini-call-grip.dragging { cursor: grabbing; }
+.mini-call-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+.mini-call-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mini-call-actions { display: flex; gap: 4px; flex: 0 0 auto; }
+.mini-call-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.16);
+  cursor: pointer;
+}
+.mini-call-btn:hover { background: rgba(255, 255, 255, 0.28); }
+.mini-call-btn.danger { background: var(--danger, #d64545); }
+.mini-call-btn.danger:hover { filter: brightness(1.1); }
+.mini-call-btn.muted { background: var(--danger, #d64545); }
+
 /* Active speaker: soft accent ring driven by JS audio-level polling.
    Transitions ease in/out so quick volume bursts don't strobe. */
 .tile.speaking {
@@ -6750,6 +6845,22 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .channel-topic {
   display: none !important;
 }
+/* Minimized call: the call shrinks to the floating mini panel, so undo
+   the in-call takeover — bring the channel's chat back and hide the
+   full-size call dock (the mini panel carries its own controls). Higher
+   specificity (extra .huddle-call-minimized class) + !important to beat
+   the display:none !important hide rules above. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel.huddle-call-minimized .messages,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel.huddle-call-minimized .composer {
+  display: flex !important;
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel.huddle-call-minimized .typing {
+  display: block !important;
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel.huddle-call-minimized .huddle-call-dock {
+  display: none !important;
+}
+
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .tiles {
   flex: 1 1 auto;
   max-height: none;
