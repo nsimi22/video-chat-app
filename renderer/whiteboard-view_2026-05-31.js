@@ -351,6 +351,7 @@
       this.canvas.onStrokeFinished((p) => this._persistFinishedStroke(p));
       this.canvas.onStrokeErased((uuid) => this._eraseStroke(uuid));
       this.canvas.onStrokeMoved((uuid, p) => this._moveStroke(uuid, p));
+      this.canvas.onMarquee((rect) => this._selectInRect(rect));
       this.canvas.onViewportChange(() => this._onViewportChange());
       this.canvas.setColor(resolveColor(this.drawColor));
       this.canvas.setTool(TOOL_TO_CANVAS[this.tool]);
@@ -1285,6 +1286,13 @@
       this._multi.push({ type, id });
       const e = type === 'note' ? this.notes.get(id) : this.frames.get(id);
       if (e) e.el.classList.add('is-selected');
+    }
+    // Marquee result: select every note/frame whose box intersects the rect.
+    _selectInRect(rect) {
+      this._selectNote(null); this._selectFrame(null); this._multiClear();
+      const hit = (o) => !(o.x > rect.x + rect.w || o.x + o.w < rect.x || o.y > rect.y + rect.h || o.y + o.h < rect.y);
+      for (const [id, e] of this.notes) if (hit(e.data)) this._multiAdd('note', id);
+      for (const [id, e] of this.frames) if (hit(e.data)) this._multiAdd('frame', id);
     }
 
     // Render a note's text either as plain text (while editing, so the

@@ -107,6 +107,7 @@
       this._bboxCache = new WeakMap(); // stroke -> [minX,minY,maxX,maxY], for the eraser's cheap reject
       this._selected = null;  // stroke object currently selected by the select tool, or null
       this._selDrag = null;   // { lastX, lastY, moved } while dragging the selection
+      this._marquee = null;   // { x0,y0,x1,y1,moved } while rubber-band selecting empty space
       this._renderRaf = null; // coalesced full-render handle (one repaint per frame)
       this._momentum = null;  // { vx, vy, last, raf } while flinging after a pan release
       this._anim = null;      // { raf } for an in-flight eased zoom / viewport tween
@@ -321,6 +322,20 @@
     // line width stay a constant size at any zoom. Drops a stale
     // selection if the stroke has since been removed (e.g. remotely).
     _drawSelectionOverlay() {
+      if (this._marquee) {
+        const m = this._marquee, vp = this.viewport;
+        const x = (Math.min(m.x0, m.x1) - vp.x) * vp.scale;
+        const y = (Math.min(m.y0, m.y1) - vp.y) * vp.scale;
+        const w = Math.abs(m.x1 - m.x0) * vp.scale;
+        const h = Math.abs(m.y1 - m.y0) * vp.scale;
+        this.ctx.save();
+        this.ctx.fillStyle = 'rgba(10, 132, 255, 0.12)';
+        this.ctx.strokeStyle = 'rgba(10, 132, 255, 0.9)';
+        this.ctx.lineWidth = 1;
+        this.ctx.fillRect(x, y, w, h);
+        this.ctx.strokeRect(x, y, w, h);
+        this.ctx.restore();
+      }
       if (!this._selected) return;
       if (!this.strokes.includes(this._selected)) { this._selected = null; return; }
       const bb = this._strokeBbox(this._selected);
@@ -482,12 +497,17 @@
         // a drag-to-move on it); clicking empty space deselects.
         if (this.tool === 'select') {
           const hit = this._hitTopStroke(p.x, p.y);
-          this._selected = hit;
           if (hit) {
+            this._selected = hit;
             this._selDrag = { lastX: p.x, lastY: p.y, moved: false };
             this.canvas.setPointerCapture(e.pointerId);
           } else {
+            // Empty space → begin a marquee. A plain click (no drag)
+            // deselects on pointerup; a drag selects the enclosed area.
+            this._selected = null;
             this._selDrag = null;
+            this._marquee = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, moved: false };
+            this.canvas.setPointerCapture(e.pointerId);
           }
           this._render();
           return;
@@ -510,6 +530,12 @@
           const a = this._lastErasePt || [p.x, p.y];
           this._eraseAlong(a[0], a[1], p.x, p.y);
           this._lastErasePt = [p.x, p.y];
+          return;
+        }
+        if (this._marquee) {
+          const p = this._clientToWorld(e.clientX, e.clientY);
+          this._marquee.x1 = p.x; this._marquee.y1 = p.y; this._marquee.moved = true;
+          this._invalidate();
           return;
         }
         if (this._selDrag) {
@@ -551,6 +577,17 @@
           this._erasing = false;
           this._lastErasePt = null;
           if (e?.pointerId != null) { try { this.canvas.releasePointerCapture(e.pointerId); } catch {} }
+          return;
+        }
+        if (this._marquee) {
+          const m = this._marquee;
+          this._marquee = null;
+          if (e?.pointerId != null) { try { this.canvas.releasePointerCapture(e.pointerId); } catch {} }
+          this._render();
+          if (m.moved) {
+            const rect = { x: Math.min(m.x0, m.x1), y: Math.min(m.y0, m.y1), w: Math.abs(m.x1 - m.x0), h: Math.abs(m.y1 - m.y0) };
+            this._marqueeCb?.(rect);
+          }
           return;
         }
         if (this._selDrag) {
@@ -605,6 +642,9 @@
     onStrokeFinished(cb) { this._strokeFinished = cb; }
     onStrokeErased(cb) { this._strokeErased = cb; }
     onStrokeMoved(cb) { this._strokeMoved = cb; }
+    // Report a rubber-band selection rect (world coords) so the host can
+    // select the notes/frames inside it.
+    onMarquee(cb) { this._marqueeCb = cb; }
 
     // Topmost stroke under the world point, or null. Iterates back-to-
     // front (last drawn sits on top) and allows a small screen-px slop so
