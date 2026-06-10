@@ -1497,10 +1497,10 @@ body.has-fullscreen-tile { overflow: hidden; }
 
 body.huddle-call-minimized #tiles {
   position: fixed;
-  /* left/top set inline by applyMiniCallPos; this is the pre-paint
-     fallback before the first clamp runs. */
-  right: auto;
-  bottom: auto;
+  /* JS (applyMiniCallPos) sets inline left/top, which win over this.
+     This bottom-right anchor is the fallback so the panel never falls
+     back to its in-flow top-left slot if JS hasn't positioned it yet. */
+  inset: auto 16px 16px auto;
   width: 260px;
   height: 184px;
   max-height: 184px;
@@ -6845,6 +6845,22 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .channel-topic {
   display: none !important;
 }
+/* Minimized call: the call shrinks to the floating mini panel, so undo
+   the in-call takeover — bring the channel's chat back and hide the
+   full-size call dock (the mini panel carries its own controls). Higher
+   specificity (extra .huddle-call-minimized class) + !important to beat
+   the display:none !important hide rules above. */
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel.huddle-call-minimized .messages,
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel.huddle-call-minimized .composer {
+  display: flex !important;
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel.huddle-call-minimized .typing {
+  display: block !important;
+}
+[data-ui="v2"] body.huddle-in-call.huddle-on-call-channel.huddle-call-minimized .huddle-call-dock {
+  display: none !important;
+}
+
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .tiles {
   flex: 1 1 auto;
   max-height: none;
