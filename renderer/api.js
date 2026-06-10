@@ -1345,6 +1345,28 @@
       return data || null;
     }
 
+    // Like fetchActiveMeetingRoot but returns ALL recent root anchors in
+    // the window — a near-simultaneous join race can create more than one,
+    // and the Notes panel needs to merge notes across every root so none go
+    // missing.
+    async fetchActiveMeetingRoots(channelId, { withinMs = 5 * 60 * 1000, limit = 16 } = {}) {
+      const cutoff = new Date(Date.now() - withinMs).toISOString();
+      const { data, error } = await this.supabase
+        .from('messages')
+        .select('id, ts, body, meta')
+        .eq('team_id', this.team.id)
+        .eq('channel_id', channelId)
+        .gte('ts', cutoff)
+        .filter('meta->>meeting_root', 'eq', 'true')
+        .order('ts', { ascending: false })
+        .limit(limit);
+      if (error) {
+        if (/column .* does not exist/i.test(error.message || '')) return [];
+        throw error;
+      }
+      return data || [];
+    }
+
     // Fetch the existing thread replies for a meeting root. Used when
     // the user opens the Notes panel mid-call to backfill replies that
     // landed before the panel was mounted. Capped at 500 rows so a

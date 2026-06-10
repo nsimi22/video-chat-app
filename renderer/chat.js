@@ -399,8 +399,10 @@ class ChatView {
     this._on(this.els.emojiBtn, 'click', (e) => {
       e.stopPropagation();
       this._resetEmojiPickerAnchor();
+      const willShow = this.els.emojiPicker.classList.contains('hidden');
       this.els.emojiPicker.classList.toggle('hidden');
       this._emojiPickerMode = 'compose';
+      if (willShow) this._refreshEmojiPicker();
     });
     this._on(document, 'click', (e) => {
       if (!this.els.emojiPicker.contains(e.target) && e.target !== this.els.emojiBtn) {
@@ -1740,7 +1742,15 @@ class ChatView {
       if (!Array.isArray(peers) || peers.length === 0) continue;
       const pill = document.createElement('span');
       pill.className = 'reaction' + (peers.includes(this.mesh.peerId) ? ' mine' : '');
-      pill.textContent = `${emoji} ${peers.length}`;
+      // Emoji in its own span with the colour-emoji font so the "mine"
+      // accent colour can't tint it monochrome/blue; count stays themed.
+      const emojiSpan = document.createElement('span');
+      emojiSpan.className = 'reaction-emoji';
+      emojiSpan.textContent = emoji;
+      const countSpan = document.createElement('span');
+      countSpan.className = 'reaction-count';
+      countSpan.textContent = String(peers.length);
+      pill.append(emojiSpan, countSpan);
       // Native title tooltip lists everyone who reacted with this emoji
       // so the user can tell *who* reacted without us building a custom
       // popover. Slack-style phrasing — "you, Alice and 2 others
@@ -1977,28 +1987,83 @@ class ChatView {
   _initEmojiPicker() {
     const p = this.els.emojiPicker;
     p.innerHTML = '';
-    for (const group of window.EMOJI_GROUPS) {
-      const h = document.createElement('div');
-      h.className = 'group-header';
-      h.textContent = group.name;
-      p.appendChild(h);
-      for (const [, char] of group.list) {
-        const b = document.createElement('button');
-        b.textContent = char;
-        b.onclick = (e) => {
-          e.stopPropagation();
-          if (this._emojiPickerMode === 'react' && this._emojiPickerTarget) {
-            this.mesh.toggleReaction(this._emojiPickerTarget, char);
-          } else {
-            this.els.composer.value += char;
-            this.els.composer.focus();
-          }
-          p.classList.add('hidden');
-          this._resetEmojiPickerAnchor();
-        };
-        p.appendChild(b);
-      }
+    const search = document.createElement('input');
+    search.className = 'emoji-search';
+    search.type = 'text';
+    search.placeholder = 'Search emoji…';
+    search.addEventListener('click', (e) => e.stopPropagation());
+    search.addEventListener('input', () => this._renderEmojiList(search.value));
+    p.appendChild(search);
+    const scroll = document.createElement('div');
+    scroll.className = 'emoji-scroll';
+    p.appendChild(scroll);
+    this._emojiSearchEl = search;
+    this._emojiScrollEl = scroll;
+    this._renderEmojiList('');
+  }
+
+  _pickEmoji(char) {
+    this._recordRecentEmoji(char);
+    if (this._emojiPickerMode === 'react' && this._emojiPickerTarget) {
+      this.mesh.toggleReaction(this._emojiPickerTarget, char);
+    } else {
+      this.els.composer.value += char;
+      this.els.composer.focus();
     }
+    this.els.emojiPicker.classList.add('hidden');
+    this._resetEmojiPickerAnchor();
+  }
+
+  // (Re)render the picker body: a Recently-used section (unless searching),
+  // then each category, filtered by the search term (matches shortcode or
+  // category name).
+  _renderEmojiList(filter) {
+    const scroll = this._emojiScrollEl;
+    if (!scroll) return;
+    scroll.innerHTML = '';
+    const f = (filter || '').trim().toLowerCase();
+    const makeBtn = (char) => {
+      const b = document.createElement('button');
+      b.textContent = char;
+      b.onclick = (e) => { e.stopPropagation(); this._pickEmoji(char); };
+      return b;
+    };
+    const section = (title, chars) => {
+      if (!chars.length) return;
+      const hd = document.createElement('div');
+      hd.className = 'group-header';
+      hd.textContent = title;
+      scroll.appendChild(hd);
+      for (const c of chars) scroll.appendChild(makeBtn(c));
+    };
+    if (!f) section('Recently used', this._getRecentEmoji());
+    for (const group of window.EMOJI_GROUPS) {
+      const items = group.list.filter((e) =>
+        !f || e[0].toLowerCase().includes(f) || (e[2] || '').toLowerCase().includes(f) || group.name.toLowerCase().includes(f));
+      section(group.name, items.map((e) => e[1]));
+    }
+    if (!scroll.children.length) {
+      const empty = document.createElement('div');
+      empty.className = 'group-header';
+      empty.textContent = 'No matches';
+      scroll.appendChild(empty);
+    }
+  }
+
+  _refreshEmojiPicker() {
+    if (this._emojiSearchEl) this._emojiSearchEl.value = '';
+    this._renderEmojiList('');
+  }
+
+  _getRecentEmoji() {
+    try { return JSON.parse(localStorage.getItem('huddle.emojiRecents') || '[]'); } catch { return []; }
+  }
+  _recordRecentEmoji(char) {
+    try {
+      const cur = this._getRecentEmoji().filter((c) => c !== char);
+      cur.unshift(char);
+      localStorage.setItem('huddle.emojiRecents', JSON.stringify(cur.slice(0, 24)));
+    } catch {}
   }
 
   _openReactionPicker(ev, messageId) {
@@ -2014,6 +2079,7 @@ class ChatView {
     const btn = ev.currentTarget;
     const rect = btn.getBoundingClientRect();
     p.classList.remove('hidden');
+    this._refreshEmojiPicker();
     p.dataset.anchor = 'react';
     const margin = 8;
     const w = p.offsetWidth || 296;
@@ -2326,7 +2392,8 @@ class ChatView {
     }
     for (const r of results) {
       const images = r.images || {};
-      const preview = images.fixed_height_small?.url
+      const preview = images.fixed_width?.url
+        || images.fixed_height_small?.url
         || images.preview_gif?.url
         || images.original?.url;
       const full = images.original?.url || preview;
