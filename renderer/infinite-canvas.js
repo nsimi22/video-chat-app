@@ -175,6 +175,9 @@
     onViewportChange(cb) { this._viewportCb = cb; }
 
     getViewport() { return { ...this.viewport }; }
+    // Public client→world so the view's connectors share the canvas's exact
+    // coordinate frame (avoids any board/canvas offset mismatch).
+    clientToWorld(clientX, clientY) { return this._clientToWorld(clientX, clientY); }
 
     // PNG-of-current-viewport export. Matches the design's Export
     // button: snapshot what the user sees right now (notes/frames/cursors
@@ -260,6 +263,22 @@
     clearAll(/*broadcast*/) {
       this.strokes = [];
       this._render();
+    }
+
+    // ---- Bound connectors (Phase 2) ------------------------------------
+    // Set a connector stroke's endpoints by uuid (the view recomputes these
+    // from the bound notes/frames and calls this to reflow). bind lives on
+    // the stroke object; the canvas only ever draws `points`.
+    updateStrokePoints(uuid, points) {
+      const s = this.strokes.find((x) => x.uuid === uuid);
+      if (!s) return;
+      s.points = points;
+      this._bboxCache.delete(s);
+      this._invalidate();
+    }
+    // Strokes whose bind references the given object id.
+    strokesBoundTo(id) {
+      return this.strokes.filter((s) => s.bind && (s.bind.from?.id === id || s.bind.to?.id === id));
     }
 
     // ---- Internal: rendering -------------------------------------------

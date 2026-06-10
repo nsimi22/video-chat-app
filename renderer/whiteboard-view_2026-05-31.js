@@ -715,6 +715,158 @@
       if (this._hGuide) this._hGuide.style.display = 'none';
     }
 
+    // ── Bound connectors (Phase 2): arrows whose `bind` references a note/
+    // frame reflow to its border when the object moves. ──
+    _objBox(ref) {
+      if (!ref) return null;
+      const e = ref.type === 'frame' ? this.frames.get(ref.id) : this.notes.get(ref.id);
+      if (!e) return null;
+      const d = e.data;
+      return { x: d.x, y: d.y, w: d.w, h: d.h, cx: d.x + d.w / 2, cy: d.y + d.h / 2 };
+    }
+    _objAt(wx, wy) {
+      for (const [id, e] of this.notes) { const d = e.data; if (wx >= d.x && wx <= d.x + d.w && wy >= d.y && wy <= d.y + d.h) return { type: 'note', id }; }
+      for (const [id, e] of this.frames) { const d = e.data; if (wx >= d.x && wx <= d.x + d.w && wy >= d.y && wy <= d.y + d.h) return { type: 'frame', id }; }
+      return null;
+    }
+    // Point on a box border along the ray from its centre toward (tx,ty).
+    _anchorOnBox(box, tx, ty) {
+      const dx = tx - box.cx, dy = ty - box.cy;
+      if (dx === 0 && dy === 0) return [box.cx, box.cy];
+      const sx = dx === 0 ? Infinity : (box.w / 2) / Math.abs(dx);
+      const sy = dy === 0 ? Infinity : (box.h / 2) / Math.abs(dy);
+      const s = Math.min(sx, sy);
+      return [box.cx + dx * s, box.cy + dy * s];
+    }
+    _connectorEndpoints(stroke) {
+      const fromBox = this._objBox(stroke.bind?.from);
+      const toBox = this._objBox(stroke.bind?.to);
+      const pts = stroke.points || [];
+      let p0 = pts[0] || [0, 0];
+      let p1 = pts[pts.length - 1] || [0, 0];
+      const toC = toBox ? [toBox.cx, toBox.cy] : p1;
+      const fromC = fromBox ? [fromBox.cx, fromBox.cy] : p0;
+      if (fromBox) p0 = this._anchorOnBox(fromBox, toC[0], toC[1]);
+      if (toBox) p1 = this._anchorOnBox(toBox, fromC[0], fromC[1]);
+      return [p0, p1];
+    }
+    _reflowFor(objId, persist) {
+      if (!this.canvas?.strokesBoundTo) return;
+      for (const s of this.canvas.strokesBoundTo(objId)) {
+        const pts = this._connectorEndpoints(s);
+        s.points = pts;
+        this.canvas.updateStrokePoints(s.uuid, pts);
+        if (persist) this.huddle.persistWhiteboardStroke(this.whiteboardId, s).catch(() => {});
+      }
+    }
+    _reflowAll() {
+      if (!this.canvas?.strokes) return;
+      const ids = new Set();
+      for (const s of this.canvas.strokes) {
+        if (s.bind?.from?.id) ids.add(s.bind.from.id);
+        if (s.bind?.to?.id) ids.add(s.bind.to.id);
+      }
+      for (const id of ids) this._reflowFor(id, false);
+    }
+    // Auto-bind a freshly-drawn arrow/line whose ends land on objects.
+    _autoBindStroke(stroke) {
+      if (!stroke || (stroke.tool !== 'arrow' && stroke.tool !== 'line')) return false;
+      const pts = stroke.points || [];
+      if (pts.length < 2) return false;
+      const from = this._objAt(pts[0][0], pts[0][1]);
+      const to = this._objAt(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+      if (!from && !to) return false;
+      if (from && to && from.id === to.id) return false; // same object — skip
+      stroke.bind = {};
+      if (from) stroke.bind.from = from;
+      if (to) stroke.bind.to = to;
+      const eps = this._connectorEndpoints(stroke);
+      stroke.points = eps;
+      this.canvas.updateStrokePoints(stroke.uuid, eps);
+      return true;
+    }
+    // Drag from a note's edge handle to another object → bound connector
+    // (or to empty space → arrow with a free end). Document-level listeners
+    // so the drag tracks past the handle.
+    _startConnectorDrag(sourceRef, e) {
+      e.stopPropagation();
+      e.preventDefault();
+      const box = this._objBox(sourceRef);
+      if (!box) return;
+      const uuid = (crypto?.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const color = resolveColor(this.drawColor) || '#5b8cff';
+      const stroke = { uuid, tool: 'arrow', color, size: 4, points: [[box.cx, box.cy], [box.cx, box.cy]] };
+      this.canvas.addPersistedStroke(stroke);
+      this._paintedStrokeUuids.add(uuid);
+      let moved = false;
+      const onMove = (ev) => {
+        moved = true;
+        const w = this.canvas.clientToWorld(ev.clientX, ev.clientY);
+        stroke.points = [this._anchorOnBox(box, w.x, w.y), [w.x, w.y]];
+        this.canvas.updateStrokePoints(uuid, stroke.points);
+      };
+      const onUp = (ev) => {
+        document.removeEventListener('pointermove', onMove, true);
+        document.removeEventListener('pointerup', onUp, true);
+        // Find the object under the drop via the DOM (robust to coordinate
+        // offsets) — the temp arrow is on the canvas, below the note layer.
+        const hitEl = document.elementFromPoint(ev.clientX, ev.clientY);
+        const noteEl = hitEl?.closest?.('.wbv-note, .wbv-text');
+        const frameEl = hitEl?.closest?.('.wbv-frame');
+        let target = null;
+        if (noteEl?.dataset?.noteId) target = { type: 'note', id: noteEl.dataset.noteId };
+        else if (frameEl?.dataset?.frameId) target = { type: 'frame', id: frameEl.dataset.frameId };
+        if (!moved || !target || target.id === sourceRef.id) {
+          // No other object under the drop — cancel rather than leave a
+          // stray free-floating arrow.
+          this.canvas.removeStroke(uuid);
+          this._paintedStrokeUuids.delete(uuid);
+          return;
+        }
+        stroke.bind = { from: sourceRef, to: target };
+        const eps = this._connectorEndpoints(stroke);
+        stroke.points = eps;
+        this.canvas.updateStrokePoints(uuid, eps);
+        // Replicate to peers (begin/end render it; bind makes it reflow there).
+        this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'begin', uuid, x: eps[0][0], y: eps[0][1], tool: 'arrow', color, size: 4 }, this.viewId);
+        this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'end', uuid, x: eps[1][0], y: eps[1][1], tool: 'arrow', color, size: 4 }, this.viewId);
+        this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'bind', uuid, bind: stroke.bind }, this.viewId);
+        this.huddle.persistWhiteboardStroke(this.whiteboardId, stroke).catch(() => {});
+        this._pushUndo(() => {
+          this.canvas?.removeStroke(uuid);
+          this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'delete-stroke', uuid }, this.viewId);
+          this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid).catch(() => {});
+        });
+        this._reflowFor(sourceRef.id, false);
+        if (stroke.bind.to) this._reflowFor(stroke.bind.to.id, false);
+      };
+      document.addEventListener('pointermove', onMove, true);
+      document.addEventListener('pointerup', onUp, true);
+    }
+    // Remove (and return snapshots of) all connectors bound to an object —
+    // used when the object is deleted so links don't dangle.
+    _detachConnectors(objId) {
+      const out = [];
+      if (!this.canvas?.strokesBoundTo) return out;
+      for (const s of this.canvas.strokesBoundTo(objId)) {
+        out.push({ ...s, bind: s.bind ? { ...s.bind } : undefined, points: (s.points || []).map((p) => [...p]) });
+        this.canvas.removeStroke(s.uuid);
+        this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'delete-stroke', uuid: s.uuid }, this.viewId);
+        this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, s.uuid).catch(() => {});
+      }
+      return out;
+    }
+    _recreateConnector(c) {
+      this.canvas.addPersistedStroke(c);
+      const eps = c.bind ? this._connectorEndpoints(c) : c.points;
+      c.points = eps;
+      this.canvas.updateStrokePoints(c.uuid, eps);
+      this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'begin', uuid: c.uuid, x: eps[0][0], y: eps[0][1], tool: c.tool, color: c.color, size: c.size }, this.viewId);
+      this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'end', uuid: c.uuid, x: eps[1][0], y: eps[1][1], tool: c.tool, color: c.color, size: c.size }, this.viewId);
+      if (c.bind) this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'bind', uuid: c.uuid, bind: c.bind }, this.viewId);
+      this.huddle.persistWhiteboardStroke(this.whiteboardId, c).catch(() => {});
+    }
+
     async clearAll() {
       if (!confirm('Clear the whiteboard for everyone? This cannot be undone.')) return;
       this.canvas?.clearAll();
@@ -747,6 +899,9 @@
         this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid)
           .catch((e) => console.warn('[wbv] undo stroke delete failed', e));
       });
+      if (this._autoBindStroke(polyline)) { // arrow drawn between boxes → bound connector
+        this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'bind', uuid: polyline.uuid, bind: polyline.bind }, this.viewId);
+      }
       this.huddle.persistWhiteboardStroke(this.whiteboardId, polyline)
         .catch((err) => console.warn('[wbv] persist failed', err));
     }
@@ -771,6 +926,15 @@
       if (stroke?.action === 'delete-stroke' && stroke.uuid) {
         this.canvas.removeStroke(stroke.uuid);
         this._paintedStrokeUuids.add(stroke.uuid);
+        return;
+      }
+      if (stroke?.action === 'bind' && stroke.uuid) {
+        const s = (this.canvas.strokes || []).find((x) => x.uuid === stroke.uuid);
+        if (s) {
+          s.bind = stroke.bind;
+          if (s.bind?.from?.id) this._reflowFor(s.bind.from.id, false);
+          if (s.bind?.to?.id) this._reflowFor(s.bind.to.id, false);
+        }
         return;
       }
       this.canvas.applyRemote(stroke);
@@ -926,6 +1090,12 @@
         });
         el.appendChild(handle);
       }
+      // Connector handles (4 mid-edges) — drag to another object to link.
+      for (const side of ['n', 'e', 's', 'w']) {
+        const ch = h('span', { class: `wbv-conn-handle is-${side}`, attrs: { 'data-side': side, 'aria-hidden': 'true' } });
+        ch.addEventListener('pointerdown', (e) => this._startConnectorDrag({ type: 'note', id: note.id }, e));
+        el.appendChild(ch);
+      }
 
       this.worldLayer.appendChild(el);
 
@@ -1021,6 +1191,7 @@
         const fontPx = Math.max(11, Math.min(30, 13 * (data.w / NOTE_W))) * vp.scale;
         el.style.setProperty('--wbv-note-font', fontPx.toFixed(1) + 'px');
       }
+      this._reflowFor(entry.data.id, false); // keep bound connectors attached
     }
 
     _refreshVoteStyle(entry) {
@@ -1082,7 +1253,7 @@
         // (color swatches / delete), the vote pill, or a resize
         // handle — those have their own handlers and a tiny pointer
         // drift would otherwise burn a spurious "moved" persist.
-        if (e.target.closest('.wbv-note-toolbar, .wbv-note-vote, .wbv-resize-handle, a.wbv-link')) return;
+        if (e.target.closest('.wbv-note-toolbar, .wbv-note-vote, .wbv-resize-handle, .wbv-conn-handle, a.wbv-link')) return;
         e.stopPropagation();
         e.preventDefault();
         const vp = this.canvas?.getViewport() || { scale: 1 };
@@ -1539,9 +1710,10 @@
     async _deleteNote(id) {
       const entry = this.notes.get(id);
       const snap = entry ? { ...entry.data } : null;
+      const conns = this._detachConnectors(id);
       this._removeNoteEl(id);
       this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'delete', id }, this.viewId);
-      if (snap) this._pushUndo(() => this._recreateNoteFromData(snap));
+      if (snap) this._pushUndo(() => { this._recreateNoteFromData(snap); for (const c of conns) this._recreateConnector(c); });
       try { await this.huddle.deleteWhiteboardNote(id); }
       catch (err) { console.warn('[wbv] note delete failed', err); }
     }
@@ -1682,6 +1854,7 @@
       el.style.top = ((data.y - vp.y) * vp.scale) + 'px';
       el.style.width = (data.w * vp.scale) + 'px';
       el.style.height = (data.h * vp.scale) + 'px';
+      this._reflowFor(entry.data.id, false); // keep bound connectors attached
     }
 
     _wireFrameHandlers(entry) {
@@ -1876,9 +2049,10 @@
       if (this.selectedFrame === id) this.selectedFrame = null;
       const entry = this.frames.get(id);
       const snap = entry ? { ...entry.data } : null;
+      const conns = this._detachConnectors(id);
       this._removeFrameEl(id);
       this.huddle.sendWhiteboardFrame(this.whiteboardId, { action: 'delete', id }, this.viewId);
-      if (snap) this._pushUndo(() => this._recreateFrameFromData(snap));
+      if (snap) this._pushUndo(() => { this._recreateFrameFromData(snap); for (const c of conns) this._recreateConnector(c); });
       try { await this.huddle.deleteWhiteboardFrame(id); }
       catch (err) { console.warn('[wbv] frame delete failed', err); }
     }
