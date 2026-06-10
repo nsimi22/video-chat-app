@@ -801,15 +801,21 @@
       let moved = false;
       const onMove = (ev) => {
         moved = true;
-        const w = this._clientToWorld(ev.clientX, ev.clientY);
+        const w = this.canvas.clientToWorld(ev.clientX, ev.clientY);
         stroke.points = [this._anchorOnBox(box, w.x, w.y), [w.x, w.y]];
         this.canvas.updateStrokePoints(uuid, stroke.points);
       };
       const onUp = (ev) => {
         document.removeEventListener('pointermove', onMove, true);
         document.removeEventListener('pointerup', onUp, true);
-        const w = this._clientToWorld(ev.clientX, ev.clientY);
-        const target = this._objAt(w.x, w.y);
+        // Find the object under the drop via the DOM (robust to coordinate
+        // offsets) — the temp arrow is on the canvas, below the note layer.
+        const hitEl = document.elementFromPoint(ev.clientX, ev.clientY);
+        const noteEl = hitEl?.closest?.('.wbv-note, .wbv-text');
+        const frameEl = hitEl?.closest?.('.wbv-frame');
+        let target = null;
+        if (noteEl?.dataset?.noteId) target = { type: 'note', id: noteEl.dataset.noteId };
+        else if (frameEl?.dataset?.frameId) target = { type: 'frame', id: frameEl.dataset.frameId };
         if (!moved || !target || target.id === sourceRef.id) {
           // No other object under the drop — cancel rather than leave a
           // stray free-floating arrow.

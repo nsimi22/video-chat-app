@@ -175,6 +175,9 @@
     onViewportChange(cb) { this._viewportCb = cb; }
 
     getViewport() { return { ...this.viewport }; }
+    // Public client→world so the view's connectors share the canvas's exact
+    // coordinate frame (avoids any board/canvas offset mismatch).
+    clientToWorld(clientX, clientY) { return this._clientToWorld(clientX, clientY); }
 
     // PNG-of-current-viewport export. Matches the design's Export
     // button: snapshot what the user sees right now (notes/frames/cursors
