@@ -715,6 +715,77 @@
       if (this._hGuide) this._hGuide.style.display = 'none';
     }
 
+    // ── Bound connectors (Phase 2): arrows whose `bind` references a note/
+    // frame reflow to its border when the object moves. ──
+    _objBox(ref) {
+      if (!ref) return null;
+      const e = ref.type === 'frame' ? this.frames.get(ref.id) : this.notes.get(ref.id);
+      if (!e) return null;
+      const d = e.data;
+      return { x: d.x, y: d.y, w: d.w, h: d.h, cx: d.x + d.w / 2, cy: d.y + d.h / 2 };
+    }
+    _objAt(wx, wy) {
+      for (const [id, e] of this.notes) { const d = e.data; if (wx >= d.x && wx <= d.x + d.w && wy >= d.y && wy <= d.y + d.h) return { type: 'note', id }; }
+      for (const [id, e] of this.frames) { const d = e.data; if (wx >= d.x && wx <= d.x + d.w && wy >= d.y && wy <= d.y + d.h) return { type: 'frame', id }; }
+      return null;
+    }
+    // Point on a box border along the ray from its centre toward (tx,ty).
+    _anchorOnBox(box, tx, ty) {
+      const dx = tx - box.cx, dy = ty - box.cy;
+      if (dx === 0 && dy === 0) return [box.cx, box.cy];
+      const sx = dx === 0 ? Infinity : (box.w / 2) / Math.abs(dx);
+      const sy = dy === 0 ? Infinity : (box.h / 2) / Math.abs(dy);
+      const s = Math.min(sx, sy);
+      return [box.cx + dx * s, box.cy + dy * s];
+    }
+    _connectorEndpoints(stroke) {
+      const fromBox = this._objBox(stroke.bind?.from);
+      const toBox = this._objBox(stroke.bind?.to);
+      const pts = stroke.points || [];
+      let p0 = pts[0] || [0, 0];
+      let p1 = pts[pts.length - 1] || [0, 0];
+      const toC = toBox ? [toBox.cx, toBox.cy] : p1;
+      const fromC = fromBox ? [fromBox.cx, fromBox.cy] : p0;
+      if (fromBox) p0 = this._anchorOnBox(fromBox, toC[0], toC[1]);
+      if (toBox) p1 = this._anchorOnBox(toBox, fromC[0], fromC[1]);
+      return [p0, p1];
+    }
+    _reflowFor(objId, persist) {
+      if (!this.canvas?.strokesBoundTo) return;
+      for (const s of this.canvas.strokesBoundTo(objId)) {
+        const pts = this._connectorEndpoints(s);
+        s.points = pts;
+        this.canvas.updateStrokePoints(s.uuid, pts);
+        if (persist) this.huddle.persistWhiteboardStroke(this.whiteboardId, s).catch(() => {});
+      }
+    }
+    _reflowAll() {
+      if (!this.canvas?.strokes) return;
+      const ids = new Set();
+      for (const s of this.canvas.strokes) {
+        if (s.bind?.from?.id) ids.add(s.bind.from.id);
+        if (s.bind?.to?.id) ids.add(s.bind.to.id);
+      }
+      for (const id of ids) this._reflowFor(id, false);
+    }
+    // Auto-bind a freshly-drawn arrow/line whose ends land on objects.
+    _autoBindStroke(stroke) {
+      if (!stroke || (stroke.tool !== 'arrow' && stroke.tool !== 'line')) return false;
+      const pts = stroke.points || [];
+      if (pts.length < 2) return false;
+      const from = this._objAt(pts[0][0], pts[0][1]);
+      const to = this._objAt(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+      if (!from && !to) return false;
+      if (from && to && from.id === to.id) return false; // same object — skip
+      stroke.bind = {};
+      if (from) stroke.bind.from = from;
+      if (to) stroke.bind.to = to;
+      const eps = this._connectorEndpoints(stroke);
+      stroke.points = eps;
+      this.canvas.updateStrokePoints(stroke.uuid, eps);
+      return true;
+    }
+
     async clearAll() {
       if (!confirm('Clear the whiteboard for everyone? This cannot be undone.')) return;
       this.canvas?.clearAll();
@@ -747,6 +818,9 @@
         this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid)
           .catch((e) => console.warn('[wbv] undo stroke delete failed', e));
       });
+      if (this._autoBindStroke(polyline)) { // arrow drawn between boxes → bound connector
+        this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'bind', uuid: polyline.uuid, bind: polyline.bind }, this.viewId);
+      }
       this.huddle.persistWhiteboardStroke(this.whiteboardId, polyline)
         .catch((err) => console.warn('[wbv] persist failed', err));
     }
@@ -771,6 +845,15 @@
       if (stroke?.action === 'delete-stroke' && stroke.uuid) {
         this.canvas.removeStroke(stroke.uuid);
         this._paintedStrokeUuids.add(stroke.uuid);
+        return;
+      }
+      if (stroke?.action === 'bind' && stroke.uuid) {
+        const s = (this.canvas.strokes || []).find((x) => x.uuid === stroke.uuid);
+        if (s) {
+          s.bind = stroke.bind;
+          if (s.bind?.from?.id) this._reflowFor(s.bind.from.id, false);
+          if (s.bind?.to?.id) this._reflowFor(s.bind.to.id, false);
+        }
         return;
       }
       this.canvas.applyRemote(stroke);
@@ -1021,6 +1104,7 @@
         const fontPx = Math.max(11, Math.min(30, 13 * (data.w / NOTE_W))) * vp.scale;
         el.style.setProperty('--wbv-note-font', fontPx.toFixed(1) + 'px');
       }
+      this._reflowFor(entry.data.id, false); // keep bound connectors attached
     }
 
     _refreshVoteStyle(entry) {
@@ -1682,6 +1766,7 @@
       el.style.top = ((data.y - vp.y) * vp.scale) + 'px';
       el.style.width = (data.w * vp.scale) + 'px';
       el.style.height = (data.h * vp.scale) + 'px';
+      this._reflowFor(entry.data.id, false); // keep bound connectors attached
     }
 
     _wireFrameHandlers(entry) {
