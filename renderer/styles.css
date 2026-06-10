@@ -8281,6 +8281,40 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 }
 .wbv-link:hover { filter: brightness(1.15); }
 
+/* Link preview card + toggle inside a note. */
+.wbv-note-linkbox { margin-top: 6px; }
+.wbv-linkbox-toggle {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent, #0a84ff);
+  background: transparent;
+  border: 0;
+  padding: 2px 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.wbv-link-card {
+  display: block;
+  margin-top: 5px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  text-decoration: none;
+  cursor: pointer;
+}
+.wbv-link-card-img { display: block; width: 100%; height: 88px; object-fit: cover; }
+.wbv-link-card-body { padding: 6px 8px; }
+.wbv-link-card-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--tx-hi, #eef0f2);
+  line-height: 1.25;
+  max-height: 2.5em;
+  overflow: hidden;
+}
+.wbv-link-card-domain { font-size: 10px; color: var(--tx-lo, #8a8e96); margin-top: 2px; }
+
 /* Ghost collaborator cursors ------------------------------------ */
 .wbv-cursor {
   position: absolute;

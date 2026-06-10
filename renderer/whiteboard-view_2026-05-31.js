@@ -1302,6 +1302,67 @@
       const txt = entry.data.text || '';
       if (this.editingNote === entry.data.id) entry.textEl.textContent = txt;
       else entry.textEl.innerHTML = linkifyHtml(txt);
+      this._renderNoteLinkPreview(entry);
+    }
+
+    _noteFirstUrl(text) {
+      const m = String(text || '').match(/https?:\/\/[^\s<]+[^\s<.,;:!?)\]}'"]/);
+      return m ? m[0] : null;
+    }
+    // Fetch + cache OpenGraph metadata for a URL via the fetch-proxy.
+    _fetchLinkMeta(url) {
+      this._linkMetaCache = this._linkMetaCache || new Map();
+      if (this._linkMetaCache.has(url)) return this._linkMetaCache.get(url);
+      const p = (async () => {
+        try {
+          const res = await window.huddle.fetchProxy({ url, method: 'GET' });
+          if (!res || !res.ok || !res.body) return null;
+          const doc = new DOMParser().parseFromString(res.body, 'text/html');
+          const c = (sel) => doc.querySelector(sel)?.getAttribute('content')?.trim() || '';
+          const title = c('meta[property="og:title"]') || c('meta[name="twitter:title"]') || doc.querySelector('title')?.textContent?.trim() || url;
+          const image = c('meta[property="og:image"]') || c('meta[name="twitter:image"]') || '';
+          const desc = c('meta[property="og:description"]') || c('meta[name="description"]') || '';
+          let domain = url; try { domain = new URL(url).hostname.replace(/^www\./, ''); } catch {}
+          return { url, title, image, desc, domain };
+        } catch { return null; }
+      })();
+      this._linkMetaCache.set(url, p);
+      return p;
+    }
+    // Link display toggle: a "Show preview" chip under a note's text that
+    // expands an OG preview card (thumbnail + title + domain). Session-only.
+    _renderNoteLinkPreview(entry) {
+      const host = entry.el.querySelector('.wbv-note-card') || entry.el;
+      const existing = host.querySelector(':scope > .wbv-note-linkbox');
+      if (existing) existing.remove();
+      if (this.editingNote === entry.data.id) return;
+      const url = this._noteFirstUrl(entry.data.text || '');
+      if (!url) return;
+      const box = h('div', { class: 'wbv-note-linkbox' });
+      const toggle = h('button', { class: 'wbv-linkbox-toggle', text: entry.showPreview ? 'Hide preview' : 'Show preview' });
+      toggle.addEventListener('click', (e) => { e.stopPropagation(); entry.showPreview = !entry.showPreview; this._renderNoteLinkPreview(entry); });
+      box.appendChild(toggle);
+      if (entry.showPreview) {
+        const card = h('a', { class: 'wbv-link-card', attrs: { title: url } });
+        card.appendChild(h('div', { class: 'wbv-link-card-body', text: 'Loading preview…' }));
+        card.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); window.open(url, '_blank', 'noopener'); });
+        box.appendChild(card);
+        this._fetchLinkMeta(url).then((meta) => {
+          if (this._destroyed) return;
+          card.innerHTML = '';
+          if (!meta) { card.appendChild(h('div', { class: 'wbv-link-card-body', text: url })); return; }
+          if (meta.image && /^https?:\/\//.test(meta.image)) {
+            const img = h('img', { class: 'wbv-link-card-img', attrs: { src: meta.image, loading: 'lazy' } });
+            img.addEventListener('error', () => img.remove());
+            card.appendChild(img);
+          }
+          const body = h('div', { class: 'wbv-link-card-body' });
+          body.appendChild(h('div', { class: 'wbv-link-card-title', text: meta.title || url }));
+          body.appendChild(h('div', { class: 'wbv-link-card-domain', text: meta.domain || '' }));
+          card.appendChild(body);
+        }).catch(() => {});
+      }
+      host.appendChild(box);
     }
 
     // Plain text from the start of the contenteditable up to the caret,
