@@ -642,6 +642,56 @@
       this.huddle.createWhiteboardFrame(this.whiteboardId, { ...data }).catch((e) => console.warn('[wbv] undo recreate frame failed', e));
     }
 
+    // ── Snapping + alignment guides ──
+    // Given a moving object's proposed world box, snap its nearest edge or
+    // centre to another object's edge/centre within ~6 screen px, and report
+    // the guide line position(s) to draw. Considers notes + frames.
+    _applySnap(excludeId, x, y, w, h) {
+      const vp = this.canvas?.getViewport() || { scale: 1 };
+      const TH = 6 / (vp.scale || 1); // threshold in world units
+      const mX = [x, x + w / 2, x + w];
+      const mY = [y, y + h / 2, y + h];
+      let snapX = null, dX = TH, guideX = null;
+      let snapY = null, dY = TH, guideY = null;
+      const consider = (o) => {
+        if (!o || o.id === excludeId) return;
+        const tX = [o.x, o.x + o.w / 2, o.x + o.w];
+        const tY = [o.y, o.y + o.h / 2, o.y + o.h];
+        for (let i = 0; i < 3; i++) for (const t of tX) {
+          const d = Math.abs(mX[i] - t);
+          if (d < dX) { dX = d; snapX = x + (t - mX[i]); guideX = t; }
+        }
+        for (let i = 0; i < 3; i++) for (const t of tY) {
+          const d = Math.abs(mY[i] - t);
+          if (d < dY) { dY = d; snapY = y + (t - mY[i]); guideY = t; }
+        }
+      };
+      for (const e of this.notes.values()) consider(e.data);
+      for (const e of this.frames.values()) consider(e.data);
+      return { x: snapX != null ? snapX : x, y: snapY != null ? snapY : y, guideX, guideY };
+    }
+    _ensureGuides() {
+      if (this._vGuide) return;
+      this._vGuide = h('div', { class: 'wbv-guide wbv-guide-v' });
+      this._hGuide = h('div', { class: 'wbv-guide wbv-guide-h' });
+      this._vGuide.style.display = 'none';
+      this._hGuide.style.display = 'none';
+      this.boardEl.appendChild(this._vGuide);
+      this.boardEl.appendChild(this._hGuide);
+    }
+    _showSnapGuides(guideX, guideY) {
+      this._ensureGuides();
+      const vp = this.canvas?.getViewport() || { x: 0, y: 0, scale: 1 };
+      if (guideX != null) { this._vGuide.style.display = 'block'; this._vGuide.style.left = ((guideX - vp.x) * vp.scale) + 'px'; }
+      else this._vGuide.style.display = 'none';
+      if (guideY != null) { this._hGuide.style.display = 'block'; this._hGuide.style.top = ((guideY - vp.y) * vp.scale) + 'px'; }
+      else this._hGuide.style.display = 'none';
+    }
+    _clearSnapGuides() {
+      if (this._vGuide) this._vGuide.style.display = 'none';
+      if (this._hGuide) this._hGuide.style.display = 'none';
+    }
+
     async clearAll() {
       if (!confirm('Clear the whiteboard for everyone? This cannot be undone.')) return;
       this.canvas?.clearAll();
@@ -1024,6 +1074,9 @@
           if (Math.abs(dx) + Math.abs(dy) > 1) this._noteDrag.moved = true;
           data.x = start.origX + dx;
           data.y = start.origY + dy;
+          const snap = this._applySnap(data.id, data.x, data.y, data.w, data.h);
+          data.x = snap.x; data.y = snap.y;
+          this._showSnapGuides(snap.guideX, snap.guideY);
           this._positionNote(entry);
           this._scheduleMinimapRender();
         };
@@ -1031,6 +1084,7 @@
           el.removeEventListener('pointermove', onMove);
           el.removeEventListener('pointerup', onUp);
           el.removeEventListener('pointercancel', onUp);
+          this._clearSnapGuides();
           if (this._noteDrag?.moved) {
             const px = start.origX, py = start.origY;
             this._pushUndo(() => this._applyNoteGeom(data.id, { x: px, y: py }));
@@ -1498,6 +1552,9 @@
         const onMove = (ev) => {
           data.x = start.origX + (ev.clientX - start.clientX) / start.scale;
           data.y = start.origY + (ev.clientY - start.clientY) / start.scale;
+          const snap = this._applySnap(data.id, data.x, data.y, data.w, data.h);
+          data.x = snap.x; data.y = snap.y;
+          this._showSnapGuides(snap.guideX, snap.guideY);
           this._positionFrame(entry);
           this._scheduleMinimapRender();
         };
@@ -1505,6 +1562,7 @@
           chipEl.removeEventListener('pointermove', onMove);
           chipEl.removeEventListener('pointerup', onUp);
           chipEl.removeEventListener('pointercancel', onUp);
+          this._clearSnapGuides();
           if (start.origX !== data.x || start.origY !== data.y) {
             const px = start.origX, py = start.origY;
             this._pushUndo(() => this._applyFrameGeom(data.id, { x: px, y: py }));

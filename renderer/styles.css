@@ -8174,6 +8174,16 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 }
 .wbv-frame-swatch:hover { transform: scale(1.08); }
 
+/* Alignment guides shown while dragging a note/frame near another. */
+.wbv-guide {
+  position: absolute;
+  pointer-events: none;
+  z-index: 50;
+  background: #ff3b6b;
+}
+.wbv-guide-v { top: 0; bottom: 0; width: 1px; }
+.wbv-guide-h { left: 0; right: 0; height: 1px; }
+
 /* Unified colour control — a dot+caret button (in any contextual toolbar
  * or the palette) that opens the .wbv-color-pop popover. FigJam-style. */
 .wbv-toolbar-color {
