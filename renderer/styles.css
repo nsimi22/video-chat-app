@@ -2536,17 +2536,28 @@ body.has-fullscreen-tile { overflow: hidden; }
    are viewport-relative regardless of scroll. */
 .emoji-picker {
   position: absolute; bottom: 64px; right: 16px;
-  width: 296px; max-height: 340px;
+  width: 296px; max-height: 360px;
   background: var(--bg-2);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   padding: 8px;
-  overflow-y: auto;
+  overflow: hidden;
   z-index: 30;
-  display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px;
+  display: flex; flex-direction: column; gap: 6px;
   box-shadow: var(--shadow-2);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
+}
+.emoji-search {
+  flex-shrink: 0; width: 100%; box-sizing: border-box;
+  padding: 6px 9px; border-radius: var(--r-sm);
+  border: 1px solid var(--line); background: rgba(0, 0, 0, 0.2);
+  color: var(--text); font-size: 12px; outline: none;
+}
+.emoji-search:focus { border-color: var(--accent); }
+.emoji-scroll {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px;
 }
 .emoji-picker[data-anchor="react"] { position: fixed; }
 .emoji-picker button {
