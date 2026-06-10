@@ -785,6 +785,53 @@
       this.canvas.updateStrokePoints(stroke.uuid, eps);
       return true;
     }
+    // Drag from a note's edge handle to another object → bound connector
+    // (or to empty space → arrow with a free end). Document-level listeners
+    // so the drag tracks past the handle.
+    _startConnectorDrag(sourceRef, e) {
+      e.stopPropagation();
+      e.preventDefault();
+      const box = this._objBox(sourceRef);
+      if (!box) return;
+      const uuid = (crypto?.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const color = resolveColor(this.drawColor) || '#5b8cff';
+      const stroke = { uuid, tool: 'arrow', color, size: 4, points: [[box.cx, box.cy], [box.cx, box.cy]] };
+      this.canvas.addPersistedStroke(stroke);
+      this._paintedStrokeUuids.add(uuid);
+      let moved = false;
+      const onMove = (ev) => {
+        moved = true;
+        const w = this._clientToWorld(ev.clientX, ev.clientY);
+        stroke.points = [this._anchorOnBox(box, w.x, w.y), [w.x, w.y]];
+        this.canvas.updateStrokePoints(uuid, stroke.points);
+      };
+      const onUp = (ev) => {
+        document.removeEventListener('pointermove', onMove, true);
+        document.removeEventListener('pointerup', onUp, true);
+        if (!moved) { this.canvas.removeStroke(uuid); this._paintedStrokeUuids.delete(uuid); return; }
+        const w = this._clientToWorld(ev.clientX, ev.clientY);
+        const target = this._objAt(w.x, w.y);
+        stroke.bind = { from: sourceRef };
+        if (target && target.id !== sourceRef.id) stroke.bind.to = target;
+        const eps = this._connectorEndpoints(stroke);
+        stroke.points = eps;
+        this.canvas.updateStrokePoints(uuid, eps);
+        // Replicate to peers (begin/end render it; bind makes it reflow there).
+        this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'begin', uuid, x: eps[0][0], y: eps[0][1], tool: 'arrow', color, size: 4 }, this.viewId);
+        this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'end', uuid, x: eps[1][0], y: eps[1][1], tool: 'arrow', color, size: 4 }, this.viewId);
+        this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'bind', uuid, bind: stroke.bind }, this.viewId);
+        this.huddle.persistWhiteboardStroke(this.whiteboardId, stroke).catch(() => {});
+        this._pushUndo(() => {
+          this.canvas?.removeStroke(uuid);
+          this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'delete-stroke', uuid }, this.viewId);
+          this.huddle.deleteWhiteboardStrokeByUuid(this.whiteboardId, uuid).catch(() => {});
+        });
+        this._reflowFor(sourceRef.id, false);
+        if (stroke.bind.to) this._reflowFor(stroke.bind.to.id, false);
+      };
+      document.addEventListener('pointermove', onMove, true);
+      document.addEventListener('pointerup', onUp, true);
+    }
 
     async clearAll() {
       if (!confirm('Clear the whiteboard for everyone? This cannot be undone.')) return;
@@ -1009,6 +1056,12 @@
         });
         el.appendChild(handle);
       }
+      // Connector handles (4 mid-edges) — drag to another object to link.
+      for (const side of ['n', 'e', 's', 'w']) {
+        const ch = h('span', { class: `wbv-conn-handle is-${side}`, attrs: { 'data-side': side, 'aria-hidden': 'true' } });
+        ch.addEventListener('pointerdown', (e) => this._startConnectorDrag({ type: 'note', id: note.id }, e));
+        el.appendChild(ch);
+      }
 
       this.worldLayer.appendChild(el);
 
@@ -1166,7 +1219,7 @@
         // (color swatches / delete), the vote pill, or a resize
         // handle — those have their own handlers and a tiny pointer
         // drift would otherwise burn a spurious "moved" persist.
-        if (e.target.closest('.wbv-note-toolbar, .wbv-note-vote, .wbv-resize-handle, a.wbv-link')) return;
+        if (e.target.closest('.wbv-note-toolbar, .wbv-note-vote, .wbv-resize-handle, .wbv-conn-handle, a.wbv-link')) return;
         e.stopPropagation();
         e.preventDefault();
         const vp = this.canvas?.getViewport() || { scale: 1 };

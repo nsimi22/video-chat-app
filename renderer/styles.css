@@ -8174,6 +8174,27 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 }
 .wbv-frame-swatch:hover { transform: scale(1.08); }
 
+/* Connector handles — 4 mid-edge dots on a note; drag to link to another. */
+.wbv-conn-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent, #0a84ff);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transition: opacity .1s ease;
+  cursor: crosshair;
+  z-index: 4;
+}
+.wbv-note:hover .wbv-conn-handle,
+.wbv-note.is-selected .wbv-conn-handle { opacity: 1; }
+.wbv-conn-handle.is-n { top: -7px; left: 50%; transform: translateX(-50%); }
+.wbv-conn-handle.is-s { bottom: -7px; left: 50%; transform: translateX(-50%); }
+.wbv-conn-handle.is-e { right: -7px; top: 50%; transform: translateY(-50%); }
+.wbv-conn-handle.is-w { left: -7px; top: 50%; transform: translateY(-50%); }
+
 /* Alignment guides shown while dragging a note/frame near another. */
 .wbv-guide {
   position: absolute;
