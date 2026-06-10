@@ -1001,7 +1001,10 @@
       const id = crypto.randomUUID();
       const W = 160, H = 100, color = '#a3cbef';
       const note = { id, x, y, w: W, h: H, text: '', color_key: CUSTOM_KIND, color, shape, author_id: this.huddle.peerId, votes: 0, mine: false };
-      this._renderNote(note, { focus: true });
+      // Don't auto-enter text edit — a new shape should be selected and
+      // resizable right away (double-click it to add a label).
+      this._renderNote(note, { focus: false });
+      this._selectNote(id);
       this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'create', note }, this.viewId);
       this._pushUndo(() => this._deleteNote(id));
       try { await this.huddle.createWhiteboardNote(this.whiteboardId, { id, x, y, w: W, h: H, text: '', color, color_key: CUSTOM_KIND, shape }); }
@@ -1062,6 +1065,37 @@
       entry._renderCells();
       this._positionNote(entry);
       this._reflowFor(note.id, false);
+      // Add-row / add-column controls + persist.
+      const persistMeta = () => {
+        this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: note.id, meta: entry.data.meta } }, this.viewId);
+        this.huddle.updateWhiteboardNote(note.id, { meta: entry.data.meta }).catch(() => {});
+      };
+      const addRow = h('button', { class: 'wbv-table-add', text: '+ Row', attrs: { title: 'Add row' } });
+      addRow.addEventListener('click', (e) => { e.stopPropagation(); const m = entry.data.meta; m.cells.push(new Array(m.cols).fill('')); m.rows = m.cells.length; entry._renderCells(); persistMeta(); });
+      const addCol = h('button', { class: 'wbv-table-add', text: '+ Col', attrs: { title: 'Add column' } });
+      addCol.addEventListener('click', (e) => { e.stopPropagation(); const m = entry.data.meta; m.cells.forEach((r) => r.push('')); m.cols += 1; entry._renderCells(); persistMeta(); });
+      head.insertBefore(addCol, head.firstChild);
+      head.insertBefore(addRow, head.firstChild);
+      // SE handle to scale the whole table.
+      const rh = h('span', { class: 'wbv-resize-handle is-se wbv-resize-corner', attrs: { 'aria-hidden': 'true' } });
+      el.appendChild(rh);
+      rh.addEventListener('pointerdown', (e) => {
+        e.stopPropagation(); e.preventDefault();
+        const vp = this.canvas?.getViewport() || { scale: 1 };
+        const start = { cx: e.clientX, cy: e.clientY, w: entry.data.w, h: entry.data.h, scale: vp.scale };
+        rh.setPointerCapture?.(e.pointerId);
+        const onMove = (ev) => {
+          entry.data.w = Math.max(120, start.w + (ev.clientX - start.cx) / start.scale);
+          entry.data.h = Math.max(60, start.h + (ev.clientY - start.cy) / start.scale);
+          this._positionNote(entry);
+        };
+        const onUp = () => {
+          rh.removeEventListener('pointermove', onMove); rh.removeEventListener('pointerup', onUp); rh.removeEventListener('pointercancel', onUp);
+          this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: note.id, w: entry.data.w, h: entry.data.h } }, this.viewId);
+          this.huddle.updateWhiteboardNote(note.id, { w: entry.data.w, h: entry.data.h }).catch(() => {});
+        };
+        rh.addEventListener('pointermove', onMove); rh.addEventListener('pointerup', onUp); rh.addEventListener('pointercancel', onUp);
+      });
       // Drag the whole table via its header (snap + reflow + undo).
       head.addEventListener('pointerdown', (e) => {
         if (e.target.closest('.wbv-table-del')) return;
