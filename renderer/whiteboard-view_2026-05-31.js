@@ -808,11 +808,16 @@
       const onUp = (ev) => {
         document.removeEventListener('pointermove', onMove, true);
         document.removeEventListener('pointerup', onUp, true);
-        if (!moved) { this.canvas.removeStroke(uuid); this._paintedStrokeUuids.delete(uuid); return; }
         const w = this._clientToWorld(ev.clientX, ev.clientY);
         const target = this._objAt(w.x, w.y);
-        stroke.bind = { from: sourceRef };
-        if (target && target.id !== sourceRef.id) stroke.bind.to = target;
+        if (!moved || !target || target.id === sourceRef.id) {
+          // No other object under the drop — cancel rather than leave a
+          // stray free-floating arrow.
+          this.canvas.removeStroke(uuid);
+          this._paintedStrokeUuids.delete(uuid);
+          return;
+        }
+        stroke.bind = { from: sourceRef, to: target };
         const eps = this._connectorEndpoints(stroke);
         stroke.points = eps;
         this.canvas.updateStrokePoints(uuid, eps);
