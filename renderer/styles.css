@@ -2411,6 +2411,13 @@ body.has-fullscreen-tile { overflow: hidden; }
   transition: background var(--t-fast), border-color var(--t-fast);
 }
 .reaction:hover { background: rgba(255, 255, 255, 0.1); border-color: var(--line-strong); }
+/* Force colour-emoji rendering so the .mine accent colour never tints the
+   glyph (a text-presentation ❤ would otherwise show monochrome/blue). */
+.reaction-emoji {
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-variant-emoji: emoji;
+}
+.reaction-count { margin-left: 4px; }
 .reaction.mine {
   background: var(--accent-soft);
   border-color: rgba(10, 132, 255, 0.4);

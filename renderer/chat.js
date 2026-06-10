@@ -1766,7 +1766,15 @@ class ChatView {
       if (!Array.isArray(peers) || peers.length === 0) continue;
       const pill = document.createElement('span');
       pill.className = 'reaction' + (peers.includes(this.mesh.peerId) ? ' mine' : '');
-      pill.textContent = `${emoji} ${peers.length}`;
+      // Emoji in its own span with the colour-emoji font so the "mine"
+      // accent colour can't tint it monochrome/blue; count stays themed.
+      const emojiSpan = document.createElement('span');
+      emojiSpan.className = 'reaction-emoji';
+      emojiSpan.textContent = emoji;
+      const countSpan = document.createElement('span');
+      countSpan.className = 'reaction-count';
+      countSpan.textContent = String(peers.length);
+      pill.append(emojiSpan, countSpan);
       // Native title tooltip lists everyone who reacted with this emoji
       // so the user can tell *who* reacted without us building a custom
       // popover. Slack-style phrasing — "you, Alice and 2 others
