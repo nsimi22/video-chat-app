@@ -1063,16 +1063,29 @@
       this._positionNote(entry);
       this._reflowFor(note.id, false);
       // Add-row / add-column controls + persist.
-      const persistMeta = () => {
-        this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: note.id, meta: entry.data.meta } }, this.viewId);
-        this.huddle.updateWhiteboardNote(note.id, { meta: entry.data.meta }).catch(() => {});
+      // Persist meta + size together (adding a row/col grows the table).
+      const persistTable = () => {
+        this.huddle.sendWhiteboardNote(this.whiteboardId, { action: 'update', note: { id: note.id, meta: entry.data.meta, w: entry.data.w, h: entry.data.h } }, this.viewId);
+        this.huddle.updateWhiteboardNote(note.id, { meta: entry.data.meta, w: entry.data.w, h: entry.data.h }).catch(() => {});
       };
       // FigJam-style edge buttons: '+' on the right edge adds a column,
       // '+' on the bottom edge adds a row (shown on hover/select).
       const addCol = h('button', { class: 'wbv-table-edge wbv-table-edge-col', text: '+', attrs: { title: 'Add column', 'aria-label': 'Add column' } });
-      addCol.addEventListener('click', (e) => { e.stopPropagation(); const m = entry.data.meta; m.cells.forEach((r) => r.push('')); m.cols += 1; entry._renderCells(); persistMeta(); });
+      addCol.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const m = entry.data.meta;
+        entry.data.w += entry.data.w / m.cols; // grow by one column's width
+        m.cells.forEach((r) => r.push('')); m.cols += 1;
+        entry._renderCells(); this._positionNote(entry); persistTable();
+      });
       const addRow = h('button', { class: 'wbv-table-edge wbv-table-edge-row', text: '+', attrs: { title: 'Add row', 'aria-label': 'Add row' } });
-      addRow.addEventListener('click', (e) => { e.stopPropagation(); const m = entry.data.meta; m.cells.push(new Array(m.cols).fill('')); m.rows = m.cells.length; entry._renderCells(); persistMeta(); });
+      addRow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const m = entry.data.meta;
+        entry.data.h += (entry.data.h - 18) / m.rows; // grow by one row's height
+        m.cells.push(new Array(m.cols).fill('')); m.rows = m.cells.length;
+        entry._renderCells(); this._positionNote(entry); persistTable();
+      });
       el.appendChild(addCol); el.appendChild(addRow);
       // SE handle to scale the whole table.
       const rh = h('span', { class: 'wbv-resize-handle is-se wbv-resize-corner', attrs: { 'aria-hidden': 'true' } });

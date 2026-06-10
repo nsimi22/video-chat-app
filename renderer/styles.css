@@ -8220,12 +8220,14 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   display: flex; flex-direction: column;
   background: var(--bg-1, #1a1d22);
   border: 1px solid var(--line, rgba(255, 255, 255, 0.14));
-  border-radius: 8px; overflow: hidden;
+  border-radius: 8px;
+  overflow: visible; /* so the edge + buttons / resize handle aren't clipped */
 }
 .wbv-table-head {
   flex-shrink: 0; min-height: 18px; cursor: grab;
   display: flex; align-items: center; gap: 2px;
   background: rgba(255, 255, 255, 0.06);
+  border-radius: 8px 8px 0 0;
 }
 .wbv-table-head:active { cursor: grabbing; }
 .wbv-table-add {
@@ -8243,6 +8245,7 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   flex: 1; display: grid; gap: 1px;
   grid-auto-rows: 1fr; /* rows share the box height evenly so it fills */
   background: var(--line, rgba(255, 255, 255, 0.14));
+  overflow: hidden; border-radius: 0 0 8px 8px; /* clip cells to rounded bottom */
 }
 .wbv-table-cell {
   background: var(--bg-1, #1a1d22); color: var(--tx-hi, #eef0f2);
