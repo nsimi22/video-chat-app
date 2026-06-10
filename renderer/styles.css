@@ -8202,13 +8202,14 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   background: color-mix(in srgb, var(--wbv-note-bg) 16%, transparent);
   border: 2px solid var(--wbv-note-bg);
   border-radius: 10px;
-  display: flex; align-items: center; justify-content: center;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
 }
 .wbv-note.wbv-shape .wbv-note-fold,
 .wbv-note.wbv-shape .wbv-note-footer { display: none; }
 .wbv-note.wbv-shape .wbv-note-text {
-  min-height: 0; width: 100%; text-align: center;
+  flex: 0 0 auto; min-height: 0; width: 100%; text-align: center;
   color: var(--tx-hi, #eef0f2);
+  display: flex; flex-direction: column; justify-content: center;
 }
 .wbv-note.wbv-shape-ellipse .wbv-note-card { border-radius: 50%; }
 .wbv-note.wbv-shape-diamond .wbv-note-card {
