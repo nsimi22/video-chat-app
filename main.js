@@ -50,10 +50,18 @@ if (!gotLock) {
 } else {
   app.on('second-instance', (_event, argv) => {
     const url = argv.find((a) => typeof a === 'string' && a.startsWith(`${HUDDLE_PROTOCOL}://`));
-    if (url) deliverProtocolUrl(url);
     // Window-focus is centralised in deliverProtocolUrl so a URL
     // arriving via open-url (macOS) or pending-buffer drain gets
     // the same restore + focus treatment.
+    if (url) { deliverProtocolUrl(url); return; }
+    // No deep link means the user just launched the app again (taskbar
+    // pin, Start menu, double-clicked the installer shortcut). Surface
+    // the existing window — otherwise the second launch exits silently
+    // and the app looks like it failed to start.
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      try { mainWindow.focus(); } catch {}
+    }
   });
 }
 

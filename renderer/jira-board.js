@@ -501,7 +501,14 @@
   function matches(t) {
     const f = board.filter;
     const myEmail = (ctx.getSettings()?.jira?.email || '').toLowerCase();
-    if (f === 'mine' && !t.assignees.some((a) => (a.email || '').toLowerCase() === myEmail && myEmail)) return false;
+    // Gate on myEmail OUTSIDE the some() — the old `&& myEmail` inside
+    // the callback made it always falsy when no email was configured,
+    // burying the empty-email case in the per-assignee comparison.
+    // Behavior is the same ('mine' matches nothing without an email —
+    // a state the UI can't reach anyway, since the toolbar dropdown
+    // only offers "My issues" when an email is set), but the intent
+    // now reads directly.
+    if (f === 'mine' && (!myEmail || !t.assignees.some((a) => (a.email || '').toLowerCase() === myEmail))) return false;
     if (f !== 'all' && f !== 'mine' && !t.assignees.some((a) => a.id === f)) return false;
     if (board.query) {
       const hay = (t.key + ' ' + t.summary + ' ' + t.labels.join(' ')).toLowerCase();
