@@ -93,6 +93,7 @@
     square: `<svg ${A}><rect x="4.5" y="4.5" width="15" height="15" rx="1.5"/></svg>`,
     circle: `<svg ${A}><circle cx="12" cy="12" r="8"/></svg>`,
     diamond: `<svg ${A}><path d="M12 3l9 9-9 9-9-9z"/></svg>`,
+    table: `<svg ${A}><rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><line x1="3.5" y1="9.5" x2="20.5" y2="9.5"/><line x1="3.5" y1="14.5" x2="20.5" y2="14.5"/><line x1="9.5" y1="4.5" x2="9.5" y2="19.5"/><line x1="14.5" y1="4.5" x2="14.5" y2="19.5"/></svg>`,
     text: `<svg ${A}><polyline points="4 7 4 4 20 4 20 7"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="9" y1="20" x2="15" y2="20"/></svg>`,
     cursor: `<svg ${A}><path d="M5 3l6.5 16 2-6.5 6.5-2z"/></svg>`,
     zoomIn: `<svg ${A}><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>`,

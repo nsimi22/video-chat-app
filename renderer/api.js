@@ -2067,6 +2067,8 @@
         color: note.color || '#ffd866',
       };
       if (note.color_key) row.color_key = note.color_key;
+      if (note.shape) row.shape = note.shape;       // rect/ellipse/diamond/table
+      if (note.meta != null) row.meta = note.meta;  // shape fill / table cells
       const { error } = await this.supabase.from('whiteboard_notes').insert(row);
       if (error) throw error;
     }

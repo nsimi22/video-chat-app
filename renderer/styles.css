@@ -8195,6 +8195,55 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 }
 .wbv-frame-swatch:hover { transform: scale(1.08); }
 
+/* Shape objects (rect/ellipse/diamond) — a CSS skin over the sticky note. */
+.wbv-note.wbv-shape { --wbv-note-rot: 0deg; }
+.wbv-note.wbv-shape .wbv-note-card {
+  background: color-mix(in srgb, var(--wbv-note-bg) 16%, transparent);
+  border: 2px solid var(--wbv-note-bg);
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+}
+.wbv-note.wbv-shape .wbv-note-fold,
+.wbv-note.wbv-shape .wbv-note-footer { display: none; }
+.wbv-note.wbv-shape .wbv-note-text {
+  min-height: 0; width: 100%; text-align: center;
+  color: var(--tx-hi, #eef0f2);
+}
+.wbv-note.wbv-shape-ellipse .wbv-note-card { border-radius: 50%; }
+.wbv-note.wbv-shape-diamond .wbv-note-card {
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); border-radius: 0;
+}
+
+/* Table object. */
+.wbv-note.wbv-table {
+  position: absolute;
+  display: flex; flex-direction: column;
+  background: var(--bg-1, #1a1d22);
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.14));
+  border-radius: 8px; overflow: hidden;
+}
+.wbv-table-head {
+  flex-shrink: 0; height: 16px; cursor: grab;
+  display: flex; align-items: center; justify-content: flex-end;
+  background: rgba(255, 255, 255, 0.06);
+}
+.wbv-table-head:active { cursor: grabbing; }
+.wbv-table-del {
+  border: 0; background: transparent; color: var(--tx-lo, #8a8e96);
+  cursor: pointer; display: inline-flex; align-items: center; padding: 0 3px;
+}
+.wbv-table-del:hover { color: var(--danger, #ff453a); }
+.wbv-table-grid {
+  flex: 1; display: grid; gap: 1px;
+  background: var(--line, rgba(255, 255, 255, 0.14));
+}
+.wbv-table-cell {
+  background: var(--bg-1, #1a1d22); color: var(--tx-hi, #eef0f2);
+  font-size: 12px; line-height: 1.3; padding: 5px 7px; min-height: 26px;
+  outline: none; overflow-wrap: anywhere;
+}
+.wbv-table-cell:focus { background: var(--bg-2, rgba(255, 255, 255, 0.06)); }
+
 /* Connector handles — 4 mid-edge dots on a note; drag to link to another. */
 .wbv-conn-handle {
   position: absolute;
