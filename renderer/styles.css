@@ -1501,9 +1501,13 @@ body.huddle-call-minimized #tiles {
      This bottom-right anchor is the fallback so the panel never falls
      back to its in-flow top-left slot if JS hasn't positioned it yet. */
   inset: auto 16px 16px auto;
-  width: 260px;
-  height: 184px;
-  max-height: 184px;
+  /* !important so a screen share can't blow the panel open: when a
+     share is staged, .tiles gets .has-spotlight which sets its own
+     grid-template-rows + the screen tile carries min-height:360px and
+     spans all rows. Those would otherwise force the panel past 260x184. */
+  width: 260px !important;
+  height: 184px !important;
+  max-height: 184px !important;
   z-index: 60;            /* above stage + dock, below modals */
   margin: 0;
   padding: 0;
@@ -1513,13 +1517,49 @@ body.huddle-call-minimized #tiles {
   background: var(--bg-elev);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
   /* Single-cell: show the lead tile filling the panel; extra tiles are
-     clipped by overflow:hidden rather than shrunk to slivers. */
-  grid-template-columns: 1fr;
-  grid-auto-rows: 100%;
+     clipped by overflow:hidden rather than shrunk to slivers. Override
+     the spotlight grid template (.tiles.has-spotlight) explicitly. */
+  grid-template-columns: 1fr !important;
+  grid-template-rows: none !important;
+  grid-auto-rows: 100% !important;
 }
 
 /* Lead tile fills the panel; chrome that assumes full size is muted. */
 body.huddle-call-minimized #tiles .tile { min-height: 0; border-radius: 0; }
+/* Undo the spotlight + screen-tile placement on the special tiles
+   (.tile.screen spans 2 cols / min-height:360px; spotlighted spans all
+   rows; fullscreen-mode is absolute inset:0) so they collapse back into
+   the single panel cell and flow normally (auto), rather than blowing
+   the panel open. */
+body.huddle-call-minimized #tiles .tile.screen,
+body.huddle-call-minimized #tiles .tile.spotlighted,
+body.huddle-call-minimized #tiles .tile.fullscreen-mode {
+  grid-column: auto !important;
+  grid-row: auto !important;
+  min-height: 0 !important;
+  aspect-ratio: auto !important;
+  position: relative !important;  /* undo fullscreen-mode's absolute escape */
+  inset: auto !important;
+  border-radius: 0;
+}
+/* The minimized panel shows exactly ONE tile — the active speaker, marked
+   .mini-focus by updateMiniCallFocus (sticky to the last speaker, falling
+   back to self). Hide every other tile, including any shared-screen tile
+   (a screen is too small to be useful here — we toast about it instead). */
+body.huddle-call-minimized #tiles .tile:not(.mini-focus) {
+  display: none !important;
+}
+/* Force the shown tile to fill the single panel cell. Needed because in
+   a screen share .tiles becomes the spotlight grid and a non-spotlighted
+   camera tile (which the panel often focuses) inherits grid-column: 2 +
+   aspect-ratio: 16/10 from the filmstrip rule — that mis-placed the tile
+   and broke the panel layout during a share. */
+body.huddle-call-minimized #tiles .tile.mini-focus {
+  grid-column: 1 / -1 !important;
+  grid-row: 1 !important;
+  aspect-ratio: auto !important;
+  min-height: 0 !important;
+}
 body.huddle-call-minimized #tiles .tile-actions,
 body.huddle-call-minimized #tiles .draw-toolbar,
 body.huddle-call-minimized #tiles .tile-hand,
@@ -1564,6 +1604,10 @@ body.huddle-call-minimized .mini-call-bar {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Screen-share indicator — hidden until the panel is minimized AND a
+   screen is being shared (.has-screen toggled by syncMiniScreenIndicator). */
+.mini-call-sharing { display: none; flex: 0 0 auto; align-items: center; color: var(--accent); }
+.mini-call-bar.has-screen .mini-call-sharing { display: inline-flex; }
 .mini-call-actions { display: flex; gap: 4px; flex: 0 0 auto; }
 .mini-call-btn {
   display: inline-flex;

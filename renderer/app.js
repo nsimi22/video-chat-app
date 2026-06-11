@@ -3006,6 +3006,11 @@ function setCallMinimized(on) {
     if (els.miniCallTitle) els.miniCallTitle.textContent = ch?.name || 'Call';
     // Reflect the current mute state on the mini mic button.
     els.miniBtnMic?.classList.toggle('muted', els.btnMic.classList.contains('muted'));
+    // The panel shows ONE tile — the active speaker (sticky to the last
+    // speaker, falling back to self). A shared screen is too small to be
+    // useful here, so we keep the speaker in view and toast instead.
+    updateMiniCallFocus();
+    if (hasActiveScreenShare()) notifyMiniScreenShare();
     const p = initialMiniCallPos();
     applyMiniCallPos(p.x, p.y, false);
   } else {
@@ -3013,8 +3018,48 @@ function setCallMinimized(on) {
     els.tiles.style.left = '';
     els.tiles.style.top = '';
   }
-  // Keep the header's Minimize/Expand affordance in sync.
+  // Sync the persistent share indicator for both directions (clears it
+  // when restoring) and keep the header's Minimize/Expand affordance current.
+  syncMiniScreenIndicator();
   renderCallHeader();
+}
+
+// Choose which single tile the minimized panel shows: the active speaker
+// (or an explicitly preferred peer), staying sticky on the last speaker
+// during silence, and falling back to self / any camera / any tile. Marks
+// it with .mini-focus; CSS hides every other tile while minimized.
+function updateMiniCallFocus(preferPeerId) {
+  if (!state.callMinimized) return;
+  const pid = preferPeerId || state.speakingPeer;
+  let target = pid ? tileForPeer(pid) : null;
+  if (!target) target = els.tiles.querySelector('.tile.mini-focus'); // keep last
+  if (!target) target = state.tilesByKey.get('self-cam');
+  if (!target) target = els.tiles.querySelector('.tile:not(.screen)');
+  if (!target) target = els.tiles.querySelector('.tile');
+  for (const t of els.tiles.querySelectorAll('.tile.mini-focus')) {
+    if (t !== target) t.classList.remove('mini-focus');
+  }
+  if (target) target.classList.add('mini-focus');
+}
+
+// True if a non-whiteboard screen share is currently tiled.
+function hasActiveScreenShare() {
+  for (const [key, tile] of state.tilesByKey) {
+    if (key.startsWith('screen:') && !tile.classList.contains('whiteboard')) return true;
+  }
+  return false;
+}
+
+function notifyMiniScreenShare() {
+  showToast('A screen is being shared — expand the call to view it.', { duration: 3500 });
+}
+
+// Persistent cue in the mini panel: a small screen glyph stays lit while
+// minimized and a screen is being shared (the share itself isn't rendered
+// in the tiny panel). Complements the transient toast, which is easy to
+// miss. Cheap + idempotent — safe to call from any share/minimize event.
+function syncMiniScreenIndicator() {
+  els.miniCallBar?.classList.toggle('has-screen', state.callMinimized && hasActiveScreenShare());
 }
 
 // Pointer-drag the panel by its grip. A threshold isn't needed since the
@@ -4674,6 +4719,7 @@ function makeTile({ key, label, kind, userId }) {
 function removeTile(key) {
   const tile = state.tilesByKey.get(key);
   const wasScreen = tile?.classList.contains('screen') && !tile.classList.contains('whiteboard');
+  const wasMiniFocus = tile?.classList.contains('mini-focus');
   if (tile) tile.remove();
   state.tilesByKey.delete(key);
   state.zoomByKey.delete(key);
@@ -4690,6 +4736,10 @@ function removeTile(key) {
   if (state.fullscreenKey === key) clearFullscreen();
   syncTilesVisibility();
   if (wasScreen) refreshLayoutSwitcherUi?.();
+  // If the minimized panel was showing the tile that just left, re-pick.
+  if (wasMiniFocus && state.callMinimized) updateMiniCallFocus();
+  // A screen tile leaving may clear the mini share indicator.
+  if (wasScreen) syncMiniScreenIndicator();
 }
 
 // Spotlight ("Focus"): stage one screen/whiteboard tile in the main column
@@ -4958,6 +5008,8 @@ function setSpeakingPeer(peerId) {
   if (peerId) {
     const tile = tileForPeer(peerId);
     if (tile) tile.classList.add('speaking');
+    // Follow the speaker in the minimized panel (silence → keep last).
+    if (state.callMinimized) updateMiniCallFocus(peerId);
   }
 }
 
@@ -6321,6 +6373,8 @@ function addLocalScreenTile(stream, label) {
   // used to provide this implicitly; without staging, the span-2 share
   // tile also overflows the dock-squeezed grids.
   if (!state.spotlightKey && !state.forceGridLayout) setSpotlight(key);
+  // Reflect the local share in the mini panel's indicator if minimized.
+  syncMiniScreenIndicator();
 }
 
 function onTrack({ stream, track, fromId }) {
@@ -6411,6 +6465,10 @@ function renderRemoteScreen(stream, screen) {
   // user has explicitly asked for equal-size grid — skip the
   // auto-spotlight that'd otherwise pull them into stage layout.
   if (!state.spotlightKey && !state.forceGridLayout) setSpotlight(key);
+  // Minimized: the panel keeps showing the speaker, so toast to surface
+  // the new remote share rather than silently changing nothing visible.
+  if (state.callMinimized) notifyMiniScreenShare();
+  syncMiniScreenIndicator();
 }
 
 function onScreenAnnounce(detail) {
