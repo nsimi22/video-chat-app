@@ -580,9 +580,11 @@
       room.on(RE.LocalTrackUnpublished, (pub) => this._syncLocalMuteFromPub(pub));
       room.on(RE.TrackMuted, (pub, participant) => {
         if (participant.isLocal) this._syncLocalMuteFromPub(pub);
+        else this._syncRemoteMuteFromParticipant(participant);
       });
       room.on(RE.TrackUnmuted, (pub, participant) => {
         if (participant.isLocal) this._syncLocalMuteFromPub(pub);
+        else this._syncRemoteMuteFromParticipant(participant);
       });
       // LK applies its own audio-level threshold server-side; an empty
       // array means nobody is above it (silence). Re-emit as a single
@@ -809,6 +811,28 @@
         return;
       }
       this.huddle.sendMuteState(this._micOn, this._camOn);
+    }
+
+    // Reconcile a REMOTE peer's mic/cam overlay against LiveKit's
+    // authoritative publication state. The renderer normally tracks remote
+    // mute via the `mute-state` message broadcast over the huddle channel,
+    // but that single broadcast can be missed (lossy data, or sent during a
+    // presence-sync gap) — leaving a stale badge (e.g. "muted" while the peer
+    // is actually talking). LiveKit's TrackMuted/TrackUnmuted are the ground
+    // truth, so re-emit a `mute-state` event from them to self-heal the
+    // overlay. Shape matches the broadcast path so onRemoteMuteState handles
+    // both uniformly.
+    _syncRemoteMuteFromParticipant(participant) {
+      if (!participant || participant.isLocal) return;
+      const micPub = participant.getTrackPublication(LK.Track.Source.Microphone);
+      const camPub = participant.getTrackPublication(LK.Track.Source.Camera);
+      this.dispatchEvent(new CustomEvent('mute-state', {
+        detail: {
+          from: participant.identity,
+          micOn: micPub ? !micPub.isMuted : false,
+          camOn: camPub ? !camPub.isMuted : false,
+        },
+      }));
     }
 
     // Mesh exposes a single `cameraStream` MediaStream that the renderer
