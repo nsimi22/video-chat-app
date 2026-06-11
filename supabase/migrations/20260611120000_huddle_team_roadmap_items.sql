@@ -51,12 +51,18 @@ create policy team_roadmap_items_delete on public.team_roadmap_items
   for delete to authenticated using (public.is_team_member(team_id));
 
 -- Stamp updated_at and the writer's id on every write; stamp created_by
--- once on insert. auth.uid() is null under the service role / server
--- contexts — leave any supplied value untouched there.
+-- once on insert. On UPDATE the creation audit columns are pinned to the
+-- old row's values so a later editor can't rewrite who/when a bar was
+-- created. auth.uid() is null under the service role / server contexts —
+-- leave any supplied value untouched there.
 create or replace function public.touch_team_roadmap_items()
 returns trigger language plpgsql as $$
 begin
   new.updated_at = now();
+  if tg_op = 'UPDATE' then
+    new.created_by = old.created_by;
+    new.created_at = old.created_at;
+  end if;
   if auth.uid() is not null then
     new.updated_by = auth.uid();
     if tg_op = 'INSERT' then

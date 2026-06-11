@@ -1490,6 +1490,9 @@
     // Session cache: flipping timeline↔feed (or back from kanban) reuses the
     // loaded epics/items; drawer open, refresh, and project changes refetch.
     if (!force && board._roadmapProject === project) { renderActiveView(); return; }
+    // The Start-date custom field id is per-site; a project change can also
+    // mean a site change (the team row carries both), so re-resolve it.
+    if (board._roadmapProject !== project) board._startFieldId = undefined;
     board.roadmapLoading = true;
     if (force) rerenderToolbar();
     renderActiveView(); // skeleton
@@ -1521,6 +1524,20 @@
     board.roadmapLoading = false;
     if (force) rerenderToolbar();
     renderActiveView();
+  }
+
+  // Comparator shared by both views: dated entries ascending, undated last,
+  // ties broken by key/title. Equal dates MUST reach the tie-break — a
+  // `0` difference falling through an `||` chain would return -1 from the
+  // undated branch for both compare(a,b) and compare(b,a), an invalid
+  // comparator under Array.prototype.sort's contract.
+  function compareEntries(da, db, a, b) {
+    if (da && db) {
+      const d = da - db;
+      if (d) return d;
+    } else if (da) return -1;
+    else if (db) return 1;
+    return String(a.t?.key || a.it?.title || '').localeCompare(String(b.t?.key || b.it?.title || ''));
   }
 
   // One normalized entry list both views consume. An epic spans start (the
@@ -1561,10 +1578,7 @@
       hostEl.append(sk);
       return;
     }
-    const entries = roadmapEntries().sort((a, b) =>
-      (a.start && b.start && a.start - b.start)
-      || (a.start ? -1 : b.start ? 1 : 0)
-      || String(a.t?.key || a.it?.title || '').localeCompare(String(b.t?.key || b.it?.title || '')));
+    const entries = roadmapEntries().sort((a, b) => compareEntries(a.start, b.start, a, b));
 
     // Day domain: everything in play, padded, and never narrower than
     // ~today−45d … today+90d so an empty project still shows a usable grid.
@@ -1800,10 +1814,7 @@
     // a chat thread reads. Undated entries group at the very bottom.
     const entries = roadmapEntries()
       .map((en) => ({ ...en, date: en.end || en.start || null }))
-      .sort((a, b) =>
-        (a.date && b.date && a.date - b.date)
-        || (a.date ? -1 : b.date ? 1 : 0)
-        || String(a.t?.key || a.it?.title || '').localeCompare(String(b.t?.key || b.it?.title || '')));
+      .sort((a, b) => compareEntries(a.date, b.date, a, b));
 
     const list = h('div.jb-feed-list');
     if (!entries.length) {
