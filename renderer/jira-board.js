@@ -430,6 +430,8 @@
     _cols: [], // [{ id, accent, listEl }] rebuilt each renderColumns()
     _descCache: new Map(), // issue key -> loaded description text (success only)
     _descErr: new Set(),   // issue keys whose description fetch FAILED (≠ empty)
+    _childCache: new Map(), // epic key -> [mapped child issues] | null (= load failed)
+    _childLoading: new Set(), // epic keys with a child fetch in flight
   };
   let filterTimer = null; // debounces the board search input
 
@@ -648,22 +650,28 @@
       h('button.solid.jb-open-jira', { onclick: () => openInJira(t.key) }, icon('external', 14), h('span', null, 'Open in Jira')),
       iconBtn('x', 17, 'Close', close),
     );
+    // Epics get two extra editable rows (start/due — the timeline's bar
+    // span) and a child-issue section. Both lazy-load on first open.
+    const isEpic = String(t.type || '').toLowerCase().includes('epic');
     const grid = h('div.jb-detail-grid',
       null,
       detailLabel('Status'), statusEditor(t, col),
       detailLabel('Assignee'), assigneeEditor(t),
       detailLabel('Priority'), priorityEditor(t),
       detailLabel('Type'), h('div.jb-detail-val', null, t.type),
+      isEpic && [detailLabel('Start'), dateEditor(t, 'start'), detailLabel('Due'), dateEditor(t, 'due')],
       detailLabel('Labels'), labelsEditor(t),
     );
     // Description region hosts the inline "Edit with AI" flow (compose →
     // diff review → apply); mountDescriptionEditor manages its own phases and
     // reads the loaded text from board._descCache, filled just below.
     const descRegion = h('div');
+    const childRegion = isEpic ? h('div.jb-detail-children') : null;
     const body = h('div.jb-detail-body',
       null,
       titleEditor(t),
       grid,
+      childRegion,
       descRegion,
     );
     const foot = h('div.jb-detail-foot',
@@ -675,6 +683,10 @@
     const detail = h('div.jb-detail', null, head, body, foot);
     drawer.panel.append(detail);
 
+    if (isEpic) {
+      ensureEpicDates(t); // fills Start/Due and re-renders once loaded
+      mountChildren(childRegion, t);
+    }
     const ewaRerender = mountDescriptionEditor(descRegion, t);
 
     // Lazy-load the full description (ADF → text), cached per key so
@@ -822,6 +834,63 @@
     });
   }
 
+  // The detail panel and the roadmap can hold DIFFERENT instances of the
+  // same epic (board.issues vs board.epics), so date edits mirror onto the
+  // roadmap's copy — otherwise the bar wouldn't move until the next refetch.
+  function syncEpicField(key, field, v) {
+    const e = board.epics.find((x) => x.key === key);
+    if (e) e[field] = v;
+  }
+  function changeDueDate(t, v) {
+    const prev = t.due ?? null;
+    commitEdit({
+      apply: () => { t.due = v; syncEpicField(t.key, 'due', v); },
+      revert: () => { t.due = prev; syncEpicField(t.key, 'due', prev); },
+      persist: () => ctx.getClient().updateIssue({ key: t.key, duedate: v }),
+      okMsg: v ? `${t.key} due ${fmtDay(parseDay(v))}.` : `${t.key} due date cleared.`,
+    });
+  }
+  async function changeStartDate(t, v) {
+    const prev = t.start ?? null;
+    const id = await resolveStartFieldId(ctx.getClient());
+    if (!id) {
+      renderDetail(); // reset the input to the unchanged value
+      toast('error', 'This Jira site has no "Start date" field — the timeline falls back to the created date.', null, "Couldn't save");
+      return;
+    }
+    commitEdit({
+      apply: () => { t.start = v; syncEpicField(t.key, 'start', v); },
+      revert: () => { t.start = prev; syncEpicField(t.key, 'start', prev); },
+      persist: () => ctx.getClient().updateIssue({ key: t.key, extraFields: { [id]: v } }),
+      okMsg: v ? `${t.key} starts ${fmtDay(parseDay(v))}.` : `${t.key} start date cleared.`,
+    });
+  }
+
+  // An epic opened from the kanban (mapIssue, no date fields) needs one
+  // small fetch before the Start/Due editors can render; epics mapped by
+  // the roadmap (mapEpic) already carry both. Prefer copying from the
+  // roadmap's loaded instance over a network round-trip.
+  async function ensureEpicDates(t) {
+    if (t._datesLoaded || t._datesLoading) return;
+    const loaded = board.epics.find((x) => x.key === t.key && x._datesLoaded);
+    if (loaded) {
+      t.due = loaded.due; t.start = loaded.start; t._datesLoaded = true;
+      renderDetail();
+      return;
+    }
+    t._datesLoading = true;
+    try {
+      const client = ctx.getClient();
+      const startId = await resolveStartFieldId(client);
+      const full = await client.getIssue(t.key, { fields: 'duedate' + (startId ? ',' + startId : '') });
+      t.due = full?.fields?.duedate || null;
+      t.start = (startId && full?.fields?.[startId]) || null;
+      t._datesLoaded = true;
+    } catch { /* editors keep showing the loading dash; reopening retries */ }
+    t._datesLoading = false;
+    if (board.detailKey === t.key) renderDetail();
+  }
+
   // ── editable cell builders (read live values off the mapped issue `t`) ──
   function statusEditor(t, col) {
     const client = ctx.getClient();
@@ -877,6 +946,85 @@
     cell.append(input);
     return cell;
   }
+  function dateEditor(t, kind) {
+    if (!t._datesLoaded) return h('span.jb-detail-none', null, '…');
+    const cur = (kind === 'due' ? t.due : t.start) || null;
+    const input = h('input.jb-detail-date', {
+      type: 'date', value: cur ? String(cur).slice(0, 10) : '',
+      title: kind === 'start'
+        ? 'Start date — where the timeline bar begins (falls back to the created date)'
+        : 'Due date — where the timeline bar ends',
+    });
+    input.addEventListener('change', () => {
+      const v = input.value || null;
+      if (v === cur) return;
+      if (kind === 'due') changeDueDate(t, v); else changeStartDate(t, v);
+    });
+    return input;
+  }
+
+  // Child issues of an epic, lazily fetched per key and cached for the
+  // session (cleared on board/roadmap refresh). Clicking a row swaps the
+  // detail panel to that child — it's pushed into board.issues first so
+  // all the inline editors work on it.
+  function mountChildren(container, t) {
+    const render = () => {
+      container.innerHTML = '';
+      const kids = board._childCache.get(t.key);
+      const head = h('div.jb-children-head', null, detailLabel('Child issues'));
+      if (Array.isArray(kids) && kids.length) {
+        const done = kids.filter((c) => c.cat === 'done').length;
+        head.append(h('span.mono.jb-children-count', null, `${done} of ${kids.length} done`));
+      }
+      container.append(head);
+      if (kids === undefined) { // not fetched yet
+        kick();
+        for (let i = 0; i < 3; i++) {
+          container.append(h('div.jb-children-row', null,
+            shimmer(16, 16, 5), shimmer(44, 10), shimmer(i % 2 ? '52%' : '68%', 11)));
+        }
+        return;
+      }
+      if (kids === null) { // fetch failed
+        container.append(h('div.jb-children-empty', null,
+          h('span', null, "Couldn't load child issues."),
+          h('button.jb-link', { onclick: () => { board._childCache.delete(t.key); render(); } }, h('span', null, 'Retry')),
+        ));
+        return;
+      }
+      if (!kids.length) {
+        container.append(h('div.jb-children-empty', null, 'No child issues yet.'));
+        return;
+      }
+      for (const c of kids) {
+        container.append(h('button.jb-children-row.jb-clickable', {
+          onclick: () => { ensureIssueInBoard(c); openDetail(c.key); },
+        },
+          typeIcon(c.type, 16),
+          h('span.mono.jb-key-dim', null, c.key),
+          h('span.jb-children-summary', { title: c.summary }, c.summary),
+          statusPill({ name: c.status, cat: c.cat }, true),
+        ));
+      }
+    };
+    async function kick() {
+      if (board._childLoading.has(t.key)) return;
+      board._childLoading.add(t.key);
+      try {
+        const res = await ctx.getClient().searchIssuesAll(
+          `parent = "${t.key}" ORDER BY created ASC`, 100, { fields: BOARD_FIELDS });
+        board._childCache.set(t.key, (res?.issues || []).map(mapIssue));
+      } catch {
+        board._childCache.set(t.key, null);
+      }
+      board._childLoading.delete(t.key);
+      // Re-render the whole detail rather than this closure's container —
+      // a renderDetail() mid-fetch would have replaced it with a fresh one.
+      if (board.detailKey === t.key) renderDetail();
+    }
+    render();
+  }
+
   function titleEditor(t) {
     const titleEl = h('h2.jb-detail-title', { title: 'Click to edit', style: { cursor: 'text' } }, t.summary);
     titleEl.addEventListener('click', () => {
@@ -1386,6 +1534,7 @@
     if (!client?.isConfigured() || !project) return;
     board._descCache.clear(); // descriptions may have changed since last load
     board._descErr.clear();
+    board._childCache.clear(); // child issues likewise
     for (const k in ewaStore) delete ewaStore[k]; // drop stale Edit-with-AI phases
     board.loading = true;
     if (isRefresh) { rerenderToolbar(); board._cfgCache = null; } // re-pull column config on explicit refresh
@@ -1461,9 +1610,10 @@
     t.created = f.created || null;
     t.due = f.duedate || null;
     t.start = (board._startFieldId && f[board._startFieldId]) || null;
+    t._datesLoaded = true; // detail panel's date editors need no extra fetch
     return t;
   }
-  function ensureEpicInIssues(t) {
+  function ensureIssueInBoard(t) {
     if (!board.issues.some((x) => x.key === t.key)) board.issues.push(t);
   }
 
@@ -1494,7 +1644,7 @@
     // mean a site change (the team row carries both), so re-resolve it.
     if (board._roadmapProject !== project) board._startFieldId = undefined;
     board.roadmapLoading = true;
-    if (force) rerenderToolbar();
+    if (force) { board._childCache.clear(); rerenderToolbar(); }
     renderActiveView(); // skeleton
     try {
       const startId = await resolveStartFieldId(client);
@@ -1656,7 +1806,7 @@
         title: open
           ? `${t.key} — no due date (bar starts ${t.start ? fmtDay(en.start) : 'at its created date, ' + fmtDay(en.start)})`
           : `${t.key} · ${fmtDay(en.start)} → ${fmtDay(en.end)}`,
-        onclick: () => { ensureEpicInIssues(t); openDetail(t.key); },
+        onclick: () => { ensureIssueInBoard(t); openDetail(t.key); },
         style: {
           left: left + 'px', width: width + 'px',
           background: `color-mix(in srgb, ${accent} 22%, var(--bg-2))`,
@@ -1845,7 +1995,7 @@
     if (en.kind === 'epic') {
       const t = en.t;
       const overdue = en.end && en.end < td && t.cat !== 'done';
-      return h('button.jb-feed-row.jb-clickable', { onclick: () => { ensureEpicInIssues(t); openDetail(t.key); } },
+      return h('button.jb-feed-row.jb-clickable', { onclick: () => { ensureIssueInBoard(t); openDetail(t.key); } },
         typeIcon(t.type, 18),
         h('div.jb-feed-main',
           null,

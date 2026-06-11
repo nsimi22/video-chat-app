@@ -60,10 +60,11 @@
 
     // `full: true` pulls description + labels + timestamps for AI
     // consumption; the unfurl path leaves it false to keep the
-    // payload tiny on every chat-render lookup.
-    getIssue(key, { full = false } = {}) {
-      const fields = full ? ISSUE_FIELDS_FULL : ISSUE_FIELDS_BRIEF;
-      return this._request(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=${encodeURIComponent(fields)}`);
+    // payload tiny on every chat-render lookup. `fields` overrides
+    // both presets with an explicit list (the board's date fetch).
+    getIssue(key, { full = false, fields = null } = {}) {
+      const fieldList = fields || (full ? ISSUE_FIELDS_FULL : ISSUE_FIELDS_BRIEF);
+      return this._request(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=${encodeURIComponent(fieldList)}`);
     }
     // `fields` overrides the brief/full preset with an explicit comma-
     // separated field list — used by the board, which needs `labels`
@@ -158,7 +159,7 @@
     // caller can pass a sparse patch (e.g., { key, summary } to only
     // rename). Description goes through toAdf since Jira Cloud's v3
     // PUT requires the same ADF shape as create.
-    async updateIssue({ key, summary, description, assigneeAccountId, labels, priorityName }) {
+    async updateIssue({ key, summary, description, assigneeAccountId, labels, priorityName, duedate, extraFields }) {
       const fields = {};
       if (summary != null) fields.summary = String(summary);
       if (description != null) fields.description = toAdf(description);
@@ -169,6 +170,11 @@
       }
       if (Array.isArray(labels)) fields.labels = labels.map(String);
       if (priorityName) fields.priority = { name: priorityName };
+      // null clears the due date, undefined is skip (same contract as assignee).
+      if (duedate !== undefined) fields.duedate = duedate;
+      // Raw field-id → value pairs, for fields whose ids vary per site
+      // (the roadmap's "Start date" custom field).
+      if (extraFields && typeof extraFields === 'object') Object.assign(fields, extraFields);
       if (Object.keys(fields).length === 0) {
         throw new Error('updateIssue: no fields to update');
       }

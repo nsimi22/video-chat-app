@@ -9036,6 +9036,28 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .jb-toast-msg { font-size: 12px; color: var(--text-faint); margin-top: 1px; }
 .jb-toast-retry { margin-left: 4px; }
 
+/* detail panel: epic extras (date editors + child issues) */
+.jb-detail-date {
+  width: 150px; height: 28px; padding: 0 8px; box-sizing: border-box; border-radius: 7px;
+  background: var(--bg-2); border: 1px solid var(--line-strong); color: var(--text);
+  font: inherit; font-size: 12.5px; font-weight: 600;
+}
+.jb-detail-date:focus { outline: none; border-color: var(--accent-2); }
+.jb-detail-children { margin-bottom: 22px; }
+.jb-children-head { display: flex; align-items: center; gap: 10px; min-height: 28px; margin-bottom: 4px; }
+.jb-children-count { font-size: 11px; color: var(--text-faint); }
+.jb-children-row {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  padding: 7px 8px; border-radius: 8px; background: transparent; border: none; color: inherit; font: inherit;
+  transition: background var(--t-fast);
+}
+.jb-children-row.jb-clickable:hover { background: var(--bg-2); }
+.jb-children-summary {
+  flex: 1; min-width: 0; font-size: 12.8px; font-weight: 500; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.jb-children-empty { display: flex; align-items: center; gap: 10px; padding: 6px 8px; font-size: 12.5px; color: var(--text-faint); }
+
 /* view host (kanban / timeline / feed share the slot under the toolbar) */
 .jb-view-host { flex: 1; min-height: 0; display: flex; }
 .jb-view-host > * { flex: 1; min-width: 0; }
