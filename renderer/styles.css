@@ -1542,12 +1542,11 @@ body.huddle-call-minimized #tiles .tile.fullscreen-mode {
   inset: auto !important;
   border-radius: 0;
 }
-/* During a share the focused (spotlighted) tile is what matters — show
-   it filling the panel and hide the camera/other filmstrip tiles, which
-   would otherwise stack into the clipped overflow and show nothing
-   useful. With no spotlight, the base single-cell rule shows the lead
-   tile. */
-body.huddle-call-minimized #tiles.has-spotlight .tile:not(.spotlighted) {
+/* The minimized panel shows exactly ONE tile — the active speaker, marked
+   .mini-focus by updateMiniCallFocus (sticky to the last speaker, falling
+   back to self). Hide every other tile, including any shared-screen tile
+   (a screen is too small to be useful here — we toast about it instead). */
+body.huddle-call-minimized #tiles .tile:not(.mini-focus) {
   display: none !important;
 }
 body.huddle-call-minimized #tiles .tile-actions,
