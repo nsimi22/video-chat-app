@@ -21,29 +21,84 @@
     settings: 'settings',
   };
 
-  // data-view / data-action → existing legacy element to click.
-  // chat / calls are visual-only at this step; "ai" opens the
-  // dedicated Huddle AI panel; "calendar" opens the week-grid view
-  // (falls back to the legacy drawer if the grid module hasn't
-  // loaded yet).
-  const LEGACY_BRIDGE = {
-    settings: 'open-settings',
-    whiteboard: 'whiteboard-btn',
-  };
-  const CUSTOM_BRIDGE = {
-    ai: () => window.HuddleAIPanel?.open?.(),
-    // Calendar: prefer the v2 grid; only fall back to the legacy
-    // drawer if the grid module hasn't loaded. ?? would always run
-    // the fallback because open() returns undefined.
-    calendar: () => {
-      if (window.HuddleCalendarGrid?.open) {
-        window.HuddleCalendarGrid.open();
-      } else {
-        document.getElementById('open-calendar')?.click();
-      }
+  // Single source of truth for view switching. Each "surface" is an
+  // overlay/view with a DOM root (open === the root exists without
+  // .hidden) plus open/close fns. The base "chat" view and the in-call
+  // "calls" tile grid have no surface of their own — showing them just
+  // means closing every surface. "settings" stays a popover bridge, not
+  // a sticky view (handled in wireClicks).
+  const SURFACES = {
+    ai: {
+      sel: '.huddle-ai-view',
+      open: () => window.HuddleAIPanel?.open?.(),
+      close: () => window.HuddleAIPanel?.close?.(),
     },
-    board: () => window.HuddleJiraBoard?.openDrawer(),
+    calendar: {
+      sel: '.huddle-cal-view',
+      // Prefer the v2 grid; fall back to the legacy drawer only if the
+      // grid module hasn't loaded. (open() returns undefined, so no ??.)
+      open: () => {
+        if (window.HuddleCalendarGrid?.open) window.HuddleCalendarGrid.open();
+        else document.getElementById('open-calendar')?.click();
+      },
+      close: () => window.HuddleCalendarGrid?.close?.(),
+    },
+    board: {
+      sel: '.jb-drawer-root',
+      open: () => window.HuddleJiraBoard?.openDrawer?.(),
+      close: () => window.HuddleJiraBoard?.closeDrawer?.(),
+    },
+    whiteboard: {
+      // Stage-mode whiteboard mounts into #whiteboard-stage (out of
+      // call). The chat-header #whiteboard-btn is a toggle, so open/close
+      // just click it when the current state needs to flip.
+      sel: '#whiteboard-stage',
+      open: () => { if (!isSurfaceOpen('whiteboard')) document.getElementById('whiteboard-btn')?.click(); },
+      close: () => { if (isSurfaceOpen('whiteboard')) document.getElementById('whiteboard-btn')?.click(); },
+    },
   };
+
+  // A surface is open when its root exists and isn't .hidden.
+  function isSurfaceOpen(view) {
+    const s = SURFACES[view];
+    if (!s) return false;
+    const el = document.querySelector(s.sel);
+    return !!el && !el.classList.contains('hidden');
+  }
+
+  // Paint the rail highlight to match exactly one active view.
+  function highlightRail(view) {
+    document.querySelectorAll('.huddle-rail-item[data-view]').forEach((b) => {
+      b.classList.toggle('is-active', b.dataset.view === view);
+    });
+  }
+
+  // THE view-router. Close every surface except the target, open the
+  // target (chat / calls have no surface — closing the rest reveals
+  // them), then sync the highlight. This is the only place a rail click
+  // changes what's on screen; recomputeActiveView() keeps the highlight
+  // honest when a surface is dismissed by its own ✕/Esc/backdrop instead.
+  function setActiveView(view) {
+    for (const k of Object.keys(SURFACES)) {
+      if (k !== view && isSurfaceOpen(k)) SURFACES[k].close();
+    }
+    if (SURFACES[view] && !isSurfaceOpen(view)) SURFACES[view].open();
+    highlightRail(view);
+  }
+
+  // Derive the active view from what's ACTUALLY visible (DOM truth) so
+  // the highlight can't drift: an open overlay wins; else a live,
+  // non-minimized call → calls; else the base chat view.
+  function recomputeActiveView() {
+    let view = 'chat';
+    if (isSurfaceOpen('ai')) view = 'ai';
+    else if (isSurfaceOpen('calendar')) view = 'calendar';
+    else if (isSurfaceOpen('board')) view = 'board';
+    else if (isSurfaceOpen('whiteboard')) view = 'whiteboard';
+    else if (document.body.classList.contains('huddle-in-call')
+             && !document.body.classList.contains('huddle-call-minimized')) view = 'calls';
+    highlightRail(view);
+  }
 
   function paintIcons(rail) {
     rail.querySelectorAll('.huddle-rail-item').forEach((btn) => {
@@ -58,30 +113,20 @@
     rail.addEventListener('click', (e) => {
       const btn = e.target.closest('.huddle-rail-item');
       if (!btn) return;
-      const key = btn.dataset.view || btn.dataset.action;
-      if (!key) return;
 
-      // Settings is a popover toggle on the legacy element, not a
-      // sticky nav destination — don't move the active state for it.
-      if (btn.dataset.view) {
-        rail.querySelectorAll('.huddle-rail-item').forEach((b) => b.classList.remove('is-active'));
-        btn.classList.add('is-active');
+      // Settings is a popover toggle, not a sticky view: bridge to the
+      // legacy element and leave the active highlight untouched.
+      if (btn.dataset.action === 'settings') {
+        document.getElementById('open-settings')?.click();
+        return;
       }
 
-      // Single-overlay rule: close any other v2 overlay before
-      // routing this click. Avoids AI panel + Calendar grid
-      // stacking on top of each other.
-      if (key !== 'ai') window.HuddleAIPanel?.close?.();
-      if (key !== 'calendar') window.HuddleCalendarGrid?.close?.();
-      if (key !== 'board') window.HuddleJiraBoard?.closeDrawer?.();
-
-      const legacyId = LEGACY_BRIDGE[key];
-      if (legacyId) {
-        const el = document.getElementById(legacyId);
-        if (el) el.click();
-      }
-      const custom = CUSTOM_BRIDGE[key];
-      if (custom) custom();
+      const view = btn.dataset.view;
+      if (!view) return;
+      // calls is gated in setupCallsRailItem's capture handler (idle =
+      // swallowed); by the time the click reaches here it's valid, so
+      // route every view uniformly through the single source of truth.
+      setActiveView(view);
     });
   }
 
@@ -202,6 +247,11 @@
     // Calls rail item: pulsing live dot when in-call, disabled when
     // idle, and a return-to-call click handler when active.
     setupCallsRailItem();
+
+    // Keep the rail highlight in sync with what's actually on screen,
+    // however a surface was opened or dismissed (the single source of
+    // truth that replaces the old per-click sticky-active model).
+    setupRailViewSync();
   }
 
   // Mirror body.huddle-in-call onto the Calls rail item:
@@ -225,19 +275,56 @@
     new MutationObserver(apply).observe(document.body, {
       attributes: true, attributeFilter: ['class']
     });
-    // Override the visual-only stub click handler in wireClicks() —
-    // when in-call, close overlays so the tile grid is on top. When
-    // idle, swallow the click + .is-active flip the stub applied.
+    // Idle: no Calls destination exists, so swallow the click (capture
+    // phase) before the bubble-phase router can activate a dead view.
+    // In-call: fall through to wireClicks → setActiveView('calls'),
+    // which closes any open overlay so the tile grid is on top.
     railItem.addEventListener('click', (e) => {
-      const inCall = document.body.classList.contains('huddle-in-call');
-      if (!inCall) {
+      if (!document.body.classList.contains('huddle-in-call')) {
         e.stopImmediatePropagation();
         e.preventDefault();
-        return;
       }
-      window.HuddleAIPanel?.close?.();
-      window.HuddleCalendarGrid?.close?.();
-    }, true); // capture, before wireClicks' bubble-phase handler
+    }, true);
+  }
+
+  // Keep the rail highlight mirroring DOM truth. The router sets the
+  // highlight on click, but a surface can also be dismissed by its own
+  // ✕/Esc/backdrop, or opened from a non-rail path (command palette,
+  // chat-header whiteboard button, call start/end). recomputeActiveView
+  // re-derives the highlight from what's actually visible whenever:
+  //   • a watched surface root toggles .hidden,
+  //   • a lazy overlay root is appended to <body> (first open),
+  //   • <body>'s class changes (in-call / minimized → calls vs chat).
+  // Deliberately NOT a body-subtree class observer (that fires on every
+  // chat render); we watch only the specific roots + body's own class,
+  // and coalesce to one rAF so bursts collapse to a single recompute.
+  function setupRailViewSync() {
+    let scheduled = false;
+    const schedule = () => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => { scheduled = false; recomputeActiveView(); });
+    };
+    const watched = new WeakSet();
+    const watch = (el) => {
+      if (!el || watched.has(el)) return;
+      watched.add(el);
+      new MutationObserver(schedule).observe(el, { attributes: true, attributeFilter: ['class'] });
+      schedule();
+    };
+    const ROOT_SEL = '.huddle-ai-view, .huddle-cal-view, .jb-drawer-root';
+    // Static root present at load; lazy overlay roots watched as they appear.
+    watch(document.getElementById('whiteboard-stage'));
+    document.querySelectorAll(ROOT_SEL).forEach(watch);
+    new MutationObserver((records) => {
+      for (const r of records) {
+        for (const node of r.addedNodes) {
+          if (node.nodeType === 1 && node.matches?.(ROOT_SEL)) watch(node);
+        }
+      }
+    }).observe(document.body, { childList: true });
+    new MutationObserver(schedule).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    recomputeActiveView();
   }
 
   // Track call start time + render "N people · MM:SS" while body
