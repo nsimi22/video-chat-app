@@ -3018,7 +3018,9 @@ function setCallMinimized(on) {
     els.tiles.style.left = '';
     els.tiles.style.top = '';
   }
-  // Keep the header's Minimize/Expand affordance in sync.
+  // Sync the persistent share indicator for both directions (clears it
+  // when restoring) and keep the header's Minimize/Expand affordance current.
+  syncMiniScreenIndicator();
   renderCallHeader();
 }
 
@@ -3050,6 +3052,14 @@ function hasActiveScreenShare() {
 
 function notifyMiniScreenShare() {
   showToast('A screen is being shared — expand the call to view it.', { duration: 3500 });
+}
+
+// Persistent cue in the mini panel: a small screen glyph stays lit while
+// minimized and a screen is being shared (the share itself isn't rendered
+// in the tiny panel). Complements the transient toast, which is easy to
+// miss. Cheap + idempotent — safe to call from any share/minimize event.
+function syncMiniScreenIndicator() {
+  els.miniCallBar?.classList.toggle('has-screen', state.callMinimized && hasActiveScreenShare());
 }
 
 // Pointer-drag the panel by its grip. A threshold isn't needed since the
@@ -4728,6 +4738,8 @@ function removeTile(key) {
   if (wasScreen) refreshLayoutSwitcherUi?.();
   // If the minimized panel was showing the tile that just left, re-pick.
   if (wasMiniFocus && state.callMinimized) updateMiniCallFocus();
+  // A screen tile leaving may clear the mini share indicator.
+  if (wasScreen) syncMiniScreenIndicator();
 }
 
 // Spotlight ("Focus"): stage one screen/whiteboard tile in the main column
@@ -6361,6 +6373,8 @@ function addLocalScreenTile(stream, label) {
   // used to provide this implicitly; without staging, the span-2 share
   // tile also overflows the dock-squeezed grids.
   if (!state.spotlightKey && !state.forceGridLayout) setSpotlight(key);
+  // Reflect the local share in the mini panel's indicator if minimized.
+  syncMiniScreenIndicator();
 }
 
 function onTrack({ stream, track, fromId }) {
@@ -6454,6 +6468,7 @@ function renderRemoteScreen(stream, screen) {
   // Minimized: the panel keeps showing the speaker, so toast to surface
   // the new remote share rather than silently changing nothing visible.
   if (state.callMinimized) notifyMiniScreenShare();
+  syncMiniScreenIndicator();
 }
 
 function onScreenAnnounce(detail) {

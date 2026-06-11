@@ -420,6 +420,13 @@
             <div id="mini-call-grip" class="mini-call-grip" title="Drag to move">
               <span class="mini-call-dot"></span>
               <span id="mini-call-title" class="mini-call-title">Call</span>
+              <!-- Persistent screen-share indicator. Shown (via
+                   .mini-call-bar.has-screen) while minimized and a screen
+                   is being shared — the shared screen isn't rendered in
+                   the tiny panel, so this is the standing cue to expand. -->
+              <span class="mini-call-sharing" title="A screen is being shared — expand to view" aria-label="A screen is being shared">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+              </span>
             </div>
             <div class="mini-call-actions">
               <button id="mini-btn-mic" class="mini-call-btn" title="Toggle microphone" aria-label="Toggle microphone">

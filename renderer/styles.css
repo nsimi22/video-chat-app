@@ -1549,6 +1549,17 @@ body.huddle-call-minimized #tiles .tile.fullscreen-mode {
 body.huddle-call-minimized #tiles .tile:not(.mini-focus) {
   display: none !important;
 }
+/* Force the shown tile to fill the single panel cell. Needed because in
+   a screen share .tiles becomes the spotlight grid and a non-spotlighted
+   camera tile (which the panel often focuses) inherits grid-column: 2 +
+   aspect-ratio: 16/10 from the filmstrip rule — that mis-placed the tile
+   and broke the panel layout during a share. */
+body.huddle-call-minimized #tiles .tile.mini-focus {
+  grid-column: 1 / -1 !important;
+  grid-row: 1 !important;
+  aspect-ratio: auto !important;
+  min-height: 0 !important;
+}
 body.huddle-call-minimized #tiles .tile-actions,
 body.huddle-call-minimized #tiles .draw-toolbar,
 body.huddle-call-minimized #tiles .tile-hand,
@@ -1593,6 +1604,10 @@ body.huddle-call-minimized .mini-call-bar {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Screen-share indicator — hidden until the panel is minimized AND a
+   screen is being shared (.has-screen toggled by syncMiniScreenIndicator). */
+.mini-call-sharing { display: none; flex: 0 0 auto; align-items: center; color: var(--accent); }
+.mini-call-bar.has-screen .mini-call-sharing { display: inline-flex; }
 .mini-call-actions { display: flex; gap: 4px; flex: 0 0 auto; }
 .mini-call-btn {
   display: inline-flex;
