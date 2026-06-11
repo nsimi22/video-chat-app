@@ -116,6 +116,12 @@
     listPriorities() {
       return this._request(`/rest/api/3/priority`).then((r) => Array.isArray(r) ? r : []);
     }
+    // All field definitions (system + custom). The roadmap uses this to
+    // locate Jira Cloud's "Start date" custom field, whose id varies per
+    // site (commonly customfield_10015). Returns [{ id, name, schema, ... }].
+    listFields() {
+      return this._request(`/rest/api/3/field`).then((r) => Array.isArray(r) ? r : []);
+    }
     // The project's real Agile-board column layout, so the kanban can mirror
     // Jira exactly (columns persist even when empty — e.g. an unused
     // "Ready for Release"). Returns [{ name, statuses: [{ name, cat }] }] in

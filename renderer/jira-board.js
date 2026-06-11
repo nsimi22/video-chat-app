@@ -29,6 +29,9 @@
     aiRewrite: async (text) => text, // (current, instruction) -> rewritten text
     popOut: () => {},               // open the board in its own window
     copyText: async () => false,    // (text) -> robust copy-to-clipboard, returns ok
+    listRoadmapItems: async () => [],   // () -> team_roadmap_items rows
+    saveRoadmapItem: async () => null,  // ({id?, title, startDate, endDate, notes}) -> saved row
+    deleteRoadmapItem: async () => {},  // (id) -> delete a row
   };
 
   // The board's active project: the shared team selection wins, falling
@@ -417,6 +420,13 @@
   let board = {
     issues: [], columns: [], loading: false, dragKey: null, overCol: null,
     confirming: null, detailKey: null, filter: 'all', query: '', focusKey: null,
+    view: 'kanban',           // 'kanban' | 'timeline' | 'feed' — sticky via localStorage
+    epics: [],                // mapEpic() results for the roadmap/feed views
+    roadmapItems: [],         // team_roadmap_items rows (ad-hoc bars)
+    roadmapLoading: false,
+    roadmapForm: null,        // open add/edit popover descriptor (Esc closes it first)
+    _roadmapProject: null,    // project the epics/items caches were loaded for
+    _startFieldId: undefined, // resolved Jira "Start date" field id (null = not found)
     _cols: [], // [{ id, accent, listEl }] rebuilt each renderColumns()
     _descCache: new Map(), // issue key -> loaded description text (success only)
     _descErr: new Set(),   // issue keys whose description fetch FAILED (≠ empty)
@@ -433,7 +443,7 @@
     return drawer;
   }
 
-  function toast(type, msg, onRetry) {
+  function toast(type, msg, onRetry, title) {
     if (!drawer) return;
     drawer.panel.querySelector('.jb-toast')?.remove();
     const err = type === 'error';
@@ -441,7 +451,7 @@
       null,
       h('span.jb-toast-ic', null, icon(err ? 'block' : 'check', 15)),
       h('div', { style: { minWidth: '0' } },
-        h('div.jb-toast-title', null, err ? 'Transition rejected' : 'Issue updated'),
+        h('div.jb-toast-title', null, title || (err ? 'Transition rejected' : 'Issue updated')),
         h('div.jb-toast-msg', null, msg),
       ),
       err && onRetry && h('button.solid.jb-toast-retry', { onclick: () => { t.remove(); onRetry(); } }, 'Retry'),
@@ -698,14 +708,14 @@
   // ways so the two stay in sync. Mirrors the drag-to-transition onDrop path.
   async function commitEdit({ apply, revert, persist, okMsg, after }) {
     apply();
-    renderDetail(); renderColumns();
+    renderDetail(); renderActiveView();
     try {
       await persist();
       toast('success', okMsg);
       if (after) after();
     } catch (err) {
       revert();
-      renderDetail(); renderColumns();
+      renderDetail(); renderActiveView();
       toast('error', `${err?.message || err}`.slice(0, 160));
     }
   }
@@ -1109,19 +1119,22 @@
         oninput: (e) => {
           board.query = e.target.value; reflectClear();
           clearTimeout(filterTimer);
-          filterTimer = setTimeout(renderColumns, 140);
+          filterTimer = setTimeout(renderActiveView, 140);
         },
       }),
     );
     const clearBtn = h('button.jb-search-clear' + (board.query ? '' : '.hidden'), {
-      onclick: () => { board.query = ''; search.querySelector('input').value = ''; renderColumns(); reflectClear(); },
+      onclick: () => { board.query = ''; search.querySelector('input').value = ''; renderActiveView(); reflectClear(); },
     }, icon('x', 14, 'var(--text-faint)'));
     search.append(clearBtn);
     function reflectClear() { clearBtn.classList.toggle('hidden', !board.query); }
 
     return h('div.jb-toolbar',
       null,
-      dropdown('filter', filterLabel, [
+      viewSwitch(),
+      // The assignee filter only applies to kanban cards; timeline/feed
+      // are epic-level views where the search box is the filter.
+      board.view === 'kanban' && dropdown('filter', filterLabel, [
         { value: 'all', label: 'All issues', icon: 'people' },
         myEmail && { value: 'mine', label: 'My issues', icon: 'star' },
         ...[...people.values()].map((u) => ({ value: u.id, label: u.name, user: u })),
@@ -1133,7 +1146,9 @@
         style: { cursor: 'pointer' },
         onclick: () => { board._pickProject = true; renderDrawer(); },
       }, `${activeProject()} · ${jiraSite()}`),
-      iconBtn('refresh', 17, 'Refresh', () => loadBoard(true), board.loading),
+      iconBtn('refresh', 17, 'Refresh',
+        () => (board.view === 'kanban' ? loadBoard(true) : loadRoadmapData(true)),
+        board.loading || board.roadmapLoading),
     );
   }
 
@@ -1281,8 +1296,53 @@
       return;
     }
     drawer.panel.append(toolbar());
-    drawer.panel.append(h('div.jb-board'));
-    loadBoard();
+    drawer.panel.append(h('div.jb-view-host'));
+    renderBody(true);
+  }
+
+  /* ── view switching (kanban / timeline / feed) ── */
+  const VIEWS = [['kanban', 'kanban', 'Board'], ['timeline', 'calendar', 'Timeline'], ['feed', 'chat', 'Feed']];
+  function viewSwitch() {
+    const seg = h('div.jb-viewseg');
+    for (const [v, ic, lbl] of VIEWS) {
+      seg.append(h('button.jb-viewseg-btn' + (board.view === v ? '.jb-viewseg-on' : ''), {
+        title: lbl + ' view', onclick: () => setView(v),
+      }, icon(ic, 14), h('span', null, lbl)));
+    }
+    return seg;
+  }
+  function setView(v) {
+    if (board.view === v) return;
+    board.view = v;
+    // Per-machine preference — deliberately localStorage rather than the
+    // shared settings row: zero network writes per toggle, and it works in
+    // the popout window without extra plumbing.
+    try { localStorage.setItem('huddle.jb.view', v); } catch {}
+    board.detailKey = null; renderDetail();
+    closeRoadmapForm();
+    rerenderToolbar();
+    renderBody(false);
+  }
+  // Mount the active view's container into the view host. `fresh` forces a
+  // refetch (drawer open / project change); a plain view toggle reuses the
+  // session caches so flipping back and forth is instant.
+  function renderBody(fresh) {
+    const host = drawer.panel.querySelector('.jb-view-host');
+    if (!host) return;
+    host.innerHTML = '';
+    if (board.view === 'kanban') {
+      host.append(h('div.jb-board'));
+      if (!fresh && board.issues.length && !board.loading) renderColumns();
+      else loadBoard();
+    } else {
+      host.append(h('div.' + (board.view === 'timeline' ? 'jb-roadmap' : 'jb-feed')));
+      loadRoadmapData(fresh);
+    }
+  }
+  function renderActiveView() {
+    if (board.view === 'kanban') renderColumns();
+    else if (board.view === 'timeline') renderRoadmap();
+    else renderFeed();
   }
 
   function openBoardInJira() {
@@ -1362,11 +1422,491 @@
     renderColumns();
   }
 
+  /* ════════════════════ Roadmap (timeline) + Feed views ════════════════════
+     Two alternate renderings of one data set: the project's Jira EPICS
+     (live bars, click-through to the existing detail panel) plus ad-hoc
+     team_roadmap_items rows — team-shared "things we just thought of",
+     added inline from either view. The timeline draws bars on a horizontal
+     day grid; the feed lists the same entries chat-style — oldest at the
+     top, newest at the bottom, ordered by target date. */
+
+  const DAY = 86400000;
+  const PX = 6; // px per day ≈ 180px/month on the timeline
+  // Date-only handling: parse YYYY-MM-DD at LOCAL NOON so day arithmetic
+  // never slips across a DST boundary, and format back the same way.
+  function parseDay(s) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ''));
+    return m ? new Date(+m[1], +m[2] - 1, +m[3], 12) : null;
+  }
+  function isoDay(d) {
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+  function addDays(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n, 12); }
+  function localToday() { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), n.getDate(), 12); }
+  function daysBetween(a, b) { return Math.round((b - a) / DAY); }
+  function fmtDay(d) { return d ? d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''; }
+
+  // The kanban field set PLUS the dates the timeline needs. Kept separate
+  // from BOARD_FIELDS: the kanban query shouldn't pay for dates on every
+  // card, and this query must NOT exclude stale Done epics the way the
+  // kanban JQL does — old shipped epics are exactly what a roadmap shows.
+  const EPIC_FIELDS = 'summary,status,assignee,issuetype,priority,labels,created,duedate';
+
+  // Superset of mapIssue, so an epic clicked on the roadmap can be pushed
+  // into board.issues and the existing detail panel works unchanged.
+  function mapEpic(issue) {
+    const t = mapIssue(issue);
+    const f = issue.fields || {};
+    t.created = f.created || null;
+    t.due = f.duedate || null;
+    t.start = (board._startFieldId && f[board._startFieldId]) || null;
+    return t;
+  }
+  function ensureEpicInIssues(t) {
+    if (!board.issues.some((x) => x.key === t.key)) board.issues.push(t);
+  }
+
+  // Jira Cloud's "Start date" is a custom field with a per-site id
+  // (commonly customfield_10015). Resolve it once per session from the
+  // field catalog; null (absent / lookup failed) falls back to the epic's
+  // created date below, so the roadmap renders either way.
+  async function resolveStartFieldId(client) {
+    if (board._startFieldId !== undefined) return board._startFieldId;
+    try {
+      const fields = await client.listFields();
+      const f = (fields || []).find((x) =>
+        /^start date$/i.test(x.untranslatedName || x.name || '') && x.schema?.type === 'date');
+      board._startFieldId = f?.id || null;
+    } catch { board._startFieldId = null; }
+    return board._startFieldId;
+  }
+
+  async function loadRoadmapData(force) {
+    const client = ctx.getClient();
+    const project = activeProject();
+    if (!client?.isConfigured() || !project) return;
+    if (board.roadmapLoading) { renderActiveView(); return; }
+    // Session cache: flipping timeline↔feed (or back from kanban) reuses the
+    // loaded epics/items; drawer open, refresh, and project changes refetch.
+    if (!force && board._roadmapProject === project) { renderActiveView(); return; }
+    board.roadmapLoading = true;
+    if (force) rerenderToolbar();
+    renderActiveView(); // skeleton
+    try {
+      const startId = await resolveStartFieldId(client);
+      const jql = `project = "${project}" AND issuetype = Epic ORDER BY created ASC`;
+      const [res, items] = await Promise.all([
+        client.searchIssuesAll(jql, 200, { fields: EPIC_FIELDS + (startId ? ',' + startId : '') }),
+        ctx.listRoadmapItems(),
+      ]);
+      board.epics = (res?.issues || []).map(mapEpic);
+      board.roadmapItems = items || [];
+      board._roadmapProject = project;
+    } catch (err) {
+      board.roadmapLoading = false;
+      if (force) rerenderToolbar();
+      const hostEl = drawer.panel.querySelector('.jb-roadmap, .jb-feed');
+      if (hostEl) {
+        hostEl.innerHTML = '';
+        hostEl.append(h('div.jb-empty', { style: { margin: 'auto' } },
+          h('span.jb-empty-ic', { style: { color: 'var(--bad)' } }, icon('block', 28)),
+          h('div.jb-empty-title', null, "Couldn't load the roadmap"),
+          h('p.jb-empty-sub', null, String(err?.message || err).slice(0, 160)),
+          h('button.primary', { onclick: () => loadRoadmapData(true) }, h('span', null, 'Try again')),
+        ));
+      }
+      return;
+    }
+    board.roadmapLoading = false;
+    if (force) rerenderToolbar();
+    renderActiveView();
+  }
+
+  // One normalized entry list both views consume. An epic spans start (the
+  // Jira Start-date field when present, else created) → due; an ad-hoc item
+  // spans start_date → end_date. A missing end means "unscheduled": drawn
+  // open-ended on the timeline, never hidden.
+  function roadmapEntries() {
+    const q = board.query.trim().toLowerCase();
+    const entries = [];
+    for (const t of board.epics) {
+      if (q && !(`${t.key} ${t.summary}`).toLowerCase().includes(q)) continue;
+      entries.push({
+        kind: 'epic', t,
+        start: parseDay(t.start) || parseDay(t.created) || localToday(),
+        end: parseDay(t.due),
+      });
+    }
+    for (const it of board.roadmapItems) {
+      if (q && !String(it.title || '').toLowerCase().includes(q)) continue;
+      const start = parseDay(it.start_date), end = parseDay(it.end_date);
+      entries.push({ kind: 'adhoc', it, start: start || end, end });
+    }
+    return entries;
+  }
+
+  /* ── horizontal timeline ── */
+  function renderRoadmap() {
+    if (!drawer) return;
+    const hostEl = drawer.panel.querySelector('.jb-roadmap');
+    if (!hostEl) return;
+    hostEl.innerHTML = '';
+    if (board.roadmapLoading) {
+      const sk = h('div.jb-roadmap-skel');
+      for (let i = 0; i < 6; i++) {
+        sk.append(h('div.jb-roadmap-skelrow', { style: { paddingLeft: (24 + ((i * 97) % 260)) + 'px' } },
+          shimmer(140 + ((i * 73) % 220), 22, 8)));
+      }
+      hostEl.append(sk);
+      return;
+    }
+    const entries = roadmapEntries().sort((a, b) =>
+      (a.start && b.start && a.start - b.start)
+      || (a.start ? -1 : b.start ? 1 : 0)
+      || String(a.t?.key || a.it?.title || '').localeCompare(String(b.t?.key || b.it?.title || '')));
+
+    // Day domain: everything in play, padded, and never narrower than
+    // ~today−45d … today+90d so an empty project still shows a usable grid.
+    const td = localToday();
+    let min = addDays(td, -45), max = addDays(td, 90);
+    for (const en of entries) {
+      if (en.start && en.start < min) min = en.start;
+      const tail = en.end || en.start;
+      if (tail && tail > max) max = tail;
+    }
+    min = new Date(min.getFullYear(), min.getMonth(), 1, 12); // snap to a month edge
+    max = addDays(max, 14);
+    const x = (d) => daysBetween(min, d) * PX;
+
+    const inner = h('div.jb-roadmap-inner');
+    inner.style.width = ((daysBetween(min, max) + 1) * PX) + 'px';
+    inner.style.setProperty('--jb-px', PX + 'px');
+
+    // Month axis (sticky) + month grid lines.
+    const axis = h('div.jb-roadmap-axis');
+    for (let m = new Date(min.getFullYear(), min.getMonth(), 1, 12); m <= max;
+      m = new Date(m.getFullYear(), m.getMonth() + 1, 1, 12)) {
+      if (m < min) continue;
+      const opts = m.getMonth() === 0 ? { month: 'short', year: 'numeric' } : { month: 'short' };
+      axis.append(h('span.jb-roadmap-axis-month.mono', { style: { left: (x(m) + 6) + 'px' } },
+        m.toLocaleDateString(undefined, opts)));
+      inner.append(h('div.jb-roadmap-grid-month', { style: { left: x(m) + 'px' } }));
+    }
+    inner.prepend(axis);
+
+    const tx = x(td);
+    inner.append(h('div.jb-roadmap-today', { style: { left: tx + 'px' } },
+      h('span.jb-roadmap-today-pill.mono', null, 'Today')));
+
+    if (!entries.length) {
+      inner.append(h('div.jb-roadmap-empty-hint', null,
+        icon('star', 16, 'var(--text-faint)'),
+        h('span', null, board.query
+          ? 'Nothing matches your search.'
+          : 'No epics or roadmap items yet — click anywhere to add your first bar.')));
+    }
+    for (const en of entries) {
+      const row = h('div.jb-roadmap-row');
+      row.append(roadmapBar(en, x, td));
+      inner.append(row);
+    }
+    inner.append(h('div.jb-roadmap-addrow', null,
+      icon('plus', 14), h('span', null, 'Click anywhere on the timeline to add an item')));
+
+    // Add-a-bar-anywhere: a click on empty grid opens the inline form
+    // prefilled with the clicked date (+1 week). Click-to-create only for
+    // now — drag-to-create/resize is a natural follow-up.
+    inner.addEventListener('click', (e) => {
+      if (e.target.closest('.jb-roadmap-bar')) return;
+      const rect = inner.getBoundingClientRect();
+      const d = addDays(min, Math.max(0, Math.floor((e.clientX - rect.left) / PX)));
+      openRoadmapForm({ mode: 'create', startDate: isoDay(d), endDate: isoDay(addDays(d, 7)) }, e.clientX, e.clientY);
+    });
+
+    const scroll = h('div.jb-roadmap-scroll');
+    scroll.append(inner);
+    hostEl.append(scroll);
+    // Land with today at roughly the first quarter of the viewport.
+    requestAnimationFrame(() => { scroll.scrollLeft = Math.max(0, tx - scroll.clientWidth * 0.25); });
+  }
+
+  function roadmapBar(en, x, td) {
+    const open = !en.end;
+    if (en.kind === 'epic') {
+      const t = en.t;
+      const accent = statusColor(t.cat, t.status);
+      const left = x(en.start);
+      const width = open ? 14 * PX : Math.max(PX, x(en.end) + PX - left);
+      return h('button.jb-roadmap-bar' + (open ? '.jb-roadmap-bar-unsched' : ''), {
+        title: open
+          ? `${t.key} — no due date (bar starts ${t.start ? fmtDay(en.start) : 'at its created date, ' + fmtDay(en.start)})`
+          : `${t.key} · ${fmtDay(en.start)} → ${fmtDay(en.end)}`,
+        onclick: () => { ensureEpicInIssues(t); openDetail(t.key); },
+        style: {
+          left: left + 'px', width: width + 'px',
+          background: `color-mix(in srgb, ${accent} 22%, var(--bg-2))`,
+          borderLeftColor: accent,
+        },
+      },
+        typeIcon(t.type, 14),
+        h('span.mono.jb-roadmap-bar-key', null, t.key),
+        h('span.jb-roadmap-bar-title', null, t.summary),
+      );
+    }
+    const it = en.it;
+    const start = en.start || td; // a date-less idea parks at today, open-ended
+    const left = x(start);
+    const width = open ? 14 * PX : Math.max(PX, x(en.end) + PX - left);
+    return h('button.jb-roadmap-bar.jb-roadmap-bar-adhoc' + (open ? '.jb-roadmap-bar-unsched' : ''), {
+      title: (it.notes ? `${it.title} — ${it.notes}` : it.title) + ' (click to edit)',
+      onclick: (e) => openRoadmapForm({
+        mode: 'edit', id: it.id, title: it.title, notes: it.notes || '',
+        startDate: it.start_date || '', endDate: it.end_date || '',
+      }, e.clientX, e.clientY),
+      style: { left: left + 'px', width: width + 'px' },
+    },
+      icon('pen', 12, 'var(--accent-tx)'),
+      h('span.jb-roadmap-bar-title', null, it.title),
+    );
+  }
+
+  /* ── add/edit popover for ad-hoc items ── */
+  // Appended to <body> (the drawer panel runs a transform animation, which
+  // would re-anchor a position:fixed child) and torn down by Esc, outside
+  // mousedown, Cancel, or Save.
+  function closeRoadmapForm() {
+    board.roadmapForm = null;
+    document.querySelector('.jb-roadmap-form')?.remove();
+    document.removeEventListener('mousedown', roadmapFormOutside);
+  }
+  function roadmapFormOutside(e) {
+    const form = document.querySelector('.jb-roadmap-form');
+    if (form && !form.contains(e.target)) closeRoadmapForm();
+  }
+  function openRoadmapForm(desc, clickX, clickY) {
+    closeRoadmapForm();
+    board.roadmapForm = desc;
+    const isEdit = desc.mode === 'edit';
+    const titleIn = h('input.jb-rf-input', { type: 'text', placeholder: 'What ships here?', value: desc.title || '' });
+    const startIn = h('input.jb-rf-input.jb-rf-date', { type: 'date', value: desc.startDate || '' });
+    const endIn = h('input.jb-rf-input.jb-rf-date', { type: 'date', value: desc.endDate || '' });
+    const notesIn = h('input.jb-rf-input', { type: 'text', placeholder: 'Notes (optional)', value: desc.notes || '' });
+    const save = () => {
+      const title = titleIn.value.trim();
+      if (!title) { titleIn.focus(); return; }
+      // Swap an inverted range instead of erroring — the DB CHECK rejects it.
+      let s = startIn.value || null, e2 = endIn.value || null;
+      if (s && e2 && e2 < s) { const tmp = s; s = e2; e2 = tmp; }
+      const payload = { id: desc.id, title, startDate: s, endDate: e2, notes: notesIn.value.trim() || null };
+      closeRoadmapForm();
+      commitRoadmapItem(payload);
+    };
+    for (const el of [titleIn, notesIn]) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+    const form = h('div.jb-roadmap-form',
+      null,
+      h('div.jb-rf-head',
+        null,
+        icon('pen', 14, 'var(--accent-tx)'),
+        h('span.jb-rf-title', null, isEdit ? 'Edit roadmap item' : 'New roadmap item'),
+        h('div', { style: { flex: '1' } }),
+        h('span.mono.jb-rf-esc', null, 'esc'),
+      ),
+      titleIn,
+      h('div.jb-rf-dates', null, startIn, h('span.jb-rf-arrow', null, '→'), endIn),
+      notesIn,
+      h('div.jb-rf-foot',
+        null,
+        h('button.primary', { onclick: save }, h('span', null, isEdit ? 'Save' : 'Add to roadmap')),
+        h('button.ghost', { onclick: closeRoadmapForm }, h('span', null, 'Cancel')),
+        h('div', { style: { flex: '1' } }),
+        isEdit && iconBtn('trash', 15, 'Delete item', () => { const id = desc.id; closeRoadmapForm(); removeRoadmapItem(id); }),
+      ),
+    );
+    document.body.append(form);
+    // Clamp near the click point but inside the viewport.
+    const pad = 12;
+    const fw = form.offsetWidth || 300, fh = form.offsetHeight || 210;
+    form.style.left = Math.max(pad, Math.min((clickX ?? innerWidth / 2) - 20, innerWidth - fw - pad)) + 'px';
+    form.style.top = Math.max(pad, Math.min((clickY ?? innerHeight / 2) + 10, innerHeight - fh - pad)) + 'px';
+    document.addEventListener('mousedown', roadmapFormOutside);
+    setTimeout(() => titleIn.focus(), 20);
+  }
+
+  // Optimistic write: the bar/row appears (or updates) immediately, then the
+  // upsert confirms it; on rejection the previous list is restored and the
+  // error surfaced — same philosophy as commitEdit above.
+  async function commitRoadmapItem(payload) {
+    const prev = board.roadmapItems.slice();
+    const tempId = payload.id || `tmp-${Date.now()}`;
+    const local = {
+      id: tempId, title: payload.title,
+      start_date: payload.startDate || null, end_date: payload.endDate || null,
+      color: payload.color || null, notes: payload.notes || null,
+    };
+    const i = board.roadmapItems.findIndex((r) => r.id === tempId);
+    if (i >= 0) board.roadmapItems[i] = { ...board.roadmapItems[i], ...local };
+    else board.roadmapItems.push(local);
+    renderActiveView();
+    try {
+      const row = await ctx.saveRoadmapItem(payload);
+      if (row) {
+        // Replace the optimistic entry; the realtime echo of our own insert
+        // may have landed already, so dedupe by the row's real id too.
+        board.roadmapItems = board.roadmapItems.filter((r) => r.id !== tempId && r.id !== row.id);
+        board.roadmapItems.push(row);
+      }
+      renderActiveView();
+      toast('success', `“${payload.title}” is on the roadmap.`, null, 'Roadmap updated');
+    } catch (err) {
+      board.roadmapItems = prev;
+      renderActiveView();
+      toast('error', `${err?.message || err}`.slice(0, 160), null, "Couldn't save the item");
+    }
+  }
+  async function removeRoadmapItem(id) {
+    const prev = board.roadmapItems.slice();
+    board.roadmapItems = board.roadmapItems.filter((r) => r.id !== id);
+    renderActiveView();
+    try {
+      await ctx.deleteRoadmapItem(id);
+      toast('success', 'Item removed from the roadmap.', null, 'Roadmap updated');
+    } catch (err) {
+      board.roadmapItems = prev;
+      renderActiveView();
+      toast('error', `${err?.message || err}`.slice(0, 160), null, "Couldn't delete the item");
+    }
+  }
+
+  /* ── vertical feed ── */
+  function renderFeed() {
+    if (!drawer) return;
+    const hostEl = drawer.panel.querySelector('.jb-feed');
+    if (!hostEl) return;
+    hostEl.innerHTML = '';
+    if (board.roadmapLoading) {
+      const sk = h('div.jb-feed-list');
+      for (let i = 0; i < 5; i++) {
+        sk.append(h('div.jb-feed-row', null, shimmer(18, 18, 5),
+          h('div', { style: { flex: '1', display: 'flex', flexDirection: 'column', gap: '6px' } },
+            shimmer(58, 9), shimmer(i % 2 ? '64%' : '82%', 10))));
+      }
+      hostEl.append(sk);
+      return;
+    }
+    const td = localToday();
+    // Target-date order, ascending — the feed reads like a delivery log,
+    // oldest at the top and the newest/furthest-out at the bottom, the way
+    // a chat thread reads. Undated entries group at the very bottom.
+    const entries = roadmapEntries()
+      .map((en) => ({ ...en, date: en.end || en.start || null }))
+      .sort((a, b) =>
+        (a.date && b.date && a.date - b.date)
+        || (a.date ? -1 : b.date ? 1 : 0)
+        || String(a.t?.key || a.it?.title || '').localeCompare(String(b.t?.key || b.it?.title || '')));
+
+    const list = h('div.jb-feed-list');
+    if (!entries.length) {
+      list.append(h('div.jb-empty', { style: { margin: 'auto' } },
+        h('span.jb-empty-ic', null, icon('chat', 26)),
+        h('div.jb-empty-title', null, board.query ? 'Nothing matches your search' : 'Nothing on the roadmap yet'),
+        h('p.jb-empty-sub', null, board.query ? 'Try a different search.' : 'Epics from Jira appear here automatically — or add your first deliverable below.'),
+      ));
+    }
+    let lastLabel = null, todayDone = false;
+    for (const en of entries) {
+      if (!todayDone && (!en.date || en.date > td)) {
+        list.append(h('div.jb-feed-divider.jb-feed-divider-today', null, h('span.mono', null, 'Today')));
+        todayDone = true;
+      }
+      const lbl = en.date ? en.date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }) : 'No date yet';
+      if (lbl !== lastLabel) { list.append(h('div.jb-feed-divider', null, h('span.mono', null, lbl))); lastLabel = lbl; }
+      list.append(feedRow(en, td));
+    }
+    if (entries.length && !todayDone) {
+      list.append(h('div.jb-feed-divider.jb-feed-divider-today', null, h('span.mono', null, 'Today')));
+    }
+    hostEl.append(list, feedComposer());
+    list.scrollTop = list.scrollHeight; // newest (bottom) in view, like a chat
+  }
+
+  function feedRow(en, td) {
+    if (en.kind === 'epic') {
+      const t = en.t;
+      const overdue = en.end && en.end < td && t.cat !== 'done';
+      return h('button.jb-feed-row.jb-clickable', { onclick: () => { ensureEpicInIssues(t); openDetail(t.key); } },
+        typeIcon(t.type, 18),
+        h('div.jb-feed-main',
+          null,
+          h('div.jb-feed-top', null,
+            h('span.mono.jb-key', null, t.key),
+            h('span.mono.jb-feed-date' + (overdue ? '.jb-feed-overdue' : ''), null,
+              en.end ? `due ${fmtDay(en.end)}` : 'no due date'),
+          ),
+          h('div.jb-feed-summary', { title: t.summary }, t.summary),
+        ),
+        statusPill({ name: t.status, cat: t.cat }, true),
+        avatarStack(t.assignees, 20),
+      );
+    }
+    const it = en.it;
+    const range = [it.start_date && fmtDay(parseDay(it.start_date)), it.end_date && fmtDay(parseDay(it.end_date))]
+      .filter(Boolean).join(' → ');
+    return h('div.jb-feed-row.jb-feed-row-adhoc',
+      null,
+      h('span.jb-feed-adhoc-ic', null, icon('pen', 13)),
+      h('div.jb-feed-main',
+        null,
+        h('div.jb-feed-top', null,
+          h('span.jb-feed-adhoc-tag.mono', null, 'idea'),
+          h('span.mono.jb-feed-date', null, range || 'no date'),
+        ),
+        h('div.jb-feed-summary', { title: it.notes || it.title }, it.title),
+      ),
+      h('span.jb-feed-actions',
+        null,
+        iconBtn('pen', 13, 'Edit', (e) => openRoadmapForm({
+          mode: 'edit', id: it.id, title: it.title, notes: it.notes || '',
+          startDate: it.start_date || '', endDate: it.end_date || '',
+        }, e.clientX, e.clientY)),
+        iconBtn('trash', 13, 'Delete', () => removeRoadmapItem(it.id)),
+      ),
+    );
+  }
+
+  // The feed's "message composer": type a deliverable, optionally give it a
+  // target date, Enter/send appends it at the bottom — the add-bar flow,
+  // vertical edition. The date maps to end_date (the feed's sort key).
+  function feedComposer() {
+    const input = h('input.jb-feed-input', { type: 'text', placeholder: 'Add a roadmap item…' });
+    const dateIn = h('input.jb-feed-datein', { type: 'date', title: 'Target date (optional)' });
+    const submit = () => {
+      const title = input.value.trim();
+      if (!title) { input.focus(); return; }
+      input.value = '';
+      commitRoadmapItem({ title, startDate: null, endDate: dateIn.value || null });
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+    return h('div.jb-feed-composer',
+      null,
+      icon('plus', 16, 'var(--text-faint)'),
+      input,
+      dateIn,
+      h('button.jb-feed-send', { title: 'Add item', onclick: submit }, icon('send', 15)),
+    );
+  }
+
   async function openDrawer(focusKey) {
     if (!drawer) buildDrawer();
     board.detailKey = null;
     board._pickProject = false;
     board.query = ''; board.filter = 'all';
+    // The view choice is a sticky preference (unlike query/filter, which
+    // reset per open) — restore the last-used one.
+    try {
+      const v = localStorage.getItem('huddle.jb.view');
+      if (v === 'kanban' || v === 'timeline' || v === 'feed') board.view = v;
+    } catch {}
     drawer.root.classList.remove('hidden');
     drawer.panel.classList.remove('jb-slide'); void drawer.panel.offsetWidth; drawer.panel.classList.add('jb-slide');
     // Clear stale content up front so the panel isn't showing the previous
@@ -1381,17 +1921,19 @@
     if (!drawer) return;
     drawer.root.classList.add('hidden');
     board.detailKey = null;
+    closeRoadmapForm();
   }
   function toggleDrawer() {
     if (drawer && !drawer.root.classList.contains('hidden')) closeDrawer();
     else openDrawer();
   }
 
-  // Esc closes detail, then drawer.
+  // Esc closes the roadmap form, then detail, then the drawer.
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (drawer && !drawer.root.classList.contains('hidden')) {
-      if (board.detailKey) { board.detailKey = null; renderDetail(); }
+      if (board.roadmapForm) { closeRoadmapForm(); }
+      else if (board.detailKey) { board.detailKey = null; renderDetail(); }
       else closeDrawer();
     } else if (inCall?.open) {
       hideInCall();
@@ -1409,5 +1951,16 @@
     // Re-render the drawer if it's open (e.g. a teammate changed the shared
     // board project via realtime) — picks up the new active project.
     reloadDrawer: () => { if (drawer && !drawer.root.classList.contains('hidden')) renderDrawer(); },
+    // A teammate added/edited/removed an ad-hoc roadmap bar (realtime).
+    // Refetch the whole list (dozens of rows at most — simpler than
+    // reconciling per-row events) and re-render if a roadmap view is up.
+    onRoadmapItemsChanged: async () => {
+      if (!drawer || drawer.root.classList.contains('hidden')) return;
+      if (board.view === 'kanban') return;
+      let items;
+      try { items = await ctx.listRoadmapItems(); } catch { return; }
+      board.roadmapItems = items || [];
+      renderActiveView();
+    },
   };
 })();

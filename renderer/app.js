@@ -1878,6 +1878,9 @@ async function joinTeamAndStart(teamId) {
       window.HuddleJiraBoard?.refreshInCall?.();
     }
   });
+  // A teammate added/edited/removed an ad-hoc roadmap bar — refresh the
+  // board's roadmap/feed views if one is showing (no-op on kanban/closed).
+  huddle.addEventListener('team-roadmap-changed', () => window.HuddleJiraBoard?.onRoadmapItemsChanged?.());
   // Surface incoming messages to the meeting Notes panel. The handler
   // filters by parent_id so non-meeting-thread messages are no-ops;
   // gating it here (rather than only while in-call) is fine because
@@ -7450,6 +7453,11 @@ function initJiraBoard() {
       const row = await state.huddle?.saveTeamJiraBoard(payload);
       if (row) state.teamBoard = row;
     },
+    // Ad-hoc roadmap bars (public.team_roadmap_items) for the board's
+    // roadmap/feed views — team-shared, live via 'team-roadmap-changed'.
+    listRoadmapItems: async () => (await state.huddle?.listTeamRoadmapItems?.()) || [],
+    saveRoadmapItem: async (payload) => state.huddle?.saveTeamRoadmapItem(payload),
+    deleteRoadmapItem: async (id) => state.huddle?.deleteTeamRoadmapItem(id),
     // Rewrite a ticket description with the configured AI provider, for the
     // board's inline "Edit with AI". Returns plain text (simple markdown);
     // JiraClient.updateIssue converts it to ADF on save.
