@@ -1161,8 +1161,11 @@ class ChatView {
     const inThread = this.threadParentId !== null;
     const jiraOk = !!this.hooks.getJira?.()?.isConfigured?.();
     const roadmapOk = !!this.hooks.addRoadmapItem;
+    // Capture the cursor point now — `ev` is stale by the time an item's
+    // onClick runs, so the reaction picker anchors off these coordinates.
+    const at = { clientX: ev?.clientX, clientY: ev?.clientY };
     const items = [];
-    items.push({ label: 'Add reaction', icon: 'smile', onClick: () => this._openReactionPicker(ev, m.id) });
+    items.push({ label: 'Add reaction', icon: 'smile', onClick: () => this._openReactionPicker(at, m.id) });
     if (!m.parentId && !inThread) items.push({ label: 'Reply in thread', icon: 'reply', onClick: () => this.openThread(m.id) });
     items.push({ type: 'divider' });
     if (m.text) items.push({ label: 'Copy text', icon: 'text', onClick: () => this._copyText(m.text) });
@@ -2126,7 +2129,7 @@ class ChatView {
   }
 
   _openReactionPicker(ev, messageId) {
-    ev.stopPropagation();
+    ev?.stopPropagation?.();
     this._emojiPickerMode = 'react';
     this._emojiPickerTarget = messageId;
     const p = this.els.emojiPicker;
@@ -2134,9 +2137,12 @@ class ChatView {
     // the default composer-anchored slot. Use position: fixed (set via
     // [data-anchor=react]) and align the picker's right edge with the
     // button's right edge, opening downward by default and flipping
-    // upward when there isn't room below.
-    const btn = ev.currentTarget;
-    const rect = btn.getBoundingClientRect();
+    // upward when there isn't room below. The right-click menu has no
+    // button — it passes { clientX, clientY }, so anchor to the cursor.
+    const btn = ev?.currentTarget;
+    const rect = btn?.getBoundingClientRect
+      ? btn.getBoundingClientRect()
+      : { left: ev?.clientX ?? 0, right: ev?.clientX ?? 0, top: ev?.clientY ?? 0, bottom: ev?.clientY ?? 0 };
     p.classList.remove('hidden');
     this._refreshEmojiPicker();
     p.dataset.anchor = 'react';
