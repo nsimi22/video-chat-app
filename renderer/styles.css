@@ -642,6 +642,13 @@ input:focus, textarea:focus {
   box-shadow: var(--shadow-1);
   outline: none;
 }
+/* In fullscreen the inline 420×280 cap must lift, or the video stays that
+   small size pinned to a corner of the black backdrop instead of filling
+   and centering the screen. object-fit keeps it centered + letterboxed. */
+.msg-video:fullscreen, .msg-video:-webkit-full-screen {
+  max-width: none; max-height: none; width: 100%; height: 100%;
+  object-fit: contain; border-radius: 0;
+}
 .attachment-chip {
   display: inline-flex; align-items: center; gap: 6px;
   background: rgba(255, 255, 255, 0.06);
