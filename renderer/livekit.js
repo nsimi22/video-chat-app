@@ -813,6 +813,16 @@
         return;
       }
       this.huddle.sendMuteState(this._micOn, this._camOn);
+      // Local signal for the renderer: lets it engage persisted blur /
+      // noise-suppression the first time a track is actually published
+      // (our muted join publishes nothing, so the pipelines can't start
+      // until then). Carries the source so each pref applies independently.
+      this.dispatchEvent(new CustomEvent('local-mute-changed', {
+        detail: {
+          source: source === LK.Track.Source.Microphone ? 'mic' : 'cam',
+          micOn: this._micOn, camOn: this._camOn,
+        },
+      }));
     }
 
     // Reconcile a REMOTE peer's mic/cam overlay against LiveKit's

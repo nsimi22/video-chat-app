@@ -2022,6 +2022,13 @@ async function startCall(channelId) {
   mesh.addEventListener('camera-stream-changed', (e) => onLocalCameraStreamChanged(e.detail));
   mesh.addEventListener('active-speaker', (e) => setSpeakingPeer(e.detail.peerId));
   mesh.addEventListener('connection-failed', (e) => onCallConnectionFailed(e.detail));
+  // First-enable hook: since the muted join publishes neither track, engage
+  // the persisted blur / noise-suppression preferences the first time the
+  // user turns the camera / mic on (each once per call — a manual toggle
+  // afterwards owns the state).
+  state._blurPrefApplied = false;
+  state._noisePrefApplied = false;
+  mesh.addEventListener('local-mute-changed', (e) => onLocalMuteChanged(e.detail));
   try {
     await state.huddle.joinCall(channelId);
     // LiveKit needs an explicit room connect on top of the team-side
@@ -6102,15 +6109,16 @@ async function toggleBackgroundBlur() {
   }
 }
 
-// Called from startCall / startPopoutCall AFTER setCamera resolves, so
-// the camera publication already exists and setBlurBackground(true) can
-// snapshot the live camera track and start the pipeline. (Calling it
-// before setCamera only stashed the preference — no publication to act
-// on yet — which left the camera published raw while the button showed
-// active and made the first user toggle a no-op, exactly the bug noise
-// suppression had.) Safe to call unconditionally: it bails when the pref
-// is off and setBlurBackground is idempotent. Returns the in-flight
-// promise so callers can await it before syncing the button.
+// Called when the camera is first published — from onLocalMuteChanged for
+// the main-window call (the muted join publishes nothing, so blur can't
+// start until the user turns the camera on) and from the call-popout after
+// its setCamera. The camera publication must already exist so
+// setBlurBackground(true) can snapshot the live track and start the
+// pipeline; calling it with no publication only stashes the preference and
+// poisons the idempotent guard, leaving the first toggle a no-op. Safe to
+// call unconditionally: it bails when the pref is off and setBlurBackground
+// is idempotent. Returns the in-flight promise so callers can await it
+// before syncing the button.
 function applyPersistedBlurPreference() {
   if (!state.mesh) return Promise.resolve();
   if (!getBlurPreference()) return Promise.resolve();
@@ -6173,12 +6181,13 @@ async function toggleNoiseSuppression() {
   }
 }
 
-// Called from startCall / startPopoutCall AFTER setCamera resolves, so
-// the mic publication already exists and setNoiseSuppression(true) can
-// clone the live mic track and start the pipeline. (Calling it before
-// setCamera only stashed the preference — no publication to act on yet —
-// which left audio published raw while the button showed active and made
-// the first user toggle a no-op.) Safe to call unconditionally: it bails
+// Called when the mic is first published — from onLocalMuteChanged for the
+// main-window call (the muted join publishes nothing, so denoise can't
+// start until the user turns the mic on) and from the call-popout after its
+// setCamera. The mic publication must already exist so
+// setNoiseSuppression(true) can clone the live mic track and start the
+// pipeline; calling it with no publication only stashes the preference and
+// makes the first toggle a no-op. Safe to call unconditionally: it bails
 // when the pref is off and setNoiseSuppression is idempotent.
 // Returns the in-flight setNoiseSuppression promise so callers can await
 // it before syncing the button — otherwise the button reads the not-yet-
@@ -6191,6 +6200,22 @@ function applyPersistedNoiseSuppressionPreference() {
   return state.mesh.setNoiseSuppression(true).catch((err) => {
     console.warn('applyPersistedNoiseSuppressionPreference failed', err);
   });
+}
+
+// First time the camera / mic is published after a muted join, engage the
+// persisted blur / noise-suppression preference — their pipelines need a
+// live published track, which the join itself never creates. One-shot per
+// call (flags reset in startCall) so a manual toggle afterwards owns the
+// state. Main-window only; the call-popout publishes on join and applies
+// these directly.
+function onLocalMuteChanged({ source, camOn, micOn }) {
+  if (source === 'cam' && camOn && !state._blurPrefApplied) {
+    state._blurPrefApplied = true;
+    applyPersistedBlurPreference().then(syncBlurButtonState);
+  } else if (source === 'mic' && micOn && !state._noisePrefApplied) {
+    state._noisePrefApplied = true;
+    applyPersistedNoiseSuppressionPreference().then(syncNoiseSuppressionButtonState);
+  }
 }
 
 function syncNoiseSuppressionButtonState() {
