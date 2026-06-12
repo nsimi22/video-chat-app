@@ -118,34 +118,43 @@
     return `Action item captured from an AI recap in ${channelName}.${owner}`;
   }
 
-  // Open a tiny anchored menu offering the integrations that are usable, so
-  // a single button can route to Jira *or* GitHub without a second modal.
-  // When only one is configured we skip the menu and go straight there;
-  // when neither is, we explain how to fix it. `anchor` is the clicked
-  // button — the menu positions just below it.
+  // Open a tiny anchored menu offering the targets that are usable, so a
+  // single button can route to Jira, GitHub, or the team roadmap without a
+  // second modal. When only one is available we skip the menu and go
+  // straight there; when none are, we explain how to fix it. `anchor` is
+  // the clicked button — the menu positions just below it.
   function openTargetMenu(anchor, item, ctx) {
     const jiraOk = !!ctx?.getJira?.()?.isConfigured?.();
     const ghOk = !!ctx?.getGitHub?.()?.isConfigured?.();
+    // The roadmap needs no per-user keys — just the team connection the
+    // hook implies — so it's available whenever the host wires it.
+    const roadmapOk = !!ctx?.addRoadmapItem;
+    const run = (target) => {
+      if (target === 'jira') createJiraTicket(item, ctx);
+      else if (target === 'github') createGitHubIssue(item, ctx);
+      else addToRoadmap(item, ctx);
+    };
+    const targets = [jiraOk && 'jira', ghOk && 'github', roadmapOk && 'roadmap'].filter(Boolean);
 
-    if (!jiraOk && !ghOk) {
+    if (!targets.length) {
       // Reuse the host app's toast rather than a blocking alert so the user
       // stays in context; point them at the one place keys are configured.
       ctx?.toast?.('No issue tracker configured. Open Settings → Jira or GitHub to connect one.');
       return;
     }
-    if (jiraOk && !ghOk) { createJiraTicket(item, ctx); return; }
-    if (ghOk && !jiraOk) { createGitHubIssue(item, ctx); return; }
+    if (targets.length === 1) { run(targets[0]); return; }
 
-    // Both available → show a small chooser. Single-instance: tear down any
-    // previously-open menu first.
+    // Multiple available → show a small chooser. Single-instance: tear down
+    // any previously-open menu first.
     closeTargetMenu();
     const menu = document.createElement('div');
     menu.className = 'action-item-menu';
     menu.setAttribute('role', 'menu');
-    menu.innerHTML = `
-      <button class="action-item-menu-opt" data-target="jira" role="menuitem">${svg('ticket') || ''}<span>Jira ticket</span></button>
-      <button class="action-item-menu-opt" data-target="github" role="menuitem">${svg('github') || ''}<span>GitHub issue</span></button>
-    `;
+    menu.innerHTML = [
+      jiraOk && `<button class="action-item-menu-opt" data-target="jira" role="menuitem">${svg('ticket') || ''}<span>Jira ticket</span></button>`,
+      ghOk && `<button class="action-item-menu-opt" data-target="github" role="menuitem">${svg('github') || ''}<span>GitHub issue</span></button>`,
+      roadmapOk && `<button class="action-item-menu-opt" data-target="roadmap" role="menuitem">${svg('calendar') || ''}<span>Add to roadmap</span></button>`,
+    ].filter(Boolean).join('\n');
     document.body.appendChild(menu);
 
     const r = anchor.getBoundingClientRect();
@@ -155,8 +164,9 @@
     // buttons near the right edge of the feed.
     menu.style.left = `${Math.round(Math.max(8, r.right - menu.offsetWidth))}px`;
 
-    menu.querySelector('[data-target="jira"]').onclick = () => { closeTargetMenu(); createJiraTicket(item, ctx); };
-    menu.querySelector('[data-target="github"]').onclick = () => { closeTargetMenu(); createGitHubIssue(item, ctx); };
+    menu.querySelectorAll('.action-item-menu-opt').forEach((btn) => {
+      btn.onclick = () => { const t = btn.dataset.target; closeTargetMenu(); run(t); };
+    });
 
     // Dismiss on the next outside click / Escape. Defer the listener a tick
     // so the click that opened the menu doesn't immediately close it.
@@ -214,6 +224,21 @@
     }
   }
 
+  // Roadmap path: write a team_roadmap_items row (the board's Timeline /
+  // Feed views) via the host hook. Undated on purpose — the team drags it
+  // into place on the timeline. Provenance + owner hint go into notes.
+  async function addToRoadmap(item, ctx) {
+    const channelName = ctx?.channelName ? `#${ctx.channelName}` : 'a channel';
+    const owner = item.owner ? ` Suggested owner: ${item.owner}.` : '';
+    try {
+      // Titles are capped at 200 chars by the table's CHECK constraint.
+      await ctx.addRoadmapItem({ title: item.text.slice(0, 200), notes: `From an AI recap in ${channelName}.${owner}` });
+      ctx?.toast?.("Added to the roadmap — see the board's Timeline or Feed view.");
+    } catch (err) {
+      ctx?.toast?.(`Couldn't add to the roadmap: ${err?.message || err}`.slice(0, 140));
+    }
+  }
+
   // Build the widget. Returns a single <div class="action-items"> element
   // (or null when there are no items). `ctx` carries the integration hooks
   // chat.js wires up — see ChatView._renderMessage.
@@ -245,7 +270,7 @@
       btn.type = 'button';
       btn.className = 'action-item-create';
       btn.innerHTML = `${svg('plus') || ''}<span>Create ticket</span>`;
-      btn.title = 'Create a Jira ticket or GitHub issue from this item';
+      btn.title = 'Create a Jira ticket or GitHub issue from this item, or add it to the team roadmap';
       btn.onclick = () => openTargetMenu(btn, item, ctx);
       row.appendChild(btn);
 

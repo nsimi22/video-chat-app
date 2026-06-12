@@ -32,6 +32,8 @@
     listRoadmapItems: async () => [],   // () -> team_roadmap_items rows
     saveRoadmapItem: async () => null,  // ({id?, title, startDate, endDate, notes}) -> saved row
     deleteRoadmapItem: async () => {},  // (id) -> delete a row
+    aiDraftEpic: async () => null,      // (title, notes) -> drafted epic description | null
+    getGitHub: () => null,              // () -> GitHubClient | null (status chips)
   };
 
   // The board's active project: the shared team selection wins, falling
@@ -434,6 +436,8 @@
     _descErr: new Set(),   // issue keys whose description fetch FAILED (≠ empty)
     _childCache: new Map(), // epic key -> [mapped child issues] | null (= load failed)
     _childLoading: new Set(), // epic keys with a child fetch in flight
+    _ghRefCache: new Map(),  // 'owner/repo#n' -> {kind, state, url} | null (= lookup failed)
+    _ghRefLoading: new Set(),
   };
   let filterTimer = null; // debounces the board search input
 
@@ -1646,7 +1650,7 @@
     // mean a site change (the team row carries both), so re-resolve it.
     if (board._roadmapProject !== project) board._startFieldId = undefined;
     board.roadmapLoading = true;
-    if (force) { board._childCache.clear(); rerenderToolbar(); }
+    if (force) { board._childCache.clear(); board._ghRefCache.clear(); rerenderToolbar(); }
     renderActiveView(); // skeleton
     try {
       const startId = await resolveStartFieldId(client);
@@ -1869,6 +1873,44 @@
   // shared DB row (any teammate), so only known tokens ever reach CSS.
   const ADHOC_COLORS = ['accent-2', 'good', 'warn', 'bad'];
 
+  // Live GitHub status chip for an ad-hoc item whose notes mention a PR or
+  // issue (a github.com URL or owner/repo#123 — same extractor the chat
+  // unfurls use). Same caching shape as the chat unfurls too: one lookup
+  // per ref per session, re-render when the status lands, silently no chip
+  // on failure. Click opens the PR/issue (and never the bar's own action).
+  function githubRefChip(notes) {
+    const gh = ctx.getGitHub?.();
+    if (!gh?.isConfigured?.() || !window.githubExtractRefs) return null;
+    const ref = window.githubExtractRefs(String(notes || ''))[0];
+    if (!ref) return null;
+    const key = `${ref.owner}/${ref.repo}#${ref.number}`;
+    const cached = board._ghRefCache.get(key);
+    if (cached === undefined && !board._ghRefLoading.has(key)) {
+      board._ghRefLoading.add(key);
+      gh.getIssueOrPull(ref.owner, ref.repo, ref.number)
+        .then((d) => {
+          const isPr = !!d?.pull_request;
+          board._ghRefCache.set(key, {
+            kind: isPr ? 'PR' : 'issue',
+            state: d?.pull_request?.merged_at ? 'merged' : (d?.state || 'open'),
+            url: d?.html_url || `https://github.com/${ref.owner}/${ref.repo}/issues/${ref.number}`,
+          });
+        })
+        .catch(() => board._ghRefCache.set(key, null))
+        .finally(() => { board._ghRefLoading.delete(key); renderActiveView(); });
+    }
+    if (cached === null) return null; // lookup failed — show nothing
+    const st = cached?.state;
+    const color = st === 'merged' ? 'var(--accent-2)'
+      : st === 'closed' ? 'var(--bad)'
+        : st === 'open' ? 'var(--good)' : 'var(--text-faint)';
+    return h('span.mono.jb-gh-chip', {
+      title: cached ? `${key} — ${cached.kind} ${st} (click to open on GitHub)` : `Looking up ${key}…`,
+      onclick: (e) => { e.stopPropagation(); if (cached?.url) window.open(cached.url, '_blank', 'noopener'); },
+      style: { color, background: `color-mix(in srgb, ${color} 14%, transparent)` },
+    }, icon('github', 11), h('span', null, cached ? `#${ref.number} ${st}` : `#${ref.number}`));
+  }
+
   function roadmapBar(en, x, td, pxv) {
     const open = !en.end;
     if (en.kind === 'epic') {
@@ -1933,6 +1975,7 @@
     },
       icon('pen', 12, cvar || 'var(--accent-tx)'),
       h('span.jb-roadmap-bar-title', null, it.title),
+      githubRefChip(it.notes),
       h('span.jb-roadmap-handle'),
     );
     attachBarDrag(bar, {
@@ -2144,15 +2187,20 @@
       toast('error', `${err?.message || err}`.slice(0, 160), null, "Couldn't save the item");
     }
   }
-  // Graduate an idea into a real Jira epic: create the epic (notes become
-  // its description), copy the dates over, delete the ad-hoc row, and
-  // refresh so the new epic bar replaces the old dashed one.
+  // Graduate an idea into a real Jira epic: draft a structured description
+  // (AI when configured, raw notes otherwise), create the epic, copy the
+  // dates over, delete the ad-hoc row, and refresh so the new epic bar
+  // replaces the old dashed one.
   async function promoteRoadmapItem({ id, title, startDate, endDate, notes }) {
     const client = ctx.getClient();
     try {
+      toast('success', `Creating “${title}” in Jira…`, null, 'Promoting');
+      let description = notes || '';
+      try { description = (await ctx.aiDraftEpic?.(title, notes)) || description; }
+      catch { /* AI hiccup → the raw notes are a fine description */ }
       const created = await client.createIssue({
         projectKey: activeProject(), summary: title,
-        description: notes || '', issueType: 'Epic',
+        description, issueType: 'Epic',
       });
       if (endDate || startDate) {
         // Best effort — the epic already exists; a date-write failure
@@ -2273,6 +2321,7 @@
         h('div.jb-feed-top', null,
           h('span.jb-feed-adhoc-tag.mono', null, 'idea'),
           h('span.mono.jb-feed-date', null, range || 'no date'),
+          githubRefChip(it.notes),
         ),
         h('div.jb-feed-summary', { title: it.notes || it.title }, it.title),
       ),
