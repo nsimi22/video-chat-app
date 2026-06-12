@@ -428,6 +428,8 @@
     roadmapLoading: false,
     roadmapForm: null,        // open add/edit popover descriptor (Esc closes it first)
     roadmapPx: 6,             // timeline zoom: px per day (sticky via localStorage)
+    _rmMin: null, _rmMax: null, // persistent (only-grows) timeline domain edges for infinite scroll
+    _rmScrollLeft: null,      // scrollLeft to restore after an extend re-render (vs. the today-anchor)
     epicProgress: new Map(),  // epic key -> { done, total } child counts
     _roadmapProject: null,    // project the epics/items caches were loaded for
     _startFieldId: undefined, // resolved Jira "Start date" field id (null = not found)
@@ -980,6 +982,13 @@
     input.addEventListener('change', () => {
       const v = input.value || null;
       if (v === cur) return;
+      // The field already holds a complete date, so each digit typed into the
+      // year subfield produces its own valid date (2 → 0002, 20 → 0020, …) and
+      // fires 'change'. Committing on those would re-render the panel and steal
+      // focus after one keystroke ("only one numeral and it locks in"). Wait
+      // for a full 4-digit year (or a calendar pick); clearing (v null) still
+      // commits, since that's the user explicitly emptying the field.
+      if (v) { const d = parseDay(v); if (!d || d.getFullYear() < 1000) return; }
       if (kind === 'due') changeDueDate(t, v); else changeStartDate(t, v);
     });
     return input;
@@ -1302,6 +1311,8 @@
     return h('div.jb-toolbar',
       null,
       viewSwitch(),
+      // How-it-works hover, timeline/feed only (replaces the old in-canvas hint).
+      board.view !== 'kanban' && roadmapInfoButton(),
       // The assignee filter only applies to kanban cards; timeline/feed
       // are epic-level views where the search box is the filter.
       board.view === 'kanban' && dropdown('filter', filterLabel, [
@@ -1487,6 +1498,34 @@
     }
     return seg;
   }
+  // A header ⓘ whose hover (or click/focus) reveals how the active view works —
+  // the guidance the bottom-of-canvas hint row used to carry.
+  function roadmapInfoButton() {
+    const tips = board.view === 'timeline'
+      ? ['Click anywhere on the grid to add an item.',
+         'Drag across the grid to sketch its span.',
+         'Drag a bar to move it; drag its right edge to change the end date.',
+         'Scroll left or right to travel through time — it never runs out.',
+         'Zoom with the +/− controls in the corner.']
+      : ['Type in the composer at the bottom to add an item.',
+         'Give it an optional target date — entries sort by date.',
+         'Hover an item to edit or delete it.'];
+    const pop = h('div.jb-rm-info-pop.hidden',
+      null,
+      h('div.jb-rm-info-title', null, board.view === 'timeline' ? 'Using the timeline' : 'Using the feed'),
+      h('ul.jb-rm-info-list', null, ...tips.map((s) => h('li', null, s))),
+    );
+    const btn = h('button.jb-rm-info-btn', { type: 'button', 'aria-label': 'How this view works' }, icon('info', 16, 'var(--text-faint)'));
+    const wrap = h('div.jb-rm-info', null, btn, pop);
+    const show = () => pop.classList.remove('hidden');
+    const hide = () => pop.classList.add('hidden');
+    wrap.addEventListener('mouseenter', show);
+    wrap.addEventListener('mouseleave', hide);
+    btn.addEventListener('focus', show);
+    btn.addEventListener('blur', hide);
+    btn.addEventListener('click', () => pop.classList.toggle('hidden'));
+    return wrap;
+  }
   function setView(v) {
     if (board.view === v) return;
     board.view = v;
@@ -1620,6 +1659,8 @@
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   }
   function addDays(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n, 12); }
+  function monthStart(d) { return new Date(d.getFullYear(), d.getMonth(), 1, 12); }
+  function addMonths(d, n) { return new Date(d.getFullYear(), d.getMonth() + n, 1, 12); }
   function localToday() { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), n.getDate(), 12); }
   function daysBetween(a, b) { return Math.round((b - a) / DAY); }
   function fmtDay(d) { return d ? d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''; }
@@ -1670,9 +1711,11 @@
     if (!force && board._roadmapProject === project) { renderActiveView(); return; }
     // The Start-date custom field id is per-site; a project change can also
     // mean a site change (the team row carries both), so re-resolve it.
-    if (board._roadmapProject !== project) board._startFieldId = undefined;
+    if (board._roadmapProject !== project) { board._startFieldId = undefined; board._rmMin = board._rmMax = null; board._rmScrollLeft = null; }
     board.roadmapLoading = true;
-    if (force) { board._childCache.clear(); board._ghRefCache.clear(); rerenderToolbar(); }
+    // Fresh load (open / refresh) re-seeds the timeline domain so it recenters
+    // on today rather than keeping a domain stretched by earlier scrolling.
+    if (force) { board._childCache.clear(); board._ghRefCache.clear(); board._rmMin = board._rmMax = null; board._rmScrollLeft = null; rerenderToolbar(); }
     renderActiveView(); // skeleton
     try {
       const jql = `project = "${project}" AND issuetype = Epic ORDER BY created ASC`;
@@ -1776,17 +1819,20 @@
     }
     const entries = roadmapEntries().sort((a, b) => compareEntries(a.start, b.start, a, b));
 
-    // Day domain: everything in play, padded, and never narrower than
-    // ~today−45d … today+90d so an empty project still shows a usable grid.
+    // Timeline domain. We keep a persistent, only-grows window in board state
+    // so scrolling left/right never hits a wall — the scroll handler below
+    // extends it on demand. Seed it generously around today and the data the
+    // first time (and re-seed whenever the data spills past the current edge).
     const td = localToday();
-    let min = addDays(td, -45), max = addDays(td, 90);
+    let dmin = addDays(td, -45), dmax = addDays(td, 90);
     for (const en of entries) {
-      if (en.start && en.start < min) min = en.start;
+      if (en.start && en.start < dmin) dmin = en.start;
       const tail = en.end || en.start;
-      if (tail && tail > max) max = tail;
+      if (tail && tail > dmax) dmax = tail;
     }
-    min = new Date(min.getFullYear(), min.getMonth(), 1, 12); // snap to a month edge
-    max = addDays(max, 14);
+    if (!board._rmMin || dmin < board._rmMin) board._rmMin = monthStart(addDays(dmin, -180));
+    if (!board._rmMax || dmax > board._rmMax) board._rmMax = addMonths(addDays(dmax, 30), 1);
+    const min = board._rmMin, max = board._rmMax;
     const pxv = board.roadmapPx || PX; // current zoom (px per day)
     const x = (d) => daysBetween(min, d) * pxv;
 
@@ -1799,9 +1845,10 @@
     for (let m = new Date(min.getFullYear(), min.getMonth(), 1, 12); m <= max;
       m = new Date(m.getFullYear(), m.getMonth() + 1, 1, 12)) {
       if (m < min) continue;
-      const opts = m.getMonth() === 0 ? { month: 'short', year: 'numeric' } : { month: 'short' };
-      axis.append(h('span.jb-roadmap-axis-month.mono', { style: { left: (x(m) + 6) + 'px' } },
-        m.toLocaleDateString(undefined, opts)));
+      // Always carry the year — with left/right scrolling spanning years, a
+      // bare "May" is ambiguous. e.g. "May ’26".
+      const label = `${m.toLocaleDateString(undefined, { month: 'short' })} ’${String(m.getFullYear()).slice(-2)}`;
+      axis.append(h('span.jb-roadmap-axis-month.mono', { style: { left: (x(m) + 6) + 'px' } }, label));
       inner.append(h('div.jb-roadmap-grid-month', { style: { left: x(m) + 'px' } }));
     }
     inner.prepend(axis);
@@ -1822,9 +1869,6 @@
       row.append(roadmapBar(en, x, td, pxv));
       inner.append(row);
     }
-    inner.append(h('div.jb-roadmap-addrow', null,
-      icon('plus', 14), h('span', null, 'Click — or drag a span — anywhere on the timeline to add an item')));
-
     // Add-a-bar-anywhere: a plain click on empty grid opens the inline form
     // prefilled with the clicked date (+1 week); pressing and dragging
     // sketches the exact span with a ghost bar first.
@@ -1880,8 +1924,38 @@
       iconBtn('zoomOut', 16, 'Zoom out (fewer px per day)', () => setRoadmapZoom(-1)),
       iconBtn('zoomIn', 16, 'Zoom in (more px per day)', () => setRoadmapZoom(1)),
     ));
-    // Land with today at roughly the first quarter of the viewport.
-    requestAnimationFrame(() => { scroll.scrollLeft = Math.max(0, tx - scroll.clientWidth * 0.25); });
+    // After an infinite-scroll extend, restore the adjusted position so the
+    // view doesn't jump; otherwise land with today at the first quarter.
+    requestAnimationFrame(() => {
+      if (board._rmScrollLeft != null) { scroll.scrollLeft = board._rmScrollLeft; board._rmScrollLeft = null; }
+      else scroll.scrollLeft = Math.max(0, tx - scroll.clientWidth * 0.25);
+    });
+
+    // Infinite left/right scroll: as either edge nears, grow the persistent
+    // domain by enough months to clear the trigger band, then re-render. A
+    // left-extend bumps the restored scrollLeft by the prepended width so the
+    // view holds still; a right-extend just adds canvas past the viewport.
+    let extending = false;
+    scroll.addEventListener('scroll', () => {
+      if (extending || scroll.scrollWidth <= scroll.clientWidth + 1) return;
+      const EDGE = 500;
+      const nearLeft = scroll.scrollLeft < EDGE;
+      const nearRight = scroll.scrollLeft + scroll.clientWidth > scroll.scrollWidth - EDGE;
+      if (!nearLeft && !nearRight) return;
+      extending = true;
+      // Enough months that the added width exceeds EDGE even at the lowest zoom
+      // (≥28 days/month), so restoring the position can't immediately re-fire.
+      const months = Math.max(4, Math.ceil((EDGE + 60) / (28 * pxv)));
+      if (nearLeft) {
+        const newMin = addMonths(board._rmMin, -months);
+        board._rmScrollLeft = scroll.scrollLeft + daysBetween(newMin, board._rmMin) * pxv;
+        board._rmMin = newMin;
+      } else {
+        board._rmMax = addMonths(board._rmMax, months);
+        board._rmScrollLeft = scroll.scrollLeft;
+      }
+      renderRoadmap();
+    });
   }
 
   const ZOOM_LEVELS = [3, 6, 12, 24]; // px per day: quarter-at-a-glance → week detail
@@ -1995,7 +2069,8 @@
     for (let m = new Date(min.getFullYear(), min.getMonth(), 1, 12); m <= max;
       m = new Date(m.getFullYear(), m.getMonth() + 1, 1, 12)) {
       if (m < min) continue;
-      months.push(`<span class="ax" style="left:${x(m) + 3}px">${m.toLocaleDateString(undefined, { month: 'short', year: m.getMonth() === 0 ? 'numeric' : undefined })}</span>`
+      const ml = `${m.toLocaleDateString(undefined, { month: 'short' })} ’${String(m.getFullYear()).slice(-2)}`;
+      months.push(`<span class="ax" style="left:${x(m) + 3}px">${ml}</span>`
         + `<i class="gl" style="left:${x(m)}px"></i>`);
     }
 
