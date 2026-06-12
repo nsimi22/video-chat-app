@@ -1985,20 +1985,19 @@ async function joinTeamAndStart(teamId) {
 // first (so its event listeners are attached before huddle.joinCall
 // fires presence-sync events for everyone already in the call), then join.
 //
-// `audioFirst` (used by knock-to-huddle) joins with the camera muted so
-// a spontaneous huddle is voice-only by default; the user can flip the
-// camera on with the existing cam toggle once in.
-async function startCall(channelId, { audioFirst = false } = {}) {
+// Every call joins with mic AND camera off — nothing is published until
+// the user turns them on with the toggle buttons, so a join (channel call
+// or knock-to-huddle) never leaks audio/video and the camera never lights.
+async function startCall(channelId) {
   if (!state.huddle || state.mesh) return; // already in a call or no team
   if (state.callStarting) return;          // double-click / re-entrancy guard
   state.callStarting = true;
   els.btnStartCall.disabled = true;
   els.btnJoinCall.disabled = true;
-  // Each call starts with mic/cam enabled (fresh getUserMedia). Clear
-  // any leftover .muted styling from a previous call we left while
-  // muted; otherwise the UI can lie about the live track state.
-  els.btnMic.classList.remove('muted');
-  els.btnCam.classList.remove('muted');
+  // Each call starts with mic + camera off (nothing published yet), so the
+  // controls show muted from the outset; the user opts in with the toggles.
+  els.btnMic.classList.add('muted');
+  els.btnCam.classList.add('muted');
   // Wire the call client before joinCall — joinCall's await resolves
   // AFTER the realtime channel's initial presence sync, so huddle-
   // forwarded events (mute-state, raise-hand, reaction) emitted during
@@ -2069,33 +2068,22 @@ async function startCall(channelId, { audioFirst = false } = {}) {
   // its id so other participants pick the same thread root.
   setupMeetingThreadAsStarter(channelId);
   try {
-    const cam = await mesh.setCamera({ video: true, audio: true });
+    // Publish neither track on join (mic + camera off by default). The
+    // self tile still mounts so the user sees their slot; it shows the
+    // cam-off treatment until they turn the camera on.
+    const cam = await mesh.setCamera({ video: false, audio: false });
     addLocalCameraTile(cam, state.huddle.name);
-    // Engage the persisted blur + noise-suppression preferences AFTER
-    // setCamera resolves: only now do the camera/mic publications exist,
-    // so setBlurBackground/setNoiseSuppression can clone the live tracks
-    // and actually start their pipelines. Called before setCamera they
-    // merely stashed the flag (media published raw, button looked active,
-    // first user click no-op'd). Both are idempotent — they early-return
-    // when the state already matches — so this won't double-start.
-    await applyPersistedBlurPreference();
-    await applyPersistedNoiseSuppressionPreference();
+    // Reflect the off state on the self tile. Blur / noise-suppression
+    // preferences engage when the user first enables the camera/mic (their
+    // pipelines need a live published track, which doesn't exist yet); the
+    // buttons already read muted from the pre-join styling above.
     syncBlurButtonState();
     syncNoiseSuppressionButtonState();
-    // Audio-first huddles join with the camera off — flip it back down
-    // right after the tile is up so peers never see a video frame and
-    // the cam button reflects the muted state. toggleCam returns the new
-    // on/off, so only mute if it's currently on.
-    if (audioFirst && state.mesh) {
-      const on = state.mesh.toggleCam();
-      els.btnCam.classList.toggle('muted', !on);
-      // Mirror the manual btnCam handler (setPeerCamOn after toggleCam):
-      // the call channel is { broadcast: { self: false } }, so we never
-      // hear our own mute-state echo and the self-tile's cam-off overlay
-      // only flips if we drive it locally. Without this the local view
-      // shows a black/last-frame tile while peers correctly see cam-off.
-      setPeerCamOn(state.huddle.peerId, on);
-    }
+    // The call channel is { broadcast: { self: false } }, so we never hear
+    // our own mute-state echo — drive the self-tile overlays locally so the
+    // local view matches what peers see (no mic/cam track == muted).
+    setPeerMicOn(state.huddle.peerId, false);
+    setPeerCamOn(state.huddle.peerId, false);
   } catch (err) {
     console.warn('No camera/mic available', err);
     // The call itself is still alive (signaling + presence work) so
@@ -4180,9 +4168,9 @@ async function _acceptIncomingKnock() {
   } catch (err) {
     console.warn('knock accept: createDm failed', err);
   }
-  // Surface the DM and jump straight into the (audio-first) call.
+  // Surface the DM and jump straight into the call (joins muted by default).
   focusChannel(channelId);
-  startCall(channelId, { audioFirst: true });
+  startCall(channelId);
 }
 
 function _declineIncomingKnock() {
@@ -4215,7 +4203,7 @@ function onKnockResponse(payload) {
     // already in a call. _declineIncomingKnock no-ops when there's none.
     if (_knock.incoming) _declineIncomingKnock();
     focusChannel(channelId);
-    startCall(channelId, { audioFirst: true });
+    startCall(channelId);
   } else {
     showToast(`${peerName} can’t huddle right now.`);
   }
