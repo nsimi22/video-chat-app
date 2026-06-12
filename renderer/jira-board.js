@@ -724,8 +724,13 @@
   // Optimistic edit: apply() mutates the local issue, persist() calls Jira.
   // On failure revert() restores. Re-renders the detail + board card both
   // ways so the two stay in sync. Mirrors the drag-to-transition onDrop path.
-  async function commitEdit({ apply, revert, persist, okMsg, after }) {
+  // `issue` (when given) is mirrored onto the OTHER copy of the same epic —
+  // board.issues and board.epics can hold different instances, and without
+  // the mirror a status edit from the detail panel would leave the timeline
+  // bar (or, after a timeline drag, the cached kanban card) stale.
+  async function commitEdit({ issue, apply, revert, persist, okMsg, after }) {
     apply();
+    if (issue) syncEpicMirror(issue);
     renderDetail(); renderActiveView();
     try {
       await persist();
@@ -733,8 +738,19 @@
       if (after) after();
     } catch (err) {
       revert();
+      if (issue) syncEpicMirror(issue);
       renderDetail(); renderActiveView();
       toast('error', `${err?.message || err}`.slice(0, 160));
+    }
+  }
+
+  function syncEpicMirror(t) {
+    for (const list of [board.epics, board.issues]) {
+      const e = list.find((x) => x.key === t.key);
+      if (!e || e === t) continue;
+      e.summary = t.summary; e.status = t.status; e.cat = t.cat;
+      e.priority = t.priority; e.assignees = t.assignees; e.labels = t.labels;
+      if (t._datesLoaded) { e.start = t.start; e.due = t.due; }
     }
   }
 
@@ -793,6 +809,7 @@
     const prevStatus = t.status, prevCat = t.cat;
     const toCol = board.columns.find((c) => colHasStatus(c, toName));
     commitEdit({
+      issue: t,
       apply: () => { if (toName) { t.status = toName; t.cat = toCol?.cat || t.cat; } },
       revert: () => { t.status = prevStatus; t.cat = prevCat; },
       persist: () => ctx.getClient().transitionIssue({ key: t.key, transitionId }),
@@ -805,6 +822,7 @@
   function changeAssignee(t, accountId, name) {
     const prev = t.assignees;
     commitEdit({
+      issue: t,
       apply: () => { t.assignees = accountId ? [{ id: accountId, name: name || 'Assignee', email: '' }] : []; },
       revert: () => { t.assignees = prev; },
       persist: () => ctx.getClient().updateIssue({ key: t.key, assigneeAccountId: accountId }),
@@ -815,6 +833,7 @@
     const prev = t.priority;
     if (name === prev) return;
     commitEdit({
+      issue: t,
       apply: () => { t.priority = name; },
       revert: () => { t.priority = prev; },
       persist: () => ctx.getClient().updateIssue({ key: t.key, priorityName: name }),
@@ -824,6 +843,7 @@
   function setLabels(t, labels) {
     const prev = t.labels;
     commitEdit({
+      issue: t,
       apply: () => { t.labels = labels; },
       revert: () => { t.labels = prev; },
       persist: () => ctx.getClient().updateIssue({ key: t.key, labels }),
@@ -833,6 +853,7 @@
   function setSummary(t, summary) {
     const prev = t.summary;
     commitEdit({
+      issue: t,
       apply: () => { t.summary = summary; },
       revert: () => { t.summary = prev; },
       persist: () => ctx.getClient().updateIssue({ key: t.key, summary }),
@@ -840,18 +861,12 @@
     });
   }
 
-  // The detail panel and the roadmap can hold DIFFERENT instances of the
-  // same epic (board.issues vs board.epics), so date edits mirror onto the
-  // roadmap's copy — otherwise the bar wouldn't move until the next refetch.
-  function syncEpicField(key, field, v) {
-    const e = board.epics.find((x) => x.key === key);
-    if (e) e[field] = v;
-  }
   function changeDueDate(t, v) {
     const prev = t.due ?? null;
     commitEdit({
-      apply: () => { t.due = v; syncEpicField(t.key, 'due', v); },
-      revert: () => { t.due = prev; syncEpicField(t.key, 'due', prev); },
+      issue: t,
+      apply: () => { t.due = v; },
+      revert: () => { t.due = prev; },
       persist: () => ctx.getClient().updateIssue({ key: t.key, duedate: v }),
       okMsg: v ? `${t.key} due ${fmtDay(parseDay(v))}.` : `${t.key} due date cleared.`,
     });
@@ -865,8 +880,9 @@
       return;
     }
     commitEdit({
-      apply: () => { t.start = v; syncEpicField(t.key, 'start', v); },
-      revert: () => { t.start = prev; syncEpicField(t.key, 'start', prev); },
+      issue: t,
+      apply: () => { t.start = v; },
+      revert: () => { t.start = prev; },
       persist: () => ctx.getClient().updateIssue({ key: t.key, extraFields: { [id]: v } }),
       okMsg: v ? `${t.key} starts ${fmtDay(parseDay(v))}.` : `${t.key} start date cleared.`,
     });
@@ -1659,10 +1675,13 @@
     if (force) { board._childCache.clear(); board._ghRefCache.clear(); rerenderToolbar(); }
     renderActiveView(); // skeleton
     try {
-      const startId = await resolveStartFieldId(client);
       const jql = `project = "${project}" AND issuetype = Epic ORDER BY created ASC`;
       const [res, items, childRes] = await Promise.all([
-        client.searchIssuesAll(jql, 200, { fields: EPIC_FIELDS + (startId ? ',' + startId : '') }),
+        // The epic search needs the resolved Start-date field id in its
+        // field list, so the two chain — but the items and child-count
+        // queries don't, and run alongside instead of behind the lookup.
+        resolveStartFieldId(client).then((startId) =>
+          client.searchIssuesAll(jql, 200, { fields: EPIC_FIELDS + (startId ? ',' + startId : '') })),
         ctx.listRoadmapItems(),
         // Child counts for the per-epic progress fill. standardIssueTypes()
         // excludes sub-tasks (whose parent is a story, not an epic). Best
@@ -2067,6 +2086,7 @@ ${rows}
   // unfurls use). Same caching shape as the chat unfurls too: one lookup
   // per ref per session, re-render when the status lands, silently no chip
   // on failure. Click opens the PR/issue (and never the bar's own action).
+  let ghChipRerenderTimer = null;
   function githubRefChip(notes) {
     const gh = ctx.getGitHub?.();
     if (!gh?.isConfigured?.() || !window.githubExtractRefs) return null;
@@ -2086,7 +2106,13 @@ ${rows}
           });
         })
         .catch(() => board._ghRefCache.set(key, null))
-        .finally(() => { board._ghRefLoading.delete(key); renderActiveView(); });
+        .finally(() => {
+          board._ghRefLoading.delete(key);
+          // Coalesce: N refs resolving in a burst (first paint of a board
+          // with several linked PRs) trigger ONE re-render, not N.
+          clearTimeout(ghChipRerenderTimer);
+          ghChipRerenderTimer = setTimeout(renderActiveView, 80);
+        });
     }
     if (cached === null) return null; // lookup failed — show nothing
     const st = cached?.state;
@@ -2230,13 +2256,14 @@ ${rows}
     const ns = isoDay(addDays(en.start, days));
     const ndue = en.end ? isoDay(addDays(en.end, days)) : null;
     commitEdit({
+      issue: t,
       apply: () => {
-        t.start = ns; syncEpicField(t.key, 'start', ns);
-        if (ndue) { t.due = ndue; syncEpicField(t.key, 'due', ndue); }
+        t.start = ns;
+        if (ndue) t.due = ndue;
       },
       revert: () => {
-        t.start = prevStart; syncEpicField(t.key, 'start', prevStart);
-        if (ndue) { t.due = prevDue; syncEpicField(t.key, 'due', prevDue); }
+        t.start = prevStart;
+        if (ndue) t.due = prevDue;
       },
       persist: () => ctx.getClient().updateIssue({
         key: t.key,
