@@ -1165,7 +1165,11 @@ class ChatView {
     // onClick runs, so the reaction picker anchors off these coordinates.
     const at = { clientX: ev?.clientX, clientY: ev?.clientY };
     const items = [];
-    items.push({ label: 'Add reaction', icon: 'smile', onClick: () => this._openReactionPicker(at, m.id) });
+    // Defer to the next tick: the menu-item click bubbles to the document
+    // outside-click listener that hides the emoji picker (chat.js wires one
+    // for the composer), so opening synchronously would be undone by this
+    // same click. Opening after it settles keeps the picker up.
+    items.push({ label: 'Add reaction', icon: 'smile', onClick: () => setTimeout(() => this._openReactionPicker(at, m.id), 0) });
     if (!m.parentId && !inThread) items.push({ label: 'Reply in thread', icon: 'reply', onClick: () => this.openThread(m.id) });
     items.push({ type: 'divider' });
     if (m.text) items.push({ label: 'Copy text', icon: 'text', onClick: () => this._copyText(m.text) });
