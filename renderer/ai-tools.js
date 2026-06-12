@@ -216,5 +216,54 @@
     ];
   }
 
-  window.HuddleAiTools = { buildJiraTools, buildGithubTicketTools };
+  // Team-roadmap tools (the board's Timeline/Feed ad-hoc items — rows in
+  // team_roadmap_items, NOT Jira issues). `roadmap` is a tiny adapter —
+  // { list(), save(payload) } — wired by app.js to the HuddleClient so
+  // this module stays free of Supabase specifics. Null when no team is
+  // connected, so callers can spread the result unconditionally.
+  function buildRoadmapTools(roadmap) {
+    if (!roadmap) return [];
+    return [
+      {
+        name: 'roadmap_list_items',
+        description: "List the team's ad-hoc roadmap items — the hand-added bars on the board's Timeline view (separate from Jira epics). Returns id, title, start_date, end_date (the target/ship date), and notes. Use this to answer what's planned, or before adding to avoid duplicates.",
+        input_schema: { type: 'object', properties: {} },
+        async run() {
+          const rows = await roadmap.list();
+          return (rows || []).map((r) => ({
+            id: r.id, title: r.title,
+            start_date: r.start_date || null, end_date: r.end_date || null,
+            notes: r.notes || '',
+          }));
+        },
+      },
+      {
+        name: 'roadmap_add_item',
+        description: "Add an ad-hoc item to the team roadmap, visible to the whole team on the board's Timeline and Feed views. Use when the user asks to put something on the roadmap. Dates are optional ISO YYYY-MM-DD strings; end_date is the target/ship date. Omit dates the user did not give or clearly imply — never invent them.",
+        input_schema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Short deliverable title (max 200 chars).' },
+            start_date: { type: 'string', description: 'Optional start date, YYYY-MM-DD.' },
+            end_date: { type: 'string', description: 'Optional target/ship date, YYYY-MM-DD.' },
+            notes: { type: 'string', description: 'Optional one-line context.' },
+          },
+          required: ['title'],
+        },
+        async run({ title, start_date, end_date, notes }) {
+          const t = String(title || '').trim();
+          if (!t) throw new Error('title is required');
+          const row = await roadmap.save({
+            title: t.slice(0, 200),
+            startDate: start_date || null,
+            endDate: end_date || null,
+            notes: notes || null,
+          });
+          return { id: row?.id || null, title: row?.title || t, ok: true };
+        },
+      },
+    ];
+  }
+
+  window.HuddleAiTools = { buildJiraTools, buildGithubTicketTools, buildRoadmapTools };
 })();

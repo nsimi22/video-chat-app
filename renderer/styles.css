@@ -9035,3 +9035,214 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .jb-toast-title { font-size: 13px; font-weight: 700; color: var(--text); }
 .jb-toast-msg { font-size: 12px; color: var(--text-faint); margin-top: 1px; }
 .jb-toast-retry { margin-left: 4px; }
+
+/* detail panel: epic extras (date editors + child issues) */
+.jb-detail-date {
+  width: 150px; height: 28px; padding: 0 8px; box-sizing: border-box; border-radius: 7px;
+  background: var(--bg-2); border: 1px solid var(--line-strong); color: var(--text);
+  font: inherit; font-size: 12.5px; font-weight: 600;
+}
+.jb-detail-date:focus { outline: none; border-color: var(--accent-2); }
+.jb-detail-children { margin-bottom: 22px; }
+.jb-children-head { display: flex; align-items: center; gap: 10px; min-height: 28px; margin-bottom: 4px; }
+.jb-children-count { font-size: 11px; color: var(--text-faint); }
+.jb-children-row {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  padding: 7px 8px; border-radius: 8px; background: transparent; border: none; color: inherit; font: inherit;
+  transition: background var(--t-fast);
+}
+.jb-children-row.jb-clickable:hover { background: var(--bg-2); }
+.jb-children-summary {
+  flex: 1; min-width: 0; font-size: 12.8px; font-weight: 500; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.jb-children-empty { display: flex; align-items: center; gap: 10px; padding: 6px 8px; font-size: 12.5px; color: var(--text-faint); }
+
+/* view host (kanban / timeline / feed share the slot under the toolbar) */
+.jb-view-host { flex: 1; min-height: 0; display: flex; }
+.jb-view-host > * { flex: 1; min-width: 0; }
+
+/* view switcher — segmented control in the toolbar */
+.jb-viewseg {
+  display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--r-sm);
+  background: var(--bg-2); border: 1px solid var(--line-strong); flex: 0 0 auto;
+}
+.jb-viewseg-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px;
+  border-radius: 6px; border: none; background: transparent; cursor: pointer;
+  font: inherit; font-size: 12.5px; font-weight: 600; color: var(--text-faint);
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.jb-viewseg-btn:hover { color: var(--text); }
+.jb-viewseg-on { background: var(--bg-3); color: var(--text); }
+
+/* ── roadmap (horizontal timeline) ── */
+.jb-roadmap { display: flex; flex-direction: column; min-height: 0; position: relative; }
+.jb-roadmap-scroll { flex: 1; min-height: 0; overflow: auto; }
+.jb-roadmap-inner {
+  position: relative; min-height: 100%; padding: 40px 0 12px;
+  /* week ticks; --jb-px (px per day) is set from JS */
+  background: repeating-linear-gradient(90deg,
+    transparent 0 calc(7 * var(--jb-px, 6px) - 1px),
+    color-mix(in srgb, var(--line) 55%, transparent) 0 calc(7 * var(--jb-px, 6px)));
+}
+.jb-roadmap-axis {
+  position: sticky; top: 0; left: 0; height: 30px; z-index: 5;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  margin-top: -40px; margin-bottom: 10px;
+}
+.jb-roadmap-axis-month {
+  position: absolute; top: 7px; font-size: 10.5px; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); white-space: nowrap;
+}
+.jb-roadmap-grid-month { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line); }
+.jb-roadmap-today { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent-2); z-index: 4; }
+.jb-roadmap-today-pill {
+  position: sticky; top: 34px; display: inline-block; transform: translateX(-50%);
+  font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--bg); background: var(--accent-2); padding: 2px 7px; border-radius: 8px; white-space: nowrap;
+}
+.jb-roadmap-row { position: relative; height: 36px; }
+.jb-roadmap-bar {
+  position: absolute; top: 4px; height: 28px; min-width: 90px;
+  display: inline-flex; align-items: center; gap: 7px; padding: 0 10px 0 8px;
+  border: 1px solid var(--line); border-left-width: 3px; border-radius: 8px;
+  font: inherit; font-size: 12px; font-weight: 600; color: var(--text); text-align: left;
+  cursor: pointer; overflow: hidden; white-space: nowrap; z-index: 2;
+  box-shadow: var(--shadow-1); transition: box-shadow var(--t-fast), transform var(--t-fast);
+}
+.jb-roadmap-bar:hover { box-shadow: var(--shadow-2); transform: translateY(-1px); z-index: 3; }
+.jb-roadmap-bar-key { font-size: 10.5px; color: var(--text-dim); flex: 0 0 auto; }
+.jb-roadmap-bar-title { overflow: hidden; text-overflow: ellipsis; }
+.jb-roadmap-bar-adhoc {
+  border: 1px dashed var(--accent-tx); border-left-width: 3px;
+  background: var(--accent-dim); color: var(--text);
+}
+.jb-roadmap-bar-done { opacity: 0.72; }
+.jb-roadmap-bar-pending { opacity: 0.55; cursor: progress; }
+.jb-roadmap-bar-movable { cursor: grab; }
+.jb-roadmap-bar-movable:active { cursor: grabbing; }
+.jb-roadmap-handle { position: absolute; right: 0; top: 0; bottom: 0; width: 10px; cursor: ew-resize; }
+.jb-roadmap-bar-count { font-size: 10px; color: var(--text-dim); flex: 0 0 auto; margin-left: auto; padding-left: 6px; }
+.jb-roadmap-bar-prog {
+  position: absolute; left: 0; bottom: 0; height: 3px; pointer-events: none;
+  background: var(--good); border-radius: 0 2px 2px 0; opacity: 0.85;
+}
+.jb-roadmap-ghost {
+  position: absolute; height: 28px; z-index: 5; pointer-events: none;
+  border: 1.5px dashed var(--accent-2); border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-2) 12%, transparent);
+}
+.jb-roadmap-zoom {
+  position: absolute; right: 14px; bottom: 14px; z-index: 7;
+  display: flex; gap: 2px; padding: 3px;
+  background: var(--bg-elev); border: 1px solid var(--line-strong); border-radius: 9px;
+  box-shadow: var(--shadow-1);
+}
+.jb-roadmap-bar-unsched {
+  border-right: none; border-radius: 8px 0 0 8px;
+  -webkit-mask-image: linear-gradient(90deg, #000 70%, transparent);
+  mask-image: linear-gradient(90deg, #000 70%, transparent);
+}
+.jb-roadmap-addrow {
+  position: sticky; left: 0; display: flex; align-items: center; gap: 8px;
+  margin: 14px 18px 6px; width: max-content; padding: 8px 14px;
+  border: 1.5px dashed var(--line); border-radius: var(--r-md);
+  color: var(--text-faint); font-size: 12px; font-weight: 600; pointer-events: none;
+}
+.jb-roadmap-empty-hint {
+  position: sticky; left: 0; display: flex; align-items: center; gap: 9px;
+  margin: 26px 18px; width: max-content; color: var(--text-faint); font-size: 13px; font-weight: 600;
+}
+.jb-roadmap-skel { flex: 1; padding: 22px 0; display: flex; flex-direction: column; gap: 14px; }
+.jb-roadmap-skelrow { display: flex; }
+
+/* add/edit popover (appended to <body>) */
+.jb-roadmap-form {
+  position: fixed; z-index: 130; width: 300px; padding: 12px;
+  display: flex; flex-direction: column; gap: 9px;
+  background: var(--bg-elev); border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  box-shadow: var(--shadow-2);
+  backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
+  animation: huddle-pop 0.12s ease;
+}
+.jb-rf-head { display: flex; align-items: center; gap: 8px; }
+.jb-rf-title { font-size: 13px; font-weight: 700; }
+.jb-rf-esc { border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; font-size: 10.5px; color: var(--text-faint); }
+.jb-rf-input {
+  width: 100%; box-sizing: border-box; background: var(--bg-2); border: 1px solid var(--line-strong);
+  border-radius: 7px; color: var(--text); font: inherit; font-size: 13px; padding: 7px 9px;
+}
+.jb-rf-input:focus { outline: none; border-color: var(--accent-2); }
+.jb-rf-dates { display: flex; align-items: center; gap: 7px; }
+.jb-rf-date { flex: 1; min-width: 0; font-size: 12px; }
+.jb-rf-arrow { color: var(--text-faint); flex: 0 0 auto; }
+.jb-rf-colors { display: flex; align-items: center; gap: 7px; }
+.jb-rf-colors-lbl { font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-faint); margin-right: 3px; }
+.jb-rf-color { width: 20px; height: 20px; border-radius: 50%; border: 2px solid transparent; padding: 0; cursor: pointer; flex: 0 0 auto; }
+.jb-rf-color-on { border-color: var(--text); box-shadow: 0 0 0 2px var(--bg-elev); }
+.jb-rf-foot { display: flex; align-items: center; gap: 7px; margin-top: 2px; }
+
+/* ── feed (vertical, chat-style) ── */
+.jb-feed { display: flex; flex-direction: column; min-height: 0; }
+.jb-feed-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding: 10px 18px 14px; }
+.jb-feed-divider {
+  display: flex; align-items: center; gap: 12px; margin: 14px 0 8px;
+  color: var(--text-faint); font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+}
+.jb-feed-divider::before, .jb-feed-divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.jb-feed-divider-today { color: var(--accent-2); }
+.jb-feed-divider-today::before, .jb-feed-divider-today::after { background: color-mix(in srgb, var(--accent-2) 45%, transparent); }
+.jb-feed-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 9px 10px; margin: 2px 0; border-radius: 9px;
+  background: transparent; border: 1px solid transparent; color: inherit; font: inherit;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+.jb-feed-row.jb-clickable:hover { background: var(--bg-2); }
+.jb-feed-main { flex: 1; min-width: 0; }
+.jb-feed-top { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.jb-feed-date { font-size: 10.5px; color: var(--text-faint); }
+.jb-feed-overdue { color: var(--bad); }
+.jb-feed-summary {
+  font-size: 13px; font-weight: 500; color: var(--text); line-height: 1.35;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.jb-feed-row-adhoc { border: 1px dashed var(--line-strong); background: color-mix(in srgb, var(--bg-2) 60%, transparent); }
+.jb-feed-adhoc-ic {
+  width: 24px; height: 24px; flex: 0 0 auto; border-radius: 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--accent-dim); color: var(--accent-tx);
+}
+.jb-feed-adhoc-tag {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--accent-tx); background: var(--accent-dim); padding: 1px 6px; border-radius: 5px;
+}
+/* live GitHub PR/issue status chip on roadmap bars + feed rows */
+.jb-gh-chip {
+  display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto;
+  padding: 1px 6px; border-radius: 6px; font-size: 10px; font-weight: 600;
+  cursor: pointer; white-space: nowrap;
+}
+.jb-feed-actions { display: none; align-items: center; gap: 2px; flex: 0 0 auto; }
+.jb-feed-row-adhoc:hover .jb-feed-actions { display: inline-flex; }
+.jb-feed-composer {
+  display: flex; align-items: center; gap: 9px; padding: 11px 18px;
+  border-top: 1px solid var(--line); flex: 0 0 auto; background: var(--bg);
+}
+.jb-feed-input {
+  flex: 1; min-width: 0; height: 34px; padding: 0 12px; border-radius: 9px;
+  background: var(--bg-2); border: 1px solid var(--line-strong); color: var(--text); font: inherit; font-size: 13px;
+}
+.jb-feed-input:focus { outline: none; border-color: var(--accent-2); }
+.jb-feed-datein {
+  height: 34px; padding: 0 9px; border-radius: 9px; box-sizing: border-box;
+  background: var(--bg-2); border: 1px solid var(--line-strong); color: var(--text-dim); font: inherit; font-size: 12px;
+}
+.jb-feed-send {
+  display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px;
+  border-radius: 9px; border: none; background: var(--accent); color: #0b1020; cursor: pointer;
+}
+.jb-feed-send:hover { filter: brightness(1.08); }

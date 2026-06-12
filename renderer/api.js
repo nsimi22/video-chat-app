@@ -861,6 +861,13 @@
       // everyone live (read RLS already scopes rows to team members).
       ch.on('postgres_changes', { event: '*', schema: 'public', table: 'team_jira_board', filter: teamFilter },
         (p) => this.dispatchEvent(new CustomEvent('team-board-changed', { detail: { row: p.new || null } })));
+      // Ad-hoc roadmap bars: any teammate's add/edit/delete re-renders open
+      // roadmap/feed views. DELETE matches the team filter because the table
+      // has replica identity full (see its migration). Consumers refetch the
+      // whole list rather than patch by row — it's dozens of rows at most.
+      ch.on('postgres_changes', { event: '*', schema: 'public', table: 'team_roadmap_items', filter: teamFilter },
+        (p) => this.dispatchEvent(new CustomEvent('team-roadmap-changed',
+          { detail: { eventType: p.eventType, row: p.new || p.old || null } })));
       ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'channels', filter: teamFilter },
         (p) => this.dispatchEvent(new CustomEvent('chat-channel-added', { detail: { channel: this._marshalChannel(p.new) } })));
       ch.on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'channels', filter: teamFilter },
@@ -1298,6 +1305,37 @@
         .from('team_jira_board').upsert(row, { onConflict: 'team_id' }).select().maybeSingle();
       if (error) throw error;
       return data || null;
+    }
+
+    // ----- Team roadmap items (ad-hoc bars on the board's roadmap) -------
+    //
+    // Rows in public.team_roadmap_items: team-shared deliverables/ideas the
+    // roadmap and feed views show alongside live Jira epics. Like the board
+    // selection above, any team member may add/edit/remove; created_by /
+    // updated_by / timestamps are stamped server-side by the touch trigger.
+    async listTeamRoadmapItems() {
+      const { data, error } = await this.supabase
+        .from('team_roadmap_items').select('*').eq('team_id', this.team.id)
+        .order('start_date', { ascending: true, nullsFirst: false });
+      if (error) { console.warn('listTeamRoadmapItems failed', error); return []; }
+      return data || [];
+    }
+    async saveTeamRoadmapItem({ id, title, startDate, endDate, color, notes }) {
+      const row = { team_id: this.team.id, title };
+      if (id) row.id = id; // omit on insert so gen_random_uuid() fires
+      if (startDate !== undefined) row.start_date = startDate || null;
+      if (endDate !== undefined) row.end_date = endDate || null;
+      if (color !== undefined) row.color = color || null;
+      if (notes !== undefined) row.notes = notes || null;
+      const { data, error } = await this.supabase
+        .from('team_roadmap_items').upsert(row, { onConflict: 'id' }).select().single();
+      if (error) throw error;
+      return data;
+    }
+    async deleteTeamRoadmapItem(id) {
+      const { error } = await this.supabase
+        .from('team_roadmap_items').delete().eq('id', id).eq('team_id', this.team.id);
+      if (error) throw error;
     }
 
     // ----- Meeting threads ----------------------------------------------

@@ -29,6 +29,11 @@
     aiRewrite: async (text) => text, // (current, instruction) -> rewritten text
     popOut: () => {},               // open the board in its own window
     copyText: async () => false,    // (text) -> robust copy-to-clipboard, returns ok
+    listRoadmapItems: async () => [],   // () -> team_roadmap_items rows
+    saveRoadmapItem: async () => null,  // ({id?, title, startDate, endDate, notes}) -> saved row
+    deleteRoadmapItem: async () => {},  // (id) -> delete a row
+    aiDraftEpic: async () => null,      // (title, notes) -> drafted epic description | null
+    getGitHub: () => null,              // () -> GitHubClient | null (status chips)
   };
 
   // The board's active project: the shared team selection wins, falling
@@ -417,9 +422,22 @@
   let board = {
     issues: [], columns: [], loading: false, dragKey: null, overCol: null,
     confirming: null, detailKey: null, filter: 'all', query: '', focusKey: null,
+    view: 'kanban',           // 'kanban' | 'timeline' | 'feed' — sticky via localStorage
+    epics: [],                // mapEpic() results for the roadmap/feed views
+    roadmapItems: [],         // team_roadmap_items rows (ad-hoc bars)
+    roadmapLoading: false,
+    roadmapForm: null,        // open add/edit popover descriptor (Esc closes it first)
+    roadmapPx: 6,             // timeline zoom: px per day (sticky via localStorage)
+    epicProgress: new Map(),  // epic key -> { done, total } child counts
+    _roadmapProject: null,    // project the epics/items caches were loaded for
+    _startFieldId: undefined, // resolved Jira "Start date" field id (null = not found)
     _cols: [], // [{ id, accent, listEl }] rebuilt each renderColumns()
     _descCache: new Map(), // issue key -> loaded description text (success only)
     _descErr: new Set(),   // issue keys whose description fetch FAILED (≠ empty)
+    _childCache: new Map(), // epic key -> [mapped child issues] | null (= load failed)
+    _childLoading: new Set(), // epic keys with a child fetch in flight
+    _ghRefCache: new Map(),  // 'owner/repo#n' -> {kind, state, url} | null (= lookup failed)
+    _ghRefLoading: new Set(),
   };
   let filterTimer = null; // debounces the board search input
 
@@ -433,7 +451,7 @@
     return drawer;
   }
 
-  function toast(type, msg, onRetry) {
+  function toast(type, msg, onRetry, title) {
     if (!drawer) return;
     drawer.panel.querySelector('.jb-toast')?.remove();
     const err = type === 'error';
@@ -441,7 +459,7 @@
       null,
       h('span.jb-toast-ic', null, icon(err ? 'block' : 'check', 15)),
       h('div', { style: { minWidth: '0' } },
-        h('div.jb-toast-title', null, err ? 'Transition rejected' : 'Issue updated'),
+        h('div.jb-toast-title', null, title || (err ? 'Transition rejected' : 'Issue updated')),
         h('div.jb-toast-msg', null, msg),
       ),
       err && onRetry && h('button.solid.jb-toast-retry', { onclick: () => { t.remove(); onRetry(); } }, 'Retry'),
@@ -638,22 +656,28 @@
       h('button.solid.jb-open-jira', { onclick: () => openInJira(t.key) }, icon('external', 14), h('span', null, 'Open in Jira')),
       iconBtn('x', 17, 'Close', close),
     );
+    // Epics get two extra editable rows (start/due — the timeline's bar
+    // span) and a child-issue section. Both lazy-load on first open.
+    const isEpic = String(t.type || '').toLowerCase().includes('epic');
     const grid = h('div.jb-detail-grid',
       null,
       detailLabel('Status'), statusEditor(t, col),
       detailLabel('Assignee'), assigneeEditor(t),
       detailLabel('Priority'), priorityEditor(t),
       detailLabel('Type'), h('div.jb-detail-val', null, t.type),
+      isEpic && [detailLabel('Start'), dateEditor(t, 'start'), detailLabel('Due'), dateEditor(t, 'due')],
       detailLabel('Labels'), labelsEditor(t),
     );
     // Description region hosts the inline "Edit with AI" flow (compose →
     // diff review → apply); mountDescriptionEditor manages its own phases and
     // reads the loaded text from board._descCache, filled just below.
     const descRegion = h('div');
+    const childRegion = isEpic ? h('div.jb-detail-children') : null;
     const body = h('div.jb-detail-body',
       null,
       titleEditor(t),
       grid,
+      childRegion,
       descRegion,
     );
     const foot = h('div.jb-detail-foot',
@@ -665,6 +689,10 @@
     const detail = h('div.jb-detail', null, head, body, foot);
     drawer.panel.append(detail);
 
+    if (isEpic) {
+      ensureEpicDates(t); // fills Start/Due and re-renders once loaded
+      mountChildren(childRegion, t);
+    }
     const ewaRerender = mountDescriptionEditor(descRegion, t);
 
     // Lazy-load the full description (ADF → text), cached per key so
@@ -696,17 +724,33 @@
   // Optimistic edit: apply() mutates the local issue, persist() calls Jira.
   // On failure revert() restores. Re-renders the detail + board card both
   // ways so the two stay in sync. Mirrors the drag-to-transition onDrop path.
-  async function commitEdit({ apply, revert, persist, okMsg, after }) {
+  // `issue` (when given) is mirrored onto the OTHER copy of the same epic —
+  // board.issues and board.epics can hold different instances, and without
+  // the mirror a status edit from the detail panel would leave the timeline
+  // bar (or, after a timeline drag, the cached kanban card) stale.
+  async function commitEdit({ issue, apply, revert, persist, okMsg, after }) {
     apply();
-    renderDetail(); renderColumns();
+    if (issue) syncEpicMirror(issue);
+    renderDetail(); renderActiveView();
     try {
       await persist();
       toast('success', okMsg);
       if (after) after();
     } catch (err) {
       revert();
-      renderDetail(); renderColumns();
+      if (issue) syncEpicMirror(issue);
+      renderDetail(); renderActiveView();
       toast('error', `${err?.message || err}`.slice(0, 160));
+    }
+  }
+
+  function syncEpicMirror(t) {
+    for (const list of [board.epics, board.issues]) {
+      const e = list.find((x) => x.key === t.key);
+      if (!e || e === t) continue;
+      e.summary = t.summary; e.status = t.status; e.cat = t.cat;
+      e.priority = t.priority; e.assignees = t.assignees; e.labels = t.labels;
+      if (t._datesLoaded) { e.start = t.start; e.due = t.due; }
     }
   }
 
@@ -765,6 +809,7 @@
     const prevStatus = t.status, prevCat = t.cat;
     const toCol = board.columns.find((c) => colHasStatus(c, toName));
     commitEdit({
+      issue: t,
       apply: () => { if (toName) { t.status = toName; t.cat = toCol?.cat || t.cat; } },
       revert: () => { t.status = prevStatus; t.cat = prevCat; },
       persist: () => ctx.getClient().transitionIssue({ key: t.key, transitionId }),
@@ -777,6 +822,7 @@
   function changeAssignee(t, accountId, name) {
     const prev = t.assignees;
     commitEdit({
+      issue: t,
       apply: () => { t.assignees = accountId ? [{ id: accountId, name: name || 'Assignee', email: '' }] : []; },
       revert: () => { t.assignees = prev; },
       persist: () => ctx.getClient().updateIssue({ key: t.key, assigneeAccountId: accountId }),
@@ -787,6 +833,7 @@
     const prev = t.priority;
     if (name === prev) return;
     commitEdit({
+      issue: t,
       apply: () => { t.priority = name; },
       revert: () => { t.priority = prev; },
       persist: () => ctx.getClient().updateIssue({ key: t.key, priorityName: name }),
@@ -796,6 +843,7 @@
   function setLabels(t, labels) {
     const prev = t.labels;
     commitEdit({
+      issue: t,
       apply: () => { t.labels = labels; },
       revert: () => { t.labels = prev; },
       persist: () => ctx.getClient().updateIssue({ key: t.key, labels }),
@@ -805,11 +853,64 @@
   function setSummary(t, summary) {
     const prev = t.summary;
     commitEdit({
+      issue: t,
       apply: () => { t.summary = summary; },
       revert: () => { t.summary = prev; },
       persist: () => ctx.getClient().updateIssue({ key: t.key, summary }),
       okMsg: `${t.key} summary updated.`,
     });
+  }
+
+  function changeDueDate(t, v) {
+    const prev = t.due ?? null;
+    commitEdit({
+      issue: t,
+      apply: () => { t.due = v; },
+      revert: () => { t.due = prev; },
+      persist: () => ctx.getClient().updateIssue({ key: t.key, duedate: v }),
+      okMsg: v ? `${t.key} due ${fmtDay(parseDay(v))}.` : `${t.key} due date cleared.`,
+    });
+  }
+  async function changeStartDate(t, v) {
+    const prev = t.start ?? null;
+    const id = await resolveStartFieldId(ctx.getClient());
+    if (!id) {
+      renderDetail(); // reset the input to the unchanged value
+      toast('error', 'This Jira site has no "Start date" field — the timeline falls back to the created date.', null, "Couldn't save");
+      return;
+    }
+    commitEdit({
+      issue: t,
+      apply: () => { t.start = v; },
+      revert: () => { t.start = prev; },
+      persist: () => ctx.getClient().updateIssue({ key: t.key, extraFields: { [id]: v } }),
+      okMsg: v ? `${t.key} starts ${fmtDay(parseDay(v))}.` : `${t.key} start date cleared.`,
+    });
+  }
+
+  // An epic opened from the kanban (mapIssue, no date fields) needs one
+  // small fetch before the Start/Due editors can render; epics mapped by
+  // the roadmap (mapEpic) already carry both. Prefer copying from the
+  // roadmap's loaded instance over a network round-trip.
+  async function ensureEpicDates(t) {
+    if (t._datesLoaded || t._datesLoading) return;
+    const loaded = board.epics.find((x) => x.key === t.key && x._datesLoaded);
+    if (loaded) {
+      t.due = loaded.due; t.start = loaded.start; t._datesLoaded = true;
+      renderDetail();
+      return;
+    }
+    t._datesLoading = true;
+    try {
+      const client = ctx.getClient();
+      const startId = await resolveStartFieldId(client);
+      const full = await client.getIssue(t.key, { fields: 'duedate' + (startId ? ',' + startId : '') });
+      t.due = full?.fields?.duedate || null;
+      t.start = (startId && full?.fields?.[startId]) || null;
+      t._datesLoaded = true;
+    } catch { /* editors keep showing the loading dash; reopening retries */ }
+    t._datesLoading = false;
+    if (board.detailKey === t.key) renderDetail();
   }
 
   // ── editable cell builders (read live values off the mapped issue `t`) ──
@@ -867,6 +968,85 @@
     cell.append(input);
     return cell;
   }
+  function dateEditor(t, kind) {
+    if (!t._datesLoaded) return h('span.jb-detail-none', null, '…');
+    const cur = (kind === 'due' ? t.due : t.start) || null;
+    const input = h('input.jb-detail-date', {
+      type: 'date', value: cur ? String(cur).slice(0, 10) : '',
+      title: kind === 'start'
+        ? 'Start date — where the timeline bar begins (falls back to the created date)'
+        : 'Due date — where the timeline bar ends',
+    });
+    input.addEventListener('change', () => {
+      const v = input.value || null;
+      if (v === cur) return;
+      if (kind === 'due') changeDueDate(t, v); else changeStartDate(t, v);
+    });
+    return input;
+  }
+
+  // Child issues of an epic, lazily fetched per key and cached for the
+  // session (cleared on board/roadmap refresh). Clicking a row swaps the
+  // detail panel to that child — it's pushed into board.issues first so
+  // all the inline editors work on it.
+  function mountChildren(container, t) {
+    const render = () => {
+      container.innerHTML = '';
+      const kids = board._childCache.get(t.key);
+      const head = h('div.jb-children-head', null, detailLabel('Child issues'));
+      if (Array.isArray(kids) && kids.length) {
+        const done = kids.filter((c) => c.cat === 'done').length;
+        head.append(h('span.mono.jb-children-count', null, `${done} of ${kids.length} done`));
+      }
+      container.append(head);
+      if (kids === undefined) { // not fetched yet
+        kick();
+        for (let i = 0; i < 3; i++) {
+          container.append(h('div.jb-children-row', null,
+            shimmer(16, 16, 5), shimmer(44, 10), shimmer(i % 2 ? '52%' : '68%', 11)));
+        }
+        return;
+      }
+      if (kids === null) { // fetch failed
+        container.append(h('div.jb-children-empty', null,
+          h('span', null, "Couldn't load child issues."),
+          h('button.jb-link', { onclick: () => { board._childCache.delete(t.key); render(); } }, h('span', null, 'Retry')),
+        ));
+        return;
+      }
+      if (!kids.length) {
+        container.append(h('div.jb-children-empty', null, 'No child issues yet.'));
+        return;
+      }
+      for (const c of kids) {
+        container.append(h('button.jb-children-row.jb-clickable', {
+          onclick: () => { ensureIssueInBoard(c); openDetail(c.key); },
+        },
+          typeIcon(c.type, 16),
+          h('span.mono.jb-key-dim', null, c.key),
+          h('span.jb-children-summary', { title: c.summary }, c.summary),
+          statusPill({ name: c.status, cat: c.cat }, true),
+        ));
+      }
+    };
+    async function kick() {
+      if (board._childLoading.has(t.key)) return;
+      board._childLoading.add(t.key);
+      try {
+        const res = await ctx.getClient().searchIssuesAll(
+          `parent = "${t.key}" ORDER BY created ASC`, 100, { fields: BOARD_FIELDS });
+        board._childCache.set(t.key, (res?.issues || []).map(mapIssue));
+      } catch {
+        board._childCache.set(t.key, null);
+      }
+      board._childLoading.delete(t.key);
+      // Re-render the whole detail rather than this closure's container —
+      // a renderDetail() mid-fetch would have replaced it with a fresh one.
+      if (board.detailKey === t.key) renderDetail();
+    }
+    render();
+  }
+
   function titleEditor(t) {
     const titleEl = h('h2.jb-detail-title', { title: 'Click to edit', style: { cursor: 'text' } }, t.summary);
     titleEl.addEventListener('click', () => {
@@ -1109,31 +1289,42 @@
         oninput: (e) => {
           board.query = e.target.value; reflectClear();
           clearTimeout(filterTimer);
-          filterTimer = setTimeout(renderColumns, 140);
+          filterTimer = setTimeout(renderActiveView, 140);
         },
       }),
     );
     const clearBtn = h('button.jb-search-clear' + (board.query ? '' : '.hidden'), {
-      onclick: () => { board.query = ''; search.querySelector('input').value = ''; renderColumns(); reflectClear(); },
+      onclick: () => { board.query = ''; search.querySelector('input').value = ''; renderActiveView(); reflectClear(); },
     }, icon('x', 14, 'var(--text-faint)'));
     search.append(clearBtn);
     function reflectClear() { clearBtn.classList.toggle('hidden', !board.query); }
 
     return h('div.jb-toolbar',
       null,
-      dropdown('filter', filterLabel, [
+      viewSwitch(),
+      // The assignee filter only applies to kanban cards; timeline/feed
+      // are epic-level views where the search box is the filter.
+      board.view === 'kanban' && dropdown('filter', filterLabel, [
         { value: 'all', label: 'All issues', icon: 'people' },
         myEmail && { value: 'mine', label: 'My issues', icon: 'star' },
         ...[...people.values()].map((u) => ({ value: u.id, label: u.name, user: u })),
       ].filter(Boolean), board.filter, (v) => { board.filter = v; rerenderToolbar(); renderColumns(); }),
       search,
       h('div', { style: { flex: '1' } }),
+      // Roadmap export — timeline/feed only (it exports the roadmap data
+      // set, which those views have loaded).
+      board.view !== 'kanban' && dropdown('download', 'Export', [
+        { value: 'csv', label: 'CSV — spreadsheet', icon: 'table' },
+        { value: 'pdf', label: 'PDF — timeline document', icon: 'download' },
+      ], null, (v) => exportRoadmap(v)),
       h('span.mono.jb-toolbar-meta', {
         title: 'Shared team board — click to change the project for everyone',
         style: { cursor: 'pointer' },
         onclick: () => { board._pickProject = true; renderDrawer(); },
       }, `${activeProject()} · ${jiraSite()}`),
-      iconBtn('refresh', 17, 'Refresh', () => loadBoard(true), board.loading),
+      iconBtn('refresh', 17, 'Refresh',
+        () => (board.view === 'kanban' ? loadBoard(true) : loadRoadmapData(true)),
+        board.loading || board.roadmapLoading),
     );
   }
 
@@ -1281,8 +1472,53 @@
       return;
     }
     drawer.panel.append(toolbar());
-    drawer.panel.append(h('div.jb-board'));
-    loadBoard();
+    drawer.panel.append(h('div.jb-view-host'));
+    renderBody(true);
+  }
+
+  /* ── view switching (kanban / timeline / feed) ── */
+  const VIEWS = [['kanban', 'kanban', 'Board'], ['timeline', 'calendar', 'Timeline'], ['feed', 'chat', 'Feed']];
+  function viewSwitch() {
+    const seg = h('div.jb-viewseg');
+    for (const [v, ic, lbl] of VIEWS) {
+      seg.append(h('button.jb-viewseg-btn' + (board.view === v ? '.jb-viewseg-on' : ''), {
+        title: lbl + ' view', onclick: () => setView(v),
+      }, icon(ic, 14), h('span', null, lbl)));
+    }
+    return seg;
+  }
+  function setView(v) {
+    if (board.view === v) return;
+    board.view = v;
+    // Per-machine preference — deliberately localStorage rather than the
+    // shared settings row: zero network writes per toggle, and it works in
+    // the popout window without extra plumbing.
+    try { localStorage.setItem('huddle.jb.view', v); } catch {}
+    board.detailKey = null; renderDetail();
+    closeRoadmapForm();
+    rerenderToolbar();
+    renderBody(false);
+  }
+  // Mount the active view's container into the view host. `fresh` forces a
+  // refetch (drawer open / project change); a plain view toggle reuses the
+  // session caches so flipping back and forth is instant.
+  function renderBody(fresh) {
+    const host = drawer.panel.querySelector('.jb-view-host');
+    if (!host) return;
+    host.innerHTML = '';
+    if (board.view === 'kanban') {
+      host.append(h('div.jb-board'));
+      if (!fresh && board.issues.length && !board.loading) renderColumns();
+      else loadBoard();
+    } else {
+      host.append(h('div.' + (board.view === 'timeline' ? 'jb-roadmap' : 'jb-feed')));
+      loadRoadmapData(fresh);
+    }
+  }
+  function renderActiveView() {
+    if (board.view === 'kanban') renderColumns();
+    else if (board.view === 'timeline') renderRoadmap();
+    else renderFeed();
   }
 
   function openBoardInJira() {
@@ -1326,6 +1562,7 @@
     if (!client?.isConfigured() || !project) return;
     board._descCache.clear(); // descriptions may have changed since last load
     board._descErr.clear();
+    board._childCache.clear(); // child issues likewise
     for (const k in ewaStore) delete ewaStore[k]; // drop stale Edit-with-AI phases
     board.loading = true;
     if (isRefresh) { rerenderToolbar(); board._cfgCache = null; } // re-pull column config on explicit refresh
@@ -1362,11 +1599,1004 @@
     renderColumns();
   }
 
+  /* ════════════════════ Roadmap (timeline) + Feed views ════════════════════
+     Two alternate renderings of one data set: the project's Jira EPICS
+     (live bars, click-through to the existing detail panel) plus ad-hoc
+     team_roadmap_items rows — team-shared "things we just thought of",
+     added inline from either view. The timeline draws bars on a horizontal
+     day grid; the feed lists the same entries chat-style — oldest at the
+     top, newest at the bottom, ordered by target date. */
+
+  const DAY = 86400000;
+  const PX = 6; // px per day ≈ 180px/month on the timeline
+  // Date-only handling: parse YYYY-MM-DD at LOCAL NOON so day arithmetic
+  // never slips across a DST boundary, and format back the same way.
+  function parseDay(s) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ''));
+    return m ? new Date(+m[1], +m[2] - 1, +m[3], 12) : null;
+  }
+  function isoDay(d) {
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+  function addDays(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n, 12); }
+  function localToday() { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), n.getDate(), 12); }
+  function daysBetween(a, b) { return Math.round((b - a) / DAY); }
+  function fmtDay(d) { return d ? d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''; }
+
+  // The kanban field set PLUS the dates the timeline needs. Kept separate
+  // from BOARD_FIELDS: the kanban query shouldn't pay for dates on every
+  // card, and this query must NOT exclude stale Done epics the way the
+  // kanban JQL does — old shipped epics are exactly what a roadmap shows.
+  const EPIC_FIELDS = 'summary,status,assignee,issuetype,priority,labels,created,duedate';
+
+  // Superset of mapIssue, so an epic clicked on the roadmap can be pushed
+  // into board.issues and the existing detail panel works unchanged.
+  function mapEpic(issue) {
+    const t = mapIssue(issue);
+    const f = issue.fields || {};
+    t.created = f.created || null;
+    t.due = f.duedate || null;
+    t.start = (board._startFieldId && f[board._startFieldId]) || null;
+    t._datesLoaded = true; // detail panel's date editors need no extra fetch
+    return t;
+  }
+  function ensureIssueInBoard(t) {
+    if (!board.issues.some((x) => x.key === t.key)) board.issues.push(t);
+  }
+
+  // Jira Cloud's "Start date" is a custom field with a per-site id
+  // (commonly customfield_10015). Resolve it once per session from the
+  // field catalog; null (absent / lookup failed) falls back to the epic's
+  // created date below, so the roadmap renders either way.
+  async function resolveStartFieldId(client) {
+    if (board._startFieldId !== undefined) return board._startFieldId;
+    try {
+      const fields = await client.listFields();
+      const f = (fields || []).find((x) =>
+        /^start date$/i.test(x.untranslatedName || x.name || '') && x.schema?.type === 'date');
+      board._startFieldId = f?.id || null;
+    } catch { board._startFieldId = null; }
+    return board._startFieldId;
+  }
+
+  async function loadRoadmapData(force) {
+    const client = ctx.getClient();
+    const project = activeProject();
+    if (!client?.isConfigured() || !project) return;
+    if (board.roadmapLoading) { renderActiveView(); return; }
+    // Session cache: flipping timeline↔feed (or back from kanban) reuses the
+    // loaded epics/items; drawer open, refresh, and project changes refetch.
+    if (!force && board._roadmapProject === project) { renderActiveView(); return; }
+    // The Start-date custom field id is per-site; a project change can also
+    // mean a site change (the team row carries both), so re-resolve it.
+    if (board._roadmapProject !== project) board._startFieldId = undefined;
+    board.roadmapLoading = true;
+    if (force) { board._childCache.clear(); board._ghRefCache.clear(); rerenderToolbar(); }
+    renderActiveView(); // skeleton
+    try {
+      const jql = `project = "${project}" AND issuetype = Epic ORDER BY created ASC`;
+      const [res, items, childRes] = await Promise.all([
+        // The epic search needs the resolved Start-date field id in its
+        // field list, so the two chain — but the items and child-count
+        // queries don't, and run alongside instead of behind the lookup.
+        resolveStartFieldId(client).then((startId) =>
+          client.searchIssuesAll(jql, 200, { fields: EPIC_FIELDS + (startId ? ',' + startId : '') })),
+        ctx.listRoadmapItems(),
+        // Child counts for the per-epic progress fill. standardIssueTypes()
+        // excludes sub-tasks (whose parent is a story, not an epic). Best
+        // effort: a failure here only drops the progress chips.
+        client.searchIssuesAll(
+          `project = "${project}" AND issuetype in standardIssueTypes() AND parent is not EMPTY`,
+          500, { fields: 'status,parent' }).catch(() => null),
+      ]);
+      board.epics = (res?.issues || []).map(mapEpic);
+      board.roadmapItems = items || [];
+      board.epicProgress = new Map();
+      for (const c of childRes?.issues || []) {
+        const pk = c.fields?.parent?.key;
+        if (!pk) continue;
+        const p = board.epicProgress.get(pk) || { done: 0, total: 0 };
+        p.total++;
+        if ((c.fields?.status?.statusCategory?.key || '') === 'done') p.done++;
+        board.epicProgress.set(pk, p);
+      }
+      board._roadmapProject = project;
+    } catch (err) {
+      board.roadmapLoading = false;
+      if (force) rerenderToolbar();
+      const hostEl = drawer.panel.querySelector('.jb-roadmap, .jb-feed');
+      if (hostEl) {
+        hostEl.innerHTML = '';
+        hostEl.append(h('div.jb-empty', { style: { margin: 'auto' } },
+          h('span.jb-empty-ic', { style: { color: 'var(--bad)' } }, icon('block', 28)),
+          h('div.jb-empty-title', null, "Couldn't load the roadmap"),
+          h('p.jb-empty-sub', null, String(err?.message || err).slice(0, 160)),
+          h('button.primary', { onclick: () => loadRoadmapData(true) }, h('span', null, 'Try again')),
+        ));
+      }
+      return;
+    }
+    board.roadmapLoading = false;
+    if (force) rerenderToolbar();
+    renderActiveView();
+  }
+
+  // Comparator shared by both views: dated entries ascending, undated last,
+  // ties broken by key/title. Equal dates MUST reach the tie-break — a
+  // `0` difference falling through an `||` chain would return -1 from the
+  // undated branch for both compare(a,b) and compare(b,a), an invalid
+  // comparator under Array.prototype.sort's contract.
+  function compareEntries(da, db, a, b) {
+    if (da && db) {
+      const d = da - db;
+      if (d) return d;
+    } else if (da) return -1;
+    else if (db) return 1;
+    return String(a.t?.key || a.it?.title || '').localeCompare(String(b.t?.key || b.it?.title || ''));
+  }
+
+  // One normalized entry list both views consume. An epic spans start (the
+  // Jira Start-date field when present, else created) → due; an ad-hoc item
+  // spans start_date → end_date. A missing end means "unscheduled": drawn
+  // open-ended on the timeline, never hidden.
+  function roadmapEntries() {
+    const q = board.query.trim().toLowerCase();
+    const entries = [];
+    for (const t of board.epics) {
+      if (q && !(`${t.key} ${t.summary}`).toLowerCase().includes(q)) continue;
+      entries.push({
+        kind: 'epic', t,
+        start: parseDay(t.start) || parseDay(t.created) || localToday(),
+        end: parseDay(t.due),
+      });
+    }
+    for (const it of board.roadmapItems) {
+      if (q && !String(it.title || '').toLowerCase().includes(q)) continue;
+      const start = parseDay(it.start_date), end = parseDay(it.end_date);
+      entries.push({ kind: 'adhoc', it, start: start || end, end });
+    }
+    return entries;
+  }
+
+  /* ── horizontal timeline ── */
+  function renderRoadmap() {
+    if (!drawer) return;
+    const hostEl = drawer.panel.querySelector('.jb-roadmap');
+    if (!hostEl) return;
+    hostEl.innerHTML = '';
+    if (board.roadmapLoading) {
+      const sk = h('div.jb-roadmap-skel');
+      for (let i = 0; i < 6; i++) {
+        sk.append(h('div.jb-roadmap-skelrow', { style: { paddingLeft: (24 + ((i * 97) % 260)) + 'px' } },
+          shimmer(140 + ((i * 73) % 220), 22, 8)));
+      }
+      hostEl.append(sk);
+      return;
+    }
+    const entries = roadmapEntries().sort((a, b) => compareEntries(a.start, b.start, a, b));
+
+    // Day domain: everything in play, padded, and never narrower than
+    // ~today−45d … today+90d so an empty project still shows a usable grid.
+    const td = localToday();
+    let min = addDays(td, -45), max = addDays(td, 90);
+    for (const en of entries) {
+      if (en.start && en.start < min) min = en.start;
+      const tail = en.end || en.start;
+      if (tail && tail > max) max = tail;
+    }
+    min = new Date(min.getFullYear(), min.getMonth(), 1, 12); // snap to a month edge
+    max = addDays(max, 14);
+    const pxv = board.roadmapPx || PX; // current zoom (px per day)
+    const x = (d) => daysBetween(min, d) * pxv;
+
+    const inner = h('div.jb-roadmap-inner');
+    inner.style.width = ((daysBetween(min, max) + 1) * pxv) + 'px';
+    inner.style.setProperty('--jb-px', pxv + 'px');
+
+    // Month axis (sticky) + month grid lines.
+    const axis = h('div.jb-roadmap-axis');
+    for (let m = new Date(min.getFullYear(), min.getMonth(), 1, 12); m <= max;
+      m = new Date(m.getFullYear(), m.getMonth() + 1, 1, 12)) {
+      if (m < min) continue;
+      const opts = m.getMonth() === 0 ? { month: 'short', year: 'numeric' } : { month: 'short' };
+      axis.append(h('span.jb-roadmap-axis-month.mono', { style: { left: (x(m) + 6) + 'px' } },
+        m.toLocaleDateString(undefined, opts)));
+      inner.append(h('div.jb-roadmap-grid-month', { style: { left: x(m) + 'px' } }));
+    }
+    inner.prepend(axis);
+
+    const tx = x(td);
+    inner.append(h('div.jb-roadmap-today', { style: { left: tx + 'px' } },
+      h('span.jb-roadmap-today-pill.mono', null, 'Today')));
+
+    if (!entries.length) {
+      inner.append(h('div.jb-roadmap-empty-hint', null,
+        icon('star', 16, 'var(--text-faint)'),
+        h('span', null, board.query
+          ? 'Nothing matches your search.'
+          : 'No epics or roadmap items yet — click anywhere to add your first bar.')));
+    }
+    for (const en of entries) {
+      const row = h('div.jb-roadmap-row');
+      row.append(roadmapBar(en, x, td, pxv));
+      inner.append(row);
+    }
+    inner.append(h('div.jb-roadmap-addrow', null,
+      icon('plus', 14), h('span', null, 'Click — or drag a span — anywhere on the timeline to add an item')));
+
+    // Add-a-bar-anywhere: a plain click on empty grid opens the inline form
+    // prefilled with the clicked date (+1 week); pressing and dragging
+    // sketches the exact span with a ghost bar first.
+    let suppressCreateClick = false;
+    inner.addEventListener('click', (e) => {
+      if (suppressCreateClick || e.target.closest('.jb-roadmap-bar')) return;
+      const rect = inner.getBoundingClientRect();
+      const d = addDays(min, Math.max(0, Math.floor((e.clientX - rect.left) / pxv)));
+      openRoadmapForm({ mode: 'create', startDate: isoDay(d), endDate: isoDay(addDays(d, 7)) }, e.clientX, e.clientY);
+    });
+    inner.addEventListener('mousedown', (e) => {
+      if (e.button !== 0 || e.target.closest('.jb-roadmap-bar')) return;
+      const rect = inner.getBoundingClientRect();
+      const x0 = e.clientX, y0 = e.clientY - rect.top;
+      let ghost = null;
+      const onMove = (ev) => {
+        if (!ghost && Math.abs(ev.clientX - x0) < 5) return;
+        if (!ghost) {
+          ghost = h('div.jb-roadmap-ghost');
+          ghost.style.top = Math.max(34, y0 - 14) + 'px';
+          inner.append(ghost);
+        }
+        const a = Math.min(x0, ev.clientX) - rect.left;
+        const w = Math.abs(ev.clientX - x0);
+        ghost.style.left = (Math.floor(a / pxv) * pxv) + 'px';
+        ghost.style.width = Math.max(pxv, Math.round(w / pxv) * pxv) + 'px';
+        ev.preventDefault();
+      };
+      const onUp = (ev) => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        if (!ghost) return; // never moved — let the click handler take it
+        ghost.remove();
+        suppressCreateClick = true;
+        setTimeout(() => { suppressCreateClick = false; }, 0);
+        const lo = Math.max(0, Math.min(x0, ev.clientX) - rect.left);
+        const hi = Math.max(0, Math.max(x0, ev.clientX) - rect.left);
+        openRoadmapForm({
+          mode: 'create',
+          startDate: isoDay(addDays(min, Math.floor(lo / pxv))),
+          endDate: isoDay(addDays(min, Math.floor(hi / pxv))),
+        }, ev.clientX, ev.clientY);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+
+    const scroll = h('div.jb-roadmap-scroll');
+    scroll.append(inner);
+    hostEl.append(scroll);
+    hostEl.append(h('div.jb-roadmap-zoom',
+      null,
+      iconBtn('zoomOut', 16, 'Zoom out (fewer px per day)', () => setRoadmapZoom(-1)),
+      iconBtn('zoomIn', 16, 'Zoom in (more px per day)', () => setRoadmapZoom(1)),
+    ));
+    // Land with today at roughly the first quarter of the viewport.
+    requestAnimationFrame(() => { scroll.scrollLeft = Math.max(0, tx - scroll.clientWidth * 0.25); });
+  }
+
+  const ZOOM_LEVELS = [3, 6, 12, 24]; // px per day: quarter-at-a-glance → week detail
+  function setRoadmapZoom(dir) {
+    const cur = board.roadmapPx || PX;
+    const next = ZOOM_LEVELS[Math.max(0, Math.min(ZOOM_LEVELS.length - 1, ZOOM_LEVELS.indexOf(cur) + dir))];
+    if (next === cur) return;
+    board.roadmapPx = next;
+    try { localStorage.setItem('huddle.jb.zoom', String(next)); } catch {}
+    renderRoadmap();
+  }
+
+  /* ── export (CSV / PDF) ── */
+  function escHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function exportRoadmap(kind) {
+    if (board.roadmapLoading) {
+      toast('error', 'The roadmap is still loading — try again in a moment.', null, "Can't export yet");
+      return;
+    }
+    // Same list the views draw — honors the active search, so exporting a
+    // filtered roadmap exports the filtered set (the document says so).
+    const entries = roadmapEntries().sort((a, b) => compareEntries(a.start, b.start, a, b));
+    if (!entries.length) {
+      toast('error', board.query ? 'Your search matches no items.' : 'Nothing to export yet.', null, 'Export');
+      return;
+    }
+    if (kind === 'csv') exportRoadmapCsv(entries);
+    else exportRoadmapPdf(entries);
+  }
+
+  function exportRoadmapCsv(entries) {
+    const client = ctx.getClient();
+    const cell = (v) => {
+      const s = String(v ?? '');
+      return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const rows = [['Type', 'Key', 'Title', 'Status', 'Start', 'End', 'Progress', 'Assignee', 'Color', 'Notes', 'URL']];
+    for (const en of entries) {
+      if (en.kind === 'epic') {
+        const t = en.t;
+        const prog = board.epicProgress.get(t.key);
+        rows.push(['Epic', t.key, t.summary, t.status,
+          en.start ? isoDay(en.start) : '', t.due || '',
+          prog?.total ? `${prog.done}/${prog.total}` : '',
+          t.assignees[0]?.name || '', '', '',
+          client?.isConfigured() ? client.issueUrl(t.key) : '']);
+      } else {
+        const it = en.it;
+        rows.push(['Idea', '', it.title, '', it.start_date || '', it.end_date || '',
+          '', '', it.color || '', it.notes || '', '']);
+      }
+    }
+    // BOM so Excel opens it as UTF-8; CRLF for the same reason.
+    const csv = '\ufeff' + rows.map((r) => r.map(cell).join(',')).join('\r\n');
+    const a = h('a', {
+      href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })),
+      download: `roadmap-${activeProject() || 'huddle'}-${isoDay(localToday())}.csv`,
+    });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    toast('success', `${entries.length} item${entries.length === 1 ? '' : 's'} exported.`, null, 'CSV export');
+  }
+
+  async function exportRoadmapPdf(entries) {
+    if (!window.huddle?.exportPdf) {
+      toast('error', 'PDF export needs the app restarted on this build.', null, 'Export');
+      return;
+    }
+    const res = await window.huddle.exportPdf({
+      html: buildRoadmapPdfHtml(entries),
+      filename: `roadmap-${activeProject() || 'huddle'}-${isoDay(localToday())}.pdf`,
+      landscape: true,
+    });
+    if (res?.ok) toast('success', `Saved to ${res.path}`, null, 'PDF export');
+    else if (!res?.canceled) toast('error', String(res?.error || 'export failed').slice(0, 160), null, "Couldn't export");
+  }
+
+  // Print-friendly standalone document: a fit-to-page timeline graphic and
+  // an item table. All dynamic text is HTML-escaped (epic summaries and
+  // ad-hoc titles/notes are teammate-authored), and the window main.js
+  // renders this in has JavaScript disabled anyway.
+  function buildRoadmapPdfHtml(entries) {
+    const td = localToday();
+    let min = addDays(td, -45), max = addDays(td, 90);
+    for (const en of entries) {
+      if (en.start && en.start < min) min = en.start;
+      const tail = en.end || en.start;
+      if (tail && tail > max) max = tail;
+    }
+    min = new Date(min.getFullYear(), min.getMonth(), 1, 12);
+    max = addDays(max, 14);
+    const PAGE_W = 1060; // ≈ A4 landscape printable width at 96dpi
+    const pxd = PAGE_W / (daysBetween(min, max) + 1);
+    const x = (d) => Math.round(daysBetween(min, d) * pxd);
+
+    // Print palette — the app's CSS vars don't exist in the standalone doc.
+    const statusHex = (cat, name) => {
+      const c = String(cat || '').toLowerCase();
+      if (c === 'done') return '#1f845a';
+      if (c === 'new' || c === 'to do') return '#8590a2';
+      if (/review|qa|test|verify/i.test(name || '')) return '#5e4db2';
+      return '#b65c02';
+    };
+    const tokenHex = { 'accent-2': '#5e4db2', good: '#1f845a', warn: '#b65c02', bad: '#c9372c' };
+
+    const months = [];
+    for (let m = new Date(min.getFullYear(), min.getMonth(), 1, 12); m <= max;
+      m = new Date(m.getFullYear(), m.getMonth() + 1, 1, 12)) {
+      if (m < min) continue;
+      months.push(`<span class="ax" style="left:${x(m) + 3}px">${m.toLocaleDateString(undefined, { month: 'short', year: m.getMonth() === 0 ? 'numeric' : undefined })}</span>`
+        + `<i class="gl" style="left:${x(m)}px"></i>`);
+    }
+
+    const rows = entries.map((en) => {
+      const adhoc = en.kind === 'adhoc';
+      const t = en.t, it = en.it;
+      const color = adhoc ? (tokenHex[it?.color] || '#44546f') : statusHex(t.cat, t.status);
+      const start = en.start || td;
+      const left = x(start);
+      const width = en.end ? Math.max(4, x(en.end) + Math.ceil(pxd) - left) : Math.round(14 * pxd);
+      const label = escHtml(adhoc ? it.title : `${t.key}  ${t.summary}`);
+      // Label inside wide bars, beside narrow ones — never overflowing a
+      // neighbour invisibly.
+      const inside = width >= 150;
+      return `<div class="row">`
+        + `<span class="bar${adhoc ? ' adhoc' : ''}${en.end ? '' : ' open'}" style="left:${left}px;width:${width}px;background:${color}1f;border-color:${color}">`
+        + (inside ? `<span class="lbl">${label}</span>` : '')
+        + `</span>`
+        + (inside ? '' : `<span class="lbl out" style="left:${left + width + 5}px">${label}</span>`)
+        + `</div>`;
+    }).join('\n');
+
+    const tableRows = entries.map((en) => {
+      if (en.kind === 'epic') {
+        const t = en.t;
+        const prog = board.epicProgress.get(t.key);
+        return `<tr><td>Epic</td><td>${escHtml(t.key)}</td><td>${escHtml(t.summary)}</td><td>${escHtml(t.status)}</td>`
+          + `<td>${en.start ? isoDay(en.start) : ''}</td><td>${escHtml(t.due || '')}</td>`
+          + `<td>${prog?.total ? `${prog.done}/${prog.total}` : ''}</td><td>${escHtml(t.assignees[0]?.name || '')}</td><td></td></tr>`;
+      }
+      const it = en.it;
+      return `<tr><td>Idea</td><td></td><td>${escHtml(it.title)}</td><td></td>`
+        + `<td>${escHtml(it.start_date || '')}</td><td>${escHtml(it.end_date || '')}</td><td></td><td></td>`
+        + `<td>${escHtml(String(it.notes || '').slice(0, 90))}</td></tr>`;
+    }).join('\n');
+
+    const epics = entries.filter((e) => e.kind === 'epic').length;
+    const ideas = entries.length - epics;
+    const sub = `Exported ${td.toLocaleDateString(undefined, { dateStyle: 'long' })}`
+      + ` · ${epics} epic${epics === 1 ? '' : 's'}, ${ideas} idea${ideas === 1 ? '' : 's'}`
+      + (board.query ? ` · filtered by “${escHtml(board.query)}”` : '');
+
+    return `<!doctype html><html><head><meta charset="utf-8"><style>
+  body { font: 11px/1.45 -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #172b4d; margin: 0; }
+  h1 { font-size: 19px; margin: 0 0 2px; }
+  .meta { color: #626f86; margin-bottom: 14px; }
+  .tl { position: relative; width: ${PAGE_W}px; }
+  .axis { position: relative; height: 18px; border-bottom: 1px solid #dcdfe4; margin-bottom: 4px; }
+  .ax { position: absolute; top: 1px; font-size: 9px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: #626f86; }
+  .gl { position: absolute; top: 0; bottom: 0; width: 1px; background: #ebecf0; }
+  .today { position: absolute; top: 0; bottom: 0; width: 2px; background: #0c66e4; z-index: 2; }
+  .row { position: relative; height: 22px; page-break-inside: avoid; }
+  .bar { position: absolute; top: 3px; height: 15px; border: 1px solid; border-left-width: 3px; border-radius: 4px; box-sizing: border-box; overflow: hidden; white-space: nowrap; }
+  .bar.adhoc { border-style: dashed; border-left-style: solid; }
+  .bar.open { border-right: none; border-radius: 4px 0 0 4px; }
+  .lbl { font-size: 9.5px; padding: 1px 5px; display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
+  .lbl.out { position: absolute; top: 4px; padding: 0; max-width: 340px; color: #44546f; }
+  table { border-collapse: collapse; width: 100%; margin-top: 20px; page-break-before: auto; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #ebecf0; font-size: 10px; vertical-align: top; }
+  th { font-size: 9px; text-transform: uppercase; letter-spacing: .05em; color: #626f86; border-bottom: 1.5px solid #dcdfe4; }
+</style></head><body>
+<h1>${escHtml(activeProject() || 'Team')} roadmap</h1>
+<div class="meta">${sub}</div>
+<div class="tl">
+  <div class="axis">${months.join('')}</div>
+  <div class="today" style="left:${x(td)}px"></div>
+${rows}
+</div>
+<table>
+  <thead><tr><th>Type</th><th>Key</th><th>Title</th><th>Status</th><th>Start</th><th>End</th><th>Progress</th><th>Assignee</th><th>Notes</th></tr></thead>
+  <tbody>${tableRows}</tbody>
+</table>
+</body></html>`;
+  }
+
+  // Accent tokens an ad-hoc bar may carry. The color value comes from the
+  // shared DB row (any teammate), so only known tokens ever reach CSS.
+  const ADHOC_COLORS = ['accent-2', 'good', 'warn', 'bad'];
+
+  // True while an optimistic row's insert is still in flight (its id is the
+  // local `tmp-…` placeholder, not a DB uuid). Edit / delete / drag are
+  // disabled until the real id lands — acting on the temp id would send a
+  // non-uuid to Supabase and fail.
+  function isPendingItem(it) { return String(it?.id || '').startsWith('tmp-'); }
+
+  // Live GitHub status chip for an ad-hoc item whose notes mention a PR or
+  // issue (a github.com URL or owner/repo#123 — same extractor the chat
+  // unfurls use). Same caching shape as the chat unfurls too: one lookup
+  // per ref per session, re-render when the status lands, silently no chip
+  // on failure. Click opens the PR/issue (and never the bar's own action).
+  let ghChipRerenderTimer = null;
+  function githubRefChip(notes) {
+    const gh = ctx.getGitHub?.();
+    if (!gh?.isConfigured?.() || !window.githubExtractRefs) return null;
+    const ref = window.githubExtractRefs(String(notes || ''))[0];
+    if (!ref) return null;
+    const key = `${ref.owner}/${ref.repo}#${ref.number}`;
+    const cached = board._ghRefCache.get(key);
+    if (cached === undefined && !board._ghRefLoading.has(key)) {
+      board._ghRefLoading.add(key);
+      gh.getIssueOrPull(ref.owner, ref.repo, ref.number)
+        .then((d) => {
+          const isPr = !!d?.pull_request;
+          board._ghRefCache.set(key, {
+            kind: isPr ? 'PR' : 'issue',
+            state: d?.pull_request?.merged_at ? 'merged' : (d?.state || 'open'),
+            url: d?.html_url || `https://github.com/${ref.owner}/${ref.repo}/issues/${ref.number}`,
+          });
+        })
+        .catch(() => board._ghRefCache.set(key, null))
+        .finally(() => {
+          board._ghRefLoading.delete(key);
+          // Coalesce: N refs resolving in a burst (first paint of a board
+          // with several linked PRs) trigger ONE re-render, not N.
+          clearTimeout(ghChipRerenderTimer);
+          ghChipRerenderTimer = setTimeout(renderActiveView, 80);
+        });
+    }
+    if (cached === null) return null; // lookup failed — show nothing
+    const st = cached?.state;
+    const color = st === 'merged' ? 'var(--accent-2)'
+      : st === 'closed' ? 'var(--bad)'
+        : st === 'open' ? 'var(--good)' : 'var(--text-faint)';
+    return h('span.mono.jb-gh-chip', {
+      title: cached ? `${key} — ${cached.kind} ${st} (click to open on GitHub)` : `Looking up ${key}…`,
+      onclick: (e) => { e.stopPropagation(); if (cached?.url) window.open(cached.url, '_blank', 'noopener'); },
+      style: { color, background: `color-mix(in srgb, ${color} 14%, transparent)` },
+    }, icon('github', 11), h('span', null, cached ? `#${ref.number} ${st}` : `#${ref.number}`));
+  }
+
+  function roadmapBar(en, x, td, pxv) {
+    const open = !en.end;
+    if (en.kind === 'epic') {
+      const t = en.t;
+      const accent = statusColor(t.cat, t.status);
+      const left = x(en.start);
+      const width = open ? 14 * pxv : Math.max(pxv, x(en.end) + pxv - left);
+      const canMove = !!board._startFieldId; // moving writes the start field
+      const prog = board.epicProgress.get(t.key);
+      const bar = h('button.jb-roadmap-bar'
+        + (open ? '.jb-roadmap-bar-unsched' : '')
+        + (t.cat === 'done' ? '.jb-roadmap-bar-done' : '')
+        + (canMove ? '.jb-roadmap-bar-movable' : ''), {
+        title: (open
+          ? `${t.key} — no due date (bar starts ${t.start ? fmtDay(en.start) : 'at its created date, ' + fmtDay(en.start)})`
+          : `${t.key} · ${fmtDay(en.start)} → ${fmtDay(en.end)}`)
+          + (canMove ? ' — drag to move, drag the right edge to change the due date' : ' — drag the right edge to change the due date'),
+        onclick: (e) => { if (e.currentTarget.dataset.dragged) return; ensureIssueInBoard(t); openDetail(t.key); },
+        style: {
+          left: left + 'px', width: width + 'px',
+          background: `color-mix(in srgb, ${accent} 22%, var(--bg-2))`,
+          borderLeftColor: accent,
+        },
+      },
+        typeIcon(t.type, 14),
+        h('span.mono.jb-roadmap-bar-key', null, t.key),
+        h('span.jb-roadmap-bar-title', null, t.summary),
+        prog && prog.total ? h('span.mono.jb-roadmap-bar-count', { title: `${prog.done} of ${prog.total} child issues done` }, `${prog.done}/${prog.total}`) : null,
+        prog && prog.total ? h('span.jb-roadmap-bar-prog', { style: { width: Math.round((prog.done / prog.total) * 100) + '%' } }) : null,
+        h('span.jb-roadmap-handle'),
+      );
+      attachBarDrag(bar, {
+        pxv, canMove,
+        onCommit: (days, resize) => (resize ? resizeEpicBar(t, en, days) : moveEpicBar(t, en, days)),
+      });
+      return bar;
+    }
+    const it = en.it;
+    const start = en.start || td; // a date-less idea parks at today, open-ended
+    const left = x(start);
+    const width = open ? 14 * pxv : Math.max(pxv, x(en.end) + pxv - left);
+    const cvar = ADHOC_COLORS.includes(it.color) ? `var(--${it.color})` : null;
+    const pending = isPendingItem(it);
+    const bar = h('button.jb-roadmap-bar.jb-roadmap-bar-adhoc'
+      + (pending ? '.jb-roadmap-bar-pending' : '.jb-roadmap-bar-movable')
+      + (open ? '.jb-roadmap-bar-unsched' : ''), {
+      title: pending
+        ? `${it.title} — saving…`
+        : (it.notes ? `${it.title} — ${it.notes}` : it.title)
+          + ' — click to edit, drag to move, drag the right edge to resize',
+      onclick: pending ? null : (e) => {
+        if (e.currentTarget.dataset.dragged) return;
+        openRoadmapForm({
+          mode: 'edit', id: it.id, title: it.title, notes: it.notes || '', color: it.color || null,
+          startDate: it.start_date || '', endDate: it.end_date || '',
+        }, e.clientX, e.clientY);
+      },
+      style: {
+        left: left + 'px', width: width + 'px',
+        ...(cvar ? {
+          background: `color-mix(in srgb, ${cvar} 20%, var(--bg-2))`,
+          borderColor: `color-mix(in srgb, ${cvar} 55%, transparent)`,
+          borderLeftColor: cvar,
+        } : {}),
+      },
+    },
+      icon('pen', 12, cvar || 'var(--accent-tx)'),
+      h('span.jb-roadmap-bar-title', null, it.title),
+      githubRefChip(it.notes),
+      pending ? null : h('span.jb-roadmap-handle'),
+    );
+    if (!pending) {
+      attachBarDrag(bar, {
+        pxv, canMove: true,
+        onCommit: (days, resize) => dragAdhocBar(it, en, days, resize, td),
+      });
+    }
+    return bar;
+  }
+
+  // Pointer-drag on a bar: body = move the whole span, the right-edge
+  // handle = resize. The bar is repositioned live in px; on release the
+  // delta (whole days) is committed through the optimistic write paths,
+  // which re-render and snap everything to the truth. A drag suppresses
+  // the click that the browser fires right after mouseup.
+  function attachBarDrag(bar, { pxv, canMove, onCommit }) {
+    bar.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      const resize = !!e.target.closest('.jb-roadmap-handle');
+      if (!resize && !canMove) return;
+      e.preventDefault(); // no text selection mid-drag
+      const x0 = e.clientX;
+      const left0 = parseFloat(bar.style.left) || 0;
+      const w0 = parseFloat(bar.style.width) || bar.offsetWidth;
+      let moved = false;
+      const onMove = (ev) => {
+        if (Math.abs(ev.clientX - x0) > 3) moved = true;
+        const days = Math.round((ev.clientX - x0) / pxv);
+        if (resize) bar.style.width = Math.max(pxv, w0 + days * pxv) + 'px';
+        else bar.style.left = (left0 + days * pxv) + 'px';
+      };
+      const onUp = (ev) => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        if (!moved) return;
+        bar.dataset.dragged = '1'; // the click event fires before this clears
+        setTimeout(() => { delete bar.dataset.dragged; }, 0);
+        const days = Math.round((ev.clientX - x0) / pxv);
+        if (days) onCommit(days, resize);
+        else renderActiveView(); // snap back to the true position
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+
+  function resizeEpicBar(t, en, days) {
+    // An open-ended bar's visual edge sits 14 days past its start; resizing
+    // it sets the epic's first due date from that edge.
+    const base = en.end || addDays(en.start, 14);
+    let nd = addDays(base, days);
+    if (nd < en.start) nd = en.start;
+    changeDueDate(t, isoDay(nd));
+  }
+  function moveEpicBar(t, en, days) {
+    const id = board._startFieldId; // attachBarDrag gates move on this
+    const prevStart = t.start ?? null, prevDue = t.due ?? null;
+    const ns = isoDay(addDays(en.start, days));
+    const ndue = en.end ? isoDay(addDays(en.end, days)) : null;
+    commitEdit({
+      issue: t,
+      apply: () => {
+        t.start = ns;
+        if (ndue) t.due = ndue;
+      },
+      revert: () => {
+        t.start = prevStart;
+        if (ndue) t.due = prevDue;
+      },
+      persist: () => ctx.getClient().updateIssue({
+        key: t.key,
+        ...(ndue ? { duedate: ndue } : {}),
+        extraFields: { [id]: ns },
+      }),
+      okMsg: `${t.key} ${days > 0 ? 'pushed out' : 'pulled in'} ${Math.abs(days)}d.`,
+    });
+  }
+  function dragAdhocBar(it, en, days, resize, td) {
+    const anchor = en.start || td;
+    let startDate = it.start_date || null, endDate = it.end_date || null;
+    if (resize) {
+      const base = en.end || addDays(anchor, 14);
+      let nd = addDays(base, days);
+      if (nd < anchor) nd = anchor;
+      endDate = isoDay(nd);
+      if (!startDate) startDate = isoDay(anchor); // pin the open start so the span sticks
+    } else {
+      startDate = isoDay(addDays(anchor, days));
+      if (endDate) endDate = isoDay(addDays(parseDay(endDate), days));
+    }
+    commitRoadmapItem({ id: it.id, title: it.title, startDate, endDate, notes: it.notes ?? null, color: it.color ?? null });
+  }
+
+  /* ── add/edit popover for ad-hoc items ── */
+  // Appended to <body> (the drawer panel runs a transform animation, which
+  // would re-anchor a position:fixed child) and torn down by Esc, outside
+  // mousedown, Cancel, or Save.
+  function closeRoadmapForm() {
+    board.roadmapForm = null;
+    document.querySelector('.jb-roadmap-form')?.remove();
+    document.removeEventListener('mousedown', roadmapFormOutside);
+  }
+  function roadmapFormOutside(e) {
+    const form = document.querySelector('.jb-roadmap-form');
+    if (form && !form.contains(e.target)) closeRoadmapForm();
+  }
+  function openRoadmapForm(desc, clickX, clickY) {
+    closeRoadmapForm();
+    board.roadmapForm = desc;
+    const isEdit = desc.mode === 'edit';
+    const titleIn = h('input.jb-rf-input', { type: 'text', placeholder: 'What ships here?', value: desc.title || '' });
+    const startIn = h('input.jb-rf-input.jb-rf-date', { type: 'date', value: desc.startDate || '' });
+    const endIn = h('input.jb-rf-input.jb-rf-date', { type: 'date', value: desc.endDate || '' });
+    const notesIn = h('input.jb-rf-input', { type: 'text', placeholder: 'Notes (optional)', value: desc.notes || '' });
+    // Color swatches: default + the allow-listed accent tokens.
+    let chosenColor = ADHOC_COLORS.includes(desc.color) ? desc.color : null;
+    const swatches = h('div.jb-rf-colors', null, h('span.jb-rf-colors-lbl', null, 'Color'));
+    const paintSwatches = () => {
+      swatches.querySelectorAll('.jb-rf-color').forEach((b) =>
+        b.classList.toggle('jb-rf-color-on', (b.dataset.c || null) === chosenColor));
+    };
+    for (const c of [null, ...ADHOC_COLORS]) {
+      const b = h('button.jb-rf-color', {
+        title: c || 'Default', dataset: { c: c || '' },
+        onclick: () => { chosenColor = c; paintSwatches(); },
+      });
+      b.style.background = c ? `var(--${c})` : 'var(--accent-dim)';
+      swatches.append(b);
+    }
+    paintSwatches();
+    const readInputs = () => {
+      // Swap an inverted range instead of erroring — the DB CHECK rejects it.
+      let s = startIn.value || null, e2 = endIn.value || null;
+      if (s && e2 && e2 < s) { const tmp = s; s = e2; e2 = tmp; }
+      return { title: titleIn.value.trim(), startDate: s, endDate: e2, notes: notesIn.value.trim() || null, color: chosenColor };
+    };
+    const save = () => {
+      const vals = readInputs();
+      if (!vals.title) { titleIn.focus(); return; }
+      closeRoadmapForm();
+      commitRoadmapItem({ id: desc.id, ...vals });
+    };
+    const promote = () => {
+      const vals = readInputs();
+      if (!vals.title) { titleIn.focus(); return; }
+      const id = desc.id;
+      closeRoadmapForm();
+      promoteRoadmapItem({ id, ...vals });
+    };
+    for (const el of [titleIn, notesIn]) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+    const form = h('div.jb-roadmap-form',
+      null,
+      h('div.jb-rf-head',
+        null,
+        icon('pen', 14, 'var(--accent-tx)'),
+        h('span.jb-rf-title', null, isEdit ? 'Edit roadmap item' : 'New roadmap item'),
+        h('div', { style: { flex: '1' } }),
+        h('span.mono.jb-rf-esc', null, 'esc'),
+      ),
+      titleIn,
+      h('div.jb-rf-dates', null, startIn, h('span.jb-rf-arrow', null, '→'), endIn),
+      notesIn,
+      swatches,
+      h('div.jb-rf-foot',
+        null,
+        h('button.primary', { onclick: save }, h('span', null, isEdit ? 'Save' : 'Add to roadmap')),
+        h('button.ghost', { onclick: closeRoadmapForm }, h('span', null, 'Cancel')),
+        h('div', { style: { flex: '1' } }),
+        isEdit && iconBtn('jira', 15, 'Promote to a real Jira epic (creates the epic, removes this item)', promote),
+        isEdit && iconBtn('trash', 15, 'Delete item', () => { const id = desc.id; closeRoadmapForm(); removeRoadmapItem(id); }),
+      ),
+    );
+    document.body.append(form);
+    // Clamp near the click point but inside the viewport.
+    const pad = 12;
+    const fw = form.offsetWidth || 300, fh = form.offsetHeight || 210;
+    form.style.left = Math.max(pad, Math.min((clickX ?? innerWidth / 2) - 20, innerWidth - fw - pad)) + 'px';
+    form.style.top = Math.max(pad, Math.min((clickY ?? innerHeight / 2) + 10, innerHeight - fh - pad)) + 'px';
+    document.addEventListener('mousedown', roadmapFormOutside);
+    setTimeout(() => titleIn.focus(), 20);
+  }
+
+  // Optimistic write: the bar/row appears (or updates) immediately, then the
+  // upsert confirms it; on rejection the previous list is restored and the
+  // error surfaced — same philosophy as commitEdit above.
+  async function commitRoadmapItem(payload) {
+    const prev = board.roadmapItems.slice();
+    const tempId = payload.id || `tmp-${Date.now()}`;
+    const local = {
+      id: tempId, title: payload.title,
+      start_date: payload.startDate || null, end_date: payload.endDate || null,
+      color: payload.color || null, notes: payload.notes || null,
+    };
+    const i = board.roadmapItems.findIndex((r) => r.id === tempId);
+    if (i >= 0) board.roadmapItems[i] = { ...board.roadmapItems[i], ...local };
+    else board.roadmapItems.push(local);
+    renderActiveView();
+    try {
+      const row = await ctx.saveRoadmapItem(payload);
+      if (row) {
+        // Replace the optimistic entry; the realtime echo of our own insert
+        // may have landed already, so dedupe by the row's real id too.
+        board.roadmapItems = board.roadmapItems.filter((r) => r.id !== tempId && r.id !== row.id);
+        board.roadmapItems.push(row);
+      }
+      renderActiveView();
+      toast('success', `“${payload.title}” is on the roadmap.`, null, 'Roadmap updated');
+    } catch (err) {
+      board.roadmapItems = prev;
+      renderActiveView();
+      toast('error', `${err?.message || err}`.slice(0, 160), null, "Couldn't save the item");
+    }
+  }
+  // Graduate an idea into a real Jira epic: draft a structured description
+  // (AI when configured, raw notes otherwise), create the epic, copy the
+  // dates over, delete the ad-hoc row, and refresh so the new epic bar
+  // replaces the old dashed one.
+  async function promoteRoadmapItem({ id, title, startDate, endDate, notes }) {
+    const client = ctx.getClient();
+    try {
+      toast('success', `Creating “${title}” in Jira…`, null, 'Promoting');
+      let description = notes || '';
+      try { description = (await ctx.aiDraftEpic?.(title, notes)) || description; }
+      catch { /* AI hiccup → the raw notes are a fine description */ }
+      const created = await client.createIssue({
+        projectKey: activeProject(), summary: title,
+        description, issueType: 'Epic',
+      });
+      if (endDate || startDate) {
+        // Best effort — the epic already exists; a date-write failure
+        // shouldn't fail the promotion.
+        const startId = startDate ? await resolveStartFieldId(client) : null;
+        const upd = { key: created.key };
+        if (endDate) upd.duedate = endDate;
+        if (startDate && startId) upd.extraFields = { [startId]: startDate };
+        if (upd.duedate !== undefined || upd.extraFields) await client.updateIssue(upd).catch(() => {});
+      }
+      if (id) {
+        try {
+          await ctx.deleteRoadmapItem(id);
+          board.roadmapItems = board.roadmapItems.filter((r) => r.id !== id);
+        } catch { /* worst case the idea lingers next to the new epic */ }
+      }
+      toast('success', `${created.key} created — “${title}” is a Jira epic now.`, null, 'Promoted to Jira');
+      loadRoadmapData(true);
+    } catch (err) {
+      renderActiveView();
+      toast('error', `${err?.message || err}`.slice(0, 160), null, "Couldn't create the epic");
+    }
+  }
+
+  async function removeRoadmapItem(id) {
+    const prev = board.roadmapItems.slice();
+    board.roadmapItems = board.roadmapItems.filter((r) => r.id !== id);
+    renderActiveView();
+    try {
+      await ctx.deleteRoadmapItem(id);
+      toast('success', 'Item removed from the roadmap.', null, 'Roadmap updated');
+    } catch (err) {
+      board.roadmapItems = prev;
+      renderActiveView();
+      toast('error', `${err?.message || err}`.slice(0, 160), null, "Couldn't delete the item");
+    }
+  }
+
+  /* ── vertical feed ── */
+  function renderFeed() {
+    if (!drawer) return;
+    const hostEl = drawer.panel.querySelector('.jb-feed');
+    if (!hostEl) return;
+    hostEl.innerHTML = '';
+    if (board.roadmapLoading) {
+      const sk = h('div.jb-feed-list');
+      for (let i = 0; i < 5; i++) {
+        sk.append(h('div.jb-feed-row', null, shimmer(18, 18, 5),
+          h('div', { style: { flex: '1', display: 'flex', flexDirection: 'column', gap: '6px' } },
+            shimmer(58, 9), shimmer(i % 2 ? '64%' : '82%', 10))));
+      }
+      hostEl.append(sk);
+      return;
+    }
+    const td = localToday();
+    // Target-date order, ascending — the feed reads like a delivery log,
+    // oldest at the top and the newest/furthest-out at the bottom, the way
+    // a chat thread reads. Undated entries group at the very bottom.
+    const entries = roadmapEntries()
+      .map((en) => ({ ...en, date: en.end || en.start || null }))
+      .sort((a, b) => compareEntries(a.date, b.date, a, b));
+
+    const list = h('div.jb-feed-list');
+    if (!entries.length) {
+      list.append(h('div.jb-empty', { style: { margin: 'auto' } },
+        h('span.jb-empty-ic', null, icon('chat', 26)),
+        h('div.jb-empty-title', null, board.query ? 'Nothing matches your search' : 'Nothing on the roadmap yet'),
+        h('p.jb-empty-sub', null, board.query ? 'Try a different search.' : 'Epics from Jira appear here automatically — or add your first deliverable below.'),
+      ));
+    }
+    let lastLabel = null, todayDone = false;
+    for (const en of entries) {
+      if (!todayDone && (!en.date || en.date > td)) {
+        list.append(h('div.jb-feed-divider.jb-feed-divider-today', null, h('span.mono', null, 'Today')));
+        todayDone = true;
+      }
+      const lbl = en.date ? en.date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }) : 'No date yet';
+      if (lbl !== lastLabel) { list.append(h('div.jb-feed-divider', null, h('span.mono', null, lbl))); lastLabel = lbl; }
+      list.append(feedRow(en, td));
+    }
+    if (entries.length && !todayDone) {
+      list.append(h('div.jb-feed-divider.jb-feed-divider-today', null, h('span.mono', null, 'Today')));
+    }
+    hostEl.append(list, feedComposer());
+    list.scrollTop = list.scrollHeight; // newest (bottom) in view, like a chat
+  }
+
+  function feedRow(en, td) {
+    if (en.kind === 'epic') {
+      const t = en.t;
+      const overdue = en.end && en.end < td && t.cat !== 'done';
+      const prog = board.epicProgress.get(t.key);
+      return h('button.jb-feed-row.jb-clickable', { onclick: () => { ensureIssueInBoard(t); openDetail(t.key); } },
+        typeIcon(t.type, 18),
+        h('div.jb-feed-main',
+          null,
+          h('div.jb-feed-top', null,
+            h('span.mono.jb-key', null, t.key),
+            h('span.mono.jb-feed-date' + (overdue ? '.jb-feed-overdue' : ''), null,
+              en.end ? `due ${fmtDay(en.end)}` : 'no due date'),
+            prog && prog.total ? h('span.mono.jb-feed-date', { title: `${prog.done} of ${prog.total} child issues done` }, `${prog.done}/${prog.total} done`) : null,
+          ),
+          h('div.jb-feed-summary', { title: t.summary }, t.summary),
+        ),
+        statusPill({ name: t.status, cat: t.cat }, true),
+        avatarStack(t.assignees, 20),
+      );
+    }
+    const it = en.it;
+    const range = [it.start_date && fmtDay(parseDay(it.start_date)), it.end_date && fmtDay(parseDay(it.end_date))]
+      .filter(Boolean).join(' → ');
+    const cvar = ADHOC_COLORS.includes(it.color) ? `var(--${it.color})` : null;
+    return h('div.jb-feed-row.jb-feed-row-adhoc',
+      null,
+      h('span.jb-feed-adhoc-ic', cvar ? { style: { color: cvar, background: `color-mix(in srgb, ${cvar} 18%, transparent)` } } : null, icon('pen', 13)),
+      h('div.jb-feed-main',
+        null,
+        h('div.jb-feed-top', null,
+          h('span.jb-feed-adhoc-tag.mono', null, 'idea'),
+          h('span.mono.jb-feed-date', null, range || 'no date'),
+          githubRefChip(it.notes),
+        ),
+        h('div.jb-feed-summary', { title: it.notes || it.title }, it.title),
+      ),
+      h('span.jb-feed-actions',
+        null,
+        // Pending optimistic rows (insert in flight) get no actions — their
+        // tmp- id isn't a row Supabase knows yet.
+        isPendingItem(it) ? h('span.mono.jb-feed-date', null, 'saving…') : [
+          iconBtn('pen', 13, 'Edit', (e) => openRoadmapForm({
+            mode: 'edit', id: it.id, title: it.title, notes: it.notes || '', color: it.color || null,
+            startDate: it.start_date || '', endDate: it.end_date || '',
+          }, e.clientX, e.clientY)),
+          iconBtn('trash', 13, 'Delete', () => removeRoadmapItem(it.id)),
+        ],
+      ),
+    );
+  }
+
+  // The feed's "message composer": type a deliverable, optionally give it a
+  // target date, Enter/send appends it at the bottom — the add-bar flow,
+  // vertical edition. The date maps to end_date (the feed's sort key).
+  function feedComposer() {
+    const input = h('input.jb-feed-input', { type: 'text', placeholder: 'Add a roadmap item…' });
+    const dateIn = h('input.jb-feed-datein', { type: 'date', title: 'Target date (optional)' });
+    const submit = () => {
+      const title = input.value.trim();
+      if (!title) { input.focus(); return; }
+      input.value = '';
+      commitRoadmapItem({ title, startDate: null, endDate: dateIn.value || null });
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+    return h('div.jb-feed-composer',
+      null,
+      icon('plus', 16, 'var(--text-faint)'),
+      input,
+      dateIn,
+      h('button.jb-feed-send', { title: 'Add item', onclick: submit }, icon('send', 15)),
+    );
+  }
+
   async function openDrawer(focusKey) {
     if (!drawer) buildDrawer();
     board.detailKey = null;
     board._pickProject = false;
     board.query = ''; board.filter = 'all';
+    // The view choice is a sticky preference (unlike query/filter, which
+    // reset per open) — restore the last-used one, and the timeline zoom.
+    try {
+      const v = localStorage.getItem('huddle.jb.view');
+      if (v === 'kanban' || v === 'timeline' || v === 'feed') board.view = v;
+      const z = parseInt(localStorage.getItem('huddle.jb.zoom'), 10);
+      if (ZOOM_LEVELS.includes(z)) board.roadmapPx = z;
+    } catch {}
     drawer.root.classList.remove('hidden');
     drawer.panel.classList.remove('jb-slide'); void drawer.panel.offsetWidth; drawer.panel.classList.add('jb-slide');
     // Clear stale content up front so the panel isn't showing the previous
@@ -1381,17 +2611,19 @@
     if (!drawer) return;
     drawer.root.classList.add('hidden');
     board.detailKey = null;
+    closeRoadmapForm();
   }
   function toggleDrawer() {
     if (drawer && !drawer.root.classList.contains('hidden')) closeDrawer();
     else openDrawer();
   }
 
-  // Esc closes detail, then drawer.
+  // Esc closes the roadmap form, then detail, then the drawer.
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (drawer && !drawer.root.classList.contains('hidden')) {
-      if (board.detailKey) { board.detailKey = null; renderDetail(); }
+      if (board.roadmapForm) { closeRoadmapForm(); }
+      else if (board.detailKey) { board.detailKey = null; renderDetail(); }
       else closeDrawer();
     } else if (inCall?.open) {
       hideInCall();
@@ -1409,5 +2641,16 @@
     // Re-render the drawer if it's open (e.g. a teammate changed the shared
     // board project via realtime) — picks up the new active project.
     reloadDrawer: () => { if (drawer && !drawer.root.classList.contains('hidden')) renderDrawer(); },
+    // A teammate added/edited/removed an ad-hoc roadmap bar (realtime).
+    // Refetch the whole list (dozens of rows at most — simpler than
+    // reconciling per-row events) and re-render if a roadmap view is up.
+    onRoadmapItemsChanged: async () => {
+      if (!drawer || drawer.root.classList.contains('hidden')) return;
+      if (board.view === 'kanban') return;
+      let items;
+      try { items = await ctx.listRoadmapItems(); } catch { return; }
+      board.roadmapItems = items || [];
+      renderActiveView();
+    },
   };
 })();

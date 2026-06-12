@@ -95,6 +95,12 @@ You have read-only access to the GitHub repo \`${repoSlug}\` via tools (search_c
 // exist but keeps Jira one optional capability rather than the AI's purpose.
 const AI_SYSTEM_PROMPT = 'You are a helpful, general-purpose AI assistant inside a team chat app. Answer whatever the user asks. Be concise.';
 const AI_SYSTEM_PROMPT_WITH_JIRA = 'You are a helpful, general-purpose AI assistant inside a team chat app. Answer whatever the user asks — questions, jokes, explanations, brainstorming, code, anything — like any capable chat assistant would; never refuse or redirect a request just because it is not about Jira. You also have Jira tools available: when the user names a Jira ticket key (e.g. "FOO-123") or asks to read / comment on / update / transition a ticket, call those tools to fetch context first and then act. Be concise — bullet points for summaries, and for any ticket changes give a single-line confirmation stating the ticket key plus a one-line summary of what you did.';
+// Appended when the team-roadmap tools are wired (any connected team):
+// lets "/ai put the billing revamp on the roadmap for late July" work.
+// Built per-call so it can carry today's date for resolving relative dates.
+function aiRoadmapPromptAddendum() {
+  return `You can also read and add to the team roadmap (the shared timeline of deliverables on the board) via the roadmap_* tools: use roadmap_add_item when the user asks to put something on the roadmap — resolve relative dates like "end of July" to YYYY-MM-DD knowing that today is ${new Date().toISOString().slice(0, 10)}, and omit dates the user didn't imply — and roadmap_list_items to answer questions about what's planned. Confirm additions with the item title and date in one line.`;
+}
 
 // Tool definitions for the /ai-ticket loop live in ai-tools.js
 // (window.HuddleAiTools.buildGithubTicketTools) so the AI panel can reuse
@@ -1862,6 +1868,9 @@ class ChatView {
         // Pre-fill the composer with the `/gh issue …` command so the
         // existing slash flow creates the issue on send (no dup logic).
         prefillComposer: (text) => this._prefillComposer(text),
+        // Third target: drop the item onto the team roadmap (the board's
+        // Timeline/Feed views) as an undated team_roadmap_items row.
+        addRoadmapItem: (item) => this.hooks.addRoadmapItem?.(item),
         toast: (msg) => this.hooks.toast?.(msg),
       });
       if (widget) children.push(widget);
@@ -2512,8 +2521,12 @@ class ChatView {
     // read/act on Jira tickets when asked; the prompt (see AI_SYSTEM_PROMPT*
     // near the top of this file) keeps Jira an optional capability.
     const jira = this.hooks.getJira?.();
-    const tools = window.HuddleAiTools ? window.HuddleAiTools.buildJiraTools(jira) : [];
-    const system = tools.length ? AI_SYSTEM_PROMPT_WITH_JIRA : AI_SYSTEM_PROMPT;
+    const jiraTools = window.HuddleAiTools ? window.HuddleAiTools.buildJiraTools(jira) : [];
+    const roadmapTools = window.HuddleAiTools?.buildRoadmapTools
+      ? window.HuddleAiTools.buildRoadmapTools(this.hooks.getRoadmap?.()) : [];
+    const tools = [...jiraTools, ...roadmapTools];
+    let system = jiraTools.length ? AI_SYSTEM_PROMPT_WITH_JIRA : AI_SYSTEM_PROMPT;
+    if (roadmapTools.length) system += ' ' + aiRoadmapPromptAddendum();
     let result;
     try {
       result = await ai.chat({
@@ -2535,7 +2548,7 @@ class ChatView {
     let body = `> ${prompt.replace(/\n/g, '\n> ')}\n\n${result.text || '(no response)'}`;
     if (result.toolUses?.length) {
       const summary = result.toolUses.map((tu) => {
-        const arg = tu.input?.key || tu.input?.jql || '';
+        const arg = tu.input?.key || tu.input?.jql || tu.input?.title || '';
         return arg ? `${tu.name}(${arg})` : tu.name;
       }).join(', ');
       body += `\n\n_via ${summary}_`;

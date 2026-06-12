@@ -1878,6 +1878,9 @@ async function joinTeamAndStart(teamId) {
       window.HuddleJiraBoard?.refreshInCall?.();
     }
   });
+  // A teammate added/edited/removed an ad-hoc roadmap bar — refresh the
+  // board's roadmap/feed views if one is showing (no-op on kanban/closed).
+  huddle.addEventListener('team-roadmap-changed', () => window.HuddleJiraBoard?.onRoadmapItemsChanged?.());
   // Surface incoming messages to the meeting Notes panel. The handler
   // filters by parent_id so non-meeting-thread messages are no-ops;
   // gating it here (rather than only while in-call) is fine because
@@ -1934,6 +1937,18 @@ async function joinTeamAndStart(teamId) {
       openTicketModal: (preset) => openTicketModal(preset),
       getAi: () => state.ai,
       getGitHub: () => state.github,
+      // Action-item "Add to roadmap" target: write an undated
+      // team_roadmap_items row (the board's Timeline/Feed views).
+      addRoadmapItem: async ({ title, notes }) => {
+        if (!state.huddle) throw new Error('Not connected to a team yet.');
+        return state.huddle.saveTeamRoadmapItem({ title, notes: notes || null });
+      },
+      // Team-roadmap adapter for the /ai tool loop (ai-tools.js
+      // buildRoadmapTools): list/add the shared ad-hoc roadmap items.
+      getRoadmap: () => (state.huddle ? {
+        list: () => state.huddle.listTeamRoadmapItems(),
+        save: (p) => state.huddle.saveTeamRoadmapItem(p),
+      } : null),
       attachProfileTrigger: (el, userId) => attachProfileTrigger(el, userId),
       presenceStatusFor: (userId) => presenceStatusForUser(userId),
       openImageLightbox: (url, name) => openImageLightbox(url, name),
@@ -7450,6 +7465,11 @@ function initJiraBoard() {
       const row = await state.huddle?.saveTeamJiraBoard(payload);
       if (row) state.teamBoard = row;
     },
+    // Ad-hoc roadmap bars (public.team_roadmap_items) for the board's
+    // roadmap/feed views — team-shared, live via 'team-roadmap-changed'.
+    listRoadmapItems: async () => (await state.huddle?.listTeamRoadmapItems?.()) || [],
+    saveRoadmapItem: async (payload) => state.huddle?.saveTeamRoadmapItem(payload),
+    deleteRoadmapItem: async (id) => state.huddle?.deleteTeamRoadmapItem(id),
     // Rewrite a ticket description with the configured AI provider, for the
     // board's inline "Edit with AI". Returns plain text (simple markdown);
     // JiraClient.updateIssue converts it to ADF on save.
@@ -7460,6 +7480,19 @@ function initJiraBoard() {
       const res = await ai.chat({ system, messages: [{ role: 'user', content: `Instruction: ${instruction}\n\nCurrent description:\n${currentText || '(empty)'}` }] });
       return (res?.text || '').trim();
     },
+    // Draft a structured epic description when an ad-hoc roadmap idea is
+    // promoted to a real Jira epic. Returns null when no AI is configured
+    // or the draft comes back empty — the caller falls back to the raw notes.
+    aiDraftEpic: async (title, notes) => {
+      const ai = state.ai;
+      if (!ai || !ai.isConfigured()) return null;
+      const system = "You draft Jira epic descriptions. From a short title (and optional notes) produce a concise epic description in plain-text Markdown with exactly these sections: '## Summary' (2-3 sentences), '## Scope' (3-6 bullets of likely workstreams), '## Acceptance Criteria' (3-5 verifiable bullets), and '## Open Questions' (bullets — include this section only when something is genuinely undecided). Stay faithful to what the title and notes actually say; never invent specific facts, dates, or people. Return ONLY the description as plain-text Markdown — '## Heading' lines and '- ' bullets, no preamble, no code fences.";
+      const res = await ai.chat({ system, messages: [{ role: 'user', content: `Title: ${title}${notes ? `\n\nNotes: ${notes}` : ''}` }] });
+      return (res?.text || '').trim() || null;
+    },
+    // GitHubClient for the roadmap's PR/issue status chips (notes that
+    // mention owner/repo#123 or a github.com URL).
+    getGitHub: () => state.github,
     // Open the board in its own window (reuses the popout system; the child
     // boots into a board-only layout — see bootBoardPopout).
     popOut: () => window.huddle?.openPopout?.({ target: 'board:', teamId: state.huddle?.team?.id || '', title: 'Board' }),

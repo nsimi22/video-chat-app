@@ -87,6 +87,9 @@ contextBridge.exposeInMainWorld('huddle', {
     },
   },
   fetchProxy: (req) => ipcRenderer.invoke('fetch-proxy', req),
+  // Render HTML to a PDF via a hidden window + native save dialog
+  // (roadmap export). Returns { ok, path } or { ok:false, canceled|error }.
+  exportPdf: (payload) => ipcRenderer.invoke('export-pdf', payload),
   // ICS calendar subscription fetch. Separate from fetchProxy because
   // it accepts any HTTPS host (user-supplied URL in Settings) — the
   // main-process handler enforces a private-IP block, an HTTPS-only
