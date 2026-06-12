@@ -2085,7 +2085,16 @@ async function startCall(channelId) {
     // pipelines need a live published track, which doesn't exist yet); the
     // buttons already read muted from the pre-join styling above.
     syncBlurButtonState();
-    syncNoiseSuppressionButtonState();
+    // Denoise defaults on, so show its control active from the muted join —
+    // the pipeline only starts once the mic goes live (onLocalMuteChanged),
+    // but the button should read its default-on preference, not the not-yet-
+    // applied pipeline state. (Blur is off-by-default, so it uses the live
+    // state above.)
+    const denoiseDefault = getNoiseSuppressionPreference();
+    if (els.btnDenoise) {
+      els.btnDenoise.classList.toggle('active', denoiseDefault);
+      els.btnDenoise.classList.toggle('denoise-off', !denoiseDefault);
+    }
     // The call channel is { broadcast: { self: false } }, so we never hear
     // our own mute-state echo — drive the self-tile overlays locally so the
     // local view matches what peers see (no mic/cam track == muted).
@@ -3592,6 +3601,13 @@ function focusChannel(channelId) {
     state.huddle.watchCallPresence(channelId).catch(() => {});
   } else {
     state.lurkingChannelId = null;
+  }
+  // In a call and navigating to a different channel? Auto-minimize the call
+  // to its draggable panel so this channel's chat takes the main view. We
+  // never auto-restore — returning to the call's channel keeps it minimized;
+  // only the mini panel's expand button brings the call back to full screen.
+  if (state.mesh && state.inCallChannelId && channelId !== state.inCallChannelId && !state.callMinimized) {
+    setCallMinimized(true);
   }
   renderCallHeader();
   renderHeaderMembers(channel);
