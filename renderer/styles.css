@@ -642,6 +642,13 @@ input:focus, textarea:focus {
   box-shadow: var(--shadow-1);
   outline: none;
 }
+/* In fullscreen the inline 420×280 cap must lift, or the video stays that
+   small size pinned to a corner of the black backdrop instead of filling
+   and centering the screen. object-fit keeps it centered + letterboxed. */
+.msg-video:fullscreen, .msg-video:-webkit-full-screen {
+  max-width: none; max-height: none; width: 100%; height: 100%;
+  object-fit: contain; border-radius: 0;
+}
 .attachment-chip {
   display: inline-flex; align-items: center; gap: 6px;
   background: rgba(255, 255, 255, 0.06);
@@ -9076,6 +9083,24 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .jb-viewseg-btn:hover { color: var(--text); }
 .jb-viewseg-on { background: var(--bg-3); color: var(--text); }
 
+/* timeline/feed "how it works" info button + hover popover */
+.jb-rm-info { position: relative; flex: 0 0 auto; display: inline-flex; }
+.jb-rm-info-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 7px; border: none; cursor: pointer;
+  background: transparent; color: var(--text-faint); transition: background var(--t-fast), color var(--t-fast);
+}
+.jb-rm-info-btn:hover { background: var(--bg-2); color: var(--text); }
+.jb-rm-info-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; width: 290px;
+  padding: 12px 14px; background: var(--bg-elev); border: 1px solid var(--line-strong);
+  border-radius: var(--r-md); box-shadow: var(--shadow-1);
+}
+.jb-rm-info-pop.hidden { display: none; }
+.jb-rm-info-title { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 7px; }
+.jb-rm-info-list { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 5px; }
+.jb-rm-info-list li { font-size: 12px; line-height: 1.45; color: var(--text-dim); }
+
 /* ── roadmap (horizontal timeline) ── */
 .jb-roadmap { display: flex; flex-direction: column; min-height: 0; position: relative; }
 .jb-roadmap-scroll { flex: 1; min-height: 0; overflow: auto; }
@@ -9145,12 +9170,6 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   border-right: none; border-radius: 8px 0 0 8px;
   -webkit-mask-image: linear-gradient(90deg, #000 70%, transparent);
   mask-image: linear-gradient(90deg, #000 70%, transparent);
-}
-.jb-roadmap-addrow {
-  position: sticky; left: 0; display: flex; align-items: center; gap: 8px;
-  margin: 14px 18px 6px; width: max-content; padding: 8px 14px;
-  border: 1.5px dashed var(--line); border-radius: var(--r-md);
-  color: var(--text-faint); font-size: 12px; font-weight: 600; pointer-events: none;
 }
 .jb-roadmap-empty-hint {
   position: sticky; left: 0; display: flex; align-items: center; gap: 9px;

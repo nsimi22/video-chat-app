@@ -80,8 +80,9 @@
       this.huddle = huddle;
       this.room = null;
       this.cameraStream = null; // composite local MediaStream for the self-cam tile
-      this._micOn = true;
-      this._camOn = true;
+      // Join muted by default — nothing is published until the user opts in.
+      this._micOn = false;
+      this._camOn = false;
       this._streams = makeParticipantStreamCache();
       // Background-blur state. _rawTrack is a long-lived clone of the
       // LK-published raw camera track — needed because replaceTrack
@@ -561,8 +562,9 @@
         // has already lapsed, AudioPlaybackStatusChanged (wired below)
         // retries on the next click.
         room.startAudio().catch(() => {});
-        await room.localParticipant.setMicrophoneEnabled(true);
-        await room.localParticipant.setCameraEnabled(true);
+        // Join muted: publish neither mic nor camera here. The caller turns
+        // them on via setCamera(...) / the toggle buttons once in, so peers
+        // never receive a frame of audio/video before the user opts in.
         this._refreshLocalCameraStream();
       }
     }
@@ -811,6 +813,16 @@
         return;
       }
       this.huddle.sendMuteState(this._micOn, this._camOn);
+      // Local signal for the renderer: lets it engage persisted blur /
+      // noise-suppression the first time a track is actually published
+      // (our muted join publishes nothing, so the pipelines can't start
+      // until then). Carries the source so each pref applies independently.
+      this.dispatchEvent(new CustomEvent('local-mute-changed', {
+        detail: {
+          source: source === LK.Track.Source.Microphone ? 'mic' : 'cam',
+          micOn: this._micOn, camOn: this._camOn,
+        },
+      }));
     }
 
     // Reconcile a REMOTE peer's mic/cam overlay against LiveKit's

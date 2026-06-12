@@ -26,6 +26,7 @@
     arrow: `<svg ${A}><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>`,
     eraser: `<svg ${A}><path d="M20 20H7l-4-4 9-9 11 11-3 2z"/><line x1="14" y1="6" x2="20" y2="12"/></svg>`,
     note: `<svg ${A}><path d="M14 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-9z"/><polyline points="14 3 14 10 21 10"/></svg>`,
+    info: `<svg ${A}><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`,
     stop: `<svg ${A}><rect x="6" y="6" width="12" height="12" rx="1"/></svg>`,
     x: `<svg ${A}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
     paperclip: `<svg ${A}><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`,
