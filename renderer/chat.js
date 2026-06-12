@@ -1127,13 +1127,73 @@ class ChatView {
     const channelId = this.currentChannel;
     if (!teamId || !channelId) return;
     const url = `huddle://team/${encodeURIComponent(teamId)}/channel/${encodeURIComponent(channelId)}?msg=${encodeURIComponent(messageId)}`;
+    if (await window.writeClipboard(url)) this.hooks.toast?.('Message link copied');
+    else this.hooks.toast?.('Could not copy link');
+  }
+
+  async _copyText(text) {
+    if (await window.writeClipboard(text)) this.hooks.toast?.('Copied to clipboard');
+    else this.hooks.toast?.('Could not copy');
+  }
+
+  async _addMessageToRoadmap(m) {
+    const where = this.hooks.getChannelName?.(this.currentChannel);
     try {
-      await navigator.clipboard.writeText(url);
-      this.hooks.toast?.('Message link copied');
+      await this.hooks.addRoadmapItem({
+        title: (m.text || '').slice(0, 200),
+        notes: `From a message in ${where ? '#' + where : 'a channel'}.`,
+      });
+      this.hooks.toast?.("Added to the roadmap — see the board's Timeline or Feed.");
     } catch (err) {
-      console.warn('copy link failed', err);
-      this.hooks.toast?.('Could not copy link');
+      this.hooks.toast?.(`Couldn't add to the roadmap: ${err?.message || err}`.slice(0, 140));
     }
+  }
+
+  // Right-click context-menu items for a message. Mirrors the hover action
+  // bar (same handlers) plus copy-text and create-from-message; the global
+  // dispatcher in app.js calls this and feeds it to HuddleContextMenu. `ev`
+  // is the contextmenu event, passed through so the reaction picker can
+  // anchor at the cursor.
+  contextMenuItems(messageId, ev) {
+    const m = this._messages().find((x) => x.id === messageId);
+    if (!m) return [];
+    const isMine = m.authorId ? m.authorId === this.mesh.peerId : m.authorName === this.mesh.name;
+    const inThread = this.threadParentId !== null;
+    const jiraOk = !!this.hooks.getJira?.()?.isConfigured?.();
+    const roadmapOk = !!this.hooks.addRoadmapItem;
+    // Capture the cursor point now — `ev` is stale by the time an item's
+    // onClick runs, so the reaction picker anchors off these coordinates.
+    const at = { clientX: ev?.clientX, clientY: ev?.clientY };
+    const items = [];
+    // Defer to the next tick: the menu-item click bubbles to the document
+    // outside-click listener that hides the emoji picker (chat.js wires one
+    // for the composer), so opening synchronously would be undone by this
+    // same click. Opening after it settles keeps the picker up.
+    items.push({ label: 'Add reaction', icon: 'smile', onClick: () => setTimeout(() => this._openReactionPicker(at, m.id), 0) });
+    if (!m.parentId && !inThread) items.push({ label: 'Reply in thread', icon: 'reply', onClick: () => this.openThread(m.id) });
+    items.push({ type: 'divider' });
+    if (m.text) items.push({ label: 'Copy text', icon: 'text', onClick: () => this._copyText(m.text) });
+    items.push({ label: 'Copy link to message', icon: 'link', onClick: () => this._copyMessageLink(m.id) });
+    if (this.hooks.forwardMessage && (m.text || (m.attachments && m.attachments.length))) {
+      items.push({ label: 'Forward message…', icon: 'arrowRight', onClick: () => this.hooks.forwardMessage({ text: m.text || '', attachments: m.attachments || [], authorName: m.authorName, sourceChannelId: this.currentChannel }) });
+    }
+    items.push({ type: 'divider' });
+    items.push({ label: m.pinnedAt ? 'Unpin message' : 'Pin message', icon: 'pin', onClick: () => this._togglePin(m.id, !m.pinnedAt) });
+    items.push({
+      label: this.hooks.isMessageSaved?.(m.id) ? 'Edit saved labels' : 'Save message', icon: 'bookmark',
+      onClick: () => this.hooks.openSavePopover?.({ messageId: m.id, teamId: this.mesh.teamMeta?.id, channelId: this.currentChannel, anchor: this.nodeById.get(m.id) }),
+    });
+    if (m.text && (jiraOk || roadmapOk)) {
+      items.push({ type: 'divider' });
+      if (jiraOk) items.push({ label: 'Create Jira ticket', icon: 'ticket', onClick: () => this._prefillComposer(`/ai-ticket ${(m.text || '').trim()}`) });
+      if (roadmapOk) items.push({ label: 'Add to roadmap', icon: 'calendar', onClick: () => this._addMessageToRoadmap(m) });
+    }
+    if (isMine) {
+      items.push({ type: 'divider' });
+      if (!m.meta?.poll) items.push({ label: 'Edit message', icon: 'pen', onClick: () => this._beginEdit(m.id) });
+      items.push({ label: 'Delete message', icon: 'trash', danger: true, onClick: () => this._delete(m.id) });
+    }
+    return items;
   }
 
   // Find a rendered message node in the active channel pane and scroll
@@ -2076,7 +2136,7 @@ class ChatView {
   }
 
   _openReactionPicker(ev, messageId) {
-    ev.stopPropagation();
+    ev?.stopPropagation?.();
     this._emojiPickerMode = 'react';
     this._emojiPickerTarget = messageId;
     const p = this.els.emojiPicker;
@@ -2084,9 +2144,12 @@ class ChatView {
     // the default composer-anchored slot. Use position: fixed (set via
     // [data-anchor=react]) and align the picker's right edge with the
     // button's right edge, opening downward by default and flipping
-    // upward when there isn't room below.
-    const btn = ev.currentTarget;
-    const rect = btn.getBoundingClientRect();
+    // upward when there isn't room below. The right-click menu has no
+    // button — it passes { clientX, clientY }, so anchor to the cursor.
+    const btn = ev?.currentTarget;
+    const rect = btn?.getBoundingClientRect
+      ? btn.getBoundingClientRect()
+      : { left: ev?.clientX ?? 0, right: ev?.clientX ?? 0, top: ev?.clientY ?? 0, bottom: ev?.clientY ?? 0 };
     p.classList.remove('hidden');
     this._refreshEmojiPicker();
     p.dataset.anchor = 'react';

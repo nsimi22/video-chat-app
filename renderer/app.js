@@ -418,6 +418,186 @@ let windowFocused = document.hasFocus();
 window.addEventListener('focus', () => { windowFocused = true; clearUnreadIfActive(); });
 window.addEventListener('blur', () => { windowFocused = false; });
 
+// ── Right-click context menus ──────────────────────────────────────────────
+// One global dispatcher resolves the surface under the cursor and hands the
+// matching item list to HuddleContextMenu (context-menu.js). We only
+// preventDefault when we actually have a menu, so unhandled spots keep the
+// native menu. Surface precedence (specific → general): editable field →
+// person → message → sidebar channel/DM row.
+document.addEventListener('contextmenu', (e) => {
+  if (els.app?.classList.contains('hidden')) return; // login / team-picker screens
+  const items = contextMenuItemsForEvent(e);
+  if (!items || !items.length) return;
+  e.preventDefault();
+  window.HuddleContextMenu?.show(items, e.clientX, e.clientY);
+});
+
+function contextMenuItemsForEvent(e) {
+  const t = e.target;
+  if (!(t instanceof Element)) return null;
+  const field = t.closest('input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]), textarea');
+  if (field && !field.disabled && !field.readOnly) return textInputContextMenu(field);
+  const userEl = t.closest('[data-profile-for]');
+  if (userEl) return userContextMenu(userEl.dataset.profileFor, userEl);
+  const msg = t.closest('.msg[data-message-id]');
+  if (msg && state.chat) return state.chat.contextMenuItems(msg.dataset.messageId, e);
+  const row = t.closest('#channels li[data-id], #favorites li[data-id], #dms li[data-id]');
+  if (row) return channelContextMenu(row.dataset.id);
+  return null;
+}
+
+function channelContextMenu(channelId) {
+  const ch = state.channelMeta.get(channelId);
+  if (!ch) return null;
+  const isDm = ch.type === 'dm';
+  const muted = getChannelNotifyMode(channelId) === 'muted';
+  const fav = isFavorite(channelId);
+  const items = [{ label: isDm ? 'Open conversation' : 'Open channel', icon: isDm ? 'chat' : 'hash', onClick: () => focusChannel(channelId) }, { type: 'divider' }];
+  if (state.unread.has(channelId)) items.push({ label: 'Mark as read', icon: 'check', onClick: () => markChannelReadFromMenu(channelId) });
+  items.push({ label: fav ? 'Remove from favorites' : 'Add to favorites', icon: 'star', onClick: () => toggleFavorite(channelId) });
+  items.push({ label: muted ? 'Unmute' : 'Mute', icon: muted ? 'bell' : 'bellOff', onClick: () => setChannelNotifyFromMenu(channelId, muted ? 'default' : 'muted') });
+  items.push({ type: 'divider' });
+  items.push({ label: 'Start or join call', icon: 'video', onClick: () => startCall(channelId) });
+  items.push({ label: 'Copy link', icon: 'link', onClick: () => copyChannelLink(channelId) });
+  return items;
+}
+
+function markChannelReadFromMenu(channelId) {
+  if (!state.unread.has(channelId)) return;
+  state.unread.delete(channelId);
+  updateUnreadBadge(channelId);
+  updateUnreadTitle();
+}
+
+function setChannelNotifyFromMenu(channelId, mode) {
+  setChannelNotifyMode(channelId, mode);
+  for (const li of sidebarRowsFor(channelId)) {
+    li.classList.toggle('muted', mode === 'muted');
+    li.classList.toggle('notify-all', mode === 'all');
+  }
+  updateUnreadBadge(channelId);
+  updateUnreadTitle();
+  if (channelId === state.chat?.currentChannel) refreshNotifyButton();
+}
+
+async function copyChannelLink(channelId) {
+  const teamId = state.huddle?.team?.id;
+  if (!teamId) return;
+  const url = `huddle://team/${encodeURIComponent(teamId)}/channel/${encodeURIComponent(channelId)}`;
+  if (await window.writeClipboard(url)) showToast('Channel link copied');
+  else showToast('Could not copy link');
+}
+
+function userContextMenu(userId, el) {
+  if (!userId) return null;
+  const name = state.huddle?.peerInfo?.get(userId)?.name || el?.dataset?.name || 'Teammate';
+  const isSelf = userId === state.huddle?.peerId;
+  const items = [{ label: 'View profile', icon: 'people', onClick: () => state.profileCard?.show(el, userId) }];
+  if (!isSelf) {
+    items.push({ label: 'Message', icon: 'chat', onClick: () => openDmWith(userId, name) });
+    if (!state.mesh && presenceStatusForUser(userId) === 'active') {
+      items.push({ label: 'Knock to huddle', icon: 'video', onClick: () => knockTeammate({ user_id: userId, name }) });
+    }
+  }
+  items.push({ type: 'divider' });
+  items.push({ label: 'Copy @mention', icon: 'at', onClick: async () => { if (await window.writeClipboard('@' + name)) showToast('Mention copied'); } });
+  return items;
+}
+
+function textInputContextMenu(field) {
+  const start = field.selectionStart ?? 0, end = field.selectionEnd ?? 0;
+  const hasSel = end > start;
+  const clip = window.huddle?.clipboard;
+  const splice = (text) => {
+    const v = field.value;
+    field.value = v.slice(0, start) + text + v.slice(end);
+    const pos = start + text.length;
+    field.focus();
+    try { field.setSelectionRange(pos, pos); } catch {}
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  return [
+    { label: 'Cut', icon: 'x', disabled: !hasSel, onClick: () => { clip?.writeText(field.value.slice(start, end)); splice(''); } },
+    { label: 'Copy', icon: 'text', disabled: !hasSel, onClick: () => clip?.writeText(field.value.slice(start, end)) },
+    { label: 'Paste', icon: 'paperclip', onClick: () => { const txt = clip?.readText() || ''; if (txt) splice(txt); } },
+    { type: 'divider' },
+    { label: 'Select all', icon: 'checks', disabled: !field.value, onClick: () => { field.focus(); field.select(); } },
+  ];
+}
+
+// Message forwarding: a searchable channel/DM picker. On select, re-posts the
+// message (text + attachments, with a "Forwarded from …" attribution line) to
+// the chosen channel via the same send path the composer uses.
+function openForwardPicker(msg) {
+  if (!state.huddle) return;
+  document.querySelector('.fwd-overlay')?.remove();
+  const targets = [...state.channelMeta.values()]
+    .filter((c) => c.id !== msg.sourceChannelId)
+    .map((c) => ({ id: c.id, label: displayLabelFor(c) }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+  const overlay = document.createElement('div');
+  overlay.className = 'fwd-overlay';
+  const modal = document.createElement('div');
+  modal.className = 'fwd-modal';
+  const head = document.createElement('div');
+  head.className = 'fwd-head';
+  head.textContent = 'Forward message';
+  const search = document.createElement('input');
+  search.className = 'fwd-search';
+  search.type = 'text';
+  search.placeholder = 'Search channels and people…';
+  const list = document.createElement('div');
+  list.className = 'fwd-list';
+  modal.append(head, search, list);
+  overlay.appendChild(modal);
+
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  function close() { overlay.remove(); document.removeEventListener('keydown', onKey, true); }
+
+  const renderList = () => {
+    const q = search.value.trim().toLowerCase();
+    list.innerHTML = '';
+    const matches = targets.filter((t) => !q || t.label.toLowerCase().includes(q));
+    if (!matches.length) {
+      const empty = document.createElement('div');
+      empty.className = 'fwd-empty';
+      empty.textContent = 'No matches';
+      list.appendChild(empty);
+      return;
+    }
+    for (const t of matches) {
+      const row = document.createElement('button');
+      row.className = 'fwd-row';
+      row.textContent = t.label;
+      row.onclick = () => { close(); doForward(msg, t); };
+      list.appendChild(row);
+    }
+  };
+
+  search.addEventListener('input', renderList);
+  search.addEventListener('keydown', (e) => { if (e.key === 'Enter') list.querySelector('.fwd-row')?.click(); });
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', onKey, true);
+
+  renderList();
+  document.body.appendChild(overlay);
+  setTimeout(() => search.focus(), 20);
+}
+
+async function doForward(msg, target) {
+  const src = state.channelMeta.get(msg.sourceChannelId);
+  const srcLabel = src ? displayLabelFor(src) : 'a channel';
+  const lines = [`Forwarded from ${srcLabel}${msg.authorName ? ' · ' + msg.authorName : ''}`];
+  if (msg.text) lines.push(msg.text.split('\n').map((l) => '> ' + l).join('\n'));
+  try {
+    await state.huddle.sendMessageStrict({ channelId: target.id, text: lines.join('\n'), attachments: msg.attachments || [] });
+    showToast(`Forwarded to ${target.label}`);
+  } catch (err) {
+    showCallError('Could not forward: ' + (err?.message || err));
+  }
+}
+
 const STREAM_DECISION_MS = 1500;
 
 // Modal focus restoration. Watches every .modal-backdrop for the
@@ -1958,6 +2138,7 @@ async function joinTeamAndStart(teamId) {
       onPinChanged: () => refreshPinnedCount(),
       isMessageSaved: (id) => state.savedById.has(id),
       openSavePopover: (args) => openSavePopover(args),
+      forwardMessage: (msg) => openForwardPicker(msg),
       // Huddle Clips: the recorder reuses the screen source picker (the
       // promise-returning variant) so it can offer screen capture without
       // duplicating the permission gate / thumbnail UI.
