@@ -163,7 +163,11 @@ function createWindow() {
     }
     return false;
   };
-  const ALLOWED = new Set(['media', 'display-capture', 'mediaKeySystem', 'notifications']);
+  // 'fullscreen' covers HTML5 Fullscreen API requests (e.g. the native
+  // controls' fullscreen button on inline message videos) — without it
+  // Chromium routes the request here and our handler denies it, so the
+  // button silently does nothing.
+  const ALLOWED = new Set(['media', 'display-capture', 'mediaKeySystem', 'notifications', 'fullscreen']);
   session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => {
     cb(isOurRenderer(wc) && ALLOWED.has(permission));
   });
