@@ -1002,7 +1002,10 @@ input:focus, textarea:focus {
   background: var(--bg-2); outline: none;
 }
 .ctx-menu-item:disabled { color: var(--text-faint); cursor: default; }
-.ctx-menu-item.danger { color: var(--bad); }
+/* Override the global solid-red `button.danger` (background + white text +
+   shadow) — in the menu we want red text on a transparent row, faint red on
+   hover. */
+.ctx-menu-item.danger { color: var(--bad); background: transparent; box-shadow: none; }
 .ctx-menu-item.danger:hover:not(:disabled), .ctx-menu-item.danger:focus-visible {
   background: color-mix(in srgb, var(--bad) 14%, transparent);
 }
