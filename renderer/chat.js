@@ -1185,7 +1185,7 @@ class ChatView {
     });
     if (m.text && (jiraOk || roadmapOk)) {
       items.push({ type: 'divider' });
-      if (jiraOk) items.push({ label: 'Create Jira ticket', icon: 'ticket', onClick: () => this.hooks.openTicketModal?.({ summary: (m.text || '').split('\n')[0].slice(0, 120) }) });
+      if (jiraOk) items.push({ label: 'Create Jira ticket', icon: 'ticket', onClick: () => this._prefillComposer(`/ai-ticket ${(m.text || '').trim()}`) });
       if (roadmapOk) items.push({ label: 'Add to roadmap', icon: 'calendar', onClick: () => this._addMessageToRoadmap(m) });
     }
     if (isMine) {
