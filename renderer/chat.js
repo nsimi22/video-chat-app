@@ -1136,6 +1136,61 @@ class ChatView {
     }
   }
 
+  async _copyText(text) {
+    try { await navigator.clipboard.writeText(text || ''); this.hooks.toast?.('Copied to clipboard'); }
+    catch { this.hooks.toast?.('Could not copy'); }
+  }
+
+  async _addMessageToRoadmap(m) {
+    const where = this.hooks.getChannelName?.(this.currentChannel);
+    try {
+      await this.hooks.addRoadmapItem({
+        title: (m.text || '').slice(0, 200),
+        notes: `From a message in ${where ? '#' + where : 'a channel'}.`,
+      });
+      this.hooks.toast?.("Added to the roadmap — see the board's Timeline or Feed.");
+    } catch (err) {
+      this.hooks.toast?.(`Couldn't add to the roadmap: ${err?.message || err}`.slice(0, 140));
+    }
+  }
+
+  // Right-click context-menu items for a message. Mirrors the hover action
+  // bar (same handlers) plus copy-text and create-from-message; the global
+  // dispatcher in app.js calls this and feeds it to HuddleContextMenu. `ev`
+  // is the contextmenu event, passed through so the reaction picker can
+  // anchor at the cursor.
+  contextMenuItems(messageId, ev) {
+    const m = this._messages().find((x) => x.id === messageId);
+    if (!m) return [];
+    const isMine = m.authorId ? m.authorId === this.mesh.peerId : m.authorName === this.mesh.name;
+    const inThread = this.threadParentId !== null;
+    const jiraOk = !!this.hooks.getJira?.()?.isConfigured?.();
+    const roadmapOk = !!this.hooks.addRoadmapItem;
+    const items = [];
+    items.push({ label: 'Add reaction', icon: 'smile', onClick: () => this._openReactionPicker(ev, m.id) });
+    if (!m.parentId && !inThread) items.push({ label: 'Reply in thread', icon: 'reply', onClick: () => this.openThread(m.id) });
+    items.push({ type: 'divider' });
+    if (m.text) items.push({ label: 'Copy text', icon: 'text', onClick: () => this._copyText(m.text) });
+    items.push({ label: 'Copy link to message', icon: 'link', onClick: () => this._copyMessageLink(m.id) });
+    items.push({ type: 'divider' });
+    items.push({ label: m.pinnedAt ? 'Unpin message' : 'Pin message', icon: 'pin', onClick: () => this._togglePin(m.id, !m.pinnedAt) });
+    items.push({
+      label: this.hooks.isMessageSaved?.(m.id) ? 'Edit saved labels' : 'Save message', icon: 'bookmark',
+      onClick: () => this.hooks.openSavePopover?.({ messageId: m.id, teamId: this.mesh.teamMeta?.id, channelId: this.currentChannel, anchor: this.nodeById.get(m.id) }),
+    });
+    if (m.text && (jiraOk || roadmapOk)) {
+      items.push({ type: 'divider' });
+      if (jiraOk) items.push({ label: 'Create Jira ticket', icon: 'ticket', onClick: () => this.hooks.openTicketModal?.({ summary: (m.text || '').split('\n')[0].slice(0, 120) }) });
+      if (roadmapOk) items.push({ label: 'Add to roadmap', icon: 'calendar', onClick: () => this._addMessageToRoadmap(m) });
+    }
+    if (isMine) {
+      items.push({ type: 'divider' });
+      if (!m.meta?.poll) items.push({ label: 'Edit message', icon: 'pen', onClick: () => this._beginEdit(m.id) });
+      items.push({ label: 'Delete message', icon: 'trash', danger: true, onClick: () => this._delete(m.id) });
+    }
+    return items;
+  }
+
   // Find a rendered message node in the active channel pane and scroll
   // it into view with a brief flash. Used by the protocol-URL handler
   // and by clicks in the pinned drawer.

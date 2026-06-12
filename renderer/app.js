@@ -418,6 +418,113 @@ let windowFocused = document.hasFocus();
 window.addEventListener('focus', () => { windowFocused = true; clearUnreadIfActive(); });
 window.addEventListener('blur', () => { windowFocused = false; });
 
+// ── Right-click context menus ──────────────────────────────────────────────
+// One global dispatcher resolves the surface under the cursor and hands the
+// matching item list to HuddleContextMenu (context-menu.js). We only
+// preventDefault when we actually have a menu, so unhandled spots keep the
+// native menu. Surface precedence (specific → general): editable field →
+// person → message → sidebar channel/DM row.
+document.addEventListener('contextmenu', (e) => {
+  if (els.app?.classList.contains('hidden')) return; // login / team-picker screens
+  const items = contextMenuItemsForEvent(e);
+  if (!items || !items.length) return;
+  e.preventDefault();
+  window.HuddleContextMenu?.show(items, e.clientX, e.clientY);
+});
+
+function contextMenuItemsForEvent(e) {
+  const t = e.target;
+  if (!(t instanceof Element)) return null;
+  const field = t.closest('input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]), textarea');
+  if (field && !field.disabled && !field.readOnly) return textInputContextMenu(field);
+  const userEl = t.closest('[data-profile-for]');
+  if (userEl) return userContextMenu(userEl.dataset.profileFor, userEl);
+  const msg = t.closest('.msg[data-message-id]');
+  if (msg && state.chat) return state.chat.contextMenuItems(msg.dataset.messageId, e);
+  const row = t.closest('#channels li[data-id], #favorites li[data-id], #dms li[data-id]');
+  if (row) return channelContextMenu(row.dataset.id);
+  return null;
+}
+
+function channelContextMenu(channelId) {
+  const ch = state.channelMeta.get(channelId);
+  if (!ch) return null;
+  const isDm = ch.type === 'dm';
+  const muted = getChannelNotifyMode(channelId) === 'muted';
+  const fav = isFavorite(channelId);
+  const items = [{ label: isDm ? 'Open conversation' : 'Open channel', icon: isDm ? 'chat' : 'hash', onClick: () => focusChannel(channelId) }, { type: 'divider' }];
+  if (state.unread.has(channelId)) items.push({ label: 'Mark as read', icon: 'check', onClick: () => markChannelReadFromMenu(channelId) });
+  items.push({ label: fav ? 'Remove from favorites' : 'Add to favorites', icon: 'star', onClick: () => toggleFavorite(channelId) });
+  items.push({ label: muted ? 'Unmute' : 'Mute', icon: muted ? 'bell' : 'bellOff', onClick: () => setChannelNotifyFromMenu(channelId, muted ? 'default' : 'muted') });
+  items.push({ type: 'divider' });
+  items.push({ label: 'Start or join call', icon: 'video', onClick: () => startCall(channelId) });
+  items.push({ label: 'Copy link', icon: 'link', onClick: () => copyChannelLink(channelId) });
+  return items;
+}
+
+function markChannelReadFromMenu(channelId) {
+  if (!state.unread.has(channelId)) return;
+  state.unread.delete(channelId);
+  updateUnreadBadge(channelId);
+  updateUnreadTitle();
+}
+
+function setChannelNotifyFromMenu(channelId, mode) {
+  setChannelNotifyMode(channelId, mode);
+  for (const li of sidebarRowsFor(channelId)) {
+    li.classList.toggle('muted', mode === 'muted');
+    li.classList.toggle('notify-all', mode === 'all');
+  }
+  updateUnreadBadge(channelId);
+  updateUnreadTitle();
+  if (channelId === state.chat?.currentChannel) refreshNotifyButton();
+}
+
+async function copyChannelLink(channelId) {
+  const teamId = state.huddle?.team?.id;
+  if (!teamId) return;
+  const url = `huddle://team/${encodeURIComponent(teamId)}/channel/${encodeURIComponent(channelId)}`;
+  try { await navigator.clipboard.writeText(url); showToast('Channel link copied'); }
+  catch { showToast('Could not copy link'); }
+}
+
+function userContextMenu(userId, el) {
+  if (!userId) return null;
+  const name = state.huddle?.peerInfo?.get(userId)?.name || el?.dataset?.name || 'Teammate';
+  const isSelf = userId === state.huddle?.peerId;
+  const items = [{ label: 'View profile', icon: 'people', onClick: () => state.profileCard?.show(el, userId) }];
+  if (!isSelf) {
+    items.push({ label: 'Message', icon: 'chat', onClick: () => openDmWith(userId, name) });
+    if (!state.mesh && presenceStatusForUser(userId) === 'active') {
+      items.push({ label: 'Knock to huddle', icon: 'video', onClick: () => knockTeammate({ user_id: userId, name }) });
+    }
+  }
+  items.push({ type: 'divider' });
+  items.push({ label: 'Copy @mention', icon: 'at', onClick: async () => { try { await navigator.clipboard.writeText('@' + name); showToast('Mention copied'); } catch {} } });
+  return items;
+}
+
+function textInputContextMenu(field) {
+  const start = field.selectionStart ?? 0, end = field.selectionEnd ?? 0;
+  const hasSel = end > start;
+  const clip = window.huddle?.clipboard;
+  const splice = (text) => {
+    const v = field.value;
+    field.value = v.slice(0, start) + text + v.slice(end);
+    const pos = start + text.length;
+    field.focus();
+    try { field.setSelectionRange(pos, pos); } catch {}
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  return [
+    { label: 'Cut', icon: 'x', disabled: !hasSel, onClick: () => { clip?.writeText(field.value.slice(start, end)); splice(''); } },
+    { label: 'Copy', icon: 'text', disabled: !hasSel, onClick: () => clip?.writeText(field.value.slice(start, end)) },
+    { label: 'Paste', icon: 'paperclip', onClick: () => { const txt = clip?.readText() || ''; if (txt) splice(txt); } },
+    { type: 'divider' },
+    { label: 'Select all', icon: 'checks', disabled: !field.value, onClick: () => { field.focus(); field.select(); } },
+  ];
+}
+
 const STREAM_DECISION_MS = 1500;
 
 // Modal focus restoration. Watches every .modal-backdrop for the

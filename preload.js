@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, clipboard } = require('electron');
 
 // Cross-window event relay for popouts. The main process echoes
 // these to every window except the sender; consumers can subscribe
@@ -90,6 +90,14 @@ contextBridge.exposeInMainWorld('huddle', {
   // Render HTML to a PDF via a hidden window + native save dialog
   // (roadmap export). Returns { ok, path } or { ok:false, canceled|error }.
   exportPdf: (payload) => ipcRenderer.invoke('export-pdf', payload),
+  // Main-process-backed clipboard for the text-input context menu. Using
+  // Electron's clipboard (rather than navigator.clipboard / execCommand)
+  // sidesteps the renderer permission handler and works reliably for
+  // cut/copy/paste against the focused field.
+  clipboard: {
+    readText: () => clipboard.readText(),
+    writeText: (text) => clipboard.writeText(String(text ?? '')),
+  },
   // ICS calendar subscription fetch. Separate from fetchProxy because
   // it accepts any HTTPS host (user-supplied URL in Settings) — the
   // main-process handler enforces a private-IP block, an HTTPS-only
