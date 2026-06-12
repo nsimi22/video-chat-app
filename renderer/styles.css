@@ -9121,6 +9121,7 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   background: var(--accent-dim); color: var(--text);
 }
 .jb-roadmap-bar-done { opacity: 0.72; }
+.jb-roadmap-bar-pending { opacity: 0.55; cursor: progress; }
 .jb-roadmap-bar-movable { cursor: grab; }
 .jb-roadmap-bar-movable:active { cursor: grabbing; }
 .jb-roadmap-handle { position: absolute; right: 0; top: 0; bottom: 0; width: 10px; cursor: ew-resize; }

@@ -2056,6 +2056,12 @@ ${rows}
   // shared DB row (any teammate), so only known tokens ever reach CSS.
   const ADHOC_COLORS = ['accent-2', 'good', 'warn', 'bad'];
 
+  // True while an optimistic row's insert is still in flight (its id is the
+  // local `tmp-…` placeholder, not a DB uuid). Edit / delete / drag are
+  // disabled until the real id lands — acting on the temp id would send a
+  // non-uuid to Supabase and fail.
+  function isPendingItem(it) { return String(it?.id || '').startsWith('tmp-'); }
+
   // Live GitHub status chip for an ad-hoc item whose notes mention a PR or
   // issue (a github.com URL or owner/repo#123 — same extractor the chat
   // unfurls use). Same caching shape as the chat unfurls too: one lookup
@@ -2136,11 +2142,15 @@ ${rows}
     const left = x(start);
     const width = open ? 14 * pxv : Math.max(pxv, x(en.end) + pxv - left);
     const cvar = ADHOC_COLORS.includes(it.color) ? `var(--${it.color})` : null;
-    const bar = h('button.jb-roadmap-bar.jb-roadmap-bar-adhoc.jb-roadmap-bar-movable'
+    const pending = isPendingItem(it);
+    const bar = h('button.jb-roadmap-bar.jb-roadmap-bar-adhoc'
+      + (pending ? '.jb-roadmap-bar-pending' : '.jb-roadmap-bar-movable')
       + (open ? '.jb-roadmap-bar-unsched' : ''), {
-      title: (it.notes ? `${it.title} — ${it.notes}` : it.title)
-        + ' — click to edit, drag to move, drag the right edge to resize',
-      onclick: (e) => {
+      title: pending
+        ? `${it.title} — saving…`
+        : (it.notes ? `${it.title} — ${it.notes}` : it.title)
+          + ' — click to edit, drag to move, drag the right edge to resize',
+      onclick: pending ? null : (e) => {
         if (e.currentTarget.dataset.dragged) return;
         openRoadmapForm({
           mode: 'edit', id: it.id, title: it.title, notes: it.notes || '', color: it.color || null,
@@ -2159,12 +2169,14 @@ ${rows}
       icon('pen', 12, cvar || 'var(--accent-tx)'),
       h('span.jb-roadmap-bar-title', null, it.title),
       githubRefChip(it.notes),
-      h('span.jb-roadmap-handle'),
+      pending ? null : h('span.jb-roadmap-handle'),
     );
-    attachBarDrag(bar, {
-      pxv, canMove: true,
-      onCommit: (days, resize) => dragAdhocBar(it, en, days, resize, td),
-    });
+    if (!pending) {
+      attachBarDrag(bar, {
+        pxv, canMove: true,
+        onCommit: (days, resize) => dragAdhocBar(it, en, days, resize, td),
+      });
+    }
     return bar;
   }
 
@@ -2510,11 +2522,15 @@ ${rows}
       ),
       h('span.jb-feed-actions',
         null,
-        iconBtn('pen', 13, 'Edit', (e) => openRoadmapForm({
-          mode: 'edit', id: it.id, title: it.title, notes: it.notes || '', color: it.color || null,
-          startDate: it.start_date || '', endDate: it.end_date || '',
-        }, e.clientX, e.clientY)),
-        iconBtn('trash', 13, 'Delete', () => removeRoadmapItem(it.id)),
+        // Pending optimistic rows (insert in flight) get no actions — their
+        // tmp- id isn't a row Supabase knows yet.
+        isPendingItem(it) ? h('span.mono.jb-feed-date', null, 'saving…') : [
+          iconBtn('pen', 13, 'Edit', (e) => openRoadmapForm({
+            mode: 'edit', id: it.id, title: it.title, notes: it.notes || '', color: it.color || null,
+            startDate: it.start_date || '', endDate: it.end_date || '',
+          }, e.clientX, e.clientY)),
+          iconBtn('trash', 13, 'Delete', () => removeRoadmapItem(it.id)),
+        ],
       ),
     );
   }
