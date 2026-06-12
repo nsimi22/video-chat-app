@@ -979,18 +979,21 @@
         ? 'Start date — where the timeline bar begins (falls back to the created date)'
         : 'Due date — where the timeline bar ends',
     });
-    input.addEventListener('change', () => {
+    // Commit on blur / Enter, NOT on 'change'. A native date input fires
+    // 'change' on every transient value while the year is typed (2 → 0002 →
+    // 0020 → …); committing then re-renders the detail panel and destroys the
+    // input before the year is finished ("only one numeral and it locks in").
+    // Waiting for blur lets the user type or pick the whole date first.
+    const commit = () => {
       const v = input.value || null;
       if (v === cur) return;
-      // The field already holds a complete date, so each digit typed into the
-      // year subfield produces its own valid date (2 → 0002, 20 → 0020, …) and
-      // fires 'change'. Committing on those would re-render the panel and steal
-      // focus after one keystroke ("only one numeral and it locks in"). Wait
-      // for a full 4-digit year (or a calendar pick); clearing (v null) still
-      // commits, since that's the user explicitly emptying the field.
-      if (v) { const d = parseDay(v); if (!d || d.getFullYear() < 1000) return; }
+      // Ignore a half-typed / implausible date (e.g. a partial year) so an
+      // accidental blur mid-edit can't clear or mis-set the field.
+      if (v && (!parseDay(v) || parseDay(v).getFullYear() < 1000)) return;
       if (kind === 'due') changeDueDate(t, v); else changeStartDate(t, v);
-    });
+    };
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
     return input;
   }
 
