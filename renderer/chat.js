@@ -1170,6 +1170,9 @@ class ChatView {
     items.push({ type: 'divider' });
     if (m.text) items.push({ label: 'Copy text', icon: 'text', onClick: () => this._copyText(m.text) });
     items.push({ label: 'Copy link to message', icon: 'link', onClick: () => this._copyMessageLink(m.id) });
+    if (this.hooks.forwardMessage && (m.text || (m.attachments && m.attachments.length))) {
+      items.push({ label: 'Forward message…', icon: 'arrowRight', onClick: () => this.hooks.forwardMessage({ text: m.text || '', attachments: m.attachments || [], authorName: m.authorName, sourceChannelId: this.currentChannel }) });
+    }
     items.push({ type: 'divider' });
     items.push({ label: m.pinnedAt ? 'Unpin message' : 'Pin message', icon: 'pin', onClick: () => this._togglePin(m.id, !m.pinnedAt) });
     items.push({

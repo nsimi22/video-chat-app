@@ -1021,6 +1021,34 @@ input:focus, textarea:focus {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* Forward-message destination picker (openForwardPicker in app.js). */
+.fwd-overlay {
+  position: fixed; inset: 0; z-index: 2100;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 12vh; background: rgba(0, 0, 0, 0.45);
+}
+.fwd-modal {
+  display: flex; flex-direction: column; width: 380px; max-width: 90vw; max-height: 60vh;
+  background: var(--bg-elev); border: 1px solid var(--line-strong);
+  border-radius: var(--r-md); box-shadow: var(--shadow-1); overflow: hidden;
+}
+.fwd-head { padding: 12px 14px 8px; font-size: 13px; font-weight: 700; color: var(--text); }
+.fwd-search {
+  margin: 0 12px 8px; padding: 8px 10px; font: inherit; font-size: 13px;
+  background: var(--bg-2); border: 1px solid var(--line-strong); border-radius: var(--r-sm);
+  color: var(--text); outline: none;
+}
+.fwd-search:focus { border-color: var(--accent-2); }
+.fwd-list { overflow-y: auto; padding: 4px 6px 8px; display: flex; flex-direction: column; gap: 1px; }
+.fwd-row {
+  display: block; width: 100%; padding: 8px 10px; text-align: left;
+  background: transparent; border: none; border-radius: 6px; cursor: pointer;
+  font: inherit; font-size: 13px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.fwd-row:hover, .fwd-row:focus-visible { background: var(--bg-2); outline: none; }
+.fwd-empty { padding: 14px 12px; color: var(--text-faint); font-size: 13px; text-align: center; }
+
 /* Settings accordion — each section is a <details>/<summary>. The
    summary is a button-like header; expanded sections show a body
    block beneath it. */

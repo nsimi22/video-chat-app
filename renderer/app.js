@@ -525,6 +525,79 @@ function textInputContextMenu(field) {
   ];
 }
 
+// Message forwarding: a searchable channel/DM picker. On select, re-posts the
+// message (text + attachments, with a "Forwarded from …" attribution line) to
+// the chosen channel via the same send path the composer uses.
+function openForwardPicker(msg) {
+  if (!state.huddle) return;
+  document.querySelector('.fwd-overlay')?.remove();
+  const targets = [...state.channelMeta.values()]
+    .filter((c) => c.id !== msg.sourceChannelId)
+    .map((c) => ({ id: c.id, label: displayLabelFor(c) }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+  const overlay = document.createElement('div');
+  overlay.className = 'fwd-overlay';
+  const modal = document.createElement('div');
+  modal.className = 'fwd-modal';
+  const head = document.createElement('div');
+  head.className = 'fwd-head';
+  head.textContent = 'Forward message';
+  const search = document.createElement('input');
+  search.className = 'fwd-search';
+  search.type = 'text';
+  search.placeholder = 'Search channels and people…';
+  const list = document.createElement('div');
+  list.className = 'fwd-list';
+  modal.append(head, search, list);
+  overlay.appendChild(modal);
+
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  function close() { overlay.remove(); document.removeEventListener('keydown', onKey, true); }
+
+  const renderList = () => {
+    const q = search.value.trim().toLowerCase();
+    list.innerHTML = '';
+    const matches = targets.filter((t) => !q || t.label.toLowerCase().includes(q));
+    if (!matches.length) {
+      const empty = document.createElement('div');
+      empty.className = 'fwd-empty';
+      empty.textContent = 'No matches';
+      list.appendChild(empty);
+      return;
+    }
+    for (const t of matches) {
+      const row = document.createElement('button');
+      row.className = 'fwd-row';
+      row.textContent = t.label;
+      row.onclick = () => { close(); doForward(msg, t); };
+      list.appendChild(row);
+    }
+  };
+
+  search.addEventListener('input', renderList);
+  search.addEventListener('keydown', (e) => { if (e.key === 'Enter') list.querySelector('.fwd-row')?.click(); });
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', onKey, true);
+
+  renderList();
+  document.body.appendChild(overlay);
+  setTimeout(() => search.focus(), 20);
+}
+
+async function doForward(msg, target) {
+  const src = state.channelMeta.get(msg.sourceChannelId);
+  const srcLabel = src ? displayLabelFor(src) : 'a channel';
+  const lines = [`Forwarded from ${srcLabel}${msg.authorName ? ' · ' + msg.authorName : ''}`];
+  if (msg.text) lines.push(msg.text.split('\n').map((l) => '> ' + l).join('\n'));
+  try {
+    await state.huddle.sendMessageStrict({ channelId: target.id, text: lines.join('\n'), attachments: msg.attachments || [] });
+    showToast(`Forwarded to ${target.label}`);
+  } catch (err) {
+    showCallError('Could not forward: ' + (err?.message || err));
+  }
+}
+
 const STREAM_DECISION_MS = 1500;
 
 // Modal focus restoration. Watches every .modal-backdrop for the
@@ -2065,6 +2138,7 @@ async function joinTeamAndStart(teamId) {
       onPinChanged: () => refreshPinnedCount(),
       isMessageSaved: (id) => state.savedById.has(id),
       openSavePopover: (args) => openSavePopover(args),
+      forwardMessage: (msg) => openForwardPicker(msg),
       // Huddle Clips: the recorder reuses the screen source picker (the
       // promise-returning variant) so it can offer screen capture without
       // duplicating the permission gate / thumbnail UI.
