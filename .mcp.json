@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "huddle-roadmap": {
+      "command": "node",
+      "args": ["scripts/roadmap-mcp.js"],
+      "env": {
+        "HUDDLE_TEAM_ID": "${HUDDLE_TEAM_ID}",
+        "HUDDLE_EMAIL": "${HUDDLE_EMAIL}",
+        "HUDDLE_PASSWORD": "${HUDDLE_PASSWORD}",
+        "HUDDLE_SUPABASE_SERVICE_KEY": "${HUDDLE_SUPABASE_SERVICE_KEY}"
+      }
+    }
+  }
+}

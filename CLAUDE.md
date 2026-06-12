@@ -34,3 +34,10 @@ not force-push or rewrite history. Open the next change as a PR.
 - Releases are cut by tagging `vX.Y.Z` on `main`; the
   `.github/workflows/release.yml` workflow builds Mac/Windows/Linux
   installers and uploads to GitHub Releases.
+- The team roadmap (board → Timeline/Feed; `public.team_roadmap_items`)
+  is exposed to MCP clients via `scripts/roadmap-mcp.js`, registered in
+  `.mcp.json` as `huddle-roadmap` (tools: `roadmap_list` / `roadmap_create`
+  / `roadmap_update` / `roadmap_delete`). It needs `HUDDLE_TEAM_ID` plus
+  either `HUDDLE_EMAIL`+`HUDDLE_PASSWORD` (RLS + attribution — preferred)
+  or `HUDDLE_SUPABASE_SERVICE_KEY` in the environment; changes appear
+  live in open Huddle windows via the table's realtime publication.
