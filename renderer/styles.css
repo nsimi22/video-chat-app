@@ -9120,6 +9120,26 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   border: 1px dashed var(--accent-tx); border-left-width: 3px;
   background: var(--accent-dim); color: var(--text);
 }
+.jb-roadmap-bar-done { opacity: 0.72; }
+.jb-roadmap-bar-movable { cursor: grab; }
+.jb-roadmap-bar-movable:active { cursor: grabbing; }
+.jb-roadmap-handle { position: absolute; right: 0; top: 0; bottom: 0; width: 10px; cursor: ew-resize; }
+.jb-roadmap-bar-count { font-size: 10px; color: var(--text-dim); flex: 0 0 auto; margin-left: auto; padding-left: 6px; }
+.jb-roadmap-bar-prog {
+  position: absolute; left: 0; bottom: 0; height: 3px; pointer-events: none;
+  background: var(--good); border-radius: 0 2px 2px 0; opacity: 0.85;
+}
+.jb-roadmap-ghost {
+  position: absolute; height: 28px; z-index: 5; pointer-events: none;
+  border: 1.5px dashed var(--accent-2); border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-2) 12%, transparent);
+}
+.jb-roadmap-zoom {
+  position: absolute; right: 14px; bottom: 14px; z-index: 7;
+  display: flex; gap: 2px; padding: 3px;
+  background: var(--bg-elev); border: 1px solid var(--line-strong); border-radius: 9px;
+  box-shadow: var(--shadow-1);
+}
 .jb-roadmap-bar-unsched {
   border-right: none; border-radius: 8px 0 0 8px;
   -webkit-mask-image: linear-gradient(90deg, #000 70%, transparent);
@@ -9158,6 +9178,10 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .jb-rf-dates { display: flex; align-items: center; gap: 7px; }
 .jb-rf-date { flex: 1; min-width: 0; font-size: 12px; }
 .jb-rf-arrow { color: var(--text-faint); flex: 0 0 auto; }
+.jb-rf-colors { display: flex; align-items: center; gap: 7px; }
+.jb-rf-colors-lbl { font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-faint); margin-right: 3px; }
+.jb-rf-color { width: 20px; height: 20px; border-radius: 50%; border: 2px solid transparent; padding: 0; cursor: pointer; flex: 0 0 auto; }
+.jb-rf-color-on { border-color: var(--text); box-shadow: 0 0 0 2px var(--bg-elev); }
 .jb-rf-foot { display: flex; align-items: center; gap: 7px; margin-top: 2px; }
 
 /* ── feed (vertical, chat-style) ── */

@@ -425,6 +425,8 @@
     roadmapItems: [],         // team_roadmap_items rows (ad-hoc bars)
     roadmapLoading: false,
     roadmapForm: null,        // open add/edit popover descriptor (Esc closes it first)
+    roadmapPx: 6,             // timeline zoom: px per day (sticky via localStorage)
+    epicProgress: new Map(),  // epic key -> { done, total } child counts
     _roadmapProject: null,    // project the epics/items caches were loaded for
     _startFieldId: undefined, // resolved Jira "Start date" field id (null = not found)
     _cols: [], // [{ id, accent, listEl }] rebuilt each renderColumns()
@@ -1649,12 +1651,27 @@
     try {
       const startId = await resolveStartFieldId(client);
       const jql = `project = "${project}" AND issuetype = Epic ORDER BY created ASC`;
-      const [res, items] = await Promise.all([
+      const [res, items, childRes] = await Promise.all([
         client.searchIssuesAll(jql, 200, { fields: EPIC_FIELDS + (startId ? ',' + startId : '') }),
         ctx.listRoadmapItems(),
+        // Child counts for the per-epic progress fill. standardIssueTypes()
+        // excludes sub-tasks (whose parent is a story, not an epic). Best
+        // effort: a failure here only drops the progress chips.
+        client.searchIssuesAll(
+          `project = "${project}" AND issuetype in standardIssueTypes() AND parent is not EMPTY`,
+          500, { fields: 'status,parent' }).catch(() => null),
       ]);
       board.epics = (res?.issues || []).map(mapEpic);
       board.roadmapItems = items || [];
+      board.epicProgress = new Map();
+      for (const c of childRes?.issues || []) {
+        const pk = c.fields?.parent?.key;
+        if (!pk) continue;
+        const p = board.epicProgress.get(pk) || { done: 0, total: 0 };
+        p.total++;
+        if ((c.fields?.status?.statusCategory?.key || '') === 'done') p.done++;
+        board.epicProgress.set(pk, p);
+      }
       board._roadmapProject = project;
     } catch (err) {
       board.roadmapLoading = false;
@@ -1741,11 +1758,12 @@
     }
     min = new Date(min.getFullYear(), min.getMonth(), 1, 12); // snap to a month edge
     max = addDays(max, 14);
-    const x = (d) => daysBetween(min, d) * PX;
+    const pxv = board.roadmapPx || PX; // current zoom (px per day)
+    const x = (d) => daysBetween(min, d) * pxv;
 
     const inner = h('div.jb-roadmap-inner');
-    inner.style.width = ((daysBetween(min, max) + 1) * PX) + 'px';
-    inner.style.setProperty('--jb-px', PX + 'px');
+    inner.style.width = ((daysBetween(min, max) + 1) * pxv) + 'px';
+    inner.style.setProperty('--jb-px', pxv + 'px');
 
     // Month axis (sticky) + month grid lines.
     const axis = h('div.jb-roadmap-axis');
@@ -1772,41 +1790,103 @@
     }
     for (const en of entries) {
       const row = h('div.jb-roadmap-row');
-      row.append(roadmapBar(en, x, td));
+      row.append(roadmapBar(en, x, td, pxv));
       inner.append(row);
     }
     inner.append(h('div.jb-roadmap-addrow', null,
-      icon('plus', 14), h('span', null, 'Click anywhere on the timeline to add an item')));
+      icon('plus', 14), h('span', null, 'Click — or drag a span — anywhere on the timeline to add an item')));
 
-    // Add-a-bar-anywhere: a click on empty grid opens the inline form
-    // prefilled with the clicked date (+1 week). Click-to-create only for
-    // now — drag-to-create/resize is a natural follow-up.
+    // Add-a-bar-anywhere: a plain click on empty grid opens the inline form
+    // prefilled with the clicked date (+1 week); pressing and dragging
+    // sketches the exact span with a ghost bar first.
+    let suppressCreateClick = false;
     inner.addEventListener('click', (e) => {
-      if (e.target.closest('.jb-roadmap-bar')) return;
+      if (suppressCreateClick || e.target.closest('.jb-roadmap-bar')) return;
       const rect = inner.getBoundingClientRect();
-      const d = addDays(min, Math.max(0, Math.floor((e.clientX - rect.left) / PX)));
+      const d = addDays(min, Math.max(0, Math.floor((e.clientX - rect.left) / pxv)));
       openRoadmapForm({ mode: 'create', startDate: isoDay(d), endDate: isoDay(addDays(d, 7)) }, e.clientX, e.clientY);
+    });
+    inner.addEventListener('mousedown', (e) => {
+      if (e.button !== 0 || e.target.closest('.jb-roadmap-bar')) return;
+      const rect = inner.getBoundingClientRect();
+      const x0 = e.clientX, y0 = e.clientY - rect.top;
+      let ghost = null;
+      const onMove = (ev) => {
+        if (!ghost && Math.abs(ev.clientX - x0) < 5) return;
+        if (!ghost) {
+          ghost = h('div.jb-roadmap-ghost');
+          ghost.style.top = Math.max(34, y0 - 14) + 'px';
+          inner.append(ghost);
+        }
+        const a = Math.min(x0, ev.clientX) - rect.left;
+        const w = Math.abs(ev.clientX - x0);
+        ghost.style.left = (Math.floor(a / pxv) * pxv) + 'px';
+        ghost.style.width = Math.max(pxv, Math.round(w / pxv) * pxv) + 'px';
+        ev.preventDefault();
+      };
+      const onUp = (ev) => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        if (!ghost) return; // never moved — let the click handler take it
+        ghost.remove();
+        suppressCreateClick = true;
+        setTimeout(() => { suppressCreateClick = false; }, 0);
+        const lo = Math.max(0, Math.min(x0, ev.clientX) - rect.left);
+        const hi = Math.max(0, Math.max(x0, ev.clientX) - rect.left);
+        openRoadmapForm({
+          mode: 'create',
+          startDate: isoDay(addDays(min, Math.floor(lo / pxv))),
+          endDate: isoDay(addDays(min, Math.floor(hi / pxv))),
+        }, ev.clientX, ev.clientY);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
     });
 
     const scroll = h('div.jb-roadmap-scroll');
     scroll.append(inner);
     hostEl.append(scroll);
+    hostEl.append(h('div.jb-roadmap-zoom',
+      null,
+      iconBtn('zoomOut', 16, 'Zoom out (fewer px per day)', () => setRoadmapZoom(-1)),
+      iconBtn('zoomIn', 16, 'Zoom in (more px per day)', () => setRoadmapZoom(1)),
+    ));
     // Land with today at roughly the first quarter of the viewport.
     requestAnimationFrame(() => { scroll.scrollLeft = Math.max(0, tx - scroll.clientWidth * 0.25); });
   }
 
-  function roadmapBar(en, x, td) {
+  const ZOOM_LEVELS = [3, 6, 12, 24]; // px per day: quarter-at-a-glance → week detail
+  function setRoadmapZoom(dir) {
+    const cur = board.roadmapPx || PX;
+    const next = ZOOM_LEVELS[Math.max(0, Math.min(ZOOM_LEVELS.length - 1, ZOOM_LEVELS.indexOf(cur) + dir))];
+    if (next === cur) return;
+    board.roadmapPx = next;
+    try { localStorage.setItem('huddle.jb.zoom', String(next)); } catch {}
+    renderRoadmap();
+  }
+
+  // Accent tokens an ad-hoc bar may carry. The color value comes from the
+  // shared DB row (any teammate), so only known tokens ever reach CSS.
+  const ADHOC_COLORS = ['accent-2', 'good', 'warn', 'bad'];
+
+  function roadmapBar(en, x, td, pxv) {
     const open = !en.end;
     if (en.kind === 'epic') {
       const t = en.t;
       const accent = statusColor(t.cat, t.status);
       const left = x(en.start);
-      const width = open ? 14 * PX : Math.max(PX, x(en.end) + PX - left);
-      return h('button.jb-roadmap-bar' + (open ? '.jb-roadmap-bar-unsched' : ''), {
-        title: open
+      const width = open ? 14 * pxv : Math.max(pxv, x(en.end) + pxv - left);
+      const canMove = !!board._startFieldId; // moving writes the start field
+      const prog = board.epicProgress.get(t.key);
+      const bar = h('button.jb-roadmap-bar'
+        + (open ? '.jb-roadmap-bar-unsched' : '')
+        + (t.cat === 'done' ? '.jb-roadmap-bar-done' : '')
+        + (canMove ? '.jb-roadmap-bar-movable' : ''), {
+        title: (open
           ? `${t.key} — no due date (bar starts ${t.start ? fmtDay(en.start) : 'at its created date, ' + fmtDay(en.start)})`
-          : `${t.key} · ${fmtDay(en.start)} → ${fmtDay(en.end)}`,
-        onclick: () => { ensureIssueInBoard(t); openDetail(t.key); },
+          : `${t.key} · ${fmtDay(en.start)} → ${fmtDay(en.end)}`)
+          + (canMove ? ' — drag to move, drag the right edge to change the due date' : ' — drag the right edge to change the due date'),
+        onclick: (e) => { if (e.currentTarget.dataset.dragged) return; ensureIssueInBoard(t); openDetail(t.key); },
         style: {
           left: left + 'px', width: width + 'px',
           background: `color-mix(in srgb, ${accent} 22%, var(--bg-2))`,
@@ -1816,23 +1896,132 @@
         typeIcon(t.type, 14),
         h('span.mono.jb-roadmap-bar-key', null, t.key),
         h('span.jb-roadmap-bar-title', null, t.summary),
+        prog && prog.total ? h('span.mono.jb-roadmap-bar-count', { title: `${prog.done} of ${prog.total} child issues done` }, `${prog.done}/${prog.total}`) : null,
+        prog && prog.total ? h('span.jb-roadmap-bar-prog', { style: { width: Math.round((prog.done / prog.total) * 100) + '%' } }) : null,
+        h('span.jb-roadmap-handle'),
       );
+      attachBarDrag(bar, {
+        pxv, canMove,
+        onCommit: (days, resize) => (resize ? resizeEpicBar(t, en, days) : moveEpicBar(t, en, days)),
+      });
+      return bar;
     }
     const it = en.it;
     const start = en.start || td; // a date-less idea parks at today, open-ended
     const left = x(start);
-    const width = open ? 14 * PX : Math.max(PX, x(en.end) + PX - left);
-    return h('button.jb-roadmap-bar.jb-roadmap-bar-adhoc' + (open ? '.jb-roadmap-bar-unsched' : ''), {
-      title: (it.notes ? `${it.title} — ${it.notes}` : it.title) + ' (click to edit)',
-      onclick: (e) => openRoadmapForm({
-        mode: 'edit', id: it.id, title: it.title, notes: it.notes || '',
-        startDate: it.start_date || '', endDate: it.end_date || '',
-      }, e.clientX, e.clientY),
-      style: { left: left + 'px', width: width + 'px' },
+    const width = open ? 14 * pxv : Math.max(pxv, x(en.end) + pxv - left);
+    const cvar = ADHOC_COLORS.includes(it.color) ? `var(--${it.color})` : null;
+    const bar = h('button.jb-roadmap-bar.jb-roadmap-bar-adhoc.jb-roadmap-bar-movable'
+      + (open ? '.jb-roadmap-bar-unsched' : ''), {
+      title: (it.notes ? `${it.title} — ${it.notes}` : it.title)
+        + ' — click to edit, drag to move, drag the right edge to resize',
+      onclick: (e) => {
+        if (e.currentTarget.dataset.dragged) return;
+        openRoadmapForm({
+          mode: 'edit', id: it.id, title: it.title, notes: it.notes || '', color: it.color || null,
+          startDate: it.start_date || '', endDate: it.end_date || '',
+        }, e.clientX, e.clientY);
+      },
+      style: {
+        left: left + 'px', width: width + 'px',
+        ...(cvar ? {
+          background: `color-mix(in srgb, ${cvar} 20%, var(--bg-2))`,
+          borderColor: `color-mix(in srgb, ${cvar} 55%, transparent)`,
+          borderLeftColor: cvar,
+        } : {}),
+      },
     },
-      icon('pen', 12, 'var(--accent-tx)'),
+      icon('pen', 12, cvar || 'var(--accent-tx)'),
       h('span.jb-roadmap-bar-title', null, it.title),
+      h('span.jb-roadmap-handle'),
     );
+    attachBarDrag(bar, {
+      pxv, canMove: true,
+      onCommit: (days, resize) => dragAdhocBar(it, en, days, resize, td),
+    });
+    return bar;
+  }
+
+  // Pointer-drag on a bar: body = move the whole span, the right-edge
+  // handle = resize. The bar is repositioned live in px; on release the
+  // delta (whole days) is committed through the optimistic write paths,
+  // which re-render and snap everything to the truth. A drag suppresses
+  // the click that the browser fires right after mouseup.
+  function attachBarDrag(bar, { pxv, canMove, onCommit }) {
+    bar.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      const resize = !!e.target.closest('.jb-roadmap-handle');
+      if (!resize && !canMove) return;
+      e.preventDefault(); // no text selection mid-drag
+      const x0 = e.clientX;
+      const left0 = parseFloat(bar.style.left) || 0;
+      const w0 = parseFloat(bar.style.width) || bar.offsetWidth;
+      let moved = false;
+      const onMove = (ev) => {
+        if (Math.abs(ev.clientX - x0) > 3) moved = true;
+        const days = Math.round((ev.clientX - x0) / pxv);
+        if (resize) bar.style.width = Math.max(pxv, w0 + days * pxv) + 'px';
+        else bar.style.left = (left0 + days * pxv) + 'px';
+      };
+      const onUp = (ev) => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        if (!moved) return;
+        bar.dataset.dragged = '1'; // the click event fires before this clears
+        setTimeout(() => { delete bar.dataset.dragged; }, 0);
+        const days = Math.round((ev.clientX - x0) / pxv);
+        if (days) onCommit(days, resize);
+        else renderActiveView(); // snap back to the true position
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+
+  function resizeEpicBar(t, en, days) {
+    // An open-ended bar's visual edge sits 14 days past its start; resizing
+    // it sets the epic's first due date from that edge.
+    const base = en.end || addDays(en.start, 14);
+    let nd = addDays(base, days);
+    if (nd < en.start) nd = en.start;
+    changeDueDate(t, isoDay(nd));
+  }
+  function moveEpicBar(t, en, days) {
+    const id = board._startFieldId; // attachBarDrag gates move on this
+    const prevStart = t.start ?? null, prevDue = t.due ?? null;
+    const ns = isoDay(addDays(en.start, days));
+    const ndue = en.end ? isoDay(addDays(en.end, days)) : null;
+    commitEdit({
+      apply: () => {
+        t.start = ns; syncEpicField(t.key, 'start', ns);
+        if (ndue) { t.due = ndue; syncEpicField(t.key, 'due', ndue); }
+      },
+      revert: () => {
+        t.start = prevStart; syncEpicField(t.key, 'start', prevStart);
+        if (ndue) { t.due = prevDue; syncEpicField(t.key, 'due', prevDue); }
+      },
+      persist: () => ctx.getClient().updateIssue({
+        key: t.key,
+        ...(ndue ? { duedate: ndue } : {}),
+        extraFields: { [id]: ns },
+      }),
+      okMsg: `${t.key} ${days > 0 ? 'pushed out' : 'pulled in'} ${Math.abs(days)}d.`,
+    });
+  }
+  function dragAdhocBar(it, en, days, resize, td) {
+    const anchor = en.start || td;
+    let startDate = it.start_date || null, endDate = it.end_date || null;
+    if (resize) {
+      const base = en.end || addDays(anchor, 14);
+      let nd = addDays(base, days);
+      if (nd < anchor) nd = anchor;
+      endDate = isoDay(nd);
+      if (!startDate) startDate = isoDay(anchor); // pin the open start so the span sticks
+    } else {
+      startDate = isoDay(addDays(anchor, days));
+      if (endDate) endDate = isoDay(addDays(parseDay(endDate), days));
+    }
+    commitRoadmapItem({ id: it.id, title: it.title, startDate, endDate, notes: it.notes ?? null, color: it.color ?? null });
   }
 
   /* ── add/edit popover for ad-hoc items ── */
@@ -1856,15 +2045,40 @@
     const startIn = h('input.jb-rf-input.jb-rf-date', { type: 'date', value: desc.startDate || '' });
     const endIn = h('input.jb-rf-input.jb-rf-date', { type: 'date', value: desc.endDate || '' });
     const notesIn = h('input.jb-rf-input', { type: 'text', placeholder: 'Notes (optional)', value: desc.notes || '' });
-    const save = () => {
-      const title = titleIn.value.trim();
-      if (!title) { titleIn.focus(); return; }
+    // Color swatches: default + the allow-listed accent tokens.
+    let chosenColor = ADHOC_COLORS.includes(desc.color) ? desc.color : null;
+    const swatches = h('div.jb-rf-colors', null, h('span.jb-rf-colors-lbl', null, 'Color'));
+    const paintSwatches = () => {
+      swatches.querySelectorAll('.jb-rf-color').forEach((b) =>
+        b.classList.toggle('jb-rf-color-on', (b.dataset.c || null) === chosenColor));
+    };
+    for (const c of [null, ...ADHOC_COLORS]) {
+      const b = h('button.jb-rf-color', {
+        title: c || 'Default', dataset: { c: c || '' },
+        onclick: () => { chosenColor = c; paintSwatches(); },
+      });
+      b.style.background = c ? `var(--${c})` : 'var(--accent-dim)';
+      swatches.append(b);
+    }
+    paintSwatches();
+    const readInputs = () => {
       // Swap an inverted range instead of erroring — the DB CHECK rejects it.
       let s = startIn.value || null, e2 = endIn.value || null;
       if (s && e2 && e2 < s) { const tmp = s; s = e2; e2 = tmp; }
-      const payload = { id: desc.id, title, startDate: s, endDate: e2, notes: notesIn.value.trim() || null };
+      return { title: titleIn.value.trim(), startDate: s, endDate: e2, notes: notesIn.value.trim() || null, color: chosenColor };
+    };
+    const save = () => {
+      const vals = readInputs();
+      if (!vals.title) { titleIn.focus(); return; }
       closeRoadmapForm();
-      commitRoadmapItem(payload);
+      commitRoadmapItem({ id: desc.id, ...vals });
+    };
+    const promote = () => {
+      const vals = readInputs();
+      if (!vals.title) { titleIn.focus(); return; }
+      const id = desc.id;
+      closeRoadmapForm();
+      promoteRoadmapItem({ id, ...vals });
     };
     for (const el of [titleIn, notesIn]) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
     const form = h('div.jb-roadmap-form',
@@ -1879,11 +2093,13 @@
       titleIn,
       h('div.jb-rf-dates', null, startIn, h('span.jb-rf-arrow', null, '→'), endIn),
       notesIn,
+      swatches,
       h('div.jb-rf-foot',
         null,
         h('button.primary', { onclick: save }, h('span', null, isEdit ? 'Save' : 'Add to roadmap')),
         h('button.ghost', { onclick: closeRoadmapForm }, h('span', null, 'Cancel')),
         h('div', { style: { flex: '1' } }),
+        isEdit && iconBtn('jira', 15, 'Promote to a real Jira epic (creates the epic, removes this item)', promote),
         isEdit && iconBtn('trash', 15, 'Delete item', () => { const id = desc.id; closeRoadmapForm(); removeRoadmapItem(id); }),
       ),
     );
@@ -1928,6 +2144,39 @@
       toast('error', `${err?.message || err}`.slice(0, 160), null, "Couldn't save the item");
     }
   }
+  // Graduate an idea into a real Jira epic: create the epic (notes become
+  // its description), copy the dates over, delete the ad-hoc row, and
+  // refresh so the new epic bar replaces the old dashed one.
+  async function promoteRoadmapItem({ id, title, startDate, endDate, notes }) {
+    const client = ctx.getClient();
+    try {
+      const created = await client.createIssue({
+        projectKey: activeProject(), summary: title,
+        description: notes || '', issueType: 'Epic',
+      });
+      if (endDate || startDate) {
+        // Best effort — the epic already exists; a date-write failure
+        // shouldn't fail the promotion.
+        const startId = startDate ? await resolveStartFieldId(client) : null;
+        const upd = { key: created.key };
+        if (endDate) upd.duedate = endDate;
+        if (startDate && startId) upd.extraFields = { [startId]: startDate };
+        if (upd.duedate !== undefined || upd.extraFields) await client.updateIssue(upd).catch(() => {});
+      }
+      if (id) {
+        try {
+          await ctx.deleteRoadmapItem(id);
+          board.roadmapItems = board.roadmapItems.filter((r) => r.id !== id);
+        } catch { /* worst case the idea lingers next to the new epic */ }
+      }
+      toast('success', `${created.key} created — “${title}” is a Jira epic now.`, null, 'Promoted to Jira');
+      loadRoadmapData(true);
+    } catch (err) {
+      renderActiveView();
+      toast('error', `${err?.message || err}`.slice(0, 160), null, "Couldn't create the epic");
+    }
+  }
+
   async function removeRoadmapItem(id) {
     const prev = board.roadmapItems.slice();
     board.roadmapItems = board.roadmapItems.filter((r) => r.id !== id);
@@ -1995,6 +2244,7 @@
     if (en.kind === 'epic') {
       const t = en.t;
       const overdue = en.end && en.end < td && t.cat !== 'done';
+      const prog = board.epicProgress.get(t.key);
       return h('button.jb-feed-row.jb-clickable', { onclick: () => { ensureIssueInBoard(t); openDetail(t.key); } },
         typeIcon(t.type, 18),
         h('div.jb-feed-main',
@@ -2003,6 +2253,7 @@
             h('span.mono.jb-key', null, t.key),
             h('span.mono.jb-feed-date' + (overdue ? '.jb-feed-overdue' : ''), null,
               en.end ? `due ${fmtDay(en.end)}` : 'no due date'),
+            prog && prog.total ? h('span.mono.jb-feed-date', { title: `${prog.done} of ${prog.total} child issues done` }, `${prog.done}/${prog.total} done`) : null,
           ),
           h('div.jb-feed-summary', { title: t.summary }, t.summary),
         ),
@@ -2013,9 +2264,10 @@
     const it = en.it;
     const range = [it.start_date && fmtDay(parseDay(it.start_date)), it.end_date && fmtDay(parseDay(it.end_date))]
       .filter(Boolean).join(' → ');
+    const cvar = ADHOC_COLORS.includes(it.color) ? `var(--${it.color})` : null;
     return h('div.jb-feed-row.jb-feed-row-adhoc',
       null,
-      h('span.jb-feed-adhoc-ic', null, icon('pen', 13)),
+      h('span.jb-feed-adhoc-ic', cvar ? { style: { color: cvar, background: `color-mix(in srgb, ${cvar} 18%, transparent)` } } : null, icon('pen', 13)),
       h('div.jb-feed-main',
         null,
         h('div.jb-feed-top', null,
@@ -2027,7 +2279,7 @@
       h('span.jb-feed-actions',
         null,
         iconBtn('pen', 13, 'Edit', (e) => openRoadmapForm({
-          mode: 'edit', id: it.id, title: it.title, notes: it.notes || '',
+          mode: 'edit', id: it.id, title: it.title, notes: it.notes || '', color: it.color || null,
           startDate: it.start_date || '', endDate: it.end_date || '',
         }, e.clientX, e.clientY)),
         iconBtn('trash', 13, 'Delete', () => removeRoadmapItem(it.id)),
@@ -2063,10 +2315,12 @@
     board._pickProject = false;
     board.query = ''; board.filter = 'all';
     // The view choice is a sticky preference (unlike query/filter, which
-    // reset per open) — restore the last-used one.
+    // reset per open) — restore the last-used one, and the timeline zoom.
     try {
       const v = localStorage.getItem('huddle.jb.view');
       if (v === 'kanban' || v === 'timeline' || v === 'feed') board.view = v;
+      const z = parseInt(localStorage.getItem('huddle.jb.zoom'), 10);
+      if (ZOOM_LEVELS.includes(z)) board.roadmapPx = z;
     } catch {}
     drawer.root.classList.remove('hidden');
     drawer.panel.classList.remove('jb-slide'); void drawer.panel.offsetWidth; drawer.panel.classList.add('jb-slide');
