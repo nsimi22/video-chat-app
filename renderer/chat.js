@@ -1127,18 +1127,13 @@ class ChatView {
     const channelId = this.currentChannel;
     if (!teamId || !channelId) return;
     const url = `huddle://team/${encodeURIComponent(teamId)}/channel/${encodeURIComponent(channelId)}?msg=${encodeURIComponent(messageId)}`;
-    try {
-      await navigator.clipboard.writeText(url);
-      this.hooks.toast?.('Message link copied');
-    } catch (err) {
-      console.warn('copy link failed', err);
-      this.hooks.toast?.('Could not copy link');
-    }
+    if (await window.writeClipboard(url)) this.hooks.toast?.('Message link copied');
+    else this.hooks.toast?.('Could not copy link');
   }
 
   async _copyText(text) {
-    try { await navigator.clipboard.writeText(text || ''); this.hooks.toast?.('Copied to clipboard'); }
-    catch { this.hooks.toast?.('Could not copy'); }
+    if (await window.writeClipboard(text)) this.hooks.toast?.('Copied to clipboard');
+    else this.hooks.toast?.('Could not copy');
   }
 
   async _addMessageToRoadmap(m) {

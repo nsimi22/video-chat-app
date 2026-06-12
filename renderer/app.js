@@ -484,8 +484,8 @@ async function copyChannelLink(channelId) {
   const teamId = state.huddle?.team?.id;
   if (!teamId) return;
   const url = `huddle://team/${encodeURIComponent(teamId)}/channel/${encodeURIComponent(channelId)}`;
-  try { await navigator.clipboard.writeText(url); showToast('Channel link copied'); }
-  catch { showToast('Could not copy link'); }
+  if (await window.writeClipboard(url)) showToast('Channel link copied');
+  else showToast('Could not copy link');
 }
 
 function userContextMenu(userId, el) {
@@ -500,7 +500,7 @@ function userContextMenu(userId, el) {
     }
   }
   items.push({ type: 'divider' });
-  items.push({ label: 'Copy @mention', icon: 'at', onClick: async () => { try { await navigator.clipboard.writeText('@' + name); showToast('Mention copied'); } catch {} } });
+  items.push({ label: 'Copy @mention', icon: 'at', onClick: async () => { if (await window.writeClipboard('@' + name)) showToast('Mention copied'); } });
   return items;
 }
 

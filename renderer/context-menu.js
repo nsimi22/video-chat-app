@@ -113,4 +113,15 @@
   }
 
   window.HuddleContextMenu = { show, close };
+
+  // Shared clipboard write. Prefer Electron's main-process-backed clipboard
+  // (exposed via preload) — it bypasses the renderer permission handler that
+  // denies navigator.clipboard writes (same class of block that hit
+  // fullscreen). Falls back to navigator.clipboard. Returns true on success.
+  window.writeClipboard = async function (text) {
+    const s = String(text ?? '');
+    try { if (window.huddle?.clipboard?.writeText) { window.huddle.clipboard.writeText(s); return true; } } catch {}
+    try { await navigator.clipboard.writeText(s); return true; } catch {}
+    return false;
+  };
 })();
