@@ -1295,6 +1295,12 @@
       ].filter(Boolean), board.filter, (v) => { board.filter = v; rerenderToolbar(); renderColumns(); }),
       search,
       h('div', { style: { flex: '1' } }),
+      // Roadmap export — timeline/feed only (it exports the roadmap data
+      // set, which those views have loaded).
+      board.view !== 'kanban' && dropdown('download', 'Export', [
+        { value: 'csv', label: 'CSV — spreadsheet', icon: 'table' },
+        { value: 'pdf', label: 'PDF — timeline document', icon: 'download' },
+      ], null, (v) => exportRoadmap(v)),
       h('span.mono.jb-toolbar-meta', {
         title: 'Shared team board — click to change the project for everyone',
         style: { cursor: 'pointer' },
@@ -1867,6 +1873,183 @@
     board.roadmapPx = next;
     try { localStorage.setItem('huddle.jb.zoom', String(next)); } catch {}
     renderRoadmap();
+  }
+
+  /* ── export (CSV / PDF) ── */
+  function escHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function exportRoadmap(kind) {
+    if (board.roadmapLoading) {
+      toast('error', 'The roadmap is still loading — try again in a moment.', null, "Can't export yet");
+      return;
+    }
+    // Same list the views draw — honors the active search, so exporting a
+    // filtered roadmap exports the filtered set (the document says so).
+    const entries = roadmapEntries().sort((a, b) => compareEntries(a.start, b.start, a, b));
+    if (!entries.length) {
+      toast('error', board.query ? 'Your search matches no items.' : 'Nothing to export yet.', null, 'Export');
+      return;
+    }
+    if (kind === 'csv') exportRoadmapCsv(entries);
+    else exportRoadmapPdf(entries);
+  }
+
+  function exportRoadmapCsv(entries) {
+    const client = ctx.getClient();
+    const cell = (v) => {
+      const s = String(v ?? '');
+      return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const rows = [['Type', 'Key', 'Title', 'Status', 'Start', 'End', 'Progress', 'Assignee', 'Color', 'Notes', 'URL']];
+    for (const en of entries) {
+      if (en.kind === 'epic') {
+        const t = en.t;
+        const prog = board.epicProgress.get(t.key);
+        rows.push(['Epic', t.key, t.summary, t.status,
+          en.start ? isoDay(en.start) : '', t.due || '',
+          prog?.total ? `${prog.done}/${prog.total}` : '',
+          t.assignees[0]?.name || '', '', '',
+          client?.isConfigured() ? client.issueUrl(t.key) : '']);
+      } else {
+        const it = en.it;
+        rows.push(['Idea', '', it.title, '', it.start_date || '', it.end_date || '',
+          '', '', it.color || '', it.notes || '', '']);
+      }
+    }
+    // BOM so Excel opens it as UTF-8; CRLF for the same reason.
+    const csv = '\ufeff' + rows.map((r) => r.map(cell).join(',')).join('\r\n');
+    const a = h('a', {
+      href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })),
+      download: `roadmap-${activeProject() || 'huddle'}-${isoDay(localToday())}.csv`,
+    });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    toast('success', `${entries.length} item${entries.length === 1 ? '' : 's'} exported.`, null, 'CSV export');
+  }
+
+  async function exportRoadmapPdf(entries) {
+    if (!window.huddle?.exportPdf) {
+      toast('error', 'PDF export needs the app restarted on this build.', null, 'Export');
+      return;
+    }
+    const res = await window.huddle.exportPdf({
+      html: buildRoadmapPdfHtml(entries),
+      filename: `roadmap-${activeProject() || 'huddle'}-${isoDay(localToday())}.pdf`,
+      landscape: true,
+    });
+    if (res?.ok) toast('success', `Saved to ${res.path}`, null, 'PDF export');
+    else if (!res?.canceled) toast('error', String(res?.error || 'export failed').slice(0, 160), null, "Couldn't export");
+  }
+
+  // Print-friendly standalone document: a fit-to-page timeline graphic and
+  // an item table. All dynamic text is HTML-escaped (epic summaries and
+  // ad-hoc titles/notes are teammate-authored), and the window main.js
+  // renders this in has JavaScript disabled anyway.
+  function buildRoadmapPdfHtml(entries) {
+    const td = localToday();
+    let min = addDays(td, -45), max = addDays(td, 90);
+    for (const en of entries) {
+      if (en.start && en.start < min) min = en.start;
+      const tail = en.end || en.start;
+      if (tail && tail > max) max = tail;
+    }
+    min = new Date(min.getFullYear(), min.getMonth(), 1, 12);
+    max = addDays(max, 14);
+    const PAGE_W = 1060; // ≈ A4 landscape printable width at 96dpi
+    const pxd = PAGE_W / (daysBetween(min, max) + 1);
+    const x = (d) => Math.round(daysBetween(min, d) * pxd);
+
+    // Print palette — the app's CSS vars don't exist in the standalone doc.
+    const statusHex = (cat, name) => {
+      const c = String(cat || '').toLowerCase();
+      if (c === 'done') return '#1f845a';
+      if (c === 'new' || c === 'to do') return '#8590a2';
+      if (/review|qa|test|verify/i.test(name || '')) return '#5e4db2';
+      return '#b65c02';
+    };
+    const tokenHex = { 'accent-2': '#5e4db2', good: '#1f845a', warn: '#b65c02', bad: '#c9372c' };
+
+    const months = [];
+    for (let m = new Date(min.getFullYear(), min.getMonth(), 1, 12); m <= max;
+      m = new Date(m.getFullYear(), m.getMonth() + 1, 1, 12)) {
+      if (m < min) continue;
+      months.push(`<span class="ax" style="left:${x(m) + 3}px">${m.toLocaleDateString(undefined, { month: 'short', year: m.getMonth() === 0 ? 'numeric' : undefined })}</span>`
+        + `<i class="gl" style="left:${x(m)}px"></i>`);
+    }
+
+    const rows = entries.map((en) => {
+      const adhoc = en.kind === 'adhoc';
+      const t = en.t, it = en.it;
+      const color = adhoc ? (tokenHex[it?.color] || '#44546f') : statusHex(t.cat, t.status);
+      const start = en.start || td;
+      const left = x(start);
+      const width = en.end ? Math.max(4, x(en.end) + Math.ceil(pxd) - left) : Math.round(14 * pxd);
+      const label = escHtml(adhoc ? it.title : `${t.key}  ${t.summary}`);
+      // Label inside wide bars, beside narrow ones — never overflowing a
+      // neighbour invisibly.
+      const inside = width >= 150;
+      return `<div class="row">`
+        + `<span class="bar${adhoc ? ' adhoc' : ''}${en.end ? '' : ' open'}" style="left:${left}px;width:${width}px;background:${color}1f;border-color:${color}">`
+        + (inside ? `<span class="lbl">${label}</span>` : '')
+        + `</span>`
+        + (inside ? '' : `<span class="lbl out" style="left:${left + width + 5}px">${label}</span>`)
+        + `</div>`;
+    }).join('\n');
+
+    const tableRows = entries.map((en) => {
+      if (en.kind === 'epic') {
+        const t = en.t;
+        const prog = board.epicProgress.get(t.key);
+        return `<tr><td>Epic</td><td>${escHtml(t.key)}</td><td>${escHtml(t.summary)}</td><td>${escHtml(t.status)}</td>`
+          + `<td>${en.start ? isoDay(en.start) : ''}</td><td>${escHtml(t.due || '')}</td>`
+          + `<td>${prog?.total ? `${prog.done}/${prog.total}` : ''}</td><td>${escHtml(t.assignees[0]?.name || '')}</td><td></td></tr>`;
+      }
+      const it = en.it;
+      return `<tr><td>Idea</td><td></td><td>${escHtml(it.title)}</td><td></td>`
+        + `<td>${escHtml(it.start_date || '')}</td><td>${escHtml(it.end_date || '')}</td><td></td><td></td>`
+        + `<td>${escHtml(String(it.notes || '').slice(0, 90))}</td></tr>`;
+    }).join('\n');
+
+    const epics = entries.filter((e) => e.kind === 'epic').length;
+    const ideas = entries.length - epics;
+    const sub = `Exported ${td.toLocaleDateString(undefined, { dateStyle: 'long' })}`
+      + ` · ${epics} epic${epics === 1 ? '' : 's'}, ${ideas} idea${ideas === 1 ? '' : 's'}`
+      + (board.query ? ` · filtered by “${escHtml(board.query)}”` : '');
+
+    return `<!doctype html><html><head><meta charset="utf-8"><style>
+  body { font: 11px/1.45 -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #172b4d; margin: 0; }
+  h1 { font-size: 19px; margin: 0 0 2px; }
+  .meta { color: #626f86; margin-bottom: 14px; }
+  .tl { position: relative; width: ${PAGE_W}px; }
+  .axis { position: relative; height: 18px; border-bottom: 1px solid #dcdfe4; margin-bottom: 4px; }
+  .ax { position: absolute; top: 1px; font-size: 9px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: #626f86; }
+  .gl { position: absolute; top: 0; bottom: 0; width: 1px; background: #ebecf0; }
+  .today { position: absolute; top: 0; bottom: 0; width: 2px; background: #0c66e4; z-index: 2; }
+  .row { position: relative; height: 22px; page-break-inside: avoid; }
+  .bar { position: absolute; top: 3px; height: 15px; border: 1px solid; border-left-width: 3px; border-radius: 4px; box-sizing: border-box; overflow: hidden; white-space: nowrap; }
+  .bar.adhoc { border-style: dashed; border-left-style: solid; }
+  .bar.open { border-right: none; border-radius: 4px 0 0 4px; }
+  .lbl { font-size: 9.5px; padding: 1px 5px; display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
+  .lbl.out { position: absolute; top: 4px; padding: 0; max-width: 340px; color: #44546f; }
+  table { border-collapse: collapse; width: 100%; margin-top: 20px; page-break-before: auto; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #ebecf0; font-size: 10px; vertical-align: top; }
+  th { font-size: 9px; text-transform: uppercase; letter-spacing: .05em; color: #626f86; border-bottom: 1.5px solid #dcdfe4; }
+</style></head><body>
+<h1>${escHtml(activeProject() || 'Team')} roadmap</h1>
+<div class="meta">${sub}</div>
+<div class="tl">
+  <div class="axis">${months.join('')}</div>
+  <div class="today" style="left:${x(td)}px"></div>
+${rows}
+</div>
+<table>
+  <thead><tr><th>Type</th><th>Key</th><th>Title</th><th>Status</th><th>Start</th><th>End</th><th>Progress</th><th>Assignee</th><th>Notes</th></tr></thead>
+  <tbody>${tableRows}</tbody>
+</table>
+</body></html>`;
   }
 
   // Accent tokens an ad-hoc bar may carry. The color value comes from the

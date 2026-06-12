@@ -836,6 +836,49 @@ ipcMain.handle('fetch-proxy', async (_event, { url, method = 'GET', headers = {}
   }
 });
 
+// Render caller-supplied HTML to a PDF and save it where the user picks
+// (used by the board's roadmap export). The HTML is loaded from a temp
+// file into a hidden, JavaScript-disabled, sandboxed window — the markup
+// is generated in our renderer but contains teammate-authored text, so
+// it gets no scripting and no node access regardless.
+ipcMain.handle('export-pdf', async (event, { html, filename, landscape = true } = {}) => {
+  if (typeof html !== 'string' || !html || html.length > 4_000_000) {
+    return { ok: false, error: 'invalid html payload' };
+  }
+  const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+  const safeName = String(filename || 'export.pdf').replace(/[^\w.-]+/g, '-');
+  const { canceled, filePath } = await dialog.showSaveDialog(parent, {
+    title: 'Export PDF',
+    defaultPath: path.join(app.getPath('documents'), safeName),
+    filters: [{ name: 'PDF', extensions: ['pdf'] }],
+  });
+  if (canceled || !filePath) return { ok: false, canceled: true };
+  const fs = require('fs');
+  const tmp = path.join(app.getPath('temp'), `huddle-export-${Date.now()}.html`);
+  let win = null;
+  try {
+    fs.writeFileSync(tmp, html, 'utf8');
+    win = new BrowserWindow({
+      show: false, width: 1200, height: 800,
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, javascript: false },
+    });
+    await win.loadFile(tmp);
+    const pdf = await win.webContents.printToPDF({
+      landscape: !!landscape,
+      printBackground: true, // bar fills are backgrounds — without this the PDF is empty boxes
+      pageSize: 'A4',
+      margins: { top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 },
+    });
+    fs.writeFileSync(filePath, pdf);
+    return { ok: true, path: filePath };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message || err) };
+  } finally {
+    if (win) win.destroy();
+    try { fs.unlinkSync(tmp); } catch {}
+  }
+});
+
 // Background auto-updates via electron-updater (Squirrel.Mac on macOS,
 // NSIS on Windows). Reads the GitHub Releases feed configured in the
 // `build.publish` block; electron-builder bakes that into app-update.yml
