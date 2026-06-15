@@ -54,13 +54,24 @@ export function CallSignalsProvider({ children }: { children: React.ReactNode })
   const [peerMediaState, setPeerMediaState] = useState<Record<string, MediaState>>({});
 
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
-  const subscribedRef = useRef(false);
+  // `subscribed` is state (not a ref) so that when the channel finishes
+  // subscribing, broadcastMuteState is recreated and CallView's mute-state
+  // effect re-runs to send the initial state — a ref wouldn't re-render.
+  const [subscribed, setSubscribed] = useState(false);
   const reactionCbs = useRef<Set<(p: ReactionPayload) => void>>(new Set());
 
   useEffect(() => {
-    if (!activeTeam?.id || !userId || !channelId) return;
+    if (!activeTeam?.id || !userId || !channelId) {
+      // No active call → clear call-scoped state so nothing leaks into the
+      // next call (this provider outlives individual calls).
+      setRemoteRaised(new Set());
+      setMyHandRaised(false);
+      setPeerMediaState({});
+      setSubscribed(false);
+      return;
+    }
     let active = true;
-    subscribedRef.current = false;
+    setSubscribed(false);
     // Reset call-scoped state when (re)joining a call/channel.
     setRemoteRaised(new Set());
     setMyHandRaised(false);
@@ -113,7 +124,7 @@ export function CallSignalsProvider({ children }: { children: React.ReactNode })
 
     ch.subscribe(async (status) => {
       if (status !== 'SUBSCRIBED' || !active) return;
-      subscribedRef.current = true;
+      setSubscribed(true);
       // Track presence so desktop's pre-join "Join call · N" count and its
       // _callPeerInfo name/color fallback include this mobile participant.
       let name = '';
@@ -130,22 +141,21 @@ export function CallSignalsProvider({ children }: { children: React.ReactNode })
 
     return () => {
       active = false;
-      subscribedRef.current = false;
       channelRef.current = null;
       supabase.removeChannel(ch);
     };
   }, [activeTeam?.id, userId, channelId]);
 
   const toggleRaiseHand = useCallback(() => {
-    setMyHandRaised((prev) => {
-      const raised = !prev;
-      const ch = channelRef.current;
-      if (ch && subscribedRef.current && userId) {
-        ch.send({ type: 'broadcast', event: 'raise-hand', payload: { from: userId, raised } });
-      }
-      return raised;
-    });
-  }, [userId]);
+    if (!userId) return;
+    const raised = !myHandRaised;
+    setMyHandRaised(raised);
+    // Side effect kept out of the state updater (updaters must stay pure).
+    const ch = channelRef.current;
+    if (ch && subscribed) {
+      ch.send({ type: 'broadcast', event: 'raise-hand', payload: { from: userId, raised } });
+    }
+  }, [userId, myHandRaised, subscribed]);
 
   const sendReaction = useCallback(
     (emoji: string) => {
@@ -153,11 +163,11 @@ export function CallSignalsProvider({ children }: { children: React.ReactNode })
       if (!userId) return;
       // self:false on the channel, so mirror locally for the sender's own tile.
       reactionCbs.current.forEach((cb) => cb({ from: userId, emoji }));
-      if (ch && subscribedRef.current) {
+      if (ch && subscribed) {
         ch.send({ type: 'broadcast', event: 'reaction', payload: { from: userId, emoji } });
       }
     },
-    [userId],
+    [userId, subscribed],
   );
 
   const onReaction = useCallback((cb: (p: ReactionPayload) => void) => {
@@ -168,10 +178,10 @@ export function CallSignalsProvider({ children }: { children: React.ReactNode })
   const broadcastMuteState = useCallback(
     (micOn: boolean, camOn: boolean) => {
       const ch = channelRef.current;
-      if (!ch || !subscribedRef.current || !userId) return;
+      if (!ch || !subscribed || !userId) return;
       ch.send({ type: 'broadcast', event: 'mute-state', payload: { from: userId, micOn, camOn } });
     },
-    [userId],
+    [userId, subscribed],
   );
 
   const raisedHands = useMemo(() => {
