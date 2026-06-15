@@ -406,8 +406,8 @@ function CallView({
               )}
               {reaction && (
                 <View
-                  // key forces a remount so the same emoji sent twice in a row
-                  // still re-triggers the entrance animation.
+                  // key by the reaction id so the same emoji sent twice in a
+                  // row still remounts and re-shows (a new id each time).
                   key={reaction.id}
                   style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' }}
                   pointerEvents="none"

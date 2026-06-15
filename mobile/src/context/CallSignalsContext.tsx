@@ -17,7 +17,6 @@ import { useCall } from '@/context/CallContext';
 // team-wide, always-on topic with the wrong scope and lifetime.
 
 export type ReactionPayload = { from: string; emoji: string };
-export type MediaState = { micOn: boolean; camOn: boolean };
 
 type State = {
   // userIds with a raised hand, including self. Tile overlays match against
@@ -29,9 +28,9 @@ type State = {
   sendReaction: (emoji: string) => void;
   // Subscribe to reactions (self + remote); returns an unsubscribe fn.
   onReaction: (cb: (p: ReactionPayload) => void) => () => void;
-  // Remote peers' mic/cam state, keyed by userId. Mainly a desktop-parity
-  // safeguard — LiveKit also exposes publication.isMuted.
-  peerMediaState: Record<string, MediaState>;
+  // Mirror our own mic/cam state to the call channel. Send-only: desktop
+  // consumes this to reflect mobile mutes on its tiles. Mobile renders its
+  // own tiles from LiveKit's publication.isMuted, so there's no receive side.
   broadcastMuteState: (micOn: boolean, camOn: boolean) => void;
 };
 
@@ -51,7 +50,6 @@ export function CallSignalsProvider({ children }: { children: React.ReactNode })
 
   const [remoteRaised, setRemoteRaised] = useState<Set<string>>(new Set());
   const [myHandRaised, setMyHandRaised] = useState(false);
-  const [peerMediaState, setPeerMediaState] = useState<Record<string, MediaState>>({});
 
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   // `subscribed` is state (not a ref) so that when the channel finishes
@@ -66,7 +64,6 @@ export function CallSignalsProvider({ children }: { children: React.ReactNode })
       // next call (this provider outlives individual calls).
       setRemoteRaised(new Set());
       setMyHandRaised(false);
-      setPeerMediaState({});
       setSubscribed(false);
       return;
     }
@@ -75,25 +72,19 @@ export function CallSignalsProvider({ children }: { children: React.ReactNode })
     // Reset call-scoped state when (re)joining a call/channel.
     setRemoteRaised(new Set());
     setMyHandRaised(false);
-    setPeerMediaState({});
 
     const ch = supabase.channel(callTopic(activeTeam.id, channelId), {
       config: { presence: { key: userId }, broadcast: { self: false, ack: false }, private: true },
     });
 
-    // Prune signal state for peers who leave the call (mirrors desktop's
-    // presence-sync cleanup so a stale raised hand / mute pip can't linger).
+    // Prune a raised hand for any peer who leaves the call (mirrors desktop's
+    // presence-sync cleanup so a stale ✋ can't linger after someone drops).
     const prune = () => {
       if (!active) return;
       const present = new Set(Object.keys(ch.presenceState()));
       setRemoteRaised((prev) => {
         const next = new Set([...prev].filter((id) => present.has(id)));
         return next.size === prev.size ? prev : next;
-      });
-      setPeerMediaState((prev) => {
-        const next: Record<string, MediaState> = {};
-        for (const [id, st] of Object.entries(prev)) if (present.has(id)) next[id] = st;
-        return Object.keys(next).length === Object.keys(prev).length ? prev : next;
       });
     };
 
@@ -109,13 +100,6 @@ export function CallSignalsProvider({ children }: { children: React.ReactNode })
         else next.delete(payload.from);
         return next;
       });
-    });
-    ch.on('broadcast', { event: 'mute-state' }, ({ payload }) => {
-      if (!payload?.from) return;
-      setPeerMediaState((prev) => ({
-        ...prev,
-        [payload.from]: { micOn: !!payload.micOn, camOn: !!payload.camOn },
-      }));
     });
     ch.on('broadcast', { event: 'reaction' }, ({ payload }) => {
       if (!payload?.from || !payload?.emoji) return;
@@ -135,7 +119,15 @@ export function CallSignalsProvider({ children }: { children: React.ReactNode })
         color = p?.color ?? null;
       } catch {}
       if (!active) return;
-      ch.track({ name, color, online_at: new Date().toISOString() }).catch(() => {});
+      // track() resolves to a status string ('ok' | 'error' | 'timed out')
+      // rather than throwing — a silent failure here drops this participant
+      // from desktop's "Join call · N" count and name fallback, so log it.
+      try {
+        const res = await ch.track({ name, color, online_at: new Date().toISOString() });
+        if (res !== 'ok') console.warn('[call-signals] presence track returned', res);
+      } catch (err) {
+        console.warn('[call-signals] presence track failed', err);
+      }
     });
     channelRef.current = ch;
 
@@ -147,25 +139,25 @@ export function CallSignalsProvider({ children }: { children: React.ReactNode })
   }, [activeTeam?.id, userId, channelId]);
 
   const toggleRaiseHand = useCallback(() => {
-    if (!userId) return;
+    // No-op until the channel is subscribed so local UI can't show a raised
+    // hand that was never broadcast to peers (keeps local/remote in sync).
+    const ch = channelRef.current;
+    if (!userId || !ch || !subscribed) return;
     const raised = !myHandRaised;
     setMyHandRaised(raised);
     // Side effect kept out of the state updater (updaters must stay pure).
-    const ch = channelRef.current;
-    if (ch && subscribed) {
-      ch.send({ type: 'broadcast', event: 'raise-hand', payload: { from: userId, raised } });
-    }
+    ch.send({ type: 'broadcast', event: 'raise-hand', payload: { from: userId, raised } });
   }, [userId, myHandRaised, subscribed]);
 
   const sendReaction = useCallback(
     (emoji: string) => {
+      // Bail until subscribed: mirroring locally while we can't broadcast
+      // would show the sender an emoji no one else receives.
       const ch = channelRef.current;
-      if (!userId) return;
+      if (!userId || !ch || !subscribed) return;
       // self:false on the channel, so mirror locally for the sender's own tile.
       reactionCbs.current.forEach((cb) => cb({ from: userId, emoji }));
-      if (ch && subscribed) {
-        ch.send({ type: 'broadcast', event: 'reaction', payload: { from: userId, emoji } });
-      }
+      ch.send({ type: 'broadcast', event: 'reaction', payload: { from: userId, emoji } });
     },
     [userId, subscribed],
   );
@@ -198,10 +190,9 @@ export function CallSignalsProvider({ children }: { children: React.ReactNode })
       toggleRaiseHand,
       sendReaction,
       onReaction,
-      peerMediaState,
       broadcastMuteState,
     }),
-    [raisedHands, myHandRaised, toggleRaiseHand, sendReaction, onReaction, peerMediaState, broadcastMuteState],
+    [raisedHands, myHandRaised, toggleRaiseHand, sendReaction, onReaction, broadcastMuteState],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
