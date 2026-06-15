@@ -4,6 +4,7 @@ import { Stack, router, useSegments } from 'expo-router';
 import { LiveKitRoom, useLocalParticipant } from '@livekit/react-native';
 import { useAuth } from '@/context/AuthContext';
 import { CallProvider, useCall } from '@/context/CallContext';
+import { CallSignalsProvider } from '@/context/CallSignalsContext';
 import { UnreadProvider } from '@/context/UnreadContext';
 import { MutedChannelsProvider } from '@/context/MutedChannelsContext';
 import { FavoritesProvider } from '@/context/FavoritesContext';
@@ -44,6 +45,7 @@ export default function AppLayout() {
   // navigates between the channels list and a channel.
   return (
     <CallProvider>
+      <CallSignalsProvider>
       <MutedChannelsProvider>
         <UnreadProvider>
           <FavoritesProvider>
@@ -87,6 +89,7 @@ export default function AppLayout() {
           </FavoritesProvider>
         </UnreadProvider>
       </MutedChannelsProvider>
+      </CallSignalsProvider>
     </CallProvider>
   );
 }
