@@ -6960,9 +6960,14 @@ function wireControls() {
   els.btnLeave.onclick = leaveCall;
   els.btnMinimizeCall && (els.btnMinimizeCall.onclick = toggleMinimizeCall);
   // Mini-panel controls: reuse the header handlers so mic/leave behave
-  // identically whether the call is minimized or full-size. Expand just
+  // identically whether the call is minimized or full-size. Expand returns
+  // to the call's own channel first so the in-call header controls reappear
+  // (renderCallHeader gates them on inCallChannelId === viewed channel), then
   // un-minimizes.
-  els.miniBtnExpand && (els.miniBtnExpand.onclick = () => setCallMinimized(false));
+  els.miniBtnExpand && (els.miniBtnExpand.onclick = () => {
+    if (state.inCallChannelId) focusChannel(state.inCallChannelId);
+    setCallMinimized(false);
+  });
   els.miniBtnLeave && (els.miniBtnLeave.onclick = leaveCall);
   els.miniBtnMic && (els.miniBtnMic.onclick = () => {
     els.btnMic.onclick?.();
