@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, FlatList, Platform, Alert, Linking, useWindowDimensions } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -23,9 +23,13 @@ import {
   SwitchCamera,
   PictureInPicture,
   PhoneOff,
+  Hand,
+  Smile,
 } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
 import { useCall, type CallPerms } from '@/context/CallContext';
+import { useCallSignals, callIdentityBase, type ReactionPayload } from '@/context/CallSignalsContext';
+import { EmojiPanel } from '@/components/EmojiPanel';
 import { Avatar } from '@/components/ui';
 import { colors, radius, space } from '@/theme';
 
@@ -139,6 +143,54 @@ function CallView({
   const mic = isMicrophoneEnabled;
   const cam = isCameraEnabled;
 
+  const { raisedHands, myHandRaised, toggleRaiseHand, sendReaction, onReaction, broadcastMuteState } =
+    useCallSignals();
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  // Transient floating reactions, keyed by sender userId. Each lands as a
+  // floating emoji on that peer's tile and auto-clears after a few seconds.
+  const [reactions, setReactions] = useState<Record<string, { emoji: string; id: number }>>({});
+  const reactionTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  useEffect(() => {
+    const off = onReaction((p: ReactionPayload) => {
+      const id = Date.now();
+      setReactions((prev) => ({ ...prev, [p.from]: { emoji: p.emoji, id } }));
+      clearTimeout(reactionTimers.current[p.from]);
+      reactionTimers.current[p.from] = setTimeout(() => {
+        setReactions((prev) => {
+          // Only clear if this is still the reaction we scheduled (a newer
+          // one resets the timer and would otherwise be wiped early).
+          if (prev[p.from]?.id !== id) return prev;
+          const next = { ...prev };
+          delete next[p.from];
+          return next;
+        });
+      }, 3500);
+    });
+    return off;
+  }, [onReaction]);
+
+  // Clean up any pending reaction timers on unmount.
+  useEffect(() => {
+    const timers = reactionTimers.current;
+    return () => { Object.values(timers).forEach(clearTimeout); };
+  }, []);
+
+  // Mirror our mic/cam state to the call channel so desktop tiles reflect it
+  // (fires once on mount and on each toggle). LiveKit's publication.isMuted
+  // already covers mobile↔mobile, this is the desktop-parity safeguard.
+  useEffect(() => {
+    broadcastMuteState(mic, cam);
+  }, [mic, cam, broadcastMuteState]);
+
+  const onPickReaction = useCallback(
+    (emoji: string) => {
+      sendReaction(emoji);
+      setEmojiOpen(false);
+    },
+    [sendReaction],
+  );
+
   // iOS Simulator has no camera hardware; LiveKit publishes nothing for
   // the local participant regardless of `cam=true`. Detect this so the
   // placeholder text doesn't lie ("Camera off" implies you flipped a switch).
@@ -224,6 +276,12 @@ function CallView({
         // pattern for dynamic numColumns on FlatList.
         key={`grid-${numColumns}`}
         data={tracks}
+        // Tiles read raisedHands/reactions from closure; without extraData
+        // FlatList won't re-render rows when those change. Encode membership
+        // and reaction ids so re-raises and repeat reactions still repaint.
+        extraData={`${[...raisedHands].sort().join(',')}|${Object.entries(reactions)
+          .map(([k, v]) => `${k}:${v.id}`)
+          .join(',')}`}
         // Placeholders key by participant+source too — when a camera mutes,
         // useTracks swaps TrackReference → placeholder for the SAME tile,
         // and an index-based placeholder key made FlatList unmount the whole
@@ -248,6 +306,9 @@ function CallView({
           const showSimHint = isSim && (isPlaceholder || isLocal);
           const showCamBlocked = !isSim && isPlaceholder && isLocal && !!lastCameraError;
           const displayName = item.participant.name || item.participant.identity;
+          const idBase = callIdentityBase(item.participant.identity);
+          const handRaised = raisedHands.has(idBase);
+          const reaction = reactions[idBase];
           // `pipTrack` comes from a *separate* useTracks subscription
           // (usePipTrack only watches non-placeholder real tracks). Even
           // for the same underlying track LiveKit hands out different
@@ -325,6 +386,35 @@ function CallView({
                   </Text>
                 </View>
               )}
+              {handRaised && (
+                <View
+                  style={{
+                    position: 'absolute',
+                    top: 8,
+                    right: 8,
+                    width: 32,
+                    height: 32,
+                    borderRadius: 16,
+                    backgroundColor: 'rgba(0,0,0,0.55)',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                  accessibilityLabel={`${displayName} raised their hand`}
+                >
+                  <Text style={{ fontSize: 18 }}>✋</Text>
+                </View>
+              )}
+              {reaction && (
+                <View
+                  // key by the reaction id so the same emoji sent twice in a
+                  // row still remounts and re-shows (a new id each time).
+                  key={reaction.id}
+                  style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' }}
+                  pointerEvents="none"
+                >
+                  <Text style={{ fontSize: 64 }}>{reaction.emoji}</Text>
+                </View>
+              )}
               <Text
                 style={{
                   position: 'absolute',
@@ -352,9 +442,11 @@ function CallView({
       <View
         style={{
           flexDirection: 'row',
+          flexWrap: 'wrap',
           justifyContent: 'center',
           alignItems: 'center',
           gap: space(3),
+          rowGap: space(2),
           paddingHorizontal: space(4),
           paddingTop: space(3),
           paddingBottom: Math.max(insets.bottom, space(3)),
@@ -376,6 +468,14 @@ function CallView({
           off={!cam}
         />
         <CtrlButton icon={SwitchCamera} a11yLabel="Flip camera" onPress={flipCamera} active />
+        <CtrlButton icon={Smile} a11yLabel="Send a reaction" onPress={() => setEmojiOpen(true)} active />
+        <CtrlButton
+          icon={Hand}
+          a11yLabel={myHandRaised ? 'Lower hand' : 'Raise hand'}
+          onPress={toggleRaiseHand}
+          active={!myHandRaised}
+          accent={myHandRaised}
+        />
         {/* Minimize: pop back to the previous route, which surfaces
             the in-app floater. Same outcome as the OS back gesture
             but discoverable from the in-call control bar. */}
@@ -390,6 +490,8 @@ function CallView({
             call running and surfaces the floating tile. */}
         <CtrlButton icon={PhoneOff} a11yLabel="Leave call" onPress={onHangUp} danger />
       </View>
+
+      <EmojiPanel visible={emojiOpen} onClose={() => setEmojiOpen(false)} onPick={onPickReaction} />
     </View>
   );
 }
@@ -401,6 +503,7 @@ function CtrlButton({
   active,
   off,
   danger,
+  accent,
 }: {
   icon: LucideIcon;
   a11yLabel: string;
@@ -408,10 +511,18 @@ function CtrlButton({
   active?: boolean;
   off?: boolean;
   danger?: boolean;
+  accent?: boolean;
 }) {
   // Off-state (mic/cam disabled) gets the same red treatment as the
   // leave-call button so the user can see at a glance that they're muted.
-  const bg = danger || off ? colors.danger : active ? colors.surfaceAlt : colors.surface;
+  // Accent (e.g. hand raised) highlights an engaged toggle.
+  const bg = danger || off
+    ? colors.danger
+    : accent
+      ? colors.accent
+      : active
+        ? colors.surfaceAlt
+        : colors.surface;
   return (
     <TouchableOpacity
       onPress={onPress}
@@ -425,7 +536,7 @@ function CtrlButton({
         alignItems: 'center',
         justifyContent: 'center',
         backgroundColor: bg,
-        borderWidth: danger || off ? 0 : 1,
+        borderWidth: danger || off || accent ? 0 : 1,
         borderColor: colors.border,
       }}
     >
