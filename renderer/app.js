@@ -282,9 +282,11 @@ const state = {
   callStarting: false,    // re-entrancy guard for startCall()
   // True once THIS call observed a (non-failed) recording — meaning the server
   // will post a Meeting Recap, so the standalone "Call recap" should be
-  // suppressed. Tracked per call (reset on join) rather than read off
-  // huddle.activeRecording, whose 'completed' row lingers across sequential
-  // calls in the same channel (the watcher isn't torn down on leave).
+  // suppressed. A durable per-call latch (reset on join) rather than reading
+  // huddle.activeRecording's status at teardown: by leave time the live row may
+  // have reached a terminal state (completed/failed) or been cleared by the
+  // recordings-watcher teardown, so the latch records the fact independent of
+  // the live row's lifecycle.
   callRecordingCovered: false,
   lurkingChannelId: null, // channel.id we're watching call-presence on
   callCounts: new Map(),  // channel.id -> last known call-participant count (for "call started" detection)
@@ -3461,20 +3463,30 @@ function onCallPresence({ channelId, count }) {
   }
 }
 
+// Show a desktop notification that, on click, surfaces the window and routes to
+// `channelId` — the universal behavior for every Huddle notification. Centralises
+// the permission gate, the try/catch, and the focus-and-route onclick so each
+// call site is a single line. `opts` passes straight to the Notification
+// constructor (body, tag, silent, …).
+function notifyWithFocus(title, opts, channelId) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  try {
+    const n = new Notification(title, opts);
+    n.onclick = () => { try { window.focus(); } catch {} focusChannel(channelId); n.close(); };
+  } catch (err) { console.warn('notification failed', err); }
+}
+
 function notifyCallStarted(channelId) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   const channel = state.channelMeta.get(channelId);
   // displayLabelFor gives "# general" / "secret" / "@ Alice" — the
   // same labels the sidebar uses, so DM calls name the person.
   const where = channel ? displayLabelFor(channel) : `#${channelId}`;
-  try {
-    const n = new Notification(`Call started in ${where}`, {
-      body: 'Click to join.',
-      tag: `call:${channelId}`, // collapse repeat alerts for the same call
-      silent: false,
-    });
-    n.onclick = () => { window.focus(); focusChannel(channelId); n.close(); };
-  } catch (err) { console.warn('call notification failed', err); }
+  notifyWithFocus(`Call started in ${where}`, {
+    body: 'Click to join.',
+    tag: `call:${channelId}`, // collapse repeat alerts for the same call
+    silent: false,
+  }, channelId);
 }
 
 // ---------------------------------------------------------------------------
@@ -3927,21 +3939,13 @@ function onChatMessage(m) {
 }
 
 function sendDesktopNotification(m, channel) {
-  if (!('Notification' in window) || Notification.permission !== 'granted') return;
   const where = channel?.type === 'dm' ? `DM from ${m.authorName}`
     : `${m.authorName} in #${channel?.name || m.channelId}`;
-  try {
-    const n = new Notification(where, {
-      body: (m.text || '').slice(0, 200),
-      tag: m.channelId, // collapse repeated alerts per channel
-      silent: false,
-    });
-    n.onclick = () => {
-      window.focus();
-      focusChannel(m.channelId);
-      n.close();
-    };
-  } catch (err) { console.warn('notification failed', err); }
+  notifyWithFocus(where, {
+    body: (m.text || '').slice(0, 200),
+    tag: m.channelId, // collapse repeated alerts per channel
+    silent: false,
+  }, m.channelId);
 }
 
 function onChannelAdded(channel) {
@@ -4349,16 +4353,10 @@ function onIncomingKnock(payload) {
   }, KNOCK_TTL_MS);
   _knock.incoming = { knockId, channelId, peerId: from, peerName: fromName, timer, el };
 
-  // A soft notification helps when Huddle is backgrounded. Wire its click to
-  // surface the window + the DM so the user can reach Accept/Decline before the
-  // 30s TTL expires — without this the notification is dead on click and the
-  // window stays buried (matching every other notification's focus handler).
-  if ('Notification' in window && Notification.permission === 'granted') {
-    try {
-      const n = new Notification('Knock knock', { body: `${fromName || 'A teammate'} wants to huddle` });
-      n.onclick = () => { try { window.focus(); } catch {} focusChannel(channelId); n.close(); };
-    } catch {}
-  }
+  // A soft notification helps when Huddle is backgrounded; clicking it surfaces
+  // the window + the DM so the user can reach Accept/Decline before the 30s TTL
+  // expires (without the focus-on-click the window would stay buried).
+  notifyWithFocus('Knock knock', { body: `${fromName || 'A teammate'} wants to huddle` }, channelId);
 }
 
 async function _acceptIncomingKnock() {
@@ -6510,12 +6508,12 @@ function onRecordingState({ recording, previous }) {
   }
   syncRecordButtonState();
 
-  // Remember that this call had a recording, so finalizeCallTranscript can
-  // suppress the standalone "Call recap" in favour of the server's Meeting
-  // Recap — even if the egress reaches 'completed' before the user leaves. A
+  // Latch that this call had a recording, so finalizeCallTranscript can suppress
+  // the standalone "Call recap" in favour of the server's Meeting Recap — even
+  // if the egress reaches 'completed' before the user leaves (the standalone
+  // path runs at leave time, when the live row may no longer read as active). A
   // 'failed' egress posts no Meeting Recap, so it clears the flag (the
-  // standalone recap should still go out). This is scoped to the current call
-  // (reset on join), unlike huddle.activeRecording whose terminal row lingers.
+  // standalone recap should still go out).
   state.callRecordingCovered = recording.status !== 'failed';
 
   // The recording's starter is the single transcript submitter (the webhook

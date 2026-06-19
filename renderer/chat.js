@@ -1009,8 +1009,8 @@ class ChatView {
         // we must NOT touch: the user typed a NEW message during a slow
         // command's round-trip — the composer then holds something other than
         // the command (and isn't empty), so leave it and its draft intact.
-        const cur = this.els.composer.value;
-        if (cur.trim() === text || cur === '') {
+        const cur = this.els.composer.value.trim();
+        if (cur === text || cur === '') {
           this._clearDraft(this.currentChannel);
           this.els.composer.value = '';
           this.els.composer.style.height = 'auto';
