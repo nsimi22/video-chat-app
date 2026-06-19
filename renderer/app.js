@@ -2926,8 +2926,8 @@ function finalizeCallTranscript() {
   // submitted its transcript snapshot on the stop/leave transition. Skip the
   // standalone transcript-only "📞 Call recap" so the channel doesn't get two
   // near-identical summaries. (This legacy suppression is intentionally kept.)
-  if (state.huddle?.isRecordingActive()) {
-    console.log('[recap] skip: recording active — Meeting Recap will cover it');
+  if (state.huddle?.isRecordingCovered()) {
+    console.log('[recap] skip: recording will be covered by the server Meeting Recap');
     // Only the standalone RECAP is skipped (the server posts the Meeting
     // Recap). We must STILL tear captions down — stop the local SR engine,
     // clear + hide the panel — otherwise the live-transcript panel stayed
@@ -4341,9 +4341,15 @@ function onIncomingKnock(payload) {
   }, KNOCK_TTL_MS);
   _knock.incoming = { knockId, channelId, peerId: from, peerName: fromName, timer, el };
 
-  // A soft notification helps when Huddle is backgrounded.
+  // A soft notification helps when Huddle is backgrounded. Wire its click to
+  // surface the window + the DM so the user can reach Accept/Decline before the
+  // 30s TTL expires — without this the notification is dead on click and the
+  // window stays buried (matching every other notification's focus handler).
   if ('Notification' in window && Notification.permission === 'granted') {
-    try { new Notification('Knock knock', { body: `${fromName || 'A teammate'} wants to huddle` }); } catch {}
+    try {
+      const n = new Notification('Knock knock', { body: `${fromName || 'A teammate'} wants to huddle` });
+      n.onclick = () => { try { window.focus(); } catch {} focusChannel(channelId); n.close(); };
+    } catch {}
   }
 }
 

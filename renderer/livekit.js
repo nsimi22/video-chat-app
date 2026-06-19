@@ -214,12 +214,16 @@
       if (this.activeScreenCount >= MAX_CONCURRENT_SCREENS) {
         throw new Error(`Screen-share limit reached (${MAX_CONCURRENT_SCREENS} max).`);
       }
-      // Reserve a slot before awaiting getUserMedia so two quick clicks
-      // can't both pass the check.
+      // Reserve a slot up front so two quick clicks can't both pass the check.
+      // Hold it for the WHOLE acquire+publish: it's only released once the
+      // share is recorded in _screenStreams (which then accounts for it) or the
+      // attempt fails. Decrementing right after getUserMedia — before
+      // publishTrack — left a window where the in-progress share was counted by
+      // neither _pendingScreens nor _screenStreams.size, so a concurrent
+      // addScreen could exceed MAX_CONCURRENT_SCREENS.
       this._pendingScreens++;
-      let stream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        const stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: {
             mandatory: {
@@ -237,58 +241,58 @@
             },
           },
         });
+        const screenTrack = stream.getVideoTracks()[0];
+        if (!screenTrack) {
+          for (const t of stream.getTracks()) t.stop();
+          throw new Error('screen capture returned no video track');
+        }
+        let publication;
+        try {
+          // Explicit HD encoding so screen-share doesn't fall to a
+          // low-bitrate default. LK's ScreenSharePresets exposes
+          // tuned configs — h1080fps15 (≈1080p @ 15fps, ~3 Mbps)
+          // is the right balance for text-readability of code /
+          // settings panels without burning bandwidth on motion.
+          // Falls back to LK defaults if the preset constant isn't
+          // exposed by the bundled livekit-client version.
+          const screenPreset = LK.ScreenSharePresets?.h1080fps15
+            || LK.VideoPresets43?.h1080
+            || null;
+          const publishOpts = {
+            source: LK.Track.Source.ScreenShare,
+            name: label,
+            simulcast: false,
+          };
+          if (screenPreset?.encoding) {
+            publishOpts.videoEncoding = screenPreset.encoding;
+          }
+          publication = await this.room.localParticipant.publishTrack(screenTrack, publishOpts);
+        } catch (err) {
+          for (const t of stream.getTracks()) t.stop();
+          throw err;
+        }
+        // Stamp the LK trackSid as a cross-client share id. The renderer
+        // (shareIdFor in app.js) reads this for tile / draw-layer keys so
+        // drawing strokes from this side match the same key on remote
+        // receivers (who also stash trackSid in _onTrackSubscribed).
+        stream.__huddleShareId = publication.trackSid;
+        // Drawing strokes ride a per-screen Supabase channel named
+        // `screen:${shareId}`. Open it eagerly here (and again on the
+        // receiver side in _onTrackSubscribed) so the first sendDraw
+        // broadcast from app.js lands on a channel both ends are
+        // subscribed to.
+        if (publication.trackSid) {
+          this.huddle._ensureScreenChannel(publication.trackSid).catch(() => {});
+        }
+        this._screenStreams.set(stream.id, { stream, label, publication });
+        // OS-level "stop sharing" indicator ends the track; route that
+        // back through removeScreen so the publication is unpublished
+        // and tiles drop on every client.
+        screenTrack.addEventListener('ended', () => this.removeScreen(stream.id));
+        return stream;
       } finally {
         this._pendingScreens--;
       }
-      const screenTrack = stream.getVideoTracks()[0];
-      if (!screenTrack) {
-        for (const t of stream.getTracks()) t.stop();
-        throw new Error('screen capture returned no video track');
-      }
-      let publication;
-      try {
-        // Explicit HD encoding so screen-share doesn't fall to a
-        // low-bitrate default. LK's ScreenSharePresets exposes
-        // tuned configs — h1080fps15 (≈1080p @ 15fps, ~3 Mbps)
-        // is the right balance for text-readability of code /
-        // settings panels without burning bandwidth on motion.
-        // Falls back to LK defaults if the preset constant isn't
-        // exposed by the bundled livekit-client version.
-        const screenPreset = LK.ScreenSharePresets?.h1080fps15
-          || LK.VideoPresets43?.h1080
-          || null;
-        const publishOpts = {
-          source: LK.Track.Source.ScreenShare,
-          name: label,
-          simulcast: false,
-        };
-        if (screenPreset?.encoding) {
-          publishOpts.videoEncoding = screenPreset.encoding;
-        }
-        publication = await this.room.localParticipant.publishTrack(screenTrack, publishOpts);
-      } catch (err) {
-        for (const t of stream.getTracks()) t.stop();
-        throw err;
-      }
-      // Stamp the LK trackSid as a cross-client share id. The renderer
-      // (shareIdFor in app.js) reads this for tile / draw-layer keys so
-      // drawing strokes from this side match the same key on remote
-      // receivers (who also stash trackSid in _onTrackSubscribed).
-      stream.__huddleShareId = publication.trackSid;
-      // Drawing strokes ride a per-screen Supabase channel named
-      // `screen:${shareId}`. Open it eagerly here (and again on the
-      // receiver side in _onTrackSubscribed) so the first sendDraw
-      // broadcast from app.js lands on a channel both ends are
-      // subscribed to.
-      if (publication.trackSid) {
-        this.huddle._ensureScreenChannel(publication.trackSid).catch(() => {});
-      }
-      this._screenStreams.set(stream.id, { stream, label, publication });
-      // OS-level "stop sharing" indicator ends the track; route that
-      // back through removeScreen so the publication is unpublished
-      // and tiles drop on every client.
-      screenTrack.addEventListener('ended', () => this.removeScreen(stream.id));
-      return stream;
     }
 
     async removeScreen(streamId) {

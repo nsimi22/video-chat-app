@@ -1002,11 +1002,18 @@ class ChatView {
     if (text.startsWith('/')) {
       const handled = await this._maybeRunSlash(text);
       if (handled) {
-        this._clearDraft(this.currentChannel);
-        this.els.composer.value = '';
-        this.els.composer.style.height = 'auto';
-        this.composerAttachments = [];
-        this._renderAttachmentChips();
+        // The slow-API handlers (/ai, /summarize, …) clear the composer
+        // themselves before their network round-trip, so only clear here when
+        // the command text is still present (a synchronous handler that
+        // consumed its input). Otherwise a message the user typed during a slow
+        // command's round-trip would be silently wiped.
+        if (this.els.composer.value.trim() === text) {
+          this._clearDraft(this.currentChannel);
+          this.els.composer.value = '';
+          this.els.composer.style.height = 'auto';
+          this.composerAttachments = [];
+          this._renderAttachmentChips();
+        }
         return;
       }
     }

@@ -84,7 +84,7 @@
       return { label: 'Urgent', icon: 'chevronsUp', color: 'var(--bad)' };
     if (n.includes('high')) return { label: 'High', icon: 'chevronUp', color: 'var(--warn)' };
     if (n.includes('lowest')) return { label: 'Lowest', icon: 'chevronsDown', color: 'var(--text-faint)' };
-    if (n.includes('low')) return { label: 'Low', icon: 'chevronsDown', color: 'var(--text-faint)' };
+    if (n.includes('low')) return { label: 'Low', icon: 'chevronDown', color: 'var(--text-faint)' };
     return { label: name || 'Medium', icon: 'equal', color: 'var(--accent-2)' };
   }
   // Issue type → glyph + color. Story green, Task/Sub-task blue, Bug red,
