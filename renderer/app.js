@@ -280,6 +280,18 @@ const state = {
   mesh: null,             // LivekitCallClient — alive only while in a call
   inCallChannelId: null,  // channel.id of the active call, if any
   callStarting: false,    // re-entrancy guard for startCall()
+  // True once THIS call observed a (non-failed) recording — meaning the server
+  // will post a Meeting Recap, so the standalone "Call recap" should be
+  // suppressed. A durable per-call latch (reset on join) rather than reading
+  // huddle.activeRecording's status at teardown: by leave time the live row may
+  // have reached a terminal state (completed/failed) or been cleared by the
+  // recordings-watcher teardown, so the latch records the fact independent of
+  // the live row's lifecycle.
+  callRecordingCovered: false,
+  // Sticky companion to callRecordingCovered: set once some egress in THIS call
+  // reaches stopping/completed (a server recap is locked in), so a later
+  // recording failing in the same call can't wrongly un-cover it.
+  callRecordingCommitted: false,
   lurkingChannelId: null, // channel.id we're watching call-presence on
   callCounts: new Map(),  // channel.id -> last known call-participant count (for "call started" detection)
   chat: null,
@@ -1451,6 +1463,8 @@ async function startPopoutCall(channelId) {
     return;
   }
   state.inCallChannelId = channelId;
+  state.callRecordingCovered = false;
+  state.callRecordingCommitted = false;
   bindCallCaptionsListener();
   // Avatar stack switches to in-call source for popout's main-window
   // header too. Safe no-op when running inside the popout window where
@@ -2235,6 +2249,8 @@ async function startCall(channelId) {
     return;
   }
   state.inCallChannelId = channelId;
+  state.callRecordingCovered = false;
+  state.callRecordingCommitted = false;
   // Captions listener — runs for the whole call so receivers see
   // lines even without toggling CC themselves. The local engine
   // (state.cc.manager) is independent; CC button still controls
@@ -2926,8 +2942,8 @@ function finalizeCallTranscript() {
   // submitted its transcript snapshot on the stop/leave transition. Skip the
   // standalone transcript-only "📞 Call recap" so the channel doesn't get two
   // near-identical summaries. (This legacy suppression is intentionally kept.)
-  if (state.huddle?.isRecordingActive()) {
-    console.log('[recap] skip: recording active — Meeting Recap will cover it');
+  if (state.callRecordingCovered) {
+    console.log('[recap] skip: recording will be covered by the server Meeting Recap');
     // Only the standalone RECAP is skipped (the server posts the Meeting
     // Recap). We must STILL tear captions down — stop the local SR engine,
     // clear + hide the panel — otherwise the live-transcript panel stayed
@@ -3453,20 +3469,30 @@ function onCallPresence({ channelId, count }) {
   }
 }
 
+// Show a desktop notification that, on click, surfaces the window and routes to
+// `channelId` — the universal behavior for every Huddle notification. Centralises
+// the permission gate, the try/catch, and the focus-and-route onclick so each
+// call site is a single line. `opts` passes straight to the Notification
+// constructor (body, tag, silent, …).
+function notifyWithFocus(title, opts, channelId) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  try {
+    const n = new Notification(title, opts);
+    n.onclick = () => { try { window.focus(); } catch {} focusChannel(channelId); n.close(); };
+  } catch (err) { console.warn('notification failed', err); }
+}
+
 function notifyCallStarted(channelId) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   const channel = state.channelMeta.get(channelId);
   // displayLabelFor gives "# general" / "secret" / "@ Alice" — the
   // same labels the sidebar uses, so DM calls name the person.
   const where = channel ? displayLabelFor(channel) : `#${channelId}`;
-  try {
-    const n = new Notification(`Call started in ${where}`, {
-      body: 'Click to join.',
-      tag: `call:${channelId}`, // collapse repeat alerts for the same call
-      silent: false,
-    });
-    n.onclick = () => { window.focus(); focusChannel(channelId); n.close(); };
-  } catch (err) { console.warn('call notification failed', err); }
+  notifyWithFocus(`Call started in ${where}`, {
+    body: 'Click to join.',
+    tag: `call:${channelId}`, // collapse repeat alerts for the same call
+    silent: false,
+  }, channelId);
 }
 
 // ---------------------------------------------------------------------------
@@ -3919,21 +3945,13 @@ function onChatMessage(m) {
 }
 
 function sendDesktopNotification(m, channel) {
-  if (!('Notification' in window) || Notification.permission !== 'granted') return;
   const where = channel?.type === 'dm' ? `DM from ${m.authorName}`
     : `${m.authorName} in #${channel?.name || m.channelId}`;
-  try {
-    const n = new Notification(where, {
-      body: (m.text || '').slice(0, 200),
-      tag: m.channelId, // collapse repeated alerts per channel
-      silent: false,
-    });
-    n.onclick = () => {
-      window.focus();
-      focusChannel(m.channelId);
-      n.close();
-    };
-  } catch (err) { console.warn('notification failed', err); }
+  notifyWithFocus(where, {
+    body: (m.text || '').slice(0, 200),
+    tag: m.channelId, // collapse repeated alerts per channel
+    silent: false,
+  }, m.channelId);
 }
 
 function onChannelAdded(channel) {
@@ -4341,10 +4359,10 @@ function onIncomingKnock(payload) {
   }, KNOCK_TTL_MS);
   _knock.incoming = { knockId, channelId, peerId: from, peerName: fromName, timer, el };
 
-  // A soft notification helps when Huddle is backgrounded.
-  if ('Notification' in window && Notification.permission === 'granted') {
-    try { new Notification('Knock knock', { body: `${fromName || 'A teammate'} wants to huddle` }); } catch {}
-  }
+  // A soft notification helps when Huddle is backgrounded; clicking it surfaces
+  // the window + the DM so the user can reach Accept/Decline before the 30s TTL
+  // expires (without the focus-on-click the window would stay buried).
+  notifyWithFocus('Knock knock', { body: `${fromName || 'A teammate'} wants to huddle` }, channelId);
 }
 
 async function _acceptIncomingKnock() {
@@ -6495,6 +6513,27 @@ function onRecordingState({ recording, previous }) {
     return;
   }
   syncRecordButtonState();
+
+  // Latch whether this call will get a server Meeting Recap, so
+  // finalizeCallTranscript can suppress the redundant standalone "Call recap".
+  // The standalone path runs at leave time, when the live recording row may
+  // already read as terminal — so we latch the fact here rather than inspect the
+  // row later. Two pieces of state are needed because a call can hold more than
+  // one recording (stop + re-record): `callRecordingCommitted` records that some
+  // egress reached stopping/completed (its recap is locked in server-side), so a
+  // LATER recording failing in the same call can't un-cover the call.
+  if (recording.status === 'failed') {
+    // A failed egress posts no recap. Only un-cover if nothing has committed yet
+    // (otherwise the earlier committed recording still covers the call).
+    if (!state.callRecordingCommitted) state.callRecordingCovered = false;
+  } else {
+    // starting/recording → optimistic (leaveCall stops + submits, so it
+    // completes); stopping/completed → committed, latch it.
+    state.callRecordingCovered = true;
+    if (recording.status === 'stopping' || recording.status === 'completed') {
+      state.callRecordingCommitted = true;
+    }
+  }
 
   // The recording's starter is the single transcript submitter (the webhook
   // reads the starter's AI key, and a transcript from any other member would

@@ -1002,11 +1002,21 @@ class ChatView {
     if (text.startsWith('/')) {
       const handled = await this._maybeRunSlash(text);
       if (handled) {
-        this._clearDraft(this.currentChannel);
-        this.els.composer.value = '';
-        this.els.composer.style.height = 'auto';
-        this.composerAttachments = [];
-        this._renderAttachmentChips();
+        // The original /command was consumed, so clear the persisted draft +
+        // attachments. The visible composer is cleared either way (slow
+        // handlers like /ai clear it themselves before their round-trip; a
+        // synchronous handler leaves the command text in place). The one case
+        // we must NOT touch: the user typed a NEW message during a slow
+        // command's round-trip — the composer then holds something other than
+        // the command (and isn't empty), so leave it and its draft intact.
+        const cur = this.els.composer.value.trim();
+        if (cur === text || cur === '') {
+          this._clearDraft(this.currentChannel);
+          this.els.composer.value = '';
+          this.els.composer.style.height = 'auto';
+          this.composerAttachments = [];
+          this._renderAttachmentChips();
+        }
         return;
       }
     }
