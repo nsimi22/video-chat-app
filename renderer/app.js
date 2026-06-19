@@ -288,6 +288,10 @@ const state = {
   // recordings-watcher teardown, so the latch records the fact independent of
   // the live row's lifecycle.
   callRecordingCovered: false,
+  // Sticky companion to callRecordingCovered: set once some egress in THIS call
+  // reaches stopping/completed (a server recap is locked in), so a later
+  // recording failing in the same call can't wrongly un-cover it.
+  callRecordingCommitted: false,
   lurkingChannelId: null, // channel.id we're watching call-presence on
   callCounts: new Map(),  // channel.id -> last known call-participant count (for "call started" detection)
   chat: null,
@@ -1460,6 +1464,7 @@ async function startPopoutCall(channelId) {
   }
   state.inCallChannelId = channelId;
   state.callRecordingCovered = false;
+  state.callRecordingCommitted = false;
   bindCallCaptionsListener();
   // Avatar stack switches to in-call source for popout's main-window
   // header too. Safe no-op when running inside the popout window where
@@ -2245,6 +2250,7 @@ async function startCall(channelId) {
   }
   state.inCallChannelId = channelId;
   state.callRecordingCovered = false;
+  state.callRecordingCommitted = false;
   // Captions listener — runs for the whole call so receivers see
   // lines even without toggling CC themselves. The local engine
   // (state.cc.manager) is independent; CC button still controls
@@ -6508,13 +6514,26 @@ function onRecordingState({ recording, previous }) {
   }
   syncRecordButtonState();
 
-  // Latch that this call had a recording, so finalizeCallTranscript can suppress
-  // the standalone "Call recap" in favour of the server's Meeting Recap — even
-  // if the egress reaches 'completed' before the user leaves (the standalone
-  // path runs at leave time, when the live row may no longer read as active). A
-  // 'failed' egress posts no Meeting Recap, so it clears the flag (the
-  // standalone recap should still go out).
-  state.callRecordingCovered = recording.status !== 'failed';
+  // Latch whether this call will get a server Meeting Recap, so
+  // finalizeCallTranscript can suppress the redundant standalone "Call recap".
+  // The standalone path runs at leave time, when the live recording row may
+  // already read as terminal — so we latch the fact here rather than inspect the
+  // row later. Two pieces of state are needed because a call can hold more than
+  // one recording (stop + re-record): `callRecordingCommitted` records that some
+  // egress reached stopping/completed (its recap is locked in server-side), so a
+  // LATER recording failing in the same call can't un-cover the call.
+  if (recording.status === 'failed') {
+    // A failed egress posts no recap. Only un-cover if nothing has committed yet
+    // (otherwise the earlier committed recording still covers the call).
+    if (!state.callRecordingCommitted) state.callRecordingCovered = false;
+  } else {
+    // starting/recording → optimistic (leaveCall stops + submits, so it
+    // completes); stopping/completed → committed, latch it.
+    state.callRecordingCovered = true;
+    if (recording.status === 'stopping' || recording.status === 'completed') {
+      state.callRecordingCommitted = true;
+    }
+  }
 
   // The recording's starter is the single transcript submitter (the webhook
   // reads the starter's AI key, and a transcript from any other member would
