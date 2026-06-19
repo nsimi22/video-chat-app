@@ -280,6 +280,12 @@ const state = {
   mesh: null,             // LivekitCallClient — alive only while in a call
   inCallChannelId: null,  // channel.id of the active call, if any
   callStarting: false,    // re-entrancy guard for startCall()
+  // True once THIS call observed a (non-failed) recording — meaning the server
+  // will post a Meeting Recap, so the standalone "Call recap" should be
+  // suppressed. Tracked per call (reset on join) rather than read off
+  // huddle.activeRecording, whose 'completed' row lingers across sequential
+  // calls in the same channel (the watcher isn't torn down on leave).
+  callRecordingCovered: false,
   lurkingChannelId: null, // channel.id we're watching call-presence on
   callCounts: new Map(),  // channel.id -> last known call-participant count (for "call started" detection)
   chat: null,
@@ -1451,6 +1457,7 @@ async function startPopoutCall(channelId) {
     return;
   }
   state.inCallChannelId = channelId;
+  state.callRecordingCovered = false;
   bindCallCaptionsListener();
   // Avatar stack switches to in-call source for popout's main-window
   // header too. Safe no-op when running inside the popout window where
@@ -2235,6 +2242,7 @@ async function startCall(channelId) {
     return;
   }
   state.inCallChannelId = channelId;
+  state.callRecordingCovered = false;
   // Captions listener — runs for the whole call so receivers see
   // lines even without toggling CC themselves. The local engine
   // (state.cc.manager) is independent; CC button still controls
@@ -2926,7 +2934,7 @@ function finalizeCallTranscript() {
   // submitted its transcript snapshot on the stop/leave transition. Skip the
   // standalone transcript-only "📞 Call recap" so the channel doesn't get two
   // near-identical summaries. (This legacy suppression is intentionally kept.)
-  if (state.huddle?.isRecordingCovered()) {
+  if (state.callRecordingCovered) {
     console.log('[recap] skip: recording will be covered by the server Meeting Recap');
     // Only the standalone RECAP is skipped (the server posts the Meeting
     // Recap). We must STILL tear captions down — stop the local SR engine,
@@ -6501,6 +6509,14 @@ function onRecordingState({ recording, previous }) {
     return;
   }
   syncRecordButtonState();
+
+  // Remember that this call had a recording, so finalizeCallTranscript can
+  // suppress the standalone "Call recap" in favour of the server's Meeting
+  // Recap — even if the egress reaches 'completed' before the user leaves. A
+  // 'failed' egress posts no Meeting Recap, so it clears the flag (the
+  // standalone recap should still go out). This is scoped to the current call
+  // (reset on join), unlike huddle.activeRecording whose terminal row lingers.
+  state.callRecordingCovered = recording.status !== 'failed';
 
   // The recording's starter is the single transcript submitter (the webhook
   // reads the starter's AI key, and a transcript from any other member would

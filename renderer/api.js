@@ -545,20 +545,6 @@
       const s = this._activeRecording?.status;
       return s === 'starting' || s === 'recording' || s === 'stopping';
     }
-    // True when this call's recording will produce — or already produced — a
-    // server-side Meeting Recap, i.e. the standalone "Call recap" should be
-    // suppressed to avoid two near-identical summaries. Unlike isRecordingActive
-    // this also counts a 'completed' egress: a user who stops recording but
-    // keeps talking, then leaves, sees the row reach 'completed' before
-    // finalizeCallTranscript runs — and the webhook still posts the Meeting
-    // Recap. A 'failed' egress yields no Meeting Recap, so it's excluded (the
-    // standalone recap should still post). The seed query only ever loads
-    // in-flight rows, so _activeRecording reflects the current call, never a
-    // prior call's completed recording.
-    isRecordingCovered() {
-      const s = this._activeRecording?.status;
-      return s === 'starting' || s === 'recording' || s === 'stopping' || s === 'completed';
-    }
 
     // Subscribe to call_recordings changes for `channelId` so the shared
     // indicator stays live for all participants. Idempotent per channel.
