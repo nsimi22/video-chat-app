@@ -38,7 +38,7 @@
     // Pull inline code out to Private-Use sentinels FIRST so its contents
     // (e.g. `**kwargs` or `a*b*c`) survive the bold/italic passes verbatim —
     // otherwise markdown inside a code span gets mangled. Restored last.
-    const SENT = '';
+    const SENT = '\uE000';
     const codes = [];
     let s = esc.replace(/`([^`]+)`/g, (_, c) => `${SENT}${codes.push(c) - 1}${SENT}`);
     s = s

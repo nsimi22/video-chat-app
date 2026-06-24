@@ -654,11 +654,22 @@ export async function uploadAttachment(userId: string, file: { uri: string; name
 export function extractMentions(body: string, roster: Profile[]): string[] {
   const out = new Set<string>();
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  for (const p of roster) {
-    const name = p.name?.trim();
-    if (!name) continue;
-    const re = new RegExp(`(^|[^a-zA-Z0-9_])@${esc(name)}(?![a-zA-Z0-9_])`, 'i');
-    if (re.test(body)) out.add(p.user_id);
+  // Match longest names first and blank out each hit, so a name that is a
+  // prefix of a longer one ("Mary" vs "Mary Jane") can't also claim the same
+  // span — "@Mary Jane" would otherwise satisfy the trailing boundary for
+  // "Mary" too and notify the wrong person.
+  const sorted = [...(roster || [])]
+    .filter((p) => p.name?.trim())
+    .sort((a, b) => b.name!.trim().length - a.name!.trim().length);
+  let scan = body;
+  for (const p of sorted) {
+    const name = p.name!.trim();
+    const re = new RegExp(`(^|[^a-zA-Z0-9_])@${esc(name)}(?![a-zA-Z0-9_])`, 'gi');
+    const next = scan.replace(re, '$1\uE000');
+    if (next !== scan) {
+      out.add(p.user_id);
+      scan = next;
+    }
   }
   return [...out];
 }

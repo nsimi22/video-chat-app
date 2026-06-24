@@ -52,11 +52,11 @@ function renderMarkdown(text, { mentionNames, myName } = {}) {
     return `${SENT}L${i}${SENT}`;
   });
   // Exclude the sentinel char (SENT) from the URL too: code/link spans were
-  // already swapped out for `…` tokens above, and since that char
+  // already swapped out for `\uE000…\uE000` tokens above, and since that char
   // is neither whitespace nor `<`, a bare URL sitting right before one (e.g.
   // `https://x.com` immediately followed by `code`) would otherwise swallow the
   // following sentinel into the href, corrupting the link and losing the span.
-  s = s.replace(/\bhttps?:\/\/[^\s<]+[^\s<.,;:!?)]/g, (m) => {
+  s = s.replace(/\bhttps?:\/\/[^\s<\uE000]+[^\s<.,;:!?)\uE000]/g, (m) => {
     const i = links.push(m) - 1;
     return `${SENT}L${i}${SENT}`;
   });
