@@ -653,6 +653,8 @@ export async function uploadAttachment(userId: string, file: { uri: string; name
 // and a trailing boundary so `@ann` doesn't match a roster member "Anna".
 export function extractMentions(body: string, roster: Profile[]): string[] {
   const out = new Set<string>();
+  // Common case: no '@' means no possible mention — skip the sort + per-name scans.
+  if (!body || body.indexOf('@') === -1) return [...out];
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   // Match longest names first and blank out each hit, so a name that is a
   // prefix of a longer one ("Mary" vs "Mary Jane") can't also claim the same
