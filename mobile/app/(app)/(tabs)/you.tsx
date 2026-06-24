@@ -193,10 +193,10 @@ export default function YouScreen() {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg, padding: space(4) }}>
         <Text style={{ color: colors.text, fontSize: 16, fontWeight: '600', marginBottom: space(2), textAlign: 'center' }}>
-          Couldn't load your profile
+          {"Couldn't load your profile"}
         </Text>
         <Text style={{ color: colors.textDim, textAlign: 'center', marginBottom: space(4) }}>
-          Check your connection and try again. We won't save anything until it loads, so your profile stays safe.
+          {"Check your connection and try again. We won't save anything until it loads, so your profile stays safe."}
         </Text>
         <Button title="Retry" onPress={loadProfile} />
       </View>
