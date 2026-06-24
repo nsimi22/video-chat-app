@@ -204,7 +204,10 @@ export async function summarize(
   const lines = (msgs || [])
     .filter((m) => m.text)
     .map((m) => {
-      const ts = new Date(m.ts || Date.now()).toISOString().slice(11, 16);
+      // Local wall-clock HH:MM — toISOString() would emit UTC, showing times
+      // hours off for anyone not on UTC.
+      const d = new Date(m.ts || Date.now());
+      const ts = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
       const who = m.authorName || 'someone';
       return `[${ts}] ${who}: ${m.text.replace(/\n+/g, ' ')}`;
     })

@@ -117,7 +117,11 @@ export default function ChannelScreen() {
   // Memoize the FlatList extraData tuple — a fresh array literal in JSX
   // would defeat virtualization (FlatList does an Object.is identity
   // check and would re-render every cell on every parent render).
-  const flatListExtra = useMemo(() => [roster, dayKey], [roster, dayKey]);
+  // replyCounts must be here too: thread replies bump the count without
+  // touching `messages`, so without it FlatList's Object.is check skips the
+  // cell and the "N replies" chip never appears/updates until an unrelated
+  // re-render.
+  const flatListExtra = useMemo(() => [roster, dayKey, replyCounts], [roster, dayKey, replyCounts]);
 
   useEffect(() => {
     if (teamId) listTeamProfiles(teamId).then(setRoster).catch(() => {});

@@ -84,13 +84,17 @@ export default function YouScreen() {
 
   useEffect(() => {
     if (!userId) return;
-    getProfile(userId).then((p) => {
-      setName(p?.name ?? '');
-      setBio(p?.bio ?? '');
-      setColor(p?.color ?? null);
-      setAvatarUrl(p?.avatar_url ?? null);
-      setLoading(false);
-    });
+    getProfile(userId)
+      .then((p) => {
+        setName(p?.name ?? '');
+        setBio(p?.bio ?? '');
+        setColor(p?.color ?? null);
+        setAvatarUrl(p?.avatar_url ?? null);
+      })
+      // Without this, a transient getProfile() rejection leaves the You tab
+      // stuck on its loading spinner until the app is restarted.
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, [userId]);
 
   // Re-read integration state on focus so a key added on desktop shows up

@@ -644,12 +644,21 @@ export async function uploadAttachment(userId: string, file: { uri: string; name
 
 // Client-side @mention extraction, same approach as the desktop renderer:
 // resolve @name tokens against the known team roster.
+//
+// We scan for each roster name rather than tokenizing the body, because the
+// mention picker inserts the full display name (which can contain spaces,
+// e.g. "@Mary Jane"). A single greedy `@([\w .-]+)` token would over-match
+// across the rest of the sentence and never equal the name. We also require a
+// leading boundary so `nick@example.com` doesn't read as an "@example" mention,
+// and a trailing boundary so `@ann` doesn't match a roster member "Anna".
 export function extractMentions(body: string, roster: Profile[]): string[] {
   const out = new Set<string>();
-  for (const m of body.matchAll(/@([\w.\- ]{2,40})/g)) {
-    const name = m[1].trim().toLowerCase();
-    const hit = roster.find((p) => p.name?.toLowerCase() === name);
-    if (hit) out.add(hit.user_id);
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const p of roster) {
+    const name = p.name?.trim();
+    if (!name) continue;
+    const re = new RegExp(`(^|[^a-zA-Z0-9_])@${esc(name)}(?![a-zA-Z0-9_])`, 'i');
+    if (re.test(body)) out.add(p.user_id);
   }
   return [...out];
 }
