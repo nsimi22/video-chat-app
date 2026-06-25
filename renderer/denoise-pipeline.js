@@ -89,6 +89,14 @@
         console.warn('[denoise] AudioContext @48kHz unsupported', err);
         throw new Error('denoise: 48 kHz AudioContext unavailable');
       }
+      // Chromium doesn't throw when it can't honor the requested rate — it
+      // hands back a context at the device's native rate. RNNoise's 480-sample
+      // frames are only 10 ms at 48k, so a mismatched rate would denoise
+      // incorrectly. Verify the realized rate and bail to passthrough instead.
+      if (ctx.sampleRate !== 48000) {
+        try { ctx.close(); } catch {}
+        throw new Error('denoise: could not obtain a 48 kHz AudioContext');
+      }
       this._ctx = ctx;
 
       // Register the RNNoise worklet from its same-origin module file

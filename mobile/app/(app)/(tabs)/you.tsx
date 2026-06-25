@@ -77,21 +77,34 @@ export default function YouScreen() {
   const [color, setColor] = useState<string | null>(null);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [savingPassword, setSavingPassword] = useState(false);
   const [integrations, setIntegrations] = useState<IntegrationRow[]>([]);
 
-  useEffect(() => {
+  const loadProfile = useCallback(() => {
     if (!userId) return;
-    getProfile(userId).then((p) => {
-      setName(p?.name ?? '');
-      setBio(p?.bio ?? '');
-      setColor(p?.color ?? null);
-      setAvatarUrl(p?.avatar_url ?? null);
-      setLoading(false);
-    });
+    setLoading(true);
+    setLoadError(false);
+    getProfile(userId)
+      .then((p) => {
+        setName(p?.name ?? '');
+        setBio(p?.bio ?? '');
+        setColor(p?.color ?? null);
+        setAvatarUrl(p?.avatar_url ?? null);
+      })
+      // Surface the failure instead of swallowing it: a transient rejection
+      // used to leave the tab spinning forever, but silently clearing `loading`
+      // would show a blank form whose Save would overwrite the real profile
+      // with empty values. We render a retry state instead (see below).
+      .catch(() => setLoadError(true))
+      .finally(() => setLoading(false));
   }, [userId]);
+
+  useEffect(() => {
+    loadProfile();
+  }, [loadProfile]);
 
   // Re-read integration state on focus so a key added on desktop shows up
   // after the cache TTL without an app restart.
@@ -170,6 +183,22 @@ export default function YouScreen() {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}>
         <ActivityIndicator color={colors.accent} />
+      </View>
+    );
+  }
+
+  // Block the form on a load failure rather than showing empty fields — saving
+  // from here would clobber the user's stored profile with blank values.
+  if (loadError) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg, padding: space(4) }}>
+        <Text style={{ color: colors.text, fontSize: 16, fontWeight: '600', marginBottom: space(2), textAlign: 'center' }}>
+          {"Couldn't load your profile"}
+        </Text>
+        <Text style={{ color: colors.textDim, textAlign: 'center', marginBottom: space(4) }}>
+          {"Check your connection and try again. We won't save anything until it loads, so your profile stays safe."}
+        </Text>
+        <Button title="Retry" onPress={loadProfile} />
       </View>
     );
   }

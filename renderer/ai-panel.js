@@ -35,11 +35,20 @@
   function renderText(text) {
     if (!text) return '';
     const esc = escapeHtml(text);
-    return esc
+    // Pull inline code out to Private-Use sentinels FIRST so its contents
+    // (e.g. `**kwargs` or `a*b*c`) survive the bold/italic passes verbatim —
+    // otherwise markdown inside a code span gets mangled. Restored last.
+    const SENT = '\uE000';
+    const codes = [];
+    let s = esc.replace(/`([^`]+)`/g, (_, c) => `${SENT}${codes.push(c) - 1}${SENT}`);
+    s = s
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/(^|\W)\*([^*]+)\*(\W|$)/g, '$1<em>$2</em>$3')
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      // Lookahead (not a consumed group) on the trailing boundary so back-to-back
+      // italics like `*a* *b*` both render — consuming the space would leave the
+      // second span's leading boundary unmatched.
+      .replace(/(^|\W)\*([^*]+)\*(?=\W|$)/g, '$1<em>$2</em>')
       .replace(/\n/g, '<br />');
+    return s.replace(new RegExp(`${SENT}(\\d+)${SENT}`, 'g'), (_, i) => `<code>${codes[+i]}</code>`);
   }
 
   function getActiveChannelLabel() {

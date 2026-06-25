@@ -405,7 +405,11 @@ class WhiteboardSession {
   async clear() {
     this.canvas.clearAll();
     this.huddle.sendWhiteboardStroke(this.whiteboardId, { action: 'clear' });
-    this._paintedUuids.clear();
+    // NB: do NOT clear `_paintedUuids` here. It's the session-long dedup ledger
+    // that stops a live-broadcast stroke from being re-painted by a later
+    // history replay (e.g. a late fetchWhiteboardStrokes resolving, or reopen).
+    // Emptying it doesn't repaint anything now, but it lets already-seen
+    // strokes slip through dedup and get painted twice afterward.
     // Sticky notes are part of the canvas state — clearing should
     // wipe both. Tell remote viewers explicitly so they drop their
     // local DOM nodes; clearWhiteboard() in api.js drops the rows.

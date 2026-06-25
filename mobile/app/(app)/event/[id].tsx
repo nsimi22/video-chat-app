@@ -25,18 +25,28 @@ export default function EventDetailScreen() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (!activeTeam || !id) return;
-      const found = await getScheduledCall(id);
-      if (cancelled) return;
-      setEvent(found);
-      // Only pull the channels list to resolve the channel name + color —
-      // skip when the event itself wasn't found.
-      if (found) {
-        const channels = await listChannels(activeTeam.id);
-        if (cancelled) return;
-        setChannel(channels.find((c) => c.id === found.channelId) ?? null);
+      // Always clear `loading` — an early return or a failed fetch would
+      // otherwise leave the screen stuck on its spinner forever.
+      if (!activeTeam || !id) {
+        setLoading(false);
+        return;
       }
-      setLoading(false);
+      try {
+        const found = await getScheduledCall(id);
+        if (cancelled) return;
+        setEvent(found);
+        // Only pull the channels list to resolve the channel name + color —
+        // skip when the event itself wasn't found.
+        if (found) {
+          const channels = await listChannels(activeTeam.id);
+          if (cancelled) return;
+          setChannel(channels.find((c) => c.id === found.channelId) ?? null);
+        }
+      } catch (e) {
+        console.warn('event load failed', e);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     })();
     return () => {
       cancelled = true;

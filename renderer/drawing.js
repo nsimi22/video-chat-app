@@ -170,11 +170,22 @@ class DrawingLayer {
 
   _redraw() {
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    // Replay from a known-clean state: a resize (ResizeObserver ->
+    // _sizeToTile -> _redraw) can fire while the context is mid-stroke, so the
+    // composite op / cursor could be stale before we start.
+    this.ctx.globalCompositeOperation = 'source-over';
+    this._cursor = null;
     let prev = null;
     for (const s of this.history) {
       this._drawStroke(s, prev);
       prev = s;
     }
+    // Don't force 'source-over' here. If history ends mid-eraser-stroke (a
+    // `begin`/`move` with no `end` yet — e.g. a peer still dragging), the
+    // replayed `begin` has correctly left the op at 'destination-out' with
+    // `_cursor` set, which is exactly the state the next live `move` needs to
+    // keep erasing. _drawStroke already restores 'source-over' on a closed
+    // stroke's `end`.
   }
 
   _drawStroke(s) {

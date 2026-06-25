@@ -644,12 +644,34 @@ export async function uploadAttachment(userId: string, file: { uri: string; name
 
 // Client-side @mention extraction, same approach as the desktop renderer:
 // resolve @name tokens against the known team roster.
+//
+// We scan for each roster name rather than tokenizing the body, because the
+// mention picker inserts the full display name (which can contain spaces,
+// e.g. "@Mary Jane"). A single greedy `@([\w .-]+)` token would over-match
+// across the rest of the sentence and never equal the name. We also require a
+// leading boundary so `nick@example.com` doesn't read as an "@example" mention,
+// and a trailing boundary so `@ann` doesn't match a roster member "Anna".
 export function extractMentions(body: string, roster: Profile[]): string[] {
   const out = new Set<string>();
-  for (const m of body.matchAll(/@([\w.\- ]{2,40})/g)) {
-    const name = m[1].trim().toLowerCase();
-    const hit = roster.find((p) => p.name?.toLowerCase() === name);
-    if (hit) out.add(hit.user_id);
+  // Common case: no '@' means no possible mention — skip the sort + per-name scans.
+  if (!body || body.indexOf('@') === -1) return [...out];
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Match longest names first and blank out each hit, so a name that is a
+  // prefix of a longer one ("Mary" vs "Mary Jane") can't also claim the same
+  // span — "@Mary Jane" would otherwise satisfy the trailing boundary for
+  // "Mary" too and notify the wrong person.
+  const sorted = [...(roster || [])]
+    .filter((p) => p.name?.trim())
+    .sort((a, b) => b.name!.trim().length - a.name!.trim().length);
+  let scan = body;
+  for (const p of sorted) {
+    const name = p.name!.trim();
+    const re = new RegExp(`(^|[^a-zA-Z0-9_])@${esc(name)}(?![a-zA-Z0-9_])`, 'gi');
+    const next = scan.replace(re, '$1\uE000');
+    if (next !== scan) {
+      out.add(p.user_id);
+      scan = next;
+    }
   }
   return [...out];
 }
