@@ -1,8 +1,9 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
 import { supabase } from '@/lib/supabase';
 import { listTeams, type Team } from '@/lib/api';
+import { isEnabled as biometricPrefEnabled } from '@/lib/biometricPref';
 
 type AuthState = {
   loading: boolean;
@@ -11,6 +12,8 @@ type AuthState = {
   activeTeam: Team | null;
   setActiveTeam: (t: Team | null) => void;
   signOut: () => Promise<void>;
+  locked: boolean;
+  unlock: () => void;
 };
 
 const Ctx = createContext<AuthState | undefined>(undefined);
@@ -21,17 +24,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [session, setSession] = useState<Session | null>(null);
   const [activeTeam, setActiveTeamState] = useState<Team | null>(null);
+  // Biometric lock — true on cold start if a session exists and the user
+  // has opted in. Subsequent sign-ins within the same JS runtime are not
+  // re-locked: the `coldStart` ref ensures we only consult the pref once.
+  const [locked, setLocked] = useState(false);
+  const coldStart = useRef(true);
 
   useEffect(() => {
     supabase.auth
       .getSession()
-      .then(({ data }) => {
+      .then(async ({ data }) => {
         setSession(data.session);
         // Keep `loading` true if we have a session so the restore-team
         // effect below can finish before Index routes. If there's no
         // session at all there's nothing to restore — flip false now so
         // the user lands on the login screen immediately.
-        if (!data.session) setLoading(false);
+        if (!data.session) {
+          setLoading(false);
+          coldStart.current = false;
+          return;
+        }
+        const uid = data.session.user.id;
+        if (coldStart.current && (await biometricPrefEnabled(uid).catch(() => false))) {
+          setLocked(true);
+        }
+        coldStart.current = false;
       })
       // If the SDK fails to even resolve the session (low-level
       // network blip, native crypto issue), bail out of loading or
@@ -41,6 +58,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSession(s);
       if (!s) {
         setActiveTeamState(null);
+        setLocked(false);
         // Defensive: covers the case where the user signs out while
         // the restore is still in flight; without this `loading`
         // would stay true forever and Index would never re-route.
@@ -97,6 +115,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signOut();
   };
 
+  const unlock = () => setLocked(false);
+
   const value = useMemo<AuthState>(
     () => ({
       loading,
@@ -105,8 +125,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       activeTeam,
       setActiveTeam,
       signOut,
+      locked,
+      unlock,
     }),
-    [loading, session, activeTeam],
+    [loading, session, activeTeam, locked],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

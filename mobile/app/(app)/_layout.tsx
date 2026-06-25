@@ -9,12 +9,13 @@ import { UnreadProvider } from '@/context/UnreadContext';
 import { MutedChannelsProvider } from '@/context/MutedChannelsContext';
 import { FavoritesProvider } from '@/context/FavoritesContext';
 import { PresenceProvider } from '@/context/PresenceContext';
+import { BiometricLockScreen } from '@/components/BiometricLockScreen';
 import { FloatingCall } from '@/components/FloatingCall';
 import { registerForPush } from '@/lib/push';
 import { colors } from '@/theme';
 
 export default function AppLayout() {
-  const { loading, session, activeTeam, userId } = useAuth();
+  const { loading, session, activeTeam, userId, locked } = useAuth();
 
   useEffect(() => {
     if (loading) return;
@@ -23,7 +24,9 @@ export default function AppLayout() {
   }, [loading, session, activeTeam]);
 
   useEffect(() => {
-    if (!userId) return;
+    // Skip while locked — push registration shouldn't run for a session the
+    // user hasn't unlocked yet; it re-runs once `locked` flips to false.
+    if (!userId || locked) return;
     // Surface failures to the console — push registration is the most
     // common silent failure mode (permission gate, missing projectId,
     // device_tokens RLS, expired Expo project). Logging here is the
@@ -31,7 +34,12 @@ export default function AppLayout() {
     registerForPush(userId).catch((err) => {
       console.error('[push] registerForPush failed at app layout:', err);
     });
-  }, [userId]);
+  }, [userId, locked]);
+
+  // Gate the entire (app) tree on biometric unlock when the user has opted in.
+  // Placed after all hooks (rules-of-hooks); the providers below — and thus
+  // push registration and call setup — stay unmounted while locked.
+  if (session && locked) return <BiometricLockScreen />;
 
   // CallProvider has to wrap the navigator so /(app)/call/[id] can
   // call useCall() to read activeCall and the floater (rendered as a
