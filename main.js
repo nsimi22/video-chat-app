@@ -135,6 +135,41 @@ function customTitlebarOptions() {
   return {};
 }
 
+// Our only legitimate top-level document is renderer/index.html (popouts
+// add a query string but the same file). Pin every window to it: a
+// compromised/poisoned renderer must not be able to navigate the top frame
+// to a remote origin, which would inherit the full `window.huddle` preload
+// bridge (fetch-proxy with the user's API keys, popout spawning, etc.).
+// loadFile from the main process does not fire will-navigate, and in-page
+// pushState/hash changes fire did-navigate-in-page — so this only blocks
+// genuine renderer-initiated cross-document navigations.
+const INDEX_FILE = path.join(__dirname, 'renderer', 'index.html');
+function lockNavigationToIndex(contents) {
+  const isIndex = (raw) => {
+    try {
+      const u = new URL(raw);
+      return u.protocol === 'file:' && decodeURIComponent(u.pathname) === INDEX_FILE;
+    } catch { return false; }
+  };
+  const block = (e, url) => {
+    if (isIndex(url)) return;
+    e.preventDefault();
+    if (url.startsWith('http://') || url.startsWith('https://')) shell.openExternal(url);
+  };
+  contents.on('will-navigate', block);
+  contents.on('will-redirect', block);
+}
+
+// External http(s) links open in the system browser; everything else
+// (file://, custom schemes, etc.) is denied rather than spawned in a new
+// BrowserWindow with default, unsandboxed webPreferences.
+function externalLinkWindowOpenHandler({ url }) {
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+    shell.openExternal(url);
+  }
+  return { action: 'deny' };
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -148,7 +183,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
 
@@ -183,13 +218,8 @@ function createWindow() {
 
   // External http(s): links from chat (e.g. uploads, GIFs) open in the system
   // browser instead of replacing our renderer.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      shell.openExternal(url);
-      return { action: 'deny' };
-    }
-    return { action: 'allow' };
-  });
+  mainWindow.webContents.setWindowOpenHandler(externalLinkWindowOpenHandler);
+  lockNavigationToIndex(mainWindow.webContents);
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
@@ -239,17 +269,12 @@ ipcMain.handle('open-popout', (_event, opts) => {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
-  // Match the main window's external-link policy.
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      shell.openExternal(url);
-      return { action: 'deny' };
-    }
-    return { action: 'allow' };
-  });
+  // Match the main window's external-link + navigation policy.
+  win.webContents.setWindowOpenHandler(externalLinkWindowOpenHandler);
+  lockNavigationToIndex(win.webContents);
   const params = new URLSearchParams();
   params.set('popout', target);
   if (opts?.teamId) params.set('team', opts.teamId);
@@ -739,6 +764,12 @@ function isLoopbackOrPrivate(hostname) {
 // to https:// per the de-facto convention used by every major
 // calendar provider.
 const ICS_MAX_BYTES = 4 * 1024 * 1024; // 4 MB — accommodates large feeds (year of 30+ events)
+// fetch-proxy carries the user's API credentials (Authorization / x-api-key
+// for Anthropic, OpenRouter, GitHub, Jira). Cap the redirect chain and the
+// response body so a hostile-but-allowlisted endpoint can neither bounce the
+// credentials to an internal host nor OOM the main process.
+const FETCH_PROXY_MAX_REDIRECTS = 5;
+const FETCH_PROXY_MAX_BYTES = 16 * 1024 * 1024; // 16 MB
 ipcMain.handle('ics-fetch', async (_event, { url }) => {
   let parsed;
   try {
@@ -815,26 +846,68 @@ ipcMain.handle('ics-fetch', async (_event, { url }) => {
   }
 });
 
-ipcMain.handle('fetch-proxy', async (_event, { url, method = 'GET', headers = {}, body = null }) => {
+// Re-runs the full host gate (https + allowlist + private/loopback) on a
+// URL. Used for the initial request AND every redirect hop, so an allowlisted
+// host that 3xx-redirects can't smuggle the credential-bearing request to an
+// arbitrary or internal target.
+function validateProxyTarget(raw) {
   let parsed;
-  try { parsed = new URL(url); } catch { return { ok: false, status: 0, error: 'invalid url' }; }
-  if (parsed.protocol !== 'https:') {
-    return { ok: false, status: 0, error: 'only https urls are allowed' };
-  }
+  try { parsed = new URL(raw); } catch { return { error: 'invalid url' }; }
+  if (parsed.protocol !== 'https:') return { error: 'only https urls are allowed' };
   if (!ALLOWED_PROXY_HOSTS.some((re) => re.test(parsed.hostname))) {
-    return { ok: false, status: 0, error: `host not allowed: ${parsed.hostname}` };
+    return { error: `host not allowed: ${parsed.hostname}` };
   }
-  if (isLoopbackOrPrivate(parsed.hostname)) {
-    return { ok: false, status: 0, error: 'private/loopback hosts blocked' };
-  }
+  if (isLoopbackOrPrivate(parsed.hostname)) return { error: 'private/loopback hosts blocked' };
+  return { url: parsed.toString() };
+}
+
+ipcMain.handle('fetch-proxy', async (_event, { url, method = 'GET', headers = {}, body = null }) => {
+  const first = validateProxyTarget(url);
+  if (first.error) return { ok: false, status: 0, error: first.error };
   try {
-    const res = await fetch(parsed.toString(), { method, headers, body });
-    const text = await res.text();
-    return {
-      ok: res.ok, status: res.status,
-      headers: Object.fromEntries(res.headers.entries()),
-      body: text,
-    };
+    // Follow redirects manually so each hop is re-validated before we resend
+    // the user's Authorization/x-api-key headers. (Default redirect:'follow'
+    // would have already leaked them to the redirect target.)
+    let current = first.url;
+    let res;
+    for (let hop = 0; ; hop++) {
+      if (hop > FETCH_PROXY_MAX_REDIRECTS) {
+        return { ok: false, status: 0, error: 'too many redirects' };
+      }
+      res = await fetch(current, { method, headers, body, redirect: 'manual' });
+      if (res.status < 300 || res.status >= 400) break;
+      const location = res.headers.get('location');
+      if (!location) break; // e.g. 304 Not Modified — nothing to follow
+      const next = validateProxyTarget(new URL(location, current).toString());
+      if (next.error) return { ok: false, status: res.status, error: `redirect ${next.error}` };
+      try { res.body?.cancel?.(); } catch {}
+      current = next.url;
+    }
+    // Bounded read so a rogue server can't OOM the main process.
+    let text = '';
+    const reader = res.body?.getReader();
+    if (reader) {
+      const chunks = [];
+      let total = 0;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > FETCH_PROXY_MAX_BYTES) {
+          try { await reader.cancel(); } catch {}
+          return { ok: false, status: res.status, error: 'response too large' };
+        }
+        chunks.push(value);
+      }
+      text = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8');
+    }
+    // Don't hand Set-Cookie back to the renderer.
+    const outHeaders = {};
+    for (const [k, v] of res.headers.entries()) {
+      if (k.toLowerCase() === 'set-cookie') continue;
+      outHeaders[k] = v;
+    }
+    return { ok: res.ok, status: res.status, headers: outHeaders, body: text };
   } catch (err) {
     return { ok: false, status: 0, error: String(err && err.message || err) };
   }
