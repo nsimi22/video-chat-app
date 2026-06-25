@@ -23,13 +23,10 @@ export default function AppLayout() {
     else if (!activeTeam) router.replace('/(auth)/team');
   }, [loading, session, activeTeam]);
 
-  // Gate the entire (app) tree on biometric unlock when the user has opted
-  // in. Rendered before any of the providers so push registration and call
-  // setup don't run for a locked session.
-  if (session && locked) return <BiometricLockScreen />;
-
   useEffect(() => {
-    if (!userId) return;
+    // Skip while locked — push registration shouldn't run for a session the
+    // user hasn't unlocked yet; it re-runs once `locked` flips to false.
+    if (!userId || locked) return;
     // Surface failures to the console — push registration is the most
     // common silent failure mode (permission gate, missing projectId,
     // device_tokens RLS, expired Expo project). Logging here is the
@@ -37,7 +34,12 @@ export default function AppLayout() {
     registerForPush(userId).catch((err) => {
       console.error('[push] registerForPush failed at app layout:', err);
     });
-  }, [userId]);
+  }, [userId, locked]);
+
+  // Gate the entire (app) tree on biometric unlock when the user has opted in.
+  // Placed after all hooks (rules-of-hooks); the providers below — and thus
+  // push registration and call setup — stay unmounted while locked.
+  if (session && locked) return <BiometricLockScreen />;
 
   // CallProvider has to wrap the navigator so /(app)/call/[id] can
   // call useCall() to read activeCall and the floater (rendered as a

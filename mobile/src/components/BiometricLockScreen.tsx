@@ -65,7 +65,7 @@ export function BiometricLockScreen() {
         <Logo size={64} />
         <Text style={styles.title}>{kindLabel} unavailable</Text>
         <Text style={styles.body}>
-          Huddle is set to unlock with {kindLabel}, but it isn't enrolled on this device.
+          Huddle is set to unlock with {kindLabel}, but it isn&apos;t enrolled on this device.
           Sign in with your password to continue, then re-enable biometrics in Settings.
         </Text>
         <Button title="Sign in with password" onPress={fallbackToPassword} />
