@@ -46,11 +46,25 @@ const UNAVAILABLE: BiometricCapability = Object.freeze({
   kind: 'generic',
 });
 
-export async function capability(): Promise<BiometricCapability> {
+// Single guard for every public call: if the native module is missing it
+// degrades to `fallback`, and a native-layer failure (module present but
+// throwing) is caught so it never surfaces as an unhandled rejection — both
+// paths route the UI to the password fallback rather than crashing.
+async function withModule<T>(
+  fn: (LA: typeof LocalAuthentication) => Promise<T>,
+  fallback: T,
+): Promise<T> {
   const LA = load();
-  if (!LA) return UNAVAILABLE;
-
+  if (!LA) return fallback;
   try {
+    return await fn(LA);
+  } catch {
+    return fallback;
+  }
+}
+
+export function capability(): Promise<BiometricCapability> {
+  return withModule(async (LA) => {
     const [hasHardware, isEnrolled, types] = await Promise.all([
       LA.hasHardwareAsync(),
       LA.isEnrolledAsync(),
@@ -71,18 +85,11 @@ export async function capability(): Promise<BiometricCapability> {
       available: hasHardware && isEnrolled,
       kind,
     };
-  } catch {
-    // A native-layer failure (module present but throwing) should degrade to
-    // the password fallback, never surface as an unhandled rejection.
-    return UNAVAILABLE;
-  }
+  }, UNAVAILABLE);
 }
 
-export async function prompt(reason: string): Promise<boolean> {
-  const LA = load();
-  if (!LA) return false;
-
-  try {
+export function prompt(reason: string): Promise<boolean> {
+  return withModule(async (LA) => {
     const result = await LA.authenticateAsync({
       promptMessage: reason,
       // Disable the device-passcode fallback. We have our own "Sign in with
@@ -93,9 +100,7 @@ export async function prompt(reason: string): Promise<boolean> {
       cancelLabel: 'Cancel',
     });
     return result.success;
-  } catch {
-    return false;
-  }
+  }, false);
 }
 
 export function label(kind: BiometricKind): string {
