@@ -37,12 +37,14 @@ function load(): typeof LocalAuthentication | null {
   return mod;
 }
 
-const UNAVAILABLE: BiometricCapability = {
+// Returned by reference on every failure path, so freeze it — a consumer
+// mutating the shared singleton would corrupt all subsequent results.
+const UNAVAILABLE: BiometricCapability = Object.freeze({
   hasHardware: false,
   isEnrolled: false,
   available: false,
   kind: 'generic',
-};
+});
 
 export async function capability(): Promise<BiometricCapability> {
   const LA = load();
