@@ -216,6 +216,11 @@
         window.removeEventListener('online', this._onForegroundResync);
         this._onForegroundResync = null;
       }
+      if (this._resumeUnsub) {
+        try { this._resumeUnsub(); } catch {}
+        this._resumeUnsub = null;
+        this._onSystemResume = null;
+      }
       const direct = [this._teamChannel, this._knockChannel, this._dbChannel, this._callChannel];
       // Screen + whiteboard maps still store raw promise<RealtimeChannel>;
       // _lurkers values are now {channel, ready} pairs.
@@ -977,6 +982,26 @@
       if (typeof window !== 'undefined') {
         window.addEventListener('focus', this._onForegroundResync);
         window.addEventListener('online', this._onForegroundResync);
+      }
+
+      // Strongest signal: Electron powerMonitor 'resume'/'unlock-screen',
+      // relayed by main.js as `system-resume`. A sleep frequently leaves the
+      // socket *half-open* — readyState still OPEN but dead — which the gentle
+      // `connect()` above no-ops on (it only revives a socket that has closed).
+      // On a confirmed OS wake, force a full reconnect so the dead socket is
+      // torn down and every channel rejoins and re-SUBSCRIBEs (each rejoin runs
+      // its own catch-up); the backfill here covers the chat gap regardless.
+      // This fires even when the window stayed focused through the sleep, the
+      // one case `focus`/`online`/`visibilitychange` all miss.
+      this._onSystemResume = () => {
+        try {
+          this.supabase.realtime.disconnect();
+          this.supabase.realtime.connect();
+        } catch { /* best-effort reconnect */ }
+        this._catchUpMessages().catch((e) => console.warn('chat catch-up failed', e));
+      };
+      if (typeof window !== 'undefined' && window.huddle && typeof window.huddle.onSystemResume === 'function') {
+        this._resumeUnsub = window.huddle.onSystemResume(this._onSystemResume);
       }
     }
 

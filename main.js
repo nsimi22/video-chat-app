@@ -2,7 +2,7 @@
 // server is gone — main.js only opens the BrowserWindow, hands the renderer
 // a Supabase URL + publishable key, and exposes the desktopCapturer for
 // screen sharing.
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell, dialog, systemPreferences } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell, dialog, systemPreferences, powerMonitor } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 
@@ -919,6 +919,20 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+
+  // System wake / screen unlock: the Realtime WebSocket is frequently
+  // left half-open by a sleep (the OS reports the socket OPEN but it's
+  // dead), so no `focus`/`online`/`SUBSCRIBED` event in the renderer
+  // reliably fires to recover it. powerMonitor gives us the wake signal
+  // from the OS itself — relay it so the renderer can force a reconnect
+  // and gap-fill. (powerMonitor is only usable after `app` is ready.)
+  const notifyResume = () => {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isLoading()) {
+      try { mainWindow.webContents.send('system-resume'); } catch {}
+    }
+  };
+  powerMonitor.on('resume', notifyResume);
+  powerMonitor.on('unlock-screen', notifyResume);
 });
 
 app.on('window-all-closed', () => {
