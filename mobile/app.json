@@ -76,7 +76,7 @@
     },
     "owner": "nsimi22",
     "runtimeVersion": {
-      "policy": "appVersion"
+      "policy": "fingerprint"
     },
     "updates": {
       "url": "https://u.expo.dev/d0bbd9bd-4593-4dad-86ff-da0469f9721e"
