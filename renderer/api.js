@@ -211,6 +211,11 @@
         document.removeEventListener('visibilitychange', this._onVisibilityChange);
         this._onVisibilityChange = null;
       }
+      if (this._onForegroundResync && typeof window !== 'undefined') {
+        window.removeEventListener('focus', this._onForegroundResync);
+        window.removeEventListener('online', this._onForegroundResync);
+        this._onForegroundResync = null;
+      }
       const direct = [this._teamChannel, this._knockChannel, this._dbChannel, this._callChannel];
       // Screen + whiteboard maps still store raw promise<RealtimeChannel>;
       // _lurkers values are now {channel, ready} pairs.
@@ -940,17 +945,38 @@
         });
       });
 
-      // Belt-and-suspenders: when the window has been backgrounded and
-      // returns to the foreground, the WS sometimes auto-reconnects
-      // silently *before* our SUBSCRIBED handler observes it. Run
-      // catch-up on visibility regain too.
+      // Belt-and-suspenders for a silently-dropped WS. When the machine
+      // idles or sleeps (laptop lid, network switch), the Realtime socket
+      // can die without our SUBSCRIBED handler ever observing a reconnect —
+      // and on desktop the window commonly stays *foreground-visible* the
+      // whole time (the user just walked away and came back), so no
+      // `visibilitychange` fires either. The result is the reported bug:
+      // new messages don't appear until a manual refresh re-subscribes.
+      //
+      // On any foreground/connectivity signal, nudge Realtime to reconnect
+      // — a no-op when the socket is healthy, and it revives a closed one
+      // so live delivery resumes (the rejoin fires SUBSCRIBED, which runs
+      // its own catch-up) — then run the dedup-safe catch-up here too so
+      // anything missed during the gap appears immediately, independent of
+      // whether the WS has come back yet.
+      this._onForegroundResync = () => {
+        try { this.supabase.realtime.connect(); } catch { /* already connected */ }
+        this._catchUpMessages().catch((e) => console.warn('chat catch-up failed', e));
+      };
       this._onVisibilityChange = () => {
         if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-          this._catchUpMessages().catch((e) => console.warn('chat catch-up failed', e));
+          this._onForegroundResync();
         }
       };
       if (typeof document !== 'undefined') {
         document.addEventListener('visibilitychange', this._onVisibilityChange);
+      }
+      // `focus` covers the dominant desktop case the visibility path misses:
+      // clicking back into an idle window that never went hidden. `online`
+      // covers a network drop/restore with the window already focused.
+      if (typeof window !== 'undefined') {
+        window.addEventListener('focus', this._onForegroundResync);
+        window.addEventListener('online', this._onForegroundResync);
       }
     }
 
