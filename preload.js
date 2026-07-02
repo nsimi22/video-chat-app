@@ -34,9 +34,9 @@ ipcRenderer.on('protocol-url', (_e, url) => {
 // powerMonitor 'resume'/'unlock-screen' as a `system-resume` IPC so the
 // renderer can recover a WebSocket the OS left half-open across sleep.
 const resumeListeners = new Set();
-ipcRenderer.on('system-resume', () => {
+ipcRenderer.on('system-resume', (_e, msg) => {
   for (const cb of resumeListeners) {
-    try { cb(); } catch {}
+    try { cb(msg); } catch {}
   }
 });
 

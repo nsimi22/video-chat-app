@@ -984,21 +984,36 @@
         window.addEventListener('online', this._onForegroundResync);
       }
 
-      // Strongest signal: Electron powerMonitor 'resume'/'unlock-screen',
-      // relayed by main.js as `system-resume`. A sleep frequently leaves the
-      // socket *half-open* — readyState still OPEN but dead — which the gentle
-      // `connect()` above no-ops on (it only revives a socket that has closed).
-      // On a confirmed OS wake, force a full reconnect so the dead socket is
-      // torn down and every channel rejoins and re-SUBSCRIBEs (each rejoin runs
-      // its own catch-up); the backfill here covers the chat gap regardless.
-      // This fires even when the window stayed focused through the sleep, the
-      // one case `focus`/`online`/`visibilitychange` all miss.
-      this._onSystemResume = () => {
-        try {
-          this.supabase.realtime.disconnect();
-          this.supabase.realtime.connect();
-        } catch { /* best-effort reconnect */ }
-        this._catchUpMessages().catch((e) => console.warn('chat catch-up failed', e));
+      // Strongest signal: Electron powerMonitor, relayed by main.js as
+      // `system-resume` with a `reason`. This fires even when the window
+      // stayed focused through the sleep — the one case `focus`/`online`/
+      // `visibilitychange` all miss.
+      //
+      // A true wake (`reason === 'resume'`) frequently leaves the socket
+      // *half-open* — readyState still OPEN but dead — which the gentle
+      // `connect()` no-ops on (it only revives a socket that has fully
+      // closed). Force a clean reconnect so the dead socket is torn down and
+      // every channel rejoins and re-SUBSCRIBEs (presence re-tracks in its
+      // subscribe callback; the messages channel re-runs catch-up on
+      // SUBSCRIBED). `disconnect()` MUST be awaited before `connect()`:
+      // disconnect flips the socket to CLOSING synchronously and connect()
+      // bails while it's disconnecting, so a synchronous `disconnect();
+      // connect()` pair no-ops and leaves the socket dead (realtime-js
+      // 2.105.3 / phoenix 0.4.1).
+      //
+      // A plain screen unlock (`reason === 'unlock-screen'`) fires far more
+      // often and doesn't imply a dead socket, so it takes the gentle path
+      // instead of thrashing every channel (and everyone's presence) on each
+      // unlock.
+      this._onSystemResume = (msg) => {
+        if (msg && msg.reason === 'resume') {
+          Promise.resolve(this.supabase.realtime.disconnect())
+            .then(() => this.supabase.realtime.connect())
+            .catch(() => { /* best-effort reconnect */ });
+          this._catchUpMessages().catch((e) => console.warn('chat catch-up failed', e));
+          return;
+        }
+        this._onForegroundResync();
       };
       if (typeof window !== 'undefined' && window.huddle && typeof window.huddle.onSystemResume === 'function') {
         this._resumeUnsub = window.huddle.onSystemResume(this._onSystemResume);

@@ -924,15 +924,19 @@ app.whenReady().then(() => {
   // left half-open by a sleep (the OS reports the socket OPEN but it's
   // dead), so no `focus`/`online`/`SUBSCRIBED` event in the renderer
   // reliably fires to recover it. powerMonitor gives us the wake signal
-  // from the OS itself — relay it so the renderer can force a reconnect
-  // and gap-fill. (powerMonitor is only usable after `app` is ready.)
-  const notifyResume = () => {
-    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isLoading()) {
-      try { mainWindow.webContents.send('system-resume'); } catch {}
+  // from the OS itself — relay it (with the reason, so the renderer can
+  // distinguish a true wake from a plain unlock) to every window, since
+  // popouts run their own renderer/client. (powerMonitor is only usable
+  // after `app` is ready.)
+  const notifyResume = (reason) => {
+    for (const w of [mainWindow, ...popouts.values()]) {
+      if (w && !w.isDestroyed() && w.webContents && !w.webContents.isLoading()) {
+        try { w.webContents.send('system-resume', { reason }); } catch {}
+      }
     }
   };
-  powerMonitor.on('resume', notifyResume);
-  powerMonitor.on('unlock-screen', notifyResume);
+  powerMonitor.on('resume', () => notifyResume('resume'));
+  powerMonitor.on('unlock-screen', () => notifyResume('unlock-screen'));
 });
 
 app.on('window-all-closed', () => {
