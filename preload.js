@@ -30,6 +30,16 @@ ipcRenderer.on('protocol-url', (_e, url) => {
   }
 });
 
+// System wake / screen-unlock relay. main.js forwards Electron
+// powerMonitor 'resume'/'unlock-screen' as a `system-resume` IPC so the
+// renderer can recover a WebSocket the OS left half-open across sleep.
+const resumeListeners = new Set();
+ipcRenderer.on('system-resume', (_e, msg) => {
+  for (const cb of resumeListeners) {
+    try { cb(msg); } catch {}
+  }
+});
+
 contextBridge.exposeInMainWorld('huddle', {
   // Synchronously-known platform string (matches Node's
   // `process.platform`: 'darwin', 'win32', 'linux', ...). Used by the
@@ -129,5 +139,14 @@ contextBridge.exposeInMainWorld('huddle', {
       try { cb(url); } catch {}
     }
     return () => protocolListeners.delete(cb);
+  },
+
+  // Fires when the OS wakes from sleep or the screen is unlocked. The
+  // renderer uses this to force a Realtime reconnect + message gap-fill,
+  // since a half-open socket won't trigger focus/online/SUBSCRIBED.
+  // Returns an unsubscribe function, matching onPopoutEvent/onProtocolUrl.
+  onSystemResume: (cb) => {
+    resumeListeners.add(cb);
+    return () => resumeListeners.delete(cb);
   },
 });
