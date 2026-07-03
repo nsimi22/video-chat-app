@@ -719,7 +719,7 @@ async function runWhisperJob(job) {
 // inside the spawn handler so a failed rebuild degrades gracefully
 // (terminal unavailable) instead of crashing app boot — mirroring how
 // whisper tolerates a missing binary.
-const TERMINAL_MAX_PTYS = 4; // cap concurrent shells (cf. WHISPER_MAX_ACTIVE)
+const TERMINAL_MAX_PTYS = 8; // cap concurrent shells across all terminal tabs
 const ptys = new Map();      // id -> { pty }
 let ptySeq = 0;
 

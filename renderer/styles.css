@@ -9405,12 +9405,82 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .huddle-terminal-stop:hover { background: var(--bg-3); color: var(--tx-hi); }
 /* Close button reuses .huddle-ai-close (see terminal-panel.js). */
 
-.huddle-terminal-mount {
+/* Tab strip */
+.huddle-terminal-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px 0;
+  flex-shrink: 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-0);
+}
+.huddle-terminal-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  color: var(--tx-lo);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.huddle-terminal-tab:hover { color: var(--tx-hi); background: var(--bg-2); }
+.huddle-terminal-tab.is-active {
+  color: var(--tx-hi);
+  background: #0b0e14;
+  border-color: var(--line-soft);
+}
+.huddle-terminal-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+}
+.huddle-terminal-tab-close:hover { opacity: 1; background: var(--bg-3); }
+.huddle-terminal-tab-close svg { width: 12px; height: 12px; }
+.huddle-terminal-newtab {
+  flex-shrink: 0;
+  width: 28px;
+  height: 26px;
+  margin-left: 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tx-lo);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.huddle-terminal-newtab:hover:not(:disabled) { background: var(--bg-3); color: var(--tx-hi); }
+.huddle-terminal-newtab:disabled { opacity: 0.35; cursor: default; }
+
+/* Mounts: all tabs stack in the same area; only the active one shows. */
+.huddle-terminal-mounts {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
+}
+.huddle-terminal-mount {
+  position: absolute;
+  inset: 0;
   padding: 8px 10px;
   overflow: hidden;
 }
+.huddle-terminal-mount.hidden { display: none; }
 /* xterm sizes to its container; make the viewport fill the mount. */
 .huddle-terminal-mount .xterm,
 .huddle-terminal-mount .xterm-viewport { height: 100%; }
