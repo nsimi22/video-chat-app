@@ -706,6 +706,116 @@ async function runWhisperJob(job) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Embedded terminal (in-app pty). The renderer is sandboxed
+// (contextIsolation + no nodeIntegration), so the real shell must live
+// here in main and stream over IPC — same shape as the whisper caption
+// engine above. Each pty is spawned by an explicit user click, runs as
+// the user's own uid with their own login-shell PATH, and never touches
+// the network from main. See the terminal panel in renderer/terminal-panel.js.
+//
+// node-pty is the app's first native addon, rebuilt against Electron's
+// ABI by the postinstall `electron-rebuild` step. We lazy-require it
+// inside the spawn handler so a failed rebuild degrades gracefully
+// (terminal unavailable) instead of crashing app boot — mirroring how
+// whisper tolerates a missing binary.
+const TERMINAL_MAX_PTYS = 4; // cap concurrent shells (cf. WHISPER_MAX_ACTIVE)
+const ptys = new Map();      // id -> { pty, senderId }
+let ptySeq = 0;
+
+function killPtysForSender(senderId) {
+  for (const [id, rec] of ptys) {
+    if (rec.senderId !== senderId) continue;
+    try { rec.pty.kill(); } catch {}
+    ptys.delete(id);
+  }
+}
+
+ipcMain.handle('terminal-spawn', async (event, payload = {}) => {
+  if (ptys.size >= TERMINAL_MAX_PTYS) {
+    return { ok: false, error: 'too many open terminals' };
+  }
+  let pty;
+  try {
+    pty = require('node-pty');
+  } catch (err) {
+    console.warn('[terminal] node-pty unavailable (rebuild may have failed):', err && err.message);
+    return { ok: false, error: 'terminal engine unavailable' };
+  }
+  const os = require('os');
+  const isWin = process.platform === 'win32';
+  // Spawn a login + interactive shell so it sources the user's profile
+  // (~/.zprofile, ~/.zshrc, nvm, Homebrew shellenv, …). This is the fix
+  // for the macOS GUI-PATH gotcha: a launchd-started app inherits a
+  // truncated PATH, so npm-global / Homebrew binaries like `claude`
+  // wouldn't be found without a login shell resolving the real PATH.
+  const shell = isWin
+    ? (process.env.ComSpec || 'powershell.exe')
+    : (process.env.SHELL || '/bin/zsh');
+  const args = isWin ? [] : ['-l', '-i'];
+  const cols = Number(payload.cols) > 0 ? Math.floor(payload.cols) : 80;
+  const rows = Number(payload.rows) > 0 ? Math.floor(payload.rows) : 24;
+  let child;
+  try {
+    child = pty.spawn(shell, args, {
+      name: 'xterm-256color',
+      cols,
+      rows,
+      cwd: payload.cwd || os.homedir(),
+      env: { ...process.env, TERM: 'xterm-256color' },
+    });
+  } catch (err) {
+    console.warn('[terminal] spawn failed:', err && err.message);
+    return { ok: false, error: String(err && err.message || err) };
+  }
+
+  const id = `pty-${++ptySeq}`;
+  const senderId = event.sender.id;
+  ptys.set(id, { pty: child, senderId });
+
+  child.onData((data) => {
+    const wc = require('electron').webContents.fromId(senderId);
+    if (wc && !wc.isDestroyed()) wc.send('terminal-data', { id, data });
+  });
+  child.onExit(({ exitCode }) => {
+    ptys.delete(id);
+    const wc = require('electron').webContents.fromId(senderId);
+    if (wc && !wc.isDestroyed()) wc.send('terminal-exit', { id, exitCode });
+  });
+  // Kill this pty if its owning renderer goes away (window closed /
+  // reloaded) so we never leak an orphaned shell.
+  event.sender.once('destroyed', () => killPtysForSender(senderId));
+
+  // One-click "Start Claude Code": run `claude` *inside* the login shell
+  // we just spawned so it inherits the corrected PATH. Never pty.spawn
+  // 'claude' directly — that hits the truncated GUI PATH and fails.
+  if (payload.mode === 'claude') {
+    try { child.write('claude\r'); } catch {}
+  }
+
+  return { ok: true, id };
+});
+
+ipcMain.handle('terminal-write', (_event, { id, data } = {}) => {
+  const rec = ptys.get(id);
+  if (rec) { try { rec.pty.write(data); } catch {} }
+  return { ok: !!rec };
+});
+
+ipcMain.handle('terminal-resize', (_event, { id, cols, rows } = {}) => {
+  const rec = ptys.get(id);
+  if (rec && cols > 0 && rows > 0) {
+    try { rec.pty.resize(Math.floor(cols), Math.floor(rows)); } catch {}
+  }
+  return { ok: !!rec };
+});
+
+ipcMain.handle('terminal-kill', (_event, { id } = {}) => {
+  const rec = ptys.get(id);
+  if (rec) { try { rec.pty.kill(); } catch {} ptys.delete(id); }
+  return { ok: !!rec };
+});
+
 // Generic fetch proxy. Some third-party APIs (notably Atlassian Cloud)
 // don't permit browser-origin requests via CORS; routing through main lets
 // the renderer hit them with stored credentials. We only proxy https URLs

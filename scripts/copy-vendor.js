@@ -101,3 +101,25 @@ if (mp) {
 } else {
   console.warn('[copy-vendor] @mediapipe/selfie_segmentation not found; background-blur will be unavailable.');
 }
+
+// ---------------------------------------------------------------------------
+// xterm.js (+ fit addon)
+//
+// The in-app terminal panel loads xterm as a plain <script> (CSP is
+// script-src 'self', no CDN allowed). The npm packages ship prebuilt
+// UMD-ish bundles that attach globals (`Terminal`, `FitAddon`) to
+// window, so we just mirror the lib file + stylesheet into vendor/.
+// ---------------------------------------------------------------------------
+const xtermTargets = [
+  ['@xterm/xterm/lib/xterm.js', 'xterm/xterm.js'],
+  ['@xterm/xterm/css/xterm.css', 'xterm/xterm.css'],
+  ['@xterm/addon-fit/lib/addon-fit.js', 'xterm/addon-fit.js'],
+];
+for (const [rel, dst] of xtermTargets) {
+  const src = tryResolve(rel);
+  if (src) {
+    copyFile(src, path.join(VENDOR_DIR, dst));
+  } else {
+    console.warn(`[copy-vendor] ${rel} not found; run \`npm install\` first — the terminal panel will be unavailable.`);
+  }
+}

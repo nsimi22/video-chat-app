@@ -5,7 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "postinstall": "node scripts/copy-vendor.js",
+    "postinstall": "node scripts/copy-vendor.js && electron-rebuild -f -w node-pty",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac",
@@ -20,11 +20,15 @@
   "dependencies": {
     "@mediapipe/selfie_segmentation": "^0.1.0",
     "@supabase/supabase-js": "^2.45.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
     "electron-updater": "^6.8.3",
-    "livekit-client": "^2.19.0"
+    "livekit-client": "^2.19.0",
+    "node-pty": "^1.0.0"
   },
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
+    "@electron/rebuild": "^3.6.0",
     "@jitsi/rnnoise-wasm": "^0.2.1",
     "electron": "^31.0.0",
     "electron-builder": "^24.13.3",
@@ -43,6 +47,9 @@
       "renderer/**/*",
       "scripts/**/*",
       "package.json"
+    ],
+    "asarUnpack": [
+      "**/node_modules/node-pty/**"
     ],
     "extraResources": [
       {

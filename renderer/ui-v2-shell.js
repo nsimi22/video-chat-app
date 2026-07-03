@@ -18,6 +18,7 @@
     calendar: 'calendar',
     board: 'kanban',
     ai: 'sparkles',
+    terminal: 'terminal',
     settings: 'settings',
   };
 
@@ -32,6 +33,11 @@
       sel: '.huddle-ai-view',
       open: () => window.HuddleAIPanel?.open?.(),
       close: () => window.HuddleAIPanel?.close?.(),
+    },
+    terminal: {
+      sel: '.huddle-terminal-view',
+      open: () => window.HuddleTerminalPanel?.open?.(),
+      close: () => window.HuddleTerminalPanel?.close?.(),
     },
     calendar: {
       sel: '.huddle-cal-view',
@@ -92,6 +98,7 @@
   function recomputeActiveView() {
     let view = 'chat';
     if (isSurfaceOpen('ai')) view = 'ai';
+    else if (isSurfaceOpen('terminal')) view = 'terminal';
     else if (isSurfaceOpen('calendar')) view = 'calendar';
     else if (isSurfaceOpen('board')) view = 'board';
     else if (isSurfaceOpen('whiteboard')) view = 'whiteboard';
