@@ -741,10 +741,17 @@ ipcMain.handle('terminal-spawn', async (event, payload = {}) => {
   // for the macOS GUI-PATH gotcha: a launchd-started app inherits a
   // truncated PATH, so npm-global / Homebrew binaries like `claude`
   // wouldn't be found without a login shell resolving the real PATH.
+  // Fall back to bash (present on macOS + virtually all Linux) rather than
+  // zsh (a macOS-only assumption) when $SHELL is unset.
   const shell = isWin
     ? (process.env.ComSpec || 'powershell.exe')
-    : (process.env.SHELL || '/bin/zsh');
-  const args = isWin ? [] : ['-l', '-i'];
+    : (process.env.SHELL || '/bin/bash');
+  // `-l -i` (login+interactive, needed to source the profile for PATH) is
+  // valid for bash/zsh/fish but rejected by dash/sh, which would exit the
+  // pty immediately. Pass it only to the shells that accept it; others
+  // still get an interactive shell.
+  const base = shell.replace(/.*[\\/]/, '');
+  const args = isWin ? [] : (/^(bash|zsh|fish)$/.test(base) ? ['-l', '-i'] : ['-i']);
   const cols = Number(payload.cols) > 0 ? Math.floor(payload.cols) : 80;
   const rows = Number(payload.rows) > 0 ? Math.floor(payload.rows) : 24;
   let child;
@@ -770,12 +777,13 @@ ipcMain.handle('terminal-spawn', async (event, payload = {}) => {
   }
 
   const id = `pty-${++ptySeq}`;
-  ptys.set(id, { pty: child });
-
   // Kill this pty if its owning renderer goes away (window closed /
-  // reloaded) so we never leak an orphaned shell. Removed on normal exit
-  // below so these listeners don't pile up on the long-lived webContents.
+  // reloaded) so we never leak an orphaned shell. Removed on exit (normal
+  // or via terminal-kill) so these listeners don't pile up on the
+  // long-lived webContents. wc + onDestroyed are stored on the record so
+  // terminal-kill can detach the listener even if onExit never fires.
   const onDestroyed = () => { try { child.kill(); } catch {} ptys.delete(id); };
+  ptys.set(id, { pty: child, wc, onDestroyed });
   wc.once('destroyed', onDestroyed);
 
   // Cache the webContents in the closure — terminal output is high
@@ -810,7 +818,11 @@ ipcMain.handle('terminal-resize', (_event, { id, cols, rows } = {}) => {
 
 ipcMain.handle('terminal-kill', (_event, { id } = {}) => {
   const rec = ptys.get(id);
-  if (rec) { try { rec.pty.kill(); } catch {} ptys.delete(id); }
+  if (rec) {
+    try { rec.wc.off('destroyed', rec.onDestroyed); } catch {}
+    try { rec.pty.kill(); } catch {}
+    ptys.delete(id);
+  }
   return { ok: !!rec };
 });
 

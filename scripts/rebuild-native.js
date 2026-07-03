@@ -28,15 +28,22 @@ if (!resolvable('@electron/rebuild') || !resolvable('electron/package.json')) {
   process.exit(0);
 }
 
-const bin = path.join(
-  __dirname, '..', 'node_modules', '.bin',
-  process.platform === 'win32' ? 'electron-rebuild.cmd' : 'electron-rebuild',
-);
+// Resolve the CLI's JS entry from the package's own `bin` field and run it
+// with the current node binary in an argv array — no `.bin/*.cmd` shim and
+// no `shell:true`, which on Windows would break under install paths that
+// contain spaces (e.g. C:\Users\First Last\...).
+const rebuildDir = path.dirname(require.resolve('@electron/rebuild/package.json'));
+const rebuildPkg = require('@electron/rebuild/package.json');
+const cliRel = typeof rebuildPkg.bin === 'string'
+  ? rebuildPkg.bin
+  : (rebuildPkg.bin && rebuildPkg.bin['electron-rebuild']);
+if (!cliRel) {
+  console.warn('[rebuild-native] could not resolve electron-rebuild CLI entry — skipping.');
+  process.exit(0);
+}
+const cli = path.join(rebuildDir, cliRel);
 console.log('[rebuild-native] rebuilding node-pty against Electron ABI…');
-const res = spawnSync(bin, ['-f', '-w', 'node-pty'], {
-  stdio: 'inherit',
-  shell: process.platform === 'win32',
-});
+const res = spawnSync(process.execPath, [cli, '-f', '-w', 'node-pty'], { stdio: 'inherit' });
 if (res.error) {
   console.error('[rebuild-native] failed to launch electron-rebuild:', res.error.message);
   process.exit(1);

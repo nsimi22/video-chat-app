@@ -9391,6 +9391,18 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 }
 .huddle-terminal-start:hover { filter: brightness(1.06); }
 .huddle-terminal-start svg { width: 15px; height: 15px; }
+.huddle-terminal-stop {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--tx-mid);
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.huddle-terminal-stop:hover { background: var(--bg-3); color: var(--tx-hi); }
 /* Close button reuses .huddle-ai-close (see terminal-panel.js). */
 
 .huddle-terminal-mount {
