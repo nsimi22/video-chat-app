@@ -38,7 +38,7 @@
         </div>
         <div class="huddle-terminal-spacer"></div>
         <button class="huddle-terminal-start" type="button">${svg('sparkles')}<span>Start Claude Code</span></button>
-        <button class="huddle-terminal-close" aria-label="Close" title="Close">${svg('x')}</button>
+        <button class="huddle-ai-close" aria-label="Close" title="Close">${svg('x')}</button>
       </div>
       <div class="huddle-terminal-mount"></div>
     `;
@@ -47,7 +47,7 @@
     mount    = root.querySelector('.huddle-terminal-mount');
     startBtn = root.querySelector('.huddle-terminal-start');
 
-    root.querySelector('.huddle-terminal-close').addEventListener('click', close);
+    root.querySelector('.huddle-ai-close').addEventListener('click', close);
     startBtn.addEventListener('click', startClaude);
   }
 
@@ -57,6 +57,16 @@
     if (!term || !fit) return;
     try { fit.fit(); } catch {}
     if (ptyId) window.huddle?.terminal?.resize(ptyId, term.cols, term.rows);
+  }
+
+  // Coalesce ResizeObserver bursts (dragging the window edge fires dozens
+  // of callbacks/sec, each an fit() reflow + a resize IPC round-trip) into
+  // one fit per animation frame.
+  let fitScheduled = false;
+  function scheduleFit() {
+    if (fitScheduled) return;
+    fitScheduled = true;
+    requestAnimationFrame(() => { fitScheduled = false; fitAndResize(); });
   }
 
   function cleanupSubs() {
@@ -79,12 +89,12 @@
         convertEol: false,
         theme: { background: '#0b0e14', foreground: '#d5d8df' },
       });
-      const FitAddonCtor = window.FitAddon && (window.FitAddon.FitAddon || window.FitAddon);
+      const FitAddonCtor = window.FitAddon?.FitAddon;
       if (FitAddonCtor) { fit = new FitAddonCtor(); term.loadAddon(fit); }
       term.open(mount);
       term.onData((d) => { if (ptyId) window.huddle.terminal.write(ptyId, d); });
 
-      resizeObs = new ResizeObserver(() => fitAndResize());
+      resizeObs = new ResizeObserver(scheduleFit);
       resizeObs.observe(mount);
     }
 
@@ -108,7 +118,7 @@
       try { fit && fit.fit(); } catch {}
       const cols = term.cols || 80;
       const rows = term.rows || 24;
-      const res = await window.huddle.terminal.spawn({ cols, rows, mode });
+      const res = await window.huddle.terminal.spawn({ cols, rows });
       if (!res || !res.ok) {
         term.write(`\r\n\x1b[31m[terminal] ${res && res.error ? res.error : 'failed to start shell'}\x1b[0m\r\n`);
         return false;
@@ -122,6 +132,11 @@
         cleanupSubs();
         ptyId = null;
       });
+      // Launch Claude into the fresh shell. Doing it here (rather than in
+      // main via a `mode` flag) keeps the pty transport generic and puts
+      // all "Start Claude Code" logic in one place — same as the running
+      // and boot-in-flight branches above.
+      if (mode === 'claude') window.huddle.terminal.write(ptyId, 'claude\r');
       return true;
     })();
     const ok = await bootPromise;
@@ -136,23 +151,19 @@
 
   // --- actions -----------------------------------------------------
 
-  async function startClaude() {
-    if (!root) buildDom();
-    if (root.classList.contains('hidden')) open();
-    // ensureTerminal('claude') covers every case: a running shell (types
-    // `claude` in), an in-flight boot (awaits it, then types), or a fresh
-    // spawn (main runs `claude` via mode). No second pty, no dropped click.
-    const ok = await ensureTerminal('claude');
-    if (ok) { fitAndResize(); term.focus(); }
-  }
+  // "Start Claude Code": just open with the claude mode. ensureTerminal
+  // covers every case — a running shell types `claude` in, an in-flight
+  // boot awaits then types, a fresh spawn types after boot. No second pty,
+  // no dropped click.
+  function startClaude() { open('claude'); }
 
-  function open() {
+  function open(mode) {
     if (!root) buildDom();
     root.classList.remove('hidden');
     root.setAttribute('aria-hidden', 'false');
     // Defer the fit + spawn until the element actually has a size.
     requestAnimationFrame(async () => {
-      const ok = await ensureTerminal();
+      const ok = await ensureTerminal(mode);
       if (ok) { fitAndResize(); term.focus(); }
     });
   }
@@ -176,7 +187,7 @@
   // terminal itself, so this only fires when focus is elsewhere).
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && root && !root.classList.contains('hidden')
-        && document.activeElement && !root.contains(document.activeElement)) {
+        && !root.contains(document.activeElement)) {
       close();
     }
   });

@@ -9391,21 +9391,7 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 }
 .huddle-terminal-start:hover { filter: brightness(1.06); }
 .huddle-terminal-start svg { width: 15px; height: 15px; }
-.huddle-terminal-close {
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border-radius: 8px;
-  background: transparent;
-  border: 0;
-  color: var(--tx-lo);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-.huddle-terminal-close:hover { background: var(--bg-3); color: var(--tx-hi); }
-.huddle-terminal-close svg { width: 17px; height: 17px; }
+/* Close button reuses .huddle-ai-close (see terminal-panel.js). */
 
 .huddle-terminal-mount {
   flex: 1 1 auto;

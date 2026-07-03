@@ -319,7 +319,10 @@
       new MutationObserver(schedule).observe(el, { attributes: true, attributeFilter: ['class'] });
       schedule();
     };
-    const ROOT_SEL = '.huddle-ai-view, .huddle-cal-view, .jb-drawer-root';
+    // Derive the watched roots from SURFACES (the single source of truth)
+    // so registering a new surface there wires this observer too — no
+    // parallel hardcoded list to drift out of sync.
+    const ROOT_SEL = Object.values(SURFACES).map((s) => s.sel).join(', ');
     // Static root present at load; lazy overlay roots watched as they appear.
     watch(document.getElementById('whiteboard-stage'));
     document.querySelectorAll(ROOT_SEL).forEach(watch);

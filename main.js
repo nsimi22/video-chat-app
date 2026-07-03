@@ -720,16 +720,8 @@ async function runWhisperJob(job) {
 // (terminal unavailable) instead of crashing app boot — mirroring how
 // whisper tolerates a missing binary.
 const TERMINAL_MAX_PTYS = 4; // cap concurrent shells (cf. WHISPER_MAX_ACTIVE)
-const ptys = new Map();      // id -> { pty, senderId }
+const ptys = new Map();      // id -> { pty }
 let ptySeq = 0;
-
-function killPtysForSender(senderId) {
-  for (const [id, rec] of ptys) {
-    if (rec.senderId !== senderId) continue;
-    try { rec.pty.kill(); } catch {}
-    ptys.delete(id);
-  }
-}
 
 ipcMain.handle('terminal-spawn', async (event, payload = {}) => {
   if (ptys.size >= TERMINAL_MAX_PTYS) {
@@ -778,13 +770,12 @@ ipcMain.handle('terminal-spawn', async (event, payload = {}) => {
   }
 
   const id = `pty-${++ptySeq}`;
-  const senderId = wc.id;
-  ptys.set(id, { pty: child, senderId });
+  ptys.set(id, { pty: child });
 
   // Kill this pty if its owning renderer goes away (window closed /
   // reloaded) so we never leak an orphaned shell. Removed on normal exit
   // below so these listeners don't pile up on the long-lived webContents.
-  const onDestroyed = () => killPtysForSender(senderId);
+  const onDestroyed = () => { try { child.kill(); } catch {} ptys.delete(id); };
   wc.once('destroyed', onDestroyed);
 
   // Cache the webContents in the closure — terminal output is high
@@ -799,13 +790,6 @@ ipcMain.handle('terminal-spawn', async (event, payload = {}) => {
     try { wc.off('destroyed', onDestroyed); } catch {}
     if (!wc.isDestroyed()) wc.send('terminal-exit', { id, exitCode });
   });
-
-  // One-click "Start Claude Code": run `claude` *inside* the login shell
-  // we just spawned so it inherits the corrected PATH. Never pty.spawn
-  // 'claude' directly — that hits the truncated GUI PATH and fails.
-  if (payload.mode === 'claude') {
-    try { child.write('claude\r'); } catch {}
-  }
 
   return { ok: true, id };
 });
