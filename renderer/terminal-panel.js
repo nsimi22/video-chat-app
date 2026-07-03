@@ -18,7 +18,7 @@
   let unsubData = null;
   let unsubExit = null;
   let resizeObs = null;
-  let booting = false;
+  let bootPromise = null;
 
   function svg(name) {
     return (window.HuddleIcons && window.HuddleIcons[name]) || '';
@@ -59,6 +59,12 @@
     if (ptyId) window.huddle?.terminal?.resize(ptyId, term.cols, term.rows);
   }
 
+  function cleanupSubs() {
+    try { unsubData && unsubData(); } catch {}
+    try { unsubExit && unsubExit(); } catch {}
+    unsubData = unsubExit = null;
+  }
+
   async function ensureTerminal(mode) {
     if (!window.huddle || !window.huddle.terminal || typeof window.Terminal !== 'function') {
       if (mount) mount.innerHTML = '<div class="huddle-terminal-unavailable">Terminal engine unavailable in this build.</div>';
@@ -82,15 +88,27 @@
       resizeObs.observe(mount);
     }
 
+    // Shell already running: if this call wanted Claude, just type it in.
+    if (ptyId) {
+      if (mode === 'claude') window.huddle.terminal.write(ptyId, 'claude\r');
+      return true;
+    }
+    // A boot is already in flight (e.g. open() started a shell and the
+    // user clicked "Start Claude Code" before it finished). Await it, then
+    // run the post-boot action so the click isn't silently dropped.
+    if (bootPromise) {
+      const ok = await bootPromise;
+      if (ok && mode === 'claude' && ptyId) window.huddle.terminal.write(ptyId, 'claude\r');
+      return ok;
+    }
+
     // Spawn the pty once. A hidden element has zero size, so fit() must
     // run after the panel is visible — callers invoke this post-show.
-    if (!ptyId && !booting) {
-      booting = true;
+    bootPromise = (async () => {
       try { fit && fit.fit(); } catch {}
       const cols = term.cols || 80;
       const rows = term.rows || 24;
       const res = await window.huddle.terminal.spawn({ cols, rows, mode });
-      booting = false;
       if (!res || !res.ok) {
         term.write(`\r\n\x1b[31m[terminal] ${res && res.error ? res.error : 'failed to start shell'}\x1b[0m\r\n`);
         return false;
@@ -100,16 +118,19 @@
       unsubExit = window.huddle.terminal.onExit((p) => {
         if (p.id !== ptyId) return;
         term.write('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
+        // Unsubscribe so listeners don't pile up across shell restarts.
+        cleanupSubs();
         ptyId = null;
       });
-    }
-    return true;
+      return true;
+    })();
+    const ok = await bootPromise;
+    bootPromise = null;
+    return ok;
   }
 
   function killPty() {
-    try { unsubData && unsubData(); } catch {}
-    try { unsubExit && unsubExit(); } catch {}
-    unsubData = unsubExit = null;
+    cleanupSubs();
     if (ptyId) { try { window.huddle?.terminal?.kill(ptyId); } catch {} ptyId = null; }
   }
 
@@ -118,13 +139,9 @@
   async function startClaude() {
     if (!root) buildDom();
     if (root.classList.contains('hidden')) open();
-    // If a shell is already running, just type `claude` into it rather
-    // than spawning a second pty.
-    if (ptyId) {
-      window.huddle.terminal.write(ptyId, 'claude\r');
-      term.focus();
-      return;
-    }
+    // ensureTerminal('claude') covers every case: a running shell (types
+    // `claude` in), an in-flight boot (awaits it, then types), or a fresh
+    // spawn (main runs `claude` via mode). No second pty, no dropped click.
     const ok = await ensureTerminal('claude');
     if (ok) { fitAndResize(); term.focus(); }
   }

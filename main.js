@@ -769,22 +769,36 @@ ipcMain.handle('terminal-spawn', async (event, payload = {}) => {
     return { ok: false, error: String(err && err.message || err) };
   }
 
+  // If the renderer went away during the (async) spawn, don't leak the
+  // shell we just started.
+  const wc = event.sender;
+  if (wc.isDestroyed()) {
+    try { child.kill(); } catch {}
+    return { ok: false, error: 'sender destroyed' };
+  }
+
   const id = `pty-${++ptySeq}`;
-  const senderId = event.sender.id;
+  const senderId = wc.id;
   ptys.set(id, { pty: child, senderId });
 
+  // Kill this pty if its owning renderer goes away (window closed /
+  // reloaded) so we never leak an orphaned shell. Removed on normal exit
+  // below so these listeners don't pile up on the long-lived webContents.
+  const onDestroyed = () => killPtysForSender(senderId);
+  wc.once('destroyed', onDestroyed);
+
+  // Cache the webContents in the closure — terminal output is high
+  // frequency, so a webContents.fromId() lookup per chunk would add real
+  // overhead. isDestroyed() guards the case where the window closes
+  // between chunks.
   child.onData((data) => {
-    const wc = require('electron').webContents.fromId(senderId);
-    if (wc && !wc.isDestroyed()) wc.send('terminal-data', { id, data });
+    if (!wc.isDestroyed()) wc.send('terminal-data', { id, data });
   });
   child.onExit(({ exitCode }) => {
     ptys.delete(id);
-    const wc = require('electron').webContents.fromId(senderId);
-    if (wc && !wc.isDestroyed()) wc.send('terminal-exit', { id, exitCode });
+    try { wc.off('destroyed', onDestroyed); } catch {}
+    if (!wc.isDestroyed()) wc.send('terminal-exit', { id, exitCode });
   });
-  // Kill this pty if its owning renderer goes away (window closed /
-  // reloaded) so we never leak an orphaned shell.
-  event.sender.once('destroyed', () => killPtysForSender(senderId));
 
   // One-click "Start Claude Code": run `claude` *inside* the login shell
   // we just spawned so it inherits the corrected PATH. Never pty.spawn
