@@ -28,7 +28,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # Pin Windows to 2022, not windows-latest: node-pty is a native
+        # addon that electron-rebuild compiles with node-gyp, and the
+        # windows-latest image moved to Visual Studio 2026 (v18), which the
+        # bundled node-gyp can't detect ("unknown version undefined") — the
+        # v0.48.0 Windows build failed on exactly that. windows-2022 ships
+        # VS 2022 (v17), which node-gyp finds, so the rebuild succeeds.
+        os: [macos-latest, windows-2022, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
