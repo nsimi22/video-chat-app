@@ -110,13 +110,10 @@
       // avatar_url }.
       this.roster = new Map();
       this.remoteScreenLabels = new Map();
-      // Peer ids whose hand is currently raised. Cleared when the peer
+      // peerId -> epoch-ms of when the hand went up. Single source of
+      // truth for both "is this hand raised" (raisedHands getter) and the
+      // ordered speaker queue (speakerQueue getter). Cleared when the peer
       // lowers their hand or leaves the call.
-      this.raisedHands = new Set();
-      // peerId -> epoch-ms of when the hand went up. Drives the ordered
-      // speaker queue (first raised speaks first). Kept alongside the Set
-      // rather than replacing it so existing has()-style consumers keep
-      // working. Same lifecycle as raisedHands.
       this.raisedHandTimes = new Map();
       // Per-peer mic/cam state in the active call. Default assumption for
       // a newly-joined peer is both on; the peer broadcasts a mute-state
@@ -322,7 +319,6 @@
         for (const id of [...this._callPeerInfo.keys()]) {
           if (!seen.has(id)) {
             this._callPeerInfo.delete(id);
-            this.raisedHands.delete(id);
             this.raisedHandTimes.delete(id);
             this.peerMediaState.delete(id);
           }
@@ -334,7 +330,6 @@
         // the handler or plant an `undefined` entry in the queue maps.
         if (!payload?.from) return;
         if (payload.raised) {
-          this.raisedHands.add(payload.from);
           // First-seen wins: catch-up re-broadcasts (sent to late joiners)
           // carry the original raise time, but if we already saw this hand
           // go up, keep our existing stamp so the queue order is stable.
@@ -342,7 +337,6 @@
             this.raisedHandTimes.set(payload.from, payload.ts || Date.now());
           }
         } else {
-          this.raisedHands.delete(payload.from);
           this.raisedHandTimes.delete(payload.from);
         }
         this.dispatchEvent(new CustomEvent('raise-hand', { detail: payload }));
@@ -473,7 +467,6 @@
       );
       this._hostedTerminalShares.clear();
       this._callPeerInfo.clear();
-      this.raisedHands.clear();
       this.raisedHandTimes.clear();
       this.peerMediaState.clear();
       this._callChannel = null;
@@ -1205,7 +1198,6 @@
 
     sendRaiseHand(raised) {
       if (raised) {
-        this.raisedHands.add(this.peerId);
         // Re-broadcasts for late joiners must carry the ORIGINAL raise
         // time, not now() — otherwise every new participant would bump
         // us to the back of the speaker queue.
@@ -1213,7 +1205,6 @@
           this.raisedHandTimes.set(this.peerId, Date.now());
         }
       } else {
-        this.raisedHands.delete(this.peerId);
         this.raisedHandTimes.delete(this.peerId);
       }
       this._callChannel?.send({
@@ -1221,6 +1212,10 @@
         payload: { from: this.peerId, raised: !!raised, ts: this.raisedHandTimes.get(this.peerId) || null },
       });
     }
+    // Membership view of the raised-hand map for has()-style consumers
+    // (e.g. livekit re-broadcasting our own hand to late joiners). The
+    // ordered queue is speakerQueue; both derive from raisedHandTimes.
+    get raisedHands() { return new Set(this.raisedHandTimes.keys()); }
     // Raised hands ordered first-raised-first, ties broken by peerId so
     // every participant computes the same order. This IS the speaker queue.
     get speakerQueue() {

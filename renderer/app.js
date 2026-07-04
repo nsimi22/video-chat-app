@@ -494,10 +494,7 @@ function channelContextMenu(channelId) {
 
 function markChannelReadFromMenu(channelId) {
   if (!state.unread.has(channelId)) return;
-  state.unread.delete(channelId);
-  state.huddle?.markChannelRead(channelId).catch(() => {});
-  updateUnreadBadge(channelId);
-  updateUnreadTitle();
+  clearChannelUnread(channelId);
 }
 
 function setChannelNotifyFromMenu(channelId, mode) {
@@ -3953,8 +3950,19 @@ function focusChannel(channelId) {
   renderHeaderMembers(channel);
   renderKnockButton(channel);
   refreshNotifyButton();
-  // Visiting a channel clears its unread — and moves the durable read
-  // bookmark so the cleared state survives reloads and anchors /catchup.
+  // Visiting a channel clears its unread and advances the durable read
+  // bookmark (unconditionally — every visit should freshen the bookmark,
+  // even when nothing was unread).
+  clearChannelUnread(channelId);
+}
+
+// Clear a channel's unread everywhere it's tracked: the in-memory map, the
+// durable read bookmark (so the cleared state survives reload and anchors
+// /catchup), and the sidebar badge + window title. Centralized so a future
+// "mark read" site can't drop the badge yet forget the durable write — the
+// two must always move together, which is exactly what channel_read_state
+// exists to guarantee.
+function clearChannelUnread(channelId) {
   state.unread.delete(channelId);
   state.huddle?.markChannelRead(channelId).catch(() => {});
   updateUnreadBadge(channelId);
@@ -3965,12 +3973,7 @@ function focusChannel(channelId) {
 function clearUnreadIfActive() {
   if (!state.chat || !state.huddle) return;
   const id = state.chat.currentChannel;
-  if (state.unread.has(id)) {
-    state.unread.delete(id);
-    state.huddle.markChannelRead(id).catch(() => {});
-    updateUnreadBadge(id);
-    updateUnreadTitle();
-  }
+  if (state.unread.has(id)) clearChannelUnread(id);
 }
 
 // Rebuild the per-channel unread badges from the durable read bookmarks

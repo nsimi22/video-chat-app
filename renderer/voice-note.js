@@ -313,33 +313,44 @@
     loadPeaks(a.url).then((p) => { peaks = p; draw(); }).catch(() => {});
 
     let rafId = null;
-    function draw() {
-      const cssWidth = canvas.clientWidth || 160;
-      const cssHeight = canvas.clientHeight || 28;
+    const ctx = canvas.getContext('2d');
+    const gap = 2;
+    // Geometry + resolved colors, cached so draw() (which runs on every
+    // animation frame during playback) does zero layout or style reads.
+    // getComputedStyle alone is far too costly to call 60×/sec; measure()
+    // refreshes these only when the size or theme could actually change.
+    let cw = 160, ch = 28, barW = 3;
+    let playedColor = '#0a84ff', restColor = 'rgba(255,255,255,0.28)';
+    function measure() {
+      cw = canvas.clientWidth || 160;
+      ch = canvas.clientHeight || 28;
       const dpr = window.devicePixelRatio || 1;
-      if (canvas.width !== cssWidth * dpr) canvas.width = cssWidth * dpr;
-      if (canvas.height !== cssHeight * dpr) canvas.height = cssHeight * dpr;
-      const ctx = canvas.getContext('2d');
+      // Assigning width/height resets the context (incl. the transform),
+      // so re-apply the DPR transform right after.
+      if (canvas.width !== cw * dpr) canvas.width = cw * dpr;
+      if (canvas.height !== ch * dpr) canvas.height = ch * dpr;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, cssWidth, cssHeight);
-      const progress = duration ? Math.min(1, audio.currentTime / duration) : 0;
-      const gap = 2;
-      const barW = Math.max(1.5, (cssWidth - gap * (WAVE_BARS - 1)) / WAVE_BARS);
+      barW = Math.max(1.5, (cw - gap * (WAVE_BARS - 1)) / WAVE_BARS);
       const styles = getComputedStyle(root);
-      const played = styles.getPropertyValue('--voice-played').trim() || '#0a84ff';
-      const rest = styles.getPropertyValue('--voice-rest').trim() || 'rgba(255,255,255,0.28)';
+      playedColor = styles.getPropertyValue('--voice-played').trim() || '#0a84ff';
+      restColor = styles.getPropertyValue('--voice-rest').trim() || 'rgba(255,255,255,0.28)';
+    }
+    function draw() {
+      ctx.clearRect(0, 0, cw, ch);
+      const progress = duration ? Math.min(1, audio.currentTime / duration) : 0;
       for (let i = 0; i < WAVE_BARS; i++) {
         const v = peaks ? peaks[i] : 0.4;
-        const h = Math.max(2, v * (cssHeight - 4));
+        const h = Math.max(2, v * (ch - 4));
         const x = i * (barW + gap);
-        ctx.fillStyle = (i + 0.5) / WAVE_BARS <= progress ? played : rest;
+        ctx.fillStyle = (i + 0.5) / WAVE_BARS <= progress ? playedColor : restColor;
         // Rounded bars, vertically centered.
-        const y = (cssHeight - h) / 2;
+        const y = (ch - h) / 2;
         ctx.beginPath();
         ctx.roundRect(x, y, barW, h, barW / 2);
         ctx.fill();
       }
     }
+    measure();
 
     function updateTimeDisplay() {
       time.textContent = formatClock(duration ? Math.max(0, duration - audio.currentTime) : audio.currentTime);
@@ -371,6 +382,9 @@
       // voices are never what the listener wants.
       if (currentlyPlaying && currentlyPlaying !== audio) currentlyPlaying.pause();
       currentlyPlaying = audio;
+      // Refresh cached colors once here so a theme/skin toggle since the
+      // last measure is picked up — the frame loop itself never reads style.
+      measure();
       rafId = requestAnimationFrame(tick);
     });
     const onStopped = () => {
@@ -396,9 +410,13 @@
       draw();
     });
 
-    // First paint happens before layout settles (clientWidth 0 inside the
-    // detached message node) — draw again once we're actually in the DOM.
-    requestAnimationFrame(draw);
+    // The initial measure() ran before layout settled (clientWidth 0 in the
+    // detached node). A ResizeObserver re-measures once the canvas has a real
+    // size and on any later resize / DPR change — the two moments the cached
+    // geometry can go stale. It fires initially on observe(), covering the
+    // first real paint, and self-stops when the node is GC'd (no teardown
+    // hook needed, matching the rest of this card's lifecycle).
+    new ResizeObserver(() => { measure(); draw(); }).observe(canvas);
     return root;
   }
 
