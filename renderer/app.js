@@ -495,6 +495,7 @@ function channelContextMenu(channelId) {
 function markChannelReadFromMenu(channelId) {
   if (!state.unread.has(channelId)) return;
   state.unread.delete(channelId);
+  state.huddle?.markChannelRead(channelId).catch(() => {});
   updateUnreadBadge(channelId);
   updateUnreadTitle();
 }
@@ -3596,6 +3597,10 @@ function onWelcome({ peers, channels }) {
   // recent mentions list and seed the sidebar badge. Realtime
   // bumps from onCrossChannelMessage take over after this.
   refreshMentionsUnread().catch((err) => console.warn('mentions unread seed failed', err));
+  // Per-channel unread badges — rebuild from the durable read bookmarks
+  // (channel_read_state) so they survive reloads. Realtime bumps take
+  // over once seeded.
+  seedUnreadFromReadState().catch((err) => console.warn('unread seed failed', err));
   // Seed the calendar (internal scheduled-calls + ICS subscriptions)
   // once the team is up. Realtime + the 15-min ICS poller keep it
   // current after that.
@@ -3948,8 +3953,10 @@ function focusChannel(channelId) {
   renderHeaderMembers(channel);
   renderKnockButton(channel);
   refreshNotifyButton();
-  // Visiting a channel clears its unread.
+  // Visiting a channel clears its unread — and moves the durable read
+  // bookmark so the cleared state survives reloads and anchors /catchup.
   state.unread.delete(channelId);
+  state.huddle?.markChannelRead(channelId).catch(() => {});
   updateUnreadBadge(channelId);
   updateUnreadTitle();
 }
@@ -3960,8 +3967,42 @@ function clearUnreadIfActive() {
   const id = state.chat.currentChannel;
   if (state.unread.has(id)) {
     state.unread.delete(id);
+    state.huddle.markChannelRead(id).catch(() => {});
     updateUnreadBadge(id);
     updateUnreadTitle();
+  }
+}
+
+// Rebuild the per-channel unread badges from the durable read bookmarks
+// at sign-in. state.unread is in-memory, so before channel_read_state
+// existed every reload wiped the badges; now we replay messages newer
+// than each channel's bookmark (one bounded team-wide query, bucketed
+// client-side). Channels with no bookmark yet are treated as read —
+// flooding every badge on the migration's first run helps nobody.
+// Bounded to a 48h horizon so a long vacation doesn't pull the whole
+// history; /catchup is the tool for that.
+async function seedUnreadFromReadState() {
+  if (!state.huddle) return;
+  const readState = await state.huddle.loadChannelReadState();
+  if (!readState.size) return;
+  const horizon = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+  let since = null;
+  for (const ts of readState.values()) if (!since || ts < since) since = ts;
+  if (since < horizon) since = horizon;
+  const messages = await state.huddle.loadTeamMessagesSince(since);
+  for (const m of messages) {
+    const bookmark = readState.get(m.channelId);
+    if (!bookmark || m.ts <= bookmark) continue;
+    if (m.authorId === state.huddle.peerId) continue;
+    // The channel we're looking at right now is being read, not missed.
+    if (state.chat?.currentChannel === m.channelId && windowFocused) continue;
+    const channel = state.channelMeta.get(m.channelId);
+    const isDm = channel?.type === 'dm';
+    const mentionsMe = Array.isArray(m.mentions) && (
+      m.mentions.includes(state.myName)
+      || (!isDm && (m.mentions.includes('@here') || m.mentions.includes('@channel')))
+    );
+    bumpUnread(m.channelId, mentionsMe);
   }
 }
 

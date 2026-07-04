@@ -2002,6 +2002,20 @@ body.huddle-call-minimized #tiles .speaker-queue { display: none !important; }
 
 .popout-call .react-popover { right: 16px; bottom: 76px; top: auto; }
 
+/* Ephemeral AI cards (/catchup): local-only rows that were never sent.
+   Dashed accent strip + the "Only visible to you" note distinguish them
+   from real posted messages; any re-render naturally drops them. */
+.msg.msg-ephemeral {
+  background: linear-gradient(90deg, rgba(10, 132, 255, 0.07), transparent 40%);
+  box-shadow: inset 3px 0 0 rgba(10, 132, 255, 0.55);
+}
+.msg-ephemeral-note {
+  font-size: 11px;
+  font-style: italic;
+  opacity: 0.55;
+  margin-left: 8px;
+}
+
 /* Pinned messages: subtle accent strip + chip on the row, plus a
    pin-count chip in the channel header that toggles a drawer. */
 .msg.msg-pinned {

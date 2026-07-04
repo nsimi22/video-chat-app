@@ -1846,6 +1846,97 @@
       return data?.mentions_last_read_at || null;
     }
 
+    // --- Per-channel read bookmarks (channel_read_state) ------------------
+    //
+    // One timestamp per (team, channel, user): when this user last viewed
+    // the channel. Written on every focused visit (markChannelRead), read
+    // in bulk at sign-in (unread badges that survive reloads) and by
+    // /catchup (the per-channel "since you last looked" window). All
+    // methods tolerate the table not existing yet (migration not applied)
+    // by degrading to "no bookmarks".
+
+    // Map of channelId -> last_read_at ISO string for the current team.
+    async loadChannelReadState() {
+      const out = new Map();
+      if (!this.peerId || !this.team?.id) return out;
+      const { data, error } = await this.supabase
+        .from('channel_read_state')
+        .select('channel_id,last_read_at')
+        .eq('team_id', this.team.id)
+        .eq('user_id', this.peerId);
+      if (error) { console.warn('loadChannelReadState failed', error); return out; }
+      for (const row of data || []) out.set(row.channel_id, row.last_read_at);
+      return out;
+    }
+
+    // Bump this channel's bookmark to now. Fire-and-forget from the
+    // renderer's visit/focus paths — a lost write just means a slightly
+    // stale digest window, never a broken UI.
+    async markChannelRead(channelId) {
+      if (!this.peerId || !this.team?.id || !channelId) return null;
+      const ts = new Date().toISOString();
+      const { error } = await this.supabase
+        .from('channel_read_state')
+        .upsert({
+          team_id: this.team.id,
+          channel_id: channelId,
+          user_id: this.peerId,
+          last_read_at: ts,
+        }, { onConflict: 'team_id,channel_id,user_id' });
+      if (error) { console.warn('markChannelRead failed', error); return null; }
+      return ts;
+    }
+
+    // Bounded team-wide "messages newer than X" sweep, ascending. Used by
+    // the sign-in unread seeder, which buckets rows against each
+    // channel's own bookmark client-side. RLS keeps invisible channels'
+    // rows out, same as everywhere else.
+    async loadTeamMessagesSince(since, { limit = 500 } = {}) {
+      if (!this.team?.id || !since) return [];
+      const { data, error } = await this.supabase
+        .from('messages')
+        .select('*')
+        .eq('team_id', this.team.id)
+        .gt('ts', since)
+        .order('ts', { ascending: true })
+        .limit(limit);
+      if (error) { console.warn('loadTeamMessagesSince failed', error); return []; }
+      return (data || []).map((row) => this._marshalMessage(row));
+    }
+
+    // Everything the user missed, per channel, for the /catchup digest:
+    // [{ channelId, name, type, since, messages }] — only channels that
+    // actually have new messages from someone else. Channels without a
+    // bookmark default to a 24h window so a first run (or a fresh
+    // teammate) gets a bounded briefing, not the whole history. Message
+    // visibility rides the messages RLS (can_see_channel), so channels
+    // this user can't read simply come back empty and are skipped.
+    async gatherCatchUp({ perChannelLimit = 80, defaultWindowHours = 24 } = {}) {
+      if (!this.team?.id) return [];
+      const readState = await this.loadChannelReadState();
+      const fallbackSince = new Date(Date.now() - defaultWindowHours * 3600 * 1000).toISOString();
+      const { data: channels, error } = await this.supabase
+        .from('channels').select('id,name,type').eq('team_id', this.team.id);
+      if (error) { console.warn('gatherCatchUp channels failed', error); return []; }
+      const sections = await Promise.all((channels || []).map(async (c) => {
+        const since = readState.get(c.id) || fallbackSince;
+        const { data: rows, error: mErr } = await this.supabase
+          .from('messages')
+          .select('*')
+          .eq('team_id', this.team.id)
+          .eq('channel_id', c.id)
+          .gt('ts', since)
+          .order('ts', { ascending: true })
+          .limit(perChannelLimit);
+        if (mErr || !rows?.length) return null;
+        const messages = rows.map((r) => this._marshalMessage(r));
+        // A channel where the only news is your own messages isn't news.
+        if (!messages.some((m) => m.authorId !== this.peerId)) return null;
+        return { channelId: c.id, name: c.name, type: c.type, since, messages };
+      }));
+      return sections.filter(Boolean);
+    }
+
     // Mark all mentions read by bumping the per-user timestamp to now.
     // Returns the new timestamp string so the renderer can update its
     // cached unread baseline without a second roundtrip.
