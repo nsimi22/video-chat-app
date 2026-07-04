@@ -9332,3 +9332,160 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   border-radius: 9px; border: none; background: var(--accent); color: #0b1020; cursor: pointer;
 }
 .jb-feed-send:hover { filter: brightness(1.08); }
+
+/* ── Terminal panel (in-app pty / Claude Code) ──────────────────────
+   Full-height nav-rail surface, mirroring .huddle-ai-view. */
+.huddle-terminal-view {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  left: calc(var(--rail-w, 68px) + var(--panel-w, 256px));
+  z-index: 100;
+  background: #0b0e14;
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font);
+  animation: huddle-fade-up 0.22s ease forwards;
+}
+.huddle-terminal-view.hidden { display: none; }
+@media (max-width: 900px) { .huddle-terminal-view { left: 0; } }
+
+.huddle-terminal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line-soft);
+  flex-shrink: 0;
+  background: var(--bg-0);
+}
+.huddle-terminal-title-block { display: flex; flex-direction: column; }
+.huddle-terminal-title {
+  font-weight: 700;
+  font-size: 15.5px;
+  color: var(--tx-hi);
+  letter-spacing: -0.01em;
+}
+.huddle-terminal-subtitle { font-size: 11.5px; color: var(--tx-lo); margin-top: 2px; }
+.huddle-terminal-subtitle code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bg-3);
+  color: var(--tx-mid);
+}
+.huddle-terminal-spacer { flex: 1; }
+.huddle-terminal-start {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent));
+  color: var(--bg-0);
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.huddle-terminal-start:hover { filter: brightness(1.06); }
+.huddle-terminal-start svg { width: 15px; height: 15px; }
+.huddle-terminal-stop {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--tx-mid);
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.huddle-terminal-stop:hover { background: var(--bg-3); color: var(--tx-hi); }
+/* Close button reuses .huddle-ai-close (see terminal-panel.js). */
+
+/* Tab strip */
+.huddle-terminal-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px 0;
+  flex-shrink: 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-0);
+}
+.huddle-terminal-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  color: var(--tx-lo);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.huddle-terminal-tab:hover { color: var(--tx-hi); background: var(--bg-2); }
+.huddle-terminal-tab.is-active {
+  color: var(--tx-hi);
+  background: #0b0e14;
+  border-color: var(--line-soft);
+}
+.huddle-terminal-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+}
+.huddle-terminal-tab-close:hover { opacity: 1; background: var(--bg-3); }
+.huddle-terminal-tab-close svg { width: 12px; height: 12px; }
+.huddle-terminal-newtab {
+  flex-shrink: 0;
+  width: 28px;
+  height: 26px;
+  margin-left: 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tx-lo);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.huddle-terminal-newtab:hover:not(:disabled) { background: var(--bg-3); color: var(--tx-hi); }
+.huddle-terminal-newtab:disabled { opacity: 0.35; cursor: default; }
+
+/* Mounts: all tabs stack in the same area; only the active one shows. */
+.huddle-terminal-mounts {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.huddle-terminal-mount {
+  position: absolute;
+  inset: 0;
+  padding: 8px 10px;
+  overflow: hidden;
+}
+.huddle-terminal-mount.hidden { display: none; }
+/* xterm sizes to its container; make the viewport fill the mount. */
+.huddle-terminal-mount .xterm,
+.huddle-terminal-mount .xterm-viewport { height: 100%; }
+.huddle-terminal-unavailable {
+  padding: 24px;
+  color: var(--tx-lo);
+  font-size: 13px;
+}

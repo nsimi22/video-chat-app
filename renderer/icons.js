@@ -123,6 +123,8 @@
     chevronsDown: `<svg ${A}><polyline points="6 10 12 16 18 10"/><polyline points="6 5 12 11 18 5"/></svg>`,
     equal: `<svg ${A}><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/></svg>`,
     external: `<svg ${A}><path d="M14 3h7v7"/><path d="M10 14L21 3"/><path d="M21 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h6"/></svg>`,
+    // ── Terminal feature (in-app pty / Claude Code) ─────────────
+    terminal: `<svg ${A}><rect x="3" y="4" width="18" height="16" rx="2"/><polyline points="7 9 10 12 7 15"/><line x1="12" y1="15" x2="16" y2="15"/></svg>`,
   };
 
   // Merge: V2 design icons land alongside legacy icons. Legacy keys

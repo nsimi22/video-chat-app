@@ -96,6 +96,27 @@ contextBridge.exposeInMainWorld('huddle', {
       return () => ipcRenderer.removeListener('caption-line', handler);
     },
   },
+  // In-app terminal. The real shell runs in main (the renderer is
+  // sandboxed); this narrow bridge is the only surface it exposes.
+  // spawn/write/resize/kill are request/response; onData/onExit are
+  // push subscriptions that return an unsubscribe fn — same shape as
+  // whisperEngine.onCaptionLine above.
+  terminal: {
+    spawn:  (opts) => ipcRenderer.invoke('terminal-spawn', opts || {}),
+    write:  (id, data) => ipcRenderer.invoke('terminal-write', { id, data }),
+    resize: (id, cols, rows) => ipcRenderer.invoke('terminal-resize', { id, cols, rows }),
+    kill:   (id) => ipcRenderer.invoke('terminal-kill', { id }),
+    onData: (cb) => {
+      const handler = (_e, payload) => { try { cb(payload); } catch {} };
+      ipcRenderer.on('terminal-data', handler);
+      return () => ipcRenderer.removeListener('terminal-data', handler);
+    },
+    onExit: (cb) => {
+      const handler = (_e, payload) => { try { cb(payload); } catch {} };
+      ipcRenderer.on('terminal-exit', handler);
+      return () => ipcRenderer.removeListener('terminal-exit', handler);
+    },
+  },
   fetchProxy: (req) => ipcRenderer.invoke('fetch-proxy', req),
   // Render HTML to a PDF via a hidden window + native save dialog
   // (roadmap export). Returns { ok, path } or { ok:false, canceled|error }.
