@@ -8902,7 +8902,7 @@ window.huddleApp = {
   terminalToChat: (text) => {
     const cid = state.chat?.currentChannel;
     if (!state.huddle || !cid) { showToast('Open a channel first.', { kind: 'error' }); return; }
-    const fenced = '```\n' + String(text).replace(/```/g, '``​`') + '\n```';
+    const fenced = '```\n' + String(text).replace(/```/g, '``\u200b`') + '\n```';
     state.huddle.sendMessage({ channelId: cid, parentId: null, text: fenced, attachments: [] });
     showToast('Posted terminal output to chat.');
   },
@@ -8911,7 +8911,7 @@ window.huddleApp = {
   // rather than adding a second AI surface.
   terminalExplain: (text) => {
     if (!state.ai || !state.ai.isConfigured()) { showToast('Add an AI provider in Settings first.', { kind: 'error' }); return; }
-    const fenced = '```\n' + String(text).replace(/```/g, '``​`') + '\n```';
+    const fenced = '```\n' + String(text).replace(/```/g, '``\u200b`') + '\n```';
     state.chat?._prefillComposer(`/ai Explain this terminal output and suggest fixes if something looks wrong:\n${fenced}`);
     try { window.HuddleTerminalPanel?.close(); } catch {}
     showToast('Drafted an /ai request — review and send.');

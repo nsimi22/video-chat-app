@@ -50,10 +50,17 @@ Deno.serve(async (req) => {
   // --- Scheduled messages ---
   const { data: dueMsgs } = await admin.from('scheduled_messages')
     .select('*').eq('status', 'pending').lte('send_at', nowIso).limit(200);
+  // Resolve every author's name/color up front — one query for the batch
+  // instead of one per message.
+  const authorIds = [...new Set((dueMsgs ?? []).map((r) => r.author_id))];
+  const profileById = new Map<string, { name?: string; color?: string }>();
+  if (authorIds.length) {
+    const { data: profs } = await admin.from('profiles').select('user_id, name, color').in('user_id', authorIds);
+    for (const p of profs ?? []) profileById.set(p.user_id, p);
+  }
   for (const row of dueMsgs ?? []) {
     if (!(await claim('scheduled_messages', row.id, 'sent'))) continue;
-    const { data: prof } = await admin.from('profiles')
-      .select('name, color').eq('user_id', row.author_id).maybeSingle();
+    const prof = profileById.get(row.author_id);
     const { data: inserted, error } = await admin.from('messages').insert({
       team_id: row.team_id, channel_id: row.channel_id, parent_id: row.parent_id,
       author_id: row.author_id, author_name: prof?.name ?? 'Someone', author_color: prof?.color ?? null,
@@ -70,20 +77,30 @@ Deno.serve(async (req) => {
   // --- Reminders ---
   const { data: dueRems } = await admin.from('message_reminders')
     .select('*').eq('status', 'pending').lte('remind_at', nowIso).limit(200);
+  // One device-token query for every user with a due reminder, grouped in
+  // memory, instead of a query per reminder.
+  const remUserIds = [...new Set((dueRems ?? []).map((r) => r.user_id))];
+  const tokensByUser = new Map<string, string[]>();
+  if (remUserIds.length) {
+    const { data: tokenRows } = await admin.from('device_tokens').select('user_id, token').in('user_id', remUserIds);
+    for (const t of tokenRows ?? []) {
+      if (typeof t.token !== 'string' || !EXPO_TOKEN_RE.test(t.token)) continue;
+      const list = tokensByUser.get(t.user_id) ?? [];
+      list.push(t.token);
+      tokensByUser.set(t.user_id, list);
+    }
+  }
   const pushes: Array<{ to: string; title: string; body: string; sound: string; data: unknown }> = [];
   for (const r of dueRems ?? []) {
     if (!(await claim('message_reminders', r.id, 'fired'))) continue;
     remindersFired++;
-    const { data: tokens } = await admin.from('device_tokens').select('token').eq('user_id', r.user_id);
-    for (const t of tokens ?? []) {
-      if (typeof t.token === 'string' && EXPO_TOKEN_RE.test(t.token)) {
-        pushes.push({
-          to: t.token, title: '⏰ Reminder',
-          body: r.note || 'You asked to be reminded about a message.',
-          sound: 'default',
-          data: { teamId: r.team_id, channelId: r.channel_id, messageId: r.message_id },
-        });
-      }
+    for (const token of tokensByUser.get(r.user_id) ?? []) {
+      pushes.push({
+        to: token, title: '⏰ Reminder',
+        body: r.note || 'You asked to be reminded about a message.',
+        sound: 'default',
+        data: { teamId: r.team_id, channelId: r.channel_id, messageId: r.message_id },
+      });
     }
   }
   for (let i = 0; i < pushes.length; i += 100) {

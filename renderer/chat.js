@@ -1242,19 +1242,22 @@ class ChatView {
     document.querySelector('.time-picker-menu')?.remove();
     const menu = document.createElement('div');
     menu.className = 'time-picker-menu';
+    // Single teardown for every close path (pick or click-outside) so the
+    // document listener never outlives the menu.
+    const off = (e) => { if (!e || !menu.contains(e.target)) close(); };
+    const close = () => { menu.remove(); document.removeEventListener('mousedown', off); };
     for (const o of this._timePickerOptions()) {
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'time-picker-item';
       b.textContent = o.label;
-      b.onclick = () => { menu.remove(); onPick(o.at); };
+      b.onclick = () => { close(); onPick(o.at); };
       menu.appendChild(b);
     }
     menu.style.position = 'fixed';
     menu.style.left = `${Math.min(at?.clientX || 120, window.innerWidth - 220)}px`;
     menu.style.top = `${Math.min(at?.clientY || 120, window.innerHeight - 220)}px`;
     document.body.appendChild(menu);
-    const off = (e) => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('mousedown', off); } };
     setTimeout(() => document.addEventListener('mousedown', off), 0);
   }
 
