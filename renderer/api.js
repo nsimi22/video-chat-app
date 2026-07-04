@@ -113,6 +113,11 @@
       // Peer ids whose hand is currently raised. Cleared when the peer
       // lowers their hand or leaves the call.
       this.raisedHands = new Set();
+      // peerId -> epoch-ms of when the hand went up. Drives the ordered
+      // speaker queue (first raised speaks first). Kept alongside the Set
+      // rather than replacing it so existing has()-style consumers keep
+      // working. Same lifecycle as raisedHands.
+      this.raisedHandTimes = new Map();
       // Per-peer mic/cam state in the active call. Default assumption for
       // a newly-joined peer is both on; the peer broadcasts a mute-state
       // event when their tracks change, and the call client rebroadcasts
@@ -318,14 +323,25 @@
           if (!seen.has(id)) {
             this._callPeerInfo.delete(id);
             this.raisedHands.delete(id);
+            this.raisedHandTimes.delete(id);
             this.peerMediaState.delete(id);
           }
         }
       });
 
       ch.on('broadcast', { event: 'raise-hand' }, ({ payload }) => {
-        if (payload.raised) this.raisedHands.add(payload.from);
-        else this.raisedHands.delete(payload.from);
+        if (payload.raised) {
+          this.raisedHands.add(payload.from);
+          // First-seen wins: catch-up re-broadcasts (sent to late joiners)
+          // carry the original raise time, but if we already saw this hand
+          // go up, keep our existing stamp so the queue order is stable.
+          if (!this.raisedHandTimes.has(payload.from)) {
+            this.raisedHandTimes.set(payload.from, payload.ts || Date.now());
+          }
+        } else {
+          this.raisedHands.delete(payload.from);
+          this.raisedHandTimes.delete(payload.from);
+        }
         this.dispatchEvent(new CustomEvent('raise-hand', { detail: payload }));
       });
       // Mic/cam state for remote peers. WebRTC's `track.enabled = false`
@@ -455,6 +471,7 @@
       this._hostedTerminalShares.clear();
       this._callPeerInfo.clear();
       this.raisedHands.clear();
+      this.raisedHandTimes.clear();
       this.peerMediaState.clear();
       this._callChannel = null;
       this._callChannelId = null;
@@ -1184,9 +1201,29 @@
     // --- Outgoing operations --------------------------------------------
 
     sendRaiseHand(raised) {
-      if (raised) this.raisedHands.add(this.peerId);
-      else this.raisedHands.delete(this.peerId);
-      this._callChannel?.send({ type: 'broadcast', event: 'raise-hand', payload: { from: this.peerId, raised: !!raised } });
+      if (raised) {
+        this.raisedHands.add(this.peerId);
+        // Re-broadcasts for late joiners must carry the ORIGINAL raise
+        // time, not now() — otherwise every new participant would bump
+        // us to the back of the speaker queue.
+        if (!this.raisedHandTimes.has(this.peerId)) {
+          this.raisedHandTimes.set(this.peerId, Date.now());
+        }
+      } else {
+        this.raisedHands.delete(this.peerId);
+        this.raisedHandTimes.delete(this.peerId);
+      }
+      this._callChannel?.send({
+        type: 'broadcast', event: 'raise-hand',
+        payload: { from: this.peerId, raised: !!raised, ts: this.raisedHandTimes.get(this.peerId) || null },
+      });
+    }
+    // Raised hands ordered first-raised-first, ties broken by peerId so
+    // every participant computes the same order. This IS the speaker queue.
+    get speakerQueue() {
+      return [...this.raisedHandTimes.entries()]
+        .sort((a, b) => (a[1] - b[1]) || (a[0] < b[0] ? -1 : 1))
+        .map(([id, ts]) => ({ id, ts }));
     }
     sendMuteState(micOn, camOn) {
       // Call channel is { broadcast: { self: false } }, so this never

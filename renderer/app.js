@@ -104,6 +104,7 @@ const els = {
   btnLayout: $('#btn-layout'),
   btnFullscreen: $('#btn-fullscreen'),
   btnHand: $('#btn-hand'),
+  speakerQueue: $('#speaker-queue'),
   btnRecord: $('#btn-record'),
   btnReact: $('#btn-react'),
   reactPopover: $('#react-popover'),
@@ -3473,6 +3474,7 @@ function removePersonFromCall(peerId) {
   removeTile(`peer:${peerId}`);
   stopCamOffDetection(peerId);
   state.raisedHands.delete(peerId);
+  renderSpeakerQueue();
   state.peerPlatforms.delete(peerId);
   if (state.speakingPeer === peerId) setSpeakingPeer(null);
   // Drop any screen tiles owned by this peer too.
@@ -5279,6 +5281,8 @@ function setSpeakingPeer(peerId) {
     // Follow the speaker in the minimized panel (silence → keep last).
     if (state.callMinimized) updateMiniCallFocus(peerId);
   }
+  // Keep the queue's "now speaking" highlight in step with the tiles.
+  renderSpeakerQueue();
 }
 
 // Raise hand: maintained as a Set of peerIds locally. Self toggles via the
@@ -5287,6 +5291,10 @@ function setSpeakingPeer(peerId) {
 function setHandRaised(peerId, raised) {
   if (raised) state.raisedHands.add(peerId);
   else state.raisedHands.delete(peerId);
+  // The queue panel re-renders on every hand change even when the
+  // peer's tile hasn't mounted yet (broadcast-before-track race) —
+  // the queue lists people, not tiles, so it must not wait for one.
+  renderSpeakerQueue();
   const tile = tileForPeer(peerId);
   if (!tile) return;
   let badge = tile.querySelector('.tile-hand');
@@ -5297,6 +5305,37 @@ function setHandRaised(peerId, raised) {
     tile.appendChild(badge);
   } else if (!raised && badge) {
     badge.remove();
+  }
+}
+
+// Ordered raise-hand queue: hands listed first-raised-first, so a busy
+// call gets a fair "who talks next" order instead of a pile of badges.
+// Order comes from HuddleClient.speakerQueue (raise timestamps shared
+// via the raise-hand broadcast); the active speaker gets a highlight so
+// it's obvious when the person up next has started talking.
+function renderSpeakerQueue() {
+  const panel = els.speakerQueue;
+  if (!panel) return;
+  const queue = state.mesh?.speakerQueue || [];
+  panel.classList.toggle('hidden', queue.length === 0);
+  panel.replaceChildren();
+  if (!queue.length) return;
+  const title = document.createElement('div');
+  title.className = 'speaker-queue-title';
+  title.innerHTML = (window.HuddleIcons?.hand || '') + '<span>Speaker queue</span>';
+  panel.appendChild(title);
+  for (const [i, entry] of queue.entries()) {
+    const row = document.createElement('div');
+    row.className = 'speaker-queue-row';
+    if (entry.id === state.speakingPeer) row.classList.add('speaking');
+    const pos = document.createElement('span');
+    pos.className = 'speaker-queue-pos';
+    pos.textContent = String(i + 1);
+    const name = document.createElement('span');
+    name.className = 'speaker-queue-name';
+    name.textContent = entry.id === state.huddle?.peerId ? 'You' : resolveTileLabel(entry.id);
+    row.append(pos, name);
+    panel.appendChild(row);
   }
 }
 
@@ -6342,6 +6381,10 @@ function resetCallEphemera() {
   state.raisedHands.clear();
   state.peerPlatforms.clear();
   if (els.btnHand) els.btnHand.classList.remove('active');
+  if (els.speakerQueue) {
+    els.speakerQueue.classList.add('hidden');
+    els.speakerQueue.replaceChildren();
+  }
   // Drop the in-call team board overlay — it's only relevant mid-call.
   window.HuddleJiraBoard?.hideInCall();
   if (els.btnBoard) els.btnBoard.classList.remove('active');
