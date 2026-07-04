@@ -208,6 +208,18 @@
     requestAnimationFrame(() => { s.fitScheduled = false; fitSession(s); });
   }
 
+  // Run cb once the layout has truly settled: after web fonts resolve (so
+  // xterm measures the real cell width, not a fallback) and two animation
+  // frames (so the just-shown panel's dimensions are final). Used before
+  // launching claude, whose one-shot welcome banner is static output that
+  // never reflows on resize — it MUST be drawn at the final width.
+  function whenSettled(cb) {
+    const go = () => requestAnimationFrame(() => requestAnimationFrame(cb));
+    const fonts = document.fonts && document.fonts.ready;
+    if (fonts && typeof fonts.then === 'function') fonts.then(go, go);
+    else go();
+  }
+
   function launchClaude(s) {
     if (s.ptyId) window.huddle.terminal.write(s.ptyId, 'claude\r');
   }
@@ -275,23 +287,30 @@
           cleanupSubs(s);
           s.ptyId = null;
         });
-        // The mount may still have been settling when we measured cols for
-        // the spawn (the panel had just been shown), so re-fit now that the
-        // pty exists and push the true size to it — otherwise a full-width
-        // TUI like `claude` draws at the stale width and its right edge runs
-        // off the panel. fitSession resizes the pty (ptyId is set now);
-        // scheduleFit catches any layout that settles a frame later.
+        // Rough-fit immediately so a plain shell is close, then re-fit once
+        // the layout has truly settled and only THEN launch claude — its
+        // welcome banner is static output drawn once at start, so the pty
+        // must be at its final width before `claude` runs or the banner is
+        // stuck too wide and overflows the panel. bootWantsClaude persists
+        // (it's consumed here, not reset in the finally) so a claude request
+        // that arrived mid-boot still fires.
         fitSession(s);
-        scheduleFit(s);
-        if (s.bootWantsClaude) launchClaude(s);
+        whenSettled(() => {
+          if (s.closed || !s.ptyId) return;
+          fitSession(s);
+          if (s.bootWantsClaude) { s.bootWantsClaude = false; launchClaude(s); }
+        });
         return true;
       } catch (err) {
         if (!s.closed) s.term.write(`\r\n\x1b[31m[terminal] ${err && err.message ? err.message : 'failed to start shell'}\x1b[0m\r\n`);
         return false;
       }
     })();
+    // Note: bootWantsClaude is NOT reset here — it's consumed by the
+    // whenSettled callback above (which fires after this returns), so a
+    // claude launch deferred for settle isn't dropped.
     try { return await s.bootPromise; }
-    finally { s.bootPromise = null; s.bootWantsClaude = false; }
+    finally { s.bootPromise = null; }
   }
 
   function killSessionShell(s) {
