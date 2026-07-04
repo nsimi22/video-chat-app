@@ -216,6 +216,12 @@ const els = {
   clipStop: $('#clip-stop'),
   clipRetake: $('#clip-retake'),
   clipPost: $('#clip-post'),
+  // Voice notes (composer → #voice-btn); logic in voice-note.js.
+  voiceBtn: $('#voice-btn'),
+  voicePill: $('#voice-pill'),
+  voicePillTimer: $('#voice-pill-timer'),
+  voicePillCancel: $('#voice-pill-cancel'),
+  voicePillSend: $('#voice-pill-send'),
   // Settings
   openSettings: $('#open-settings'),
   settingsModal: $('#settings-modal'),

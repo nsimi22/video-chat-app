@@ -660,6 +660,43 @@ input:focus, textarea:focus {
 }
 .attachment-chip:hover { background: rgba(255, 255, 255, 0.1); border-color: var(--line-strong); }
 
+/* Voice-note player (renderVoiceAttachment in voice-note.js): play
+   button + waveform canvas + remaining-time label. The canvas reads the
+   two custom props below so the v2 skin can retoken the bar colors. */
+.msg-voice {
+  --voice-played: var(--accent, #0a84ff);
+  --voice-rest: rgba(255, 255, 255, 0.28);
+  display: inline-flex; align-items: center; gap: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 6px 14px 6px 6px;
+  max-width: 320px;
+}
+.msg-voice-play {
+  flex: 0 0 auto;
+  width: 30px; height: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent, #0a84ff);
+  color: #fff;
+  cursor: pointer;
+  padding: 0;
+}
+.msg-voice-play:hover { filter: brightness(1.1); }
+.msg-voice-wave {
+  width: 180px; height: 28px;
+  cursor: pointer;
+}
+.msg-voice-time {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+  min-width: 30px; text-align: right;
+}
+
 /* Composer attachment chips (pending uploads) */
 .attachment-chips {
   display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px;
@@ -2700,6 +2737,37 @@ body.huddle-call-minimized #tiles .speaker-queue { display: none !important; }
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
 }
+
+/* Voice-note recording pill: floats above the composer (same anchor
+   trick as .slash-suggest) while a take is live. The 🎙 button itself
+   turns red via .recording so the state is visible even if the pill
+   is behind another popup. */
+.voice-pill {
+  position: absolute;
+  bottom: 100%; left: 12px;
+  margin-bottom: 6px;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-2);
+  padding: 6px 8px 6px 12px;
+  z-index: 50;
+  font-size: 13px;
+}
+.voice-pill.hidden { display: none; }
+.voice-pill-dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: #ff453a;
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+@keyframes voice-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+.voice-pill-timer { font-variant-numeric: tabular-nums; opacity: 0.8; }
+.voice-pill button { flex: 0 0 auto; }
+#voice-btn.recording { color: #ff453a; }
 
 /* Slash-command autocomplete popup. Anchored above the composer
    via position:absolute / bottom:100% so it grows upward and
@@ -5645,6 +5713,20 @@ body.popout-call .popout-stage > .draw-toolbar {
   font-size: 12.5px;
   letter-spacing: 0;
   padding: 9px 16px;
+}
+
+/* Voice-note player + recording pill — retoken to v2 surfaces. The
+   waveform colors ride the --voice-* custom props the canvas reads. */
+[data-ui="v2"] .msg-voice {
+  --voice-played: var(--accent);
+  --voice-rest: color-mix(in srgb, var(--tx-lo) 40%, transparent);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+}
+[data-ui="v2"] .voice-pill {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-pop);
 }
 
 /* Attachment chips — both the message-rendered chip and the pending

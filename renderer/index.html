@@ -558,6 +558,24 @@
           <button id="clip-btn" class="icon-only ghost" title="Record a clip" aria-label="Record a clip">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="6.5" width="13" height="11" rx="2.5"/><path d="M15.5 10.5l5-3v9l-5-3z"/></svg>
           </button>
+          <!-- Voice notes: mic-only async audio messages. Click to start,
+               click again (or ✓ in the pill) to send. The capture logic
+               lives in renderer/voice-note.js; the pill below shows the
+               live timer + cancel/send while recording. -->
+          <button id="voice-btn" class="icon-only ghost" title="Record a voice note" aria-label="Record a voice note">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg>
+          </button>
+          <div id="voice-pill" class="voice-pill hidden" role="status" aria-label="Recording a voice note">
+            <span class="voice-pill-dot" aria-hidden="true"></span>
+            <span>Recording</span>
+            <span id="voice-pill-timer" class="voice-pill-timer">0:00</span>
+            <button id="voice-pill-cancel" class="icon-only ghost" title="Discard" aria-label="Discard voice note">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+            <button id="voice-pill-send" class="icon-only primary" title="Send" aria-label="Send voice note">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            </button>
+          </div>
           <button id="gif-btn" title="GIF">GIF</button>
           <button id="poll-btn" class="icon-only" title="Create a poll" aria-label="Create a poll">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
@@ -1150,6 +1168,7 @@
     <script src="livekit.js"></script>
     <script src="profile-card.js"></script>
     <script src="clip-recorder.js"></script>
+    <script src="voice-note.js"></script>
     <script src="chat.js"></script>
     <script src="calendar.js"></script>
     <script src="context-menu.js"></script>

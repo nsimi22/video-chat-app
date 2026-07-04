@@ -233,6 +233,7 @@ class ChatView {
     this._initGifPicker();
     this._initPollComposer();
     this._initClipRecorder();
+    this._initVoiceNotes();
   }
 
   // --- Public API ---------------------------------------------------------
@@ -522,6 +523,9 @@ class ChatView {
     // would strand the camera/screen tracks on.
     try { this._clipRecorder?.close(true); } catch {}
     this._clipRecorder = null;
+    // Same for a voice note mid-recording: discard it and release the mic.
+    try { this._voiceRecorder?.destroy(); } catch {}
+    this._voiceRecorder = null;
     this._listenerCtrl?.abort();
     this._listenerCtrl = null;
   }
@@ -1773,11 +1777,17 @@ class ChatView {
       for (const a of m.attachments) {
         const ct = a.contentType || '';
         const isImage = ct.startsWith('image/');
+        // Voice notes (and any other audio upload) get the inline
+        // waveform player. Checked before video: a voice note's
+        // audio/webm contentType must not fall through to the chip.
+        const isAudio = ct.startsWith('audio/') || a.kind === 'voice';
         // Huddle Clips (and any other video upload) render as an inline
         // player. We key off the MIME type so plain video uploads work too,
         // not just clips recorded in-app (which also carry kind === 'clip').
         const isVideo = ct.startsWith('video/') || a.kind === 'clip' || a.kind === 'video';
-        if (isVideo) {
+        if (isAudio && window.HuddleVoiceNote) {
+          attachmentsEl.appendChild(window.HuddleVoiceNote.renderVoiceAttachment(a));
+        } else if (isVideo) {
           const video = document.createElement('video');
           video.src = a.url;
           video.controls = true;
@@ -2291,6 +2301,59 @@ class ChatView {
       this.hooks.toast?.('Couldn’t post the clip.');
       // Re-throw for the same reason as the upload path: the recorder needs
       // to know the post didn't land so it can keep the take for a retry.
+      throw err;
+    }
+  }
+
+  // --- Voice notes ----------------------------------------------------------
+
+  // Wire the composer's 🎙 button to the inline voice-note recorder
+  // (renderer/voice-note.js). Same division of labor as clips: the module
+  // owns capture, we own the "upload + post the finished blob" hand-off.
+  _initVoiceNotes() {
+    if (!this.els.voiceBtn || !window.HuddleVoiceNote) return;
+    this._voiceRecorder = new window.HuddleVoiceNote.VoiceNoteRecorder({
+      els: this.els,
+      signal: this._listenerCtrl.signal,
+      hooks: {
+        denoiseEnabled: () => this.hooks.denoiseEnabled?.() ?? true,
+        toast: (msg) => this.hooks.toast?.(msg),
+        onPost: (blob, meta) => this._postVoiceNote(blob, meta),
+      },
+    });
+    this._on(this.els.voiceBtn, 'click', (e) => {
+      e.stopPropagation();
+      this._voiceRecorder.toggle();
+    });
+  }
+
+  // Upload a recorded voice Blob and post it as an audio attachment.
+  // Mirrors _postClip: rides the normal attachments JSONB (no schema
+  // change), rendering keys off the audio/* contentType + kind 'voice'.
+  async _postVoiceNote(blob, meta) {
+    const channelId = this.currentChannel;
+    const parentId = this.threadParentId;
+    const file = new File([blob], meta.name, { type: meta.mimeType || blob.type });
+    let info;
+    try {
+      info = await this.mesh.uploadFile(file);
+    } catch (err) {
+      console.warn('voice note upload failed', err);
+      this.hooks.toast?.('Voice note upload failed — try again.');
+      throw err;
+    }
+    info.kind = 'voice';
+    if (meta.durationSecs) info.durationSecs = meta.durationSecs;
+    try {
+      await this.mesh.sendMessageStrict({
+        channelId,
+        parentId,
+        text: '',
+        attachments: [info],
+      });
+    } catch (err) {
+      console.warn('voice note post failed', err);
+      this.hooks.toast?.('Couldn’t post the voice note.');
       throw err;
     }
   }
