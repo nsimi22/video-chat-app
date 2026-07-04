@@ -151,6 +151,7 @@
       unsubExit: null,
       bootPromise: null,
       bootWantsClaude: false,
+      claudePending: false, // a settled claude launch is scheduled (dedup latch)
       fitScheduled: false,
       // Set true once the tab is closed; the async boot re-checks it after
       // spawn so a shell that finishes booting into a closed tab is killed
@@ -208,8 +209,38 @@
     requestAnimationFrame(() => { s.fitScheduled = false; fitSession(s); });
   }
 
+  // Run cb once the layout has truly settled: after web fonts resolve (so
+  // xterm measures the real cell width, not a fallback) and two animation
+  // frames (so the just-shown panel's dimensions are final). Used before
+  // launching claude, whose one-shot welcome banner is static output that
+  // never reflows on resize — it MUST be drawn at the final width.
+  function whenSettled(cb) {
+    const go = () => requestAnimationFrame(() => requestAnimationFrame(cb));
+    const fonts = document.fonts && document.fonts.ready;
+    if (fonts && typeof fonts.then === 'function') fonts.then(go, go);
+    else go();
+  }
+
   function launchClaude(s) {
     if (s.ptyId) window.huddle.terminal.write(s.ptyId, 'claude\r');
+  }
+
+  // Launch claude into s's current shell once the layout has settled — its
+  // one-shot welcome banner is static output drawn at start, so the pty must
+  // be at its final width first. Single path for both the fresh-boot and the
+  // reopen/running-shell cases. Pins the ptyId so a shell that exits and
+  // respawns during the settle window doesn't get claude injected, and
+  // latches (claudePending) so a double request can't launch twice.
+  function launchClaudeWhenReady(s) {
+    const pid = s.ptyId;
+    if (!pid || s.claudePending) return;
+    s.claudePending = true;
+    whenSettled(() => {
+      s.claudePending = false;
+      if (s.closed || s.ptyId !== pid) return;
+      fitSession(s);
+      launchClaude(s);
+    });
   }
 
   // Ensure session `s` has a live shell. `mode==='claude'` launches Claude
@@ -239,7 +270,7 @@
     if (mode === 'claude') s.bootWantsClaude = true;
 
     if (s.ptyId) {
-      if (mode === 'claude') { s.bootWantsClaude = false; launchClaude(s); }
+      if (mode === 'claude') { s.bootWantsClaude = false; launchClaudeWhenReady(s); }
       return true;
     }
     if (s.bootPromise) return s.bootPromise;
@@ -275,21 +306,23 @@
           cleanupSubs(s);
           s.ptyId = null;
         });
-        // The mount may still have been settling when we measured cols for
-        // the spawn (the panel had just been shown), so re-fit now that the
-        // pty exists and push the true size to it — otherwise a full-width
-        // TUI like `claude` draws at the stale width and its right edge runs
-        // off the panel. fitSession resizes the pty (ptyId is set now);
-        // scheduleFit catches any layout that settles a frame later.
+        // Rough-fit immediately so a plain shell is close, then re-fit once
+        // the layout has truly settled. claude (if requested) launches only
+        // after settle via launchClaudeWhenReady — its welcome banner is
+        // static output drawn once at start, so the pty must be at its final
+        // width first.
         fitSession(s);
-        scheduleFit(s);
-        if (s.bootWantsClaude) launchClaude(s);
+        whenSettled(() => { if (!s.closed && s.ptyId) fitSession(s); });
+        if (s.bootWantsClaude) launchClaudeWhenReady(s);
         return true;
       } catch (err) {
         if (!s.closed) s.term.write(`\r\n\x1b[31m[terminal] ${err && err.message ? err.message : 'failed to start shell'}\x1b[0m\r\n`);
         return false;
       }
     })();
+    // The deferred claude launch captured its intent in a local, so it's
+    // safe to always clear the flag here — this prevents a stale intent
+    // (failed/closed boot) from auto-launching claude on a later respawn.
     try { return await s.bootPromise; }
     finally { s.bootPromise = null; s.bootWantsClaude = false; }
   }
