@@ -1351,6 +1351,12 @@
     async startTerminalShare(shareId) {
       if (!this._callChannel) throw new Error('not in a call');
       await this._ensureTerminalChannel(shareId);
+      // The call may have ended during the subscribe handshake — don't
+      // register a hosted share against a torn-down call; drop the channel.
+      if (!this._callChannel) {
+        await this.leaveTerminalShare(shareId);
+        throw new Error('call ended');
+      }
       this._hostedTerminalShares.add(shareId);
       this._callChannel.send({
         type: 'broadcast', event: 'terminal-announce',

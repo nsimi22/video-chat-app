@@ -2108,6 +2108,10 @@ async function joinTeamAndStart(teamId) {
   // the frame channels down).
   huddle.addEventListener('terminal-announce', (e) => {
     window.HuddleTerminalPanel?.remoteShareStarted?.(e.detail);
+    // Only promise a viewer if this build can actually render one (the
+    // panel no-ops without the xterm engine). Avoids "open Terminal to
+    // view" pointing at a tab that will never appear.
+    if (typeof window.Terminal !== 'function') return;
     const who = e.detail?.fromName || 'Someone';
     showToast(`${who} is sharing a terminal — open Terminal to view`, { kind: 'info' });
   });

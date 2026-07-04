@@ -137,6 +137,7 @@
       gotSnapshot: false,     // viewer: catch-up snapshot applied
       ended: false,           // viewer: host stopped the share
       share: null,            // host: { id, buf, timer } while broadcasting
+      sharePending: false,    // host: a share start is mid-flight (re-entrancy guard)
       serialize: null,        // host: SerializeAddon for late-joiner snapshots
       ptyId: null,
       term: null,
@@ -314,25 +315,37 @@
     const s = active;
     if (!s || s.viewer) return;
     if (s.share) { await unshareSession(s); updateHeaderButtons(); return; }
+    // Re-entrancy guard: two fast clicks must not start two shares (the
+    // second would leak, since s.share only ends up holding one id).
+    if (s.sharePending) return;
     const api = shareApi();
     if (!api || !inCall()) { notice(s, 'join a call first', '33'); return; }
-    if (!s.term && !(await ensureSession(s))) return;
-    // Serialize addon renders the current screen+scrollback for late
-    // joiners. Loaded lazily on first share; harmless if the vendor file
-    // is missing (joiners then start from live output only).
-    const SA = window.SerializeAddon?.SerializeAddon;
-    if (SA && !s.serialize) { s.serialize = new SA(); s.term.loadAddon(s.serialize); }
-    const shareId = crypto.randomUUID();
+    s.sharePending = true;
     try {
-      await api.start(shareId);
-    } catch (err) {
-      notice(s, err?.message || 'failed to start sharing', '31');
-      return;
+      if (!s.term && !(await ensureSession(s))) return;
+      // Serialize addon renders the current screen+scrollback for late
+      // joiners. Loaded lazily on first share; harmless if the vendor file
+      // is missing (joiners then start from live output only).
+      const SA = window.SerializeAddon?.SerializeAddon;
+      if (SA && !s.serialize) { s.serialize = new SA(); s.term.loadAddon(s.serialize); }
+      const shareId = crypto.randomUUID();
+      try {
+        await api.start(shareId);
+      } catch (err) {
+        notice(s, err?.message || 'failed to start sharing', '31');
+        return;
+      }
+      // The tab may have been closed/stopped during the awaits above.
+      // Don't wire a share onto a dead session — retract the one we just
+      // announced so viewers don't watch a stream that never flows.
+      if (s.closed) { try { await api.stop(shareId); } catch {} return; }
+      s.share = { id: shareId, buf: '', timer: null };
+      s.chipEl.classList.add('is-shared');
+      notice(s, 'broadcasting this terminal to the call (read-only for viewers)');
+    } finally {
+      s.sharePending = false;
+      updateHeaderButtons();
     }
-    s.share = { id: shareId, buf: '', timer: null };
-    s.chipEl.classList.add('is-shared');
-    notice(s, 'broadcasting this terminal to the call (read-only for viewers)');
-    updateHeaderButtons();
   }
 
   // Reset the host-side share state on `s` (timer, flag, chip badge) —
@@ -439,10 +452,13 @@
   function onViewerSnapshot(d) {
     const s = viewers.get(d?.shareId);
     if (!s || s.ended || s.closed || s.gotSnapshot) return;
+    // Empty snapshot (host has no serialize addon) — don't reset, or we'd
+    // wipe the live frames already shown and replace them with nothing.
+    if (!d.data) return;
     s.gotSnapshot = true;
     try { s.term.reset(); } catch {}
     syncViewerDims(s, d.cols, d.rows);
-    if (d.data) s.term.write(d.data);
+    s.term.write(d.data);
   }
 
   // Share over (host stopped, or the call ended). Keep the tab so the
