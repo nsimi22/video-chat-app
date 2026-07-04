@@ -135,6 +135,9 @@
       viewer: !!opts?.viewer, // read-only view of a teammate's share (no pty)
       shareId: null,          // viewer: the share being watched
       gotSnapshot: false,     // viewer: catch-up snapshot applied
+      gotData: false,         // viewer: any snapshot/frame arrived (join succeeded)
+      joinRetries: 0,         // viewer: re-join attempts made so far
+      joinTimer: null,        // viewer: pending join-retry timer
       ended: false,           // viewer: host stopped the share
       share: null,            // host: { id, buf, timer } while broadcasting
       sharePending: false,    // host: a share start is mid-flight (re-entrancy guard)
@@ -417,10 +420,36 @@
     s.term.open(s.mountEl);
     s.term.write(`\x1b[36m[watching ${who}'s terminal — read-only]\x1b[0m\r\n`);
     viewers.set(d.shareId, s);
-    Promise.resolve(api.join(d.shareId)).catch((err) => {
+    sendJoin(s);
+    if (!active) activate(s);
+  }
+
+  // `join` is a best-effort broadcast; the host answers with a snapshot.
+  // If it's dropped and the host is idle, we'd sit blank forever — so
+  // re-join a couple of times until any data arrives (cleared in
+  // markViewerData). Matches the app's other best-effort signalling but
+  // with a bounded retry for the one case where silence is indefinite.
+  const JOIN_RETRY_MS = 1500;
+  const JOIN_MAX_RETRIES = 3;
+  function sendJoin(s) {
+    if (s.ended || s.closed) return;
+    Promise.resolve(shareApi()?.join(s.shareId)).catch((err) => {
       notice(s, `couldn't subscribe: ${err?.message || err}`, '31');
     });
-    if (!active) activate(s);
+    if (s.joinTimer) clearTimeout(s.joinTimer);
+    s.joinTimer = setTimeout(() => {
+      s.joinTimer = null;
+      if (s.gotData || s.ended || s.closed || s.joinRetries >= JOIN_MAX_RETRIES) return;
+      s.joinRetries++;
+      sendJoin(s);
+    }, JOIN_RETRY_MS);
+  }
+
+  // First snapshot/frame → the join landed; stop retrying.
+  function markViewerData(s) {
+    if (s.gotData) return;
+    s.gotData = true;
+    if (s.joinTimer) { clearTimeout(s.joinTimer); s.joinTimer = null; }
   }
 
   function remoteShareStopped(d) {
@@ -442,6 +471,7 @@
   function onViewerFrame(d) {
     const s = viewers.get(d?.shareId);
     if (!s || s.ended || s.closed) return;
+    markViewerData(s);
     syncViewerDims(s, d.cols, d.rows);
     if (d.data) s.term.write(d.data);
   }
@@ -452,8 +482,10 @@
   function onViewerSnapshot(d) {
     const s = viewers.get(d?.shareId);
     if (!s || s.ended || s.closed || s.gotSnapshot) return;
-    // Empty snapshot (host has no serialize addon) — don't reset, or we'd
-    // wipe the live frames already shown and replace them with nothing.
+    // A snapshot (even empty) means the join reached the host — stop
+    // retrying. An empty one (host has no serialize addon) we don't apply,
+    // or we'd reset and wipe the live frames already shown.
+    markViewerData(s);
     if (!d.data) return;
     s.gotSnapshot = true;
     try { s.term.reset(); } catch {}
@@ -466,6 +498,7 @@
   function endViewer(s) {
     if (s.ended) return;
     s.ended = true;
+    if (s.joinTimer) { clearTimeout(s.joinTimer); s.joinTimer = null; }
     Promise.resolve(shareApi()?.leave(s.shareId)).catch(() => {});
     if (!s.closed && s.term) s.term.write('\r\n\x1b[90m[share ended]\x1b[0m\r\n');
   }
