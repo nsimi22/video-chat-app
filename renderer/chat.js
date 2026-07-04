@@ -146,6 +146,7 @@ const SLASH_COMMANDS = [
   { name: 'ai',         usage: '/ai <question>',           desc: 'Ask the configured AI provider; the answer is posted as a teammate-visible message. When Jira is configured, the AI can read tickets, post comments, update fields, and trigger transitions on its own.' },
   { name: 'ai-ticket',  usage: '/ai-ticket <description>', desc: 'AI structures the description into a Jira ticket and creates it in your default project.', aliases: ['ait'] },
   { name: 'summarize',  usage: '/summarize',               desc: 'Summarize the last few messages in this channel.', aliases: ['summary'] },
+  { name: 'catchup',    usage: '/catchup',                 desc: 'Private AI briefing of everything you missed across your channels — only you see it.', aliases: ['catch-up'] },
   { name: 'jira',       usage: '/jira',                    desc: 'Open the Jira create-ticket modal.', extras: [
       { usage: '/jira create <summary>', desc: 'Open the create-ticket modal pre-filled with a summary.' },
       { usage: '/jira <KEY>',            desc: 'Post the issue URL — auto-unfurls into a status card for everyone.' },
@@ -233,6 +234,7 @@ class ChatView {
     this._initGifPicker();
     this._initPollComposer();
     this._initClipRecorder();
+    this._initVoiceNotes();
   }
 
   // --- Public API ---------------------------------------------------------
@@ -522,6 +524,9 @@ class ChatView {
     // would strand the camera/screen tracks on.
     try { this._clipRecorder?.close(true); } catch {}
     this._clipRecorder = null;
+    // Same for a voice note mid-recording: discard it and release the mic.
+    try { this._voiceRecorder?.destroy(); } catch {}
+    this._voiceRecorder = null;
     this._listenerCtrl?.abort();
     this._listenerCtrl = null;
   }
@@ -1773,11 +1778,17 @@ class ChatView {
       for (const a of m.attachments) {
         const ct = a.contentType || '';
         const isImage = ct.startsWith('image/');
+        // Voice notes (and any other audio upload) get the inline
+        // waveform player. Checked before video: a voice note's
+        // audio/webm contentType must not fall through to the chip.
+        const isAudio = ct.startsWith('audio/') || a.kind === 'voice';
         // Huddle Clips (and any other video upload) render as an inline
         // player. We key off the MIME type so plain video uploads work too,
         // not just clips recorded in-app (which also carry kind === 'clip').
         const isVideo = ct.startsWith('video/') || a.kind === 'clip' || a.kind === 'video';
-        if (isVideo) {
+        if (isAudio && window.HuddleVoiceNote) {
+          attachmentsEl.appendChild(window.HuddleVoiceNote.renderVoiceAttachment(a));
+        } else if (isVideo) {
           const video = document.createElement('video');
           video.src = a.url;
           video.controls = true;
@@ -2295,6 +2306,59 @@ class ChatView {
     }
   }
 
+  // --- Voice notes ----------------------------------------------------------
+
+  // Wire the composer's 🎙 button to the inline voice-note recorder
+  // (renderer/voice-note.js). Same division of labor as clips: the module
+  // owns capture, we own the "upload + post the finished blob" hand-off.
+  _initVoiceNotes() {
+    if (!this.els.voiceBtn || !window.HuddleVoiceNote) return;
+    this._voiceRecorder = new window.HuddleVoiceNote.VoiceNoteRecorder({
+      els: this.els,
+      signal: this._listenerCtrl.signal,
+      hooks: {
+        denoiseEnabled: () => this.hooks.denoiseEnabled?.() ?? true,
+        toast: (msg) => this.hooks.toast?.(msg),
+        onPost: (blob, meta) => this._postVoiceNote(blob, meta),
+      },
+    });
+    this._on(this.els.voiceBtn, 'click', (e) => {
+      e.stopPropagation();
+      this._voiceRecorder.toggle();
+    });
+  }
+
+  // Upload a recorded voice Blob and post it as an audio attachment.
+  // Mirrors _postClip: rides the normal attachments JSONB (no schema
+  // change), rendering keys off the audio/* contentType + kind 'voice'.
+  async _postVoiceNote(blob, meta) {
+    const channelId = this.currentChannel;
+    const parentId = this.threadParentId;
+    const file = new File([blob], meta.name, { type: meta.mimeType || blob.type });
+    let info;
+    try {
+      info = await this.mesh.uploadFile(file);
+    } catch (err) {
+      console.warn('voice note upload failed', err);
+      this.hooks.toast?.('Voice note upload failed — try again.');
+      throw err;
+    }
+    info.kind = 'voice';
+    if (meta.durationSecs) info.durationSecs = meta.durationSecs;
+    try {
+      await this.mesh.sendMessageStrict({
+        channelId,
+        parentId,
+        text: '',
+        attachments: [info],
+      });
+    } catch (err) {
+      console.warn('voice note post failed', err);
+      this.hooks.toast?.('Couldn’t post the voice note.');
+      throw err;
+    }
+  }
+
   _openPollComposer() {
     this.els.pollQuestion.value = '';
     this.els.pollMulti.checked = false;
@@ -2506,6 +2570,7 @@ class ChatView {
     if (cmd === 'ai') return this._runSlashAi(arg);
     if (cmd === 'ai-ticket' || cmd === 'ait') return this._runSlashAiTicket(arg);
     if (cmd === 'summarize' || cmd === 'summary') return this._runSlashSummarize();
+    if (cmd === 'catchup' || cmd === 'catch-up') return this._runSlashCatchup();
     if (cmd === 'gh' || cmd === 'github') return this._runSlashGh(arg);
     if (cmd === 'jira') {
       // /jira create [summary]    -> open the create-ticket modal
@@ -2817,6 +2882,74 @@ class ChatView {
       alert('Summary failed to post to chat: ' + (err?.message || err));
     }
     return true;
+  }
+
+  // /catchup — private cross-channel digest. Gathers everything newer
+  // than each channel's read bookmark (gatherCatchUp) plus unread
+  // @-mentions, asks the AI for a briefing, and renders it as an
+  // ephemeral local-only card: there is no server-side private-message
+  // primitive, and a personal digest posted to the channel would be
+  // noise for everyone else.
+  async _runSlashCatchup() {
+    const ai = this.hooks.getAi?.();
+    if (!ai || !ai.isConfigured()) {
+      alert('No AI provider is configured. Open Settings to add an Anthropic or OpenRouter API key.');
+      return true;
+    }
+    this.els.composer.value = '';
+    this.els.composer.style.height = 'auto';
+    this._beginAiThinking();
+    let result;
+    try {
+      const [sections, mentionCutoff] = await Promise.all([
+        this.mesh.gatherCatchUp(),
+        this.mesh.getMentionsLastReadAt(),
+      ]);
+      // Unread mentions = newer than the mentions bookmark and not mine.
+      // They're usually also inside a section, but calling them out
+      // separately lets the briefing lead with "you were asked to…".
+      const mentions = (await this.mesh.loadMentions({ limit: 30 })).filter((m) =>
+        m.authorId !== this.mesh.peerId
+        && (!mentionCutoff || m.ts > mentionCutoff));
+      if (!sections.length && !mentions.length) {
+        this._renderEphemeralAiCard('You’re all caught up — nothing new in your channels. 🎉');
+        return true;
+      }
+      result = await ai.catchUp(sections, { mentions, myName: this.mesh.name });
+    } catch (err) {
+      alert('Catch-up failed: ' + (err?.message || err));
+      return true;
+    } finally {
+      this._endAiThinking();
+    }
+    this._renderEphemeralAiCard(result.text || '(no briefing)');
+    return true;
+  }
+
+  // Append a local-only AI card to the message list. It's not a
+  // messages row: nothing is sent, and any re-render (channel switch,
+  // history refresh) naturally drops it — same lifetime as Slack's
+  // "only visible to you" ephemerals.
+  _renderEphemeralAiCard(markdownText) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg msg-ai msg-ephemeral';
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar avatar-ai';
+    avatar.style.background = '#3a3f47';
+    avatar.innerHTML = window.HuddleIcons.robot;
+    // Same column layout as _renderMessage: avatar + an unclassed right
+    // column holding head/body, so the existing .msg CSS applies as-is.
+    const right = document.createElement('div');
+    const head = document.createElement('div');
+    head.className = 'msg-head';
+    head.innerHTML = '<span class="msg-author">Huddle AI</span><span class="msg-ephemeral-note">Only visible to you</span>';
+    const body = document.createElement('div');
+    body.className = 'msg-body';
+    body.innerHTML = window.renderMarkdown(markdownText, { mentionNames: this._knownNames() });
+    right.append(head, body);
+    wrap.append(avatar, right);
+    this.els.messages.appendChild(wrap);
+    this.els.messages.scrollTop = this.els.messages.scrollHeight;
   }
 
   async _runSlashGh(arg) {

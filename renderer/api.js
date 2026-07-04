@@ -110,9 +110,11 @@
       // avatar_url }.
       this.roster = new Map();
       this.remoteScreenLabels = new Map();
-      // Peer ids whose hand is currently raised. Cleared when the peer
+      // peerId -> epoch-ms of when the hand went up. Single source of
+      // truth for both "is this hand raised" (raisedHands getter) and the
+      // ordered speaker queue (speakerQueue getter). Cleared when the peer
       // lowers their hand or leaves the call.
-      this.raisedHands = new Set();
+      this.raisedHandTimes = new Map();
       // Per-peer mic/cam state in the active call. Default assumption for
       // a newly-joined peer is both on; the peer broadcasts a mute-state
       // event when their tracks change, and the call client rebroadcasts
@@ -317,15 +319,26 @@
         for (const id of [...this._callPeerInfo.keys()]) {
           if (!seen.has(id)) {
             this._callPeerInfo.delete(id);
-            this.raisedHands.delete(id);
+            this.raisedHandTimes.delete(id);
             this.peerMediaState.delete(id);
           }
         }
       });
 
       ch.on('broadcast', { event: 'raise-hand' }, ({ payload }) => {
-        if (payload.raised) this.raisedHands.add(payload.from);
-        else this.raisedHands.delete(payload.from);
+        // A malformed broadcast (no payload / no sender) must not crash
+        // the handler or plant an `undefined` entry in the queue maps.
+        if (!payload?.from) return;
+        if (payload.raised) {
+          // First-seen wins: catch-up re-broadcasts (sent to late joiners)
+          // carry the original raise time, but if we already saw this hand
+          // go up, keep our existing stamp so the queue order is stable.
+          if (!this.raisedHandTimes.has(payload.from)) {
+            this.raisedHandTimes.set(payload.from, payload.ts || Date.now());
+          }
+        } else {
+          this.raisedHandTimes.delete(payload.from);
+        }
         this.dispatchEvent(new CustomEvent('raise-hand', { detail: payload }));
       });
       // Mic/cam state for remote peers. WebRTC's `track.enabled = false`
@@ -454,7 +467,7 @@
       );
       this._hostedTerminalShares.clear();
       this._callPeerInfo.clear();
-      this.raisedHands.clear();
+      this.raisedHandTimes.clear();
       this.peerMediaState.clear();
       this._callChannel = null;
       this._callChannelId = null;
@@ -1184,9 +1197,31 @@
     // --- Outgoing operations --------------------------------------------
 
     sendRaiseHand(raised) {
-      if (raised) this.raisedHands.add(this.peerId);
-      else this.raisedHands.delete(this.peerId);
-      this._callChannel?.send({ type: 'broadcast', event: 'raise-hand', payload: { from: this.peerId, raised: !!raised } });
+      if (raised) {
+        // Re-broadcasts for late joiners must carry the ORIGINAL raise
+        // time, not now() — otherwise every new participant would bump
+        // us to the back of the speaker queue.
+        if (!this.raisedHandTimes.has(this.peerId)) {
+          this.raisedHandTimes.set(this.peerId, Date.now());
+        }
+      } else {
+        this.raisedHandTimes.delete(this.peerId);
+      }
+      this._callChannel?.send({
+        type: 'broadcast', event: 'raise-hand',
+        payload: { from: this.peerId, raised: !!raised, ts: this.raisedHandTimes.get(this.peerId) || null },
+      });
+    }
+    // Membership view of the raised-hand map for has()-style consumers
+    // (e.g. livekit re-broadcasting our own hand to late joiners). The
+    // ordered queue is speakerQueue; both derive from raisedHandTimes.
+    get raisedHands() { return new Set(this.raisedHandTimes.keys()); }
+    // Raised hands ordered first-raised-first, ties broken by peerId so
+    // every participant computes the same order. This IS the speaker queue.
+    get speakerQueue() {
+      return [...this.raisedHandTimes.entries()]
+        .sort((a, b) => (a[1] - b[1]) || (a[0] < b[0] ? -1 : 1))
+        .map(([id, ts]) => ({ id, ts }));
     }
     sendMuteState(micOn, camOn) {
       // Call channel is { broadcast: { self: false } }, so this never
@@ -1807,6 +1842,101 @@
         return null;
       }
       return data?.mentions_last_read_at || null;
+    }
+
+    // --- Per-channel read bookmarks (channel_read_state) ------------------
+    //
+    // One timestamp per (team, channel, user): when this user last viewed
+    // the channel. Written on every focused visit (markChannelRead), read
+    // in bulk at sign-in (unread badges that survive reloads) and by
+    // /catchup (the per-channel "since you last looked" window). All
+    // methods tolerate the table not existing yet (migration not applied)
+    // by degrading to "no bookmarks".
+
+    // Map of channelId -> last_read_at ISO string for the current team.
+    async loadChannelReadState() {
+      const out = new Map();
+      if (!this.peerId || !this.team?.id) return out;
+      const { data, error } = await this.supabase
+        .from('channel_read_state')
+        .select('channel_id,last_read_at')
+        .eq('team_id', this.team.id)
+        .eq('user_id', this.peerId);
+      if (error) { console.warn('loadChannelReadState failed', error); return out; }
+      for (const row of data || []) out.set(row.channel_id, row.last_read_at);
+      return out;
+    }
+
+    // Bump this channel's bookmark to now. Fire-and-forget from the
+    // renderer's visit/focus paths — a lost write just means a slightly
+    // stale digest window, never a broken UI.
+    async markChannelRead(channelId) {
+      if (!this.peerId || !this.team?.id || !channelId) return null;
+      const ts = new Date().toISOString();
+      const { error } = await this.supabase
+        .from('channel_read_state')
+        .upsert({
+          team_id: this.team.id,
+          channel_id: channelId,
+          user_id: this.peerId,
+          last_read_at: ts,
+        }, { onConflict: 'team_id,channel_id,user_id' });
+      if (error) { console.warn('markChannelRead failed', error); return null; }
+      return ts;
+    }
+
+    // Bounded team-wide "messages newer than X" sweep, ascending. Used by
+    // the sign-in unread seeder, which buckets rows against each
+    // channel's own bookmark client-side. RLS keeps invisible channels'
+    // rows out, same as everywhere else.
+    async loadTeamMessagesSince(since, { limit = 500 } = {}) {
+      if (!this.team?.id || !since) return [];
+      // Fetch descending so that when the window holds more rows than the
+      // cap we keep the NEWEST ones — those are the messages the badges
+      // are for; ancient overflow is what gets dropped. Reversed below to
+      // hand callers the ascending order they expect.
+      const { data, error } = await this.supabase
+        .from('messages')
+        .select('*')
+        .eq('team_id', this.team.id)
+        .gt('ts', since)
+        .order('ts', { ascending: false })
+        .limit(limit);
+      if (error) { console.warn('loadTeamMessagesSince failed', error); return []; }
+      return (data || []).reverse().map((row) => this._marshalMessage(row));
+    }
+
+    // Everything the user missed, per channel, for the /catchup digest:
+    // [{ channelId, name, type, since, messages }] — only channels that
+    // actually have new messages from someone else. Channels without a
+    // bookmark default to a 24h window so a first run (or a fresh
+    // teammate) gets a bounded briefing, not the whole history. Message
+    // visibility rides the messages RLS (can_see_channel), so channels
+    // this user can't read simply come back empty and are skipped.
+    async gatherCatchUp({ perChannelLimit = 80, defaultWindowHours = 24 } = {}) {
+      if (!this.team?.id) return [];
+      const readState = await this.loadChannelReadState();
+      const fallbackSince = new Date(Date.now() - defaultWindowHours * 3600 * 1000).toISOString();
+      const { data: channels, error } = await this.supabase
+        .from('channels').select('id,name,type').eq('team_id', this.team.id);
+      if (error) { console.warn('gatherCatchUp channels failed', error); return []; }
+      const sections = await Promise.all((channels || []).map(async (c) => {
+        const since = readState.get(c.id) || fallbackSince;
+        const { data: rows, error: mErr } = await this.supabase
+          .from('messages')
+          .select('*')
+          .eq('team_id', this.team.id)
+          .eq('channel_id', c.id)
+          .gt('ts', since)
+          .order('ts', { ascending: true })
+          .limit(perChannelLimit);
+        if (mErr || !rows?.length) return null;
+        const messages = rows.map((r) => this._marshalMessage(r));
+        // A channel where the only news is your own messages isn't news.
+        if (!messages.some((m) => m.authorId !== this.peerId)) return null;
+        return { channelId: c.id, name: c.name, type: c.type, since, messages };
+      }));
+      return sections.filter(Boolean);
     }
 
     // Mark all mentions read by bumping the per-user timestamp to now.
