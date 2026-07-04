@@ -719,12 +719,21 @@ async function runWhisperJob(job) {
 // inside the spawn handler so a failed rebuild degrades gracefully
 // (terminal unavailable) instead of crashing app boot — mirroring how
 // whisper tolerates a missing binary.
-const TERMINAL_MAX_PTYS = 8; // cap concurrent shells across all terminal tabs
-const ptys = new Map();      // id -> { pty }
+// Cap concurrent shells PER WINDOW (each webContents), not globally — the
+// renderer's tab cap (MAX_TABS) is per-window too, so a global cap would let
+// one window's tabs starve another's. Matches MAX_TABS in terminal-panel.js.
+const TERMINAL_MAX_PTYS_PER_WINDOW = 8;
+const ptys = new Map();      // id -> { pty, wc, onDestroyed }
 let ptySeq = 0;
 
+function ptyCountForSender(senderId) {
+  let n = 0;
+  for (const rec of ptys.values()) if (rec.wc && rec.wc.id === senderId) n++;
+  return n;
+}
+
 ipcMain.handle('terminal-spawn', async (event, payload = {}) => {
-  if (ptys.size >= TERMINAL_MAX_PTYS) {
+  if (ptyCountForSender(event.sender.id) >= TERMINAL_MAX_PTYS_PER_WINDOW) {
     return { ok: false, error: 'too many open terminals' };
   }
   let pty;

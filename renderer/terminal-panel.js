@@ -11,8 +11,8 @@
 // a tab's own ✕ kills that tab. Only active under [data-ui="v2"]; legacy
 // renders never touch this code.
 (function () {
-  // Keep in sync with TERMINAL_MAX_PTYS in main.js — the main process caps
-  // total concurrent shells, so the tab count is capped to match.
+  // Keep in sync with TERMINAL_MAX_PTYS_PER_WINDOW in main.js — the main
+  // process caps concurrent shells per window, so the tab count matches.
   const MAX_TABS = 8;
 
   let root = null;
@@ -76,17 +76,17 @@
     resizeObs = new ResizeObserver(() => scheduleFit(active));
     resizeObs.observe(mountsWrap);
 
-    // Tab keyboard shortcuts. Cmd+T / Cmd+W on macOS; Ctrl+Shift+T /
-    // Ctrl+Shift+W elsewhere (plain Ctrl+W is "delete word" in the shell,
-    // so we must not clobber it). Capture phase so xterm doesn't eat them.
+    // New-tab shortcut: Cmd+T (macOS) / Ctrl+Shift+T (elsewhere). Capture
+    // phase so xterm doesn't eat it. We deliberately do NOT bind a close
+    // shortcut: Cmd+W is the OS window-close accelerator (dispatched by the
+    // default app menu independently of this keydown, so we can't reliably
+    // own it), and plain Ctrl+W is the shell's delete-word. Tabs close via
+    // their ✕ button.
     root.addEventListener('keydown', (e) => {
       const mac = (window.huddle?.platform === 'darwin');
       const newCombo = mac ? (e.metaKey && !e.ctrlKey && e.key.toLowerCase() === 't')
                            : (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 't');
-      const closeCombo = mac ? (e.metaKey && !e.ctrlKey && e.key.toLowerCase() === 'w')
-                             : (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'w');
       if (newCombo) { e.preventDefault(); e.stopPropagation(); newTab(); }
-      else if (closeCombo) { e.preventDefault(); e.stopPropagation(); if (active) closeSession(active); }
     }, true);
   }
 
@@ -97,20 +97,23 @@
   // --- session (one tab) ------------------------------------------
 
   function makeSession() {
+    const title = `Terminal ${++seq}`;
     const s = {
-      id: `t${++seq}`,
-      title: `Terminal ${seq}`,
       ptyId: null,
       term: null,
       fit: null,
       mountEl: null,
       chipEl: null,
-      labelEl: null,
       unsubData: null,
       unsubExit: null,
       bootPromise: null,
       bootWantsClaude: false,
       fitScheduled: false,
+      // Set true once the tab is closed; the async boot re-checks it after
+      // spawn so a shell that finishes booting into a closed tab is killed
+      // instead of orphaned. stopRequested does the same for the Stop button.
+      closed: false,
+      stopRequested: false,
     };
 
     s.mountEl = document.createElement('div');
@@ -122,7 +125,7 @@
     s.chipEl.setAttribute('role', 'tab');
     const label = document.createElement('span');
     label.className = 'huddle-terminal-tab-label';
-    label.textContent = s.title;
+    label.textContent = title;
     const closeX = document.createElement('button');
     closeX.className = 'huddle-terminal-tab-close';
     closeX.type = 'button';
@@ -130,7 +133,6 @@
     closeX.innerHTML = svg('x');
     s.chipEl.appendChild(label);
     s.chipEl.appendChild(closeX);
-    s.labelEl = label;
     s.chipEl.addEventListener('click', (e) => {
       if (e.target.closest('.huddle-terminal-tab-close')) { closeSession(s); return; }
       activate(s);
@@ -209,6 +211,14 @@
         const cols = s.term.cols || 80;
         const rows = s.term.rows || 24;
         const res = await window.huddle.terminal.spawn({ cols, rows });
+        // The tab may have been closed or Stopped during the async spawn.
+        // Kill the just-born shell instead of wiring it to a disposed term
+        // (or leaking it, since a closed session is no longer in `sessions`).
+        if (s.closed || s.stopRequested) {
+          s.stopRequested = false;
+          if (res && res.ok) { try { window.huddle.terminal.kill(res.id); } catch {} }
+          return false;
+        }
         if (!res || !res.ok) {
           s.term.write(`\r\n\x1b[31m[terminal] ${res && res.error ? res.error : 'failed to start shell'}\x1b[0m\r\n`);
           return false;
@@ -224,7 +234,7 @@
         if (s.bootWantsClaude) launchClaude(s);
         return true;
       } catch (err) {
-        s.term.write(`\r\n\x1b[31m[terminal] ${err && err.message ? err.message : 'failed to start shell'}\x1b[0m\r\n`);
+        if (!s.closed) s.term.write(`\r\n\x1b[31m[terminal] ${err && err.message ? err.message : 'failed to start shell'}\x1b[0m\r\n`);
         return false;
       }
     })();
@@ -247,8 +257,11 @@
       other.mountEl.classList.toggle('hidden', !on);
       other.chipEl.classList.toggle('is-active', on);
     }
-    // Defer fit/focus until the newly-shown mount has a size.
+    // Defer fit/focus until the newly-shown mount has a size. Re-check that
+    // s is still the active, non-closed tab: it may have been switched away
+    // or closed (and its term disposed) in the intervening frame.
     requestAnimationFrame(() => {
+      if (s.closed || s !== active) return;
       fitSession(s);
       s.term && s.term.focus();
     });
@@ -264,6 +277,9 @@
 
   function closeSession(s) {
     if (!s) return;
+    // Mark closed first so an in-flight boot kills its shell on resolve
+    // instead of wiring it to the term we're about to dispose.
+    s.closed = true;
     killSessionShell(s);
     try { s.term && s.term.dispose(); } catch {}
     const i = sessions.indexOf(s);
@@ -284,32 +300,42 @@
 
   // --- actions -----------------------------------------------------
 
-  function startClaude() {
-    if (!root) buildDom();
-    if (root.classList.contains('hidden')) { open('claude'); return; }
-    if (!active) { newTab('claude'); return; }
-    ensureSession(active, 'claude').then((ok) => { if (ok) { fitSession(active); active.term.focus(); } });
-  }
-
-  // "Stop" — kill the active tab's shell (and any `claude` in it); the tab
-  // stays open and the next keystroke / "Start Claude Code" respawns.
-  function stopActiveShell() {
-    if (!active || !active.ptyId) return;
-    killSessionShell(active);
-    if (active.term) active.term.write('\r\n\x1b[90m[stopped — press any key to start a new shell]\x1b[0m\r\n');
-  }
-
-  function open(mode) {
+  // Show the panel and ensure the active tab has a live shell (optionally
+  // launching Claude). Single path for both the rail "open" and the "Start
+  // Claude Code" button, so their fit/focus sequencing can't drift. The
+  // target session is captured, so switching tabs mid-boot can't make us
+  // fit/focus the wrong one.
+  function revealAndEnsure(mode) {
     if (!root) buildDom();
     root.classList.remove('hidden');
     root.setAttribute('aria-hidden', 'false');
     if (!active) { newTab(mode); return; }
-    // Reopening: re-fit the active tab (its shell persisted) and, if asked,
-    // launch Claude in it.
+    const s = active;
     requestAnimationFrame(async () => {
-      const ok = await ensureSession(active, mode);
-      if (ok) { fitSession(active); active.term.focus(); }
+      const ok = await ensureSession(s, mode);
+      if (ok && s === active && !s.closed && s.term) { fitSession(s); s.term.focus(); }
     });
+  }
+
+  function open(mode) { revealAndEnsure(mode); }
+  function startClaude() { revealAndEnsure('claude'); }
+
+  // "Stop" — kill the active tab's shell (and any `claude` in it); the tab
+  // stays open and the next keystroke / "Start Claude Code" respawns. If the
+  // shell is still booting, flag it so the boot kills the shell on resolve
+  // rather than leaving it running.
+  function stopActiveShell() {
+    const s = active;
+    if (!s) return;
+    if (s.ptyId) {
+      killSessionShell(s);
+    } else if (s.bootPromise) {
+      s.stopRequested = true;
+      s.bootWantsClaude = false;
+    } else {
+      return;
+    }
+    if (s.term) s.term.write('\r\n\x1b[90m[stopped — press any key to start a new shell]\x1b[0m\r\n');
   }
 
   function close() {
