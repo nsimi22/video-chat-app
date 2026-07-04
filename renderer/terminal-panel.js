@@ -30,6 +30,8 @@
   let startBtn = null;
   let stopBtn = null;
   let shareBtn = null;
+  let toChatBtn = null;
+  let explainBtn = null;
 
   const sessions = []; // tab order (local shells + remote viewers)
   const viewers = new Map(); // shareId -> viewer session (subset of sessions)
@@ -70,6 +72,8 @@
         </div>
         <div class="huddle-terminal-spacer"></div>
         <button class="huddle-terminal-start" type="button">${svg('sparkles')}<span>Start Claude Code</span></button>
+        <button class="huddle-terminal-tochat" type="button" title="Post the selected output (or the last screenful) to the current channel">Send to chat</button>
+        <button class="huddle-terminal-explain" type="button" title="Ask the AI to explain the selected output (or the last screenful)">Ask AI</button>
         <button class="huddle-terminal-share" type="button"><span>Share to call</span></button>
         <button class="huddle-terminal-stop" type="button" title="Kill the active tab's shell">Stop</button>
         <button class="huddle-ai-close" aria-label="Close" title="Close (keeps your sessions)">${svg('x')}</button>
@@ -94,10 +98,14 @@
     startBtn = root.querySelector('.huddle-terminal-start');
     stopBtn  = root.querySelector('.huddle-terminal-stop');
     shareBtn = root.querySelector('.huddle-terminal-share');
+    toChatBtn = root.querySelector('.huddle-terminal-tochat');
+    explainBtn = root.querySelector('.huddle-terminal-explain');
     root.querySelector('.huddle-ai-close').addEventListener('click', close);
     startBtn.addEventListener('click', startClaude);
     stopBtn.addEventListener('click', stopActiveShell);
     shareBtn.addEventListener('click', toggleShareActive);
+    toChatBtn.addEventListener('click', sendOutputToChat);
+    explainBtn.addEventListener('click', explainOutput);
 
     // One observer for the shared mounts area; only the active tab is
     // visible/sized, so fit that one.
@@ -569,6 +577,11 @@
     shareBtn.querySelector('span').textContent = sharing ? 'Stop sharing' : 'Share to call';
     shareBtn.classList.toggle('is-sharing', sharing);
     shareBtn.disabled = viewer || (!sharing && !inCall());
+    // Send-to-chat / Ask-AI act on whatever text the active tab shows —
+    // available on any tab with a live xterm (including a shared viewer).
+    const hasTerm = !!s?.term;
+    if (toChatBtn) toChatBtn.disabled = !hasTerm;
+    if (explainBtn) explainBtn.disabled = !hasTerm;
     shareBtn.title = viewer ? 'This tab is already a shared view'
       : sharing ? 'Stop broadcasting this tab to the call'
       : inCall() ? "Broadcast this tab's output to everyone on the call (read-only)"
@@ -653,6 +666,44 @@
 
   function open(mode) { revealAndEnsure(mode); }
   function startClaude() { revealAndEnsure('claude'); }
+
+  // Strip ANSI SGR/CSI sequences + OSC strings so captured output reads as
+  // plain text in chat / an AI prompt rather than a wall of escape codes.
+  function stripAnsi(str) {
+    return String(str)
+      // eslint-disable-next-line no-control-regex
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+      // eslint-disable-next-line no-control-regex
+      .replace(/\x1b[@-Z\\-_]|\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+  }
+
+  // Capture text from the active tab: the current selection if there is
+  // one, otherwise the last screenful of scrollback (ANSI stripped, blank
+  // tail trimmed, length-capped so a huge buffer can't blow up a message).
+  function captureOutput() {
+    const s = active;
+    if (!s || !s.term) return '';
+    let text = '';
+    try { text = s.term.getSelection() || ''; } catch {}
+    if (!text.trim()) {
+      try { text = stripAnsi(s.serialize ? s.serialize.serialize({ scrollback: 40 }) : ''); } catch {}
+    }
+    return text.replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim().slice(-4000);
+  }
+
+  function sendOutputToChat() {
+    const text = captureOutput();
+    if (!text) { if (active) notice(active, 'nothing to send — select some output first'); return; }
+    window.huddleApp?.terminalToChat?.(text);
+  }
+
+  function explainOutput() {
+    const text = captureOutput();
+    if (!text) { if (active) notice(active, 'nothing to explain — select some output first'); return; }
+    window.huddleApp?.terminalExplain?.(text);
+  }
 
   // "Stop" — kill the active tab's shell (and any `claude` in it); the tab
   // stays open and the next keystroke / "Start Claude Code" respawns. If the

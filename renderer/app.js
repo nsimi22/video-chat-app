@@ -8896,6 +8896,26 @@ window.huddleApp = {
     join:     (shareId) => state.huddle ? state.huddle.joinTerminalShare(shareId) : Promise.reject(new Error('not signed in')),
     leave:    (shareId) => state.huddle?.leaveTerminalShare(shareId),
   },
+  // Terminal → chat: post captured output to the currently-viewed channel
+  // as a fenced code block. Inner ``` are defanged with a zero-width space
+  // so a stray fence in the output can't break out of the block.
+  terminalToChat: (text) => {
+    const cid = state.chat?.currentChannel;
+    if (!state.huddle || !cid) { showToast('Open a channel first.', { kind: 'error' }); return; }
+    const fenced = '```\n' + String(text).replace(/```/g, '``​`') + '\n```';
+    state.huddle.sendMessage({ channelId: cid, parentId: null, text: fenced, attachments: [] });
+    showToast('Posted terminal output to chat.');
+  },
+  // Terminal → AI: draft an /ai request from the captured output and drop
+  // the user back in chat to review + send. Reuses the existing /ai path
+  // rather than adding a second AI surface.
+  terminalExplain: (text) => {
+    if (!state.ai || !state.ai.isConfigured()) { showToast('Add an AI provider in Settings first.', { kind: 'error' }); return; }
+    const fenced = '```\n' + String(text).replace(/```/g, '``​`') + '\n```';
+    state.chat?._prefillComposer(`/ai Explain this terminal output and suggest fixes if something looks wrong:\n${fenced}`);
+    try { window.HuddleTerminalPanel?.close(); } catch {}
+    showToast('Drafted an /ai request — review and send.');
+  },
   // True in-call participant count straight from the LiveKit room
   // (remote participants + self). The DOM-tile census the v2 header used
   // misses mic-only peers and screen-share states — the "1 person with

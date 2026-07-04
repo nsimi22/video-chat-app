@@ -9653,6 +9653,8 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 /* Stop + Share share the neutral header-button look; Share adds
    disabled + is-sharing states below. */
 .huddle-terminal-stop,
+.huddle-terminal-tochat,
+.huddle-terminal-explain,
 .huddle-terminal-share {
   padding: 6px 12px;
   border-radius: 8px;
@@ -9665,8 +9667,12 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   cursor: pointer;
 }
 .huddle-terminal-stop:hover,
+.huddle-terminal-tochat:hover:not(:disabled),
+.huddle-terminal-explain:hover:not(:disabled),
 .huddle-terminal-share:hover:not(:disabled) { background: var(--bg-3); color: var(--tx-hi); }
-.huddle-terminal-share:disabled { opacity: 0.45; cursor: default; }
+.huddle-terminal-share:disabled,
+.huddle-terminal-tochat:disabled,
+.huddle-terminal-explain:disabled { opacity: 0.45; cursor: default; }
 .huddle-terminal-share.is-sharing {
   background: var(--accent);
   border-color: var(--accent);
