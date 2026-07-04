@@ -291,14 +291,15 @@
         // the layout has truly settled and only THEN launch claude — its
         // welcome banner is static output drawn once at start, so the pty
         // must be at its final width before `claude` runs or the banner is
-        // stuck too wide and overflows the panel. bootWantsClaude persists
-        // (it's consumed here, not reset in the finally) so a claude request
-        // that arrived mid-boot still fires.
+        // stuck too wide and overflows the panel. Capture the intent in a
+        // local so the deferred launch survives the finally reset without
+        // leaving bootWantsClaude stuck true on a failed/closed boot.
+        const wantClaude = s.bootWantsClaude;
         fitSession(s);
         whenSettled(() => {
           if (s.closed || !s.ptyId) return;
           fitSession(s);
-          if (s.bootWantsClaude) { s.bootWantsClaude = false; launchClaude(s); }
+          if (wantClaude) launchClaude(s);
         });
         return true;
       } catch (err) {
@@ -306,11 +307,11 @@
         return false;
       }
     })();
-    // Note: bootWantsClaude is NOT reset here — it's consumed by the
-    // whenSettled callback above (which fires after this returns), so a
-    // claude launch deferred for settle isn't dropped.
+    // The deferred claude launch captured its intent in a local, so it's
+    // safe to always clear the flag here — this prevents a stale intent
+    // (failed/closed boot) from auto-launching claude on a later respawn.
     try { return await s.bootPromise; }
-    finally { s.bootPromise = null; }
+    finally { s.bootPromise = null; s.bootWantsClaude = false; }
   }
 
   function killSessionShell(s) {
