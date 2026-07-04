@@ -9391,7 +9391,10 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 }
 .huddle-terminal-start:hover { filter: brightness(1.06); }
 .huddle-terminal-start svg { width: 15px; height: 15px; }
-.huddle-terminal-stop {
+/* Stop + Share share the neutral header-button look; Share adds
+   disabled + is-sharing states below. */
+.huddle-terminal-stop,
+.huddle-terminal-share {
   padding: 6px 12px;
   border-radius: 8px;
   border: 1px solid var(--line);
@@ -9402,7 +9405,14 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   font-size: 12.5px;
   cursor: pointer;
 }
-.huddle-terminal-stop:hover { background: var(--bg-3); color: var(--tx-hi); }
+.huddle-terminal-stop:hover,
+.huddle-terminal-share:hover:not(:disabled) { background: var(--bg-3); color: var(--tx-hi); }
+.huddle-terminal-share:disabled { opacity: 0.45; cursor: default; }
+.huddle-terminal-share.is-sharing {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-0);
+}
 /* Close button reuses .huddle-ai-close (see terminal-panel.js). */
 
 /* Tab strip */
@@ -9452,6 +9462,27 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 }
 .huddle-terminal-tab-close:hover { opacity: 1; background: var(--bg-3); }
 .huddle-terminal-tab-close svg { width: 12px; height: 12px; }
+/* Broadcasting tab: pulsing accent dot before the label. */
+.huddle-terminal-tab.is-shared .huddle-terminal-tab-label::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: huddle-term-share-pulse 1.6s ease-in-out infinite;
+}
+@keyframes huddle-term-share-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+/* Viewer tab (watching a teammate's share): eye marker on the chip. */
+.huddle-terminal-tab.is-viewer .huddle-terminal-tab-label::before {
+  content: '👁';
+  margin-right: 6px;
+  font-size: 11px;
+}
 .huddle-terminal-newtab {
   flex-shrink: 0;
   width: 28px;
@@ -9481,6 +9512,8 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   overflow: hidden;
 }
 .huddle-terminal-mount.hidden { display: none; }
+/* Viewer mounts keep the host's fixed cols/rows; scroll when smaller. */
+.huddle-terminal-mount.is-viewer { overflow: auto; }
 /* xterm sizes to its container; make the viewport fill the mount. */
 .huddle-terminal-mount .xterm,
 .huddle-terminal-mount .xterm-viewport { height: 100%; }

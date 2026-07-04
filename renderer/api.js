@@ -124,6 +124,8 @@
       this._knockChannel = null;            // private knock:<peerId> receive topic
       this._screenChannels = new Map();     // streamId -> RealtimeChannel
       this._whiteboardChannels = new Map(); // whiteboardId -> RealtimeChannel
+      this._terminalChannels = new Map();   // shareId -> promise<RealtimeChannel> (terminal share frames)
+      this._hostedTerminalShares = new Set(); // shareIds this client is broadcasting
       this._dbChannel = null;               // postgres_changes subscription
       this._myChannelIds = new Set();       // channel ids we have a membership row in (private + dm)
       this._memberRefreshTimers = new Map(); // channelId -> debounce timer, coalescing realtime member-change events
@@ -224,7 +226,7 @@
       const direct = [this._teamChannel, this._knockChannel, this._dbChannel, this._callChannel];
       // Screen + whiteboard maps still store raw promise<RealtimeChannel>;
       // _lurkers values are now {channel, ready} pairs.
-      const indirectPromises = [...this._screenChannels.values(), ...this._whiteboardChannels.values()];
+      const indirectPromises = [...this._screenChannels.values(), ...this._whiteboardChannels.values(), ...this._terminalChannels.values()];
       const lurkerChannels = [...this._lurkers.values()].map((l) => l.channel);
       const work = direct
         .map((ch) => ch ? Promise.resolve().then(() => ch.unsubscribe()).catch(() => {}) : null)
@@ -240,6 +242,8 @@
       this._callPeerInfo.clear();
       this._screenChannels.clear();
       this._whiteboardChannels.clear();
+      this._terminalChannels.clear();
+      this._hostedTerminalShares.clear();
       this._lurkers.clear();
       this._lurkerCounts.clear();
       for (const t of this._memberRefreshTimers.values()) clearTimeout(t);
@@ -359,6 +363,21 @@
         this.dispatchEvent(new CustomEvent('meeting-root', { detail: payload }));
       });
 
+      // Terminal shares: a host announces (and retracts) a read-only
+      // terminal broadcast. The output frames themselves ride a dedicated
+      // team:<team>:term:<shareId> channel (see _ensureTerminalChannel) so
+      // non-viewers don't pay the bandwidth — this pair only carries the
+      // "a share exists" signal, mirroring how screens announce via track
+      // metadata.
+      ch.on('broadcast', { event: 'terminal-announce' }, ({ payload }) => {
+        if (payload?.from === this.peerId) return;
+        this.dispatchEvent(new CustomEvent('terminal-announce', { detail: payload }));
+      });
+      ch.on('broadcast', { event: 'terminal-stop' }, ({ payload }) => {
+        if (payload?.from === this.peerId) return;
+        this.dispatchEvent(new CustomEvent('terminal-stop', { detail: payload }));
+      });
+
       await new Promise((resolve, reject) => {
         // Every failure path must unsubscribe before rejecting,
         // otherwise the channel sits subscribed in supabase-js with
@@ -425,15 +444,24 @@
       if (!this._callChannel) return;
       const ch = this._callChannel;
       const wasIn = this._callChannelId;
+      // Retract any terminal shares we're hosting BEFORE the call channel
+      // goes away, so remaining participants' viewer tabs learn the share
+      // ended rather than watching a stream that silently stops. send() is
+      // async — await the sends, or the unsubscribe below can tear the
+      // channel down under a broadcast that never leaves the client.
+      await Promise.allSettled(
+        [...this._hostedTerminalShares].map((shareId) => this._broadcastTerminalStop(ch, shareId))
+      );
+      this._hostedTerminalShares.clear();
       this._callPeerInfo.clear();
       this.raisedHands.clear();
       this.peerMediaState.clear();
       this._callChannel = null;
       this._callChannelId = null;
-      // Await the call channel + every per-screen channel before clearing
-      // their maps, otherwise we can drop the references mid-handshake
-      // and leave subscriptions hanging server-side.
-      const screenUnsubs = [...this._screenChannels.values()].map(
+      // Await the call channel + every per-screen/per-terminal channel
+      // before clearing their maps, otherwise we can drop the references
+      // mid-handshake and leave subscriptions hanging server-side.
+      const screenUnsubs = [...this._screenChannels.values(), ...this._terminalChannels.values()].map(
         (p) => Promise.resolve(p).then((c) => c.unsubscribe()).catch(() => {})
       );
       await Promise.allSettled([
@@ -441,6 +469,7 @@
         ...screenUnsubs,
       ]);
       this._screenChannels.clear();
+      this._terminalChannels.clear();
       this.remoteScreenLabels.clear();
       // Drop the recording watcher too — the indicator is call-scoped.
       // (App-level leaveCall re-establishes a watcher for the channel the
@@ -1264,16 +1293,127 @@
       ch.on('broadcast', { event: 'draw' }, ({ payload }) => {
         this.dispatchEvent(new CustomEvent('draw', { detail: payload }));
       });
+      return this._cacheSubscribe(this._screenChannels, streamId, ch);
+    }
+
+    // Shared tail of every per-resource channel helper: subscribe, cache
+    // the ready-PROMISE under `key` (so a second caller mid-handshake
+    // awaits the same subscription instead of grabbing an unsubscribed
+    // handle), and drop the cache entry on failure so the next caller
+    // retries. Used by the screen, terminal, and whiteboard channels.
+    _cacheSubscribe(map, key, ch) {
       const ready = new Promise((res, rej) => {
         ch.subscribe((s, e) => {
           if (s === 'SUBSCRIBED') res(ch);
           else if (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') rej(e);
         });
       });
-      this._screenChannels.set(streamId, ready);
-      // If the subscribe ever fails, drop the cache so the next caller can retry.
-      ready.catch(() => this._screenChannels.delete(streamId));
+      map.set(key, ready);
+      ready.catch(() => map.delete(key));
       return ready;
+    }
+
+    // --- Terminal sharing (read-only broadcast) --------------------------
+    //
+    // A host streams its in-app terminal OUTPUT to call participants.
+    // Output frames ride a dedicated per-share channel (like screen
+    // drawing) so non-viewers don't pay the bandwidth; the share is
+    // announced/retracted over the call channel (terminal-announce /
+    // terminal-stop, see _joinCallInner). Strictly one-directional:
+    // there is no event that carries viewer input back to the host.
+    //
+    // Topic is team-prefixed (team:<team>:term:<shareId>) so the existing
+    // realtime broadcast RLS gates it by team membership — same reasoning
+    // as the whiteboard topics, and no policy change needed.
+    _ensureTerminalChannel(shareId) {
+      const cached = this._terminalChannels.get(shareId);
+      if (cached) return Promise.resolve(cached);
+      const ch = this.supabase.channel(`team:${this.team.id}:term:${shareId}`, { config: { broadcast: { self: false }, private: true } });
+      // frame: a batch of raw terminal output bytes (host → viewers).
+      // snapshot: full serialized screen state, addressed to one late
+      //           joiner (host → the viewer whose join it answers).
+      // join: a viewer arrived and wants a snapshot (viewer → host).
+      ch.on('broadcast', { event: 'frame' }, ({ payload }) => {
+        this.dispatchEvent(new CustomEvent('terminal-frame', { detail: payload }));
+      });
+      ch.on('broadcast', { event: 'snapshot' }, ({ payload }) => {
+        this.dispatchEvent(new CustomEvent('terminal-snapshot', { detail: payload }));
+      });
+      ch.on('broadcast', { event: 'join' }, ({ payload }) => {
+        this.dispatchEvent(new CustomEvent('terminal-join', { detail: payload }));
+      });
+      return this._cacheSubscribe(this._terminalChannels, shareId, ch);
+    }
+
+    // Host: open the frame channel and announce the share to the call.
+    // Resolves once the frame channel is subscribed, so the first
+    // sendTerminalFrame after this cannot land in the void.
+    async startTerminalShare(shareId) {
+      if (!this._callChannel) throw new Error('not in a call');
+      await this._ensureTerminalChannel(shareId);
+      // The call may have ended during the subscribe handshake — don't
+      // register a hosted share against a torn-down call; drop the channel.
+      if (!this._callChannel) {
+        await this.leaveTerminalShare(shareId);
+        throw new Error('call ended');
+      }
+      this._hostedTerminalShares.add(shareId);
+      this._callChannel.send({
+        type: 'broadcast', event: 'terminal-announce',
+        payload: { from: this.peerId, fromName: this.name, shareId },
+      });
+    }
+
+    // Single owner of the terminal-stop wire format — used by
+    // stopTerminalShare and by leaveCall's bulk retraction. Resolves once
+    // the send has been handed to the socket; never rejects.
+    _broadcastTerminalStop(ch, shareId) {
+      return Promise.resolve(
+        ch?.send({ type: 'broadcast', event: 'terminal-stop', payload: { from: this.peerId, shareId } })
+      ).catch(() => {});
+    }
+
+    // Host: retract the share and tear down its frame channel.
+    async stopTerminalShare(shareId) {
+      this._hostedTerminalShares.delete(shareId);
+      await this._broadcastTerminalStop(this._callChannel, shareId);
+      await this.leaveTerminalShare(shareId);
+    }
+
+    // Fire-and-forget send on a share's frame channel.
+    _emitTerminal(shareId, event, payload) {
+      this._ensureTerminalChannel(shareId).then((ch) => {
+        ch.send({ type: 'broadcast', event, payload: { from: this.peerId, shareId, ...payload } });
+      }).catch((err) => console.warn(`[terminal-share] ${event} channel not ready`, err));
+    }
+
+    // cols/rows are the host terminal's dimensions — viewers pin their
+    // read-only term to them (reflowing a foreign escape stream to a
+    // different width would garble it).
+    sendTerminalFrame(shareId, data, cols, rows) {
+      this._emitTerminal(shareId, 'frame', { data, cols, rows });
+    }
+
+    // Host → one late joiner: full serialized screen state. `to` scopes
+    // the snapshot to the requesting viewer; others ignore it so a reset
+    // meant for a newcomer can't clobber an already-streaming view.
+    sendTerminalSnapshot(shareId, to, data, cols, rows) {
+      this._emitTerminal(shareId, 'snapshot', { to, data, cols, rows });
+    }
+
+    // Viewer: subscribe to a share's frames and ping the host for a
+    // catch-up snapshot.
+    async joinTerminalShare(shareId) {
+      const ch = await this._ensureTerminalChannel(shareId);
+      ch.send({ type: 'broadcast', event: 'join', payload: { from: this.peerId, shareId } });
+    }
+
+    // Viewer or host: drop the share's frame channel.
+    async leaveTerminalShare(shareId) {
+      const cached = this._terminalChannels.get(shareId);
+      if (!cached) return;
+      this._terminalChannels.delete(shareId);
+      await Promise.resolve(cached).then((ch) => ch.unsubscribe()).catch(() => {});
     }
 
     // --- Chat operations (DB-backed) ------------------------------------
@@ -2326,15 +2466,7 @@
       ch.on('broadcast', { event: 'frame' }, ({ payload }) => ch._onFrame?.(payload));
       ch.on('broadcast', { event: 'vote' }, ({ payload }) => ch._onVote?.(payload));
       ch.on('broadcast', { event: 'cursor' }, ({ payload }) => ch._onCursor?.(payload));
-      const ready = new Promise((res, rej) => {
-        ch.subscribe((s, e) => {
-          if (s === 'SUBSCRIBED') res(ch);
-          else if (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') rej(e);
-        });
-      });
-      this._whiteboardChannels.set(whiteboardId, ready);
-      ready.catch(() => this._whiteboardChannels.delete(whiteboardId));
-      return ready;
+      return this._cacheSubscribe(this._whiteboardChannels, whiteboardId, ch);
     }
 
     sendWhiteboardStroke(whiteboardId, stroke, from = this.peerId) {

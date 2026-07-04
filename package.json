@@ -21,6 +21,7 @@
     "@mediapipe/selfie_segmentation": "^0.1.0",
     "@supabase/supabase-js": "^2.45.0",
     "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-serialize": "^0.13.0",
     "@xterm/xterm": "^5.5.0",
     "electron-updater": "^6.8.3",
     "livekit-client": "^2.19.0",
