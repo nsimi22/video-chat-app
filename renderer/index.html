@@ -706,6 +706,26 @@
             </details>
 
             <details class="settings-section">
+              <summary>Working hours</summary>
+              <div class="settings-section-body">
+                <p class="hint">When set, you'll read as Do Not Disturb outside these hours — notifications stay quiet and teammates see your local time on your profile card.</p>
+                <label class="settings-check"><input id="set-wh-enabled" type="checkbox" /> Enable working hours</label>
+                <div class="settings-wh-row">
+                  <div>
+                    <label>From</label>
+                    <input id="set-wh-start" type="time" value="09:00" />
+                  </div>
+                  <div>
+                    <label>To</label>
+                    <input id="set-wh-end" type="time" value="17:00" />
+                  </div>
+                </div>
+                <label>Time zone <span class="hint-inline">(IANA, e.g. America/New_York)</span></label>
+                <input id="set-wh-tz" type="text" placeholder="America/New_York" autocomplete="off" />
+              </div>
+            </details>
+
+            <details class="settings-section">
               <summary>Password</summary>
               <div class="settings-section-body">
                 <p class="hint">Set or change the password for the "Sign in" option on the login screen. Leave this alone if you only ever use an emailed code — that keeps working either way.</p>

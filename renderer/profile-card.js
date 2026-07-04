@@ -86,6 +86,20 @@
       this._opener = null;
     }
 
+    // "9:00–17:00 · 2:14 PM their time" — the hours plus, when a timezone
+    // is set, what o'clock it currently is for them (the useful bit for a
+    // teammate deciding whether to ping now).
+    _workingHoursLine(wh) {
+      const range = `${wh.start || '09:00'}–${wh.end || '17:00'}`;
+      if (!wh.tz) return range;
+      try {
+        const now = new Date().toLocaleTimeString('en-US', {
+          timeZone: wh.tz, hour: 'numeric', minute: '2-digit',
+        });
+        return `${range} · ${now} their time`;
+      } catch { return range; }
+    }
+
     _render(p) {
       const isSelf = p.user_id === this.huddle.peerId;
       const initial = (p.name || '?').slice(0, 1).toUpperCase();
@@ -99,6 +113,19 @@
       const labels = window.HUDDLE_PRESENCE_LABELS || {};
       const statusLabel = status ? (labels[status] || status) : 'Offline';
       const statusClass = status ? `status-${status}` : 'status-offline';
+      // Custom status + DND + working hours. Self reads its own extras;
+      // peers read the broadcast presence meta (emoji/text/dnd/wh).
+      const extras = isSelf
+        ? (this.huddle._selfExtras?.() || {})
+        : (live || {});
+      const dnd = isSelf ? !!extras.dnd : !!extras.dnd;
+      const customLine = (extras.statusEmoji || extras.emoji || extras.statusText || extras.text)
+        ? `${extras.statusEmoji || extras.emoji || ''} ${extras.statusText || extras.text || ''}`.trim()
+        : '';
+      const wh = isSelf
+        ? (this.huddle.workingHours && this.huddle.workingHours.enabled ? this.huddle.workingHours : null)
+        : (extras.wh || null);
+      const whLine = wh ? this._workingHoursLine(wh) : '';
       // Knock-to-huddle is only offered for a teammate (not self) who is
       // present AND currently "Available" — knocking someone who's away /
       // brb / unavailable / offline would just ring into the void. The
@@ -117,7 +144,9 @@
           <div class="profile-card-id">
             <div class="profile-card-name">${escapeText(p.name || 'Unknown')}</div>
             ${p.email ? `<div class="profile-card-email">${escapeText(p.email)}</div>` : ''}
-            <div class="profile-card-status"><span class="profile-card-status-dot ${statusClass}"></span>${escapeText(statusLabel)}</div>
+            <div class="profile-card-status"><span class="profile-card-status-dot ${statusClass}"></span>${escapeText(dnd ? 'Do Not Disturb' : statusLabel)}${dnd ? ' 🔕' : ''}</div>
+            ${customLine ? `<div class="profile-card-custom-status">${escapeText(customLine)}</div>` : ''}
+            ${whLine ? `<div class="profile-card-hours">🕘 ${escapeText(whLine)}</div>` : ''}
           </div>
         </div>
         ${p.bio ? `<div class="profile-card-bio">${escapeText(p.bio)}</div>` : ''}

@@ -103,7 +103,22 @@
       // the same field. Persisted per-device so a restart keeps your state.
       const savedStatus = localStorage.getItem('huddle:presence-status');
       this.presenceStatus = PRESENCE_VALUES.includes(savedStatus) ? savedStatus : 'active';
-      this.peerInfo = new Map(); // user_id -> { id, name, color, status }
+      // Free-form custom status ({ emoji, text, expiresAt }) — persisted
+      // per-device like the preset status and broadcast in presence meta so
+      // teammates see "🍕 lunch" next to the name. Cleared automatically
+      // once expiresAt passes (see _readCustomStatus).
+      this.customStatus = this._readCustomStatus();
+      // Do Not Disturb until this epoch-ms (or Infinity for "until I turn it
+      // off", or 0 for off). Silences this user's own desktop notifications
+      // and — mirrored to user_integrations — their mobile push. Broadcast
+      // as a boolean so teammates get a DND indicator without leaking the
+      // exact end time.
+      this.dndUntil = Number(localStorage.getItem('huddle:dnd-until')) || 0;
+      // Working hours { start, end, days, tz } from user settings (loaded
+      // by app.js after start(), then handed over via setWorkingHours).
+      // Outside them the user reads as DND. null = always available.
+      this.workingHours = null;
+      this.peerInfo = new Map(); // user_id -> { id, name, color, status, statusEmoji, statusText, dnd }
       // Full team roster, populated on start() and read by the
       // sidebar + DM picker + member picker so offline teammates
       // are visible. Keyed by user_id, value: { id, name, color,
@@ -768,20 +783,30 @@
           seen.add(key);
           if (key === this.peerId) continue;
           const metaStatus = PRESENCE_VALUES.includes(meta.status) ? meta.status : 'active';
+          const emoji = typeof meta.statusEmoji === 'string' ? meta.statusEmoji : null;
+          const text = typeof meta.statusText === 'string' ? meta.statusText : null;
+          const dnd = !!meta.dnd;
+          const wh = meta.wh && typeof meta.wh === 'object' ? meta.wh : null;
           if (!this.peerInfo.has(key)) {
-            const peer = { id: key, name: meta.name, color: meta.color, status: metaStatus };
+            const peer = { id: key, name: meta.name, color: meta.color, status: metaStatus, statusEmoji: emoji, statusText: text, dnd, wh };
             this.peerInfo.set(key, peer);
             this.dispatchEvent(new CustomEvent('member-online', { detail: peer }));
           } else {
-            // Meta change on an existing peer (status flip, profile
-            // rename). Re-tracks arrive as another sync with the same
-            // key — without this branch the sidebar would never reflect
-            // an Away/BRB change.
+            // Meta change on an existing peer (status flip, custom-status
+            // or DND change, profile rename). Re-tracks arrive as another
+            // sync with the same key — without this branch the sidebar
+            // would never reflect an Away/BRB/DND change.
             const peer = this.peerInfo.get(key);
-            if (peer.name !== meta.name || peer.color !== meta.color || peer.status !== metaStatus) {
+            const whChanged = JSON.stringify(peer.wh || null) !== JSON.stringify(wh);
+            if (peer.name !== meta.name || peer.color !== meta.color || peer.status !== metaStatus
+                || peer.statusEmoji !== emoji || peer.statusText !== text || peer.dnd !== dnd || whChanged) {
               peer.name = meta.name;
               peer.color = meta.color;
               peer.status = metaStatus;
+              peer.statusEmoji = emoji;
+              peer.statusText = text;
+              peer.dnd = dnd;
+              peer.wh = wh;
               this.dispatchEvent(new CustomEvent('member-online', { detail: peer }));
             }
           }
@@ -801,7 +826,7 @@
       await new Promise((resolve, reject) => {
         ch.subscribe(async (status, err) => {
           if (status === 'SUBSCRIBED') {
-            await ch.track({ name: this.name, color: this.color, online_at: new Date().toISOString(), status: this.presenceStatus });
+            await ch.track(this._presenceMeta());
             resolve();
           } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
             reject(err || new Error('realtime ' + status));
@@ -2677,7 +2702,7 @@
       // but we should at least surface it so the silent-failure
       // mode is visible during debugging.
       try {
-        const trackResult = await this._teamChannel?.track({ name: this.name, color: this.color, online_at: new Date().toISOString(), status: this.presenceStatus });
+        const trackResult = await this._teamChannel?.track(this._presenceMeta());
         if (trackResult && trackResult !== 'ok') {
           console.warn('updateProfile: presence re-track returned', trackResult);
         }
@@ -2694,14 +2719,148 @@
       this.presenceStatus = status;
       try { localStorage.setItem('huddle:presence-status', status); } catch {}
       this.dispatchEvent(new CustomEvent('presence-status', { detail: status }));
+      await this._retrackPresence();
+    }
+
+    // --- Custom status + Do Not Disturb + working hours -------------------
+
+    // The presence meta every track() call sends. Single builder so the
+    // three track sites (initial join, profile re-track, status changes)
+    // always broadcast the same shape. `dnd` is the *effective* state —
+    // an explicit DND window OR being outside working hours — so teammates
+    // and the notification gate agree without re-deriving it.
+    _presenceMeta() {
+      const cs = this._activeCustomStatus();
+      const wh = this.workingHours;
+      return {
+        name: this.name,
+        color: this.color,
+        online_at: new Date().toISOString(),
+        status: this.presenceStatus,
+        statusEmoji: cs?.emoji || null,
+        statusText: cs?.text || null,
+        dnd: this.isDndActive(),
+        // Compact working-hours summary so teammates' profile cards can
+        // show "🕘 9:00–17:00" + the viewer can reason about overlap.
+        wh: wh && wh.enabled ? { start: wh.start, end: wh.end, tz: wh.tz || null } : null,
+      };
+    }
+
+    async _retrackPresence() {
       try {
-        const trackResult = await this._teamChannel?.track({ name: this.name, color: this.color, online_at: new Date().toISOString(), status });
-        if (trackResult && trackResult !== 'ok') {
-          console.warn('setPresenceStatus: presence re-track returned', trackResult);
-        }
-      } catch (e) {
-        console.warn('setPresenceStatus: presence re-track threw', e);
+        const trackResult = await this._teamChannel?.track(this._presenceMeta());
+        if (trackResult && trackResult !== 'ok') console.warn('presence re-track returned', trackResult);
+      } catch (e) { console.warn('presence re-track threw', e); }
+    }
+
+    // Read the stored custom status, dropping it if its expiry has passed.
+    _readCustomStatus() {
+      try {
+        const raw = JSON.parse(localStorage.getItem('huddle:custom-status') || 'null');
+        if (raw && (!raw.expiresAt || raw.expiresAt > Date.now())) return raw;
+      } catch {}
+      return null;
+    }
+
+    // Same, but also lazily clears an expired one from storage so a stale
+    // "🍕 lunch" doesn't linger past its window.
+    _activeCustomStatus() {
+      if (this.customStatus && this.customStatus.expiresAt && this.customStatus.expiresAt <= Date.now()) {
+        this.customStatus = null;
+        try { localStorage.removeItem('huddle:custom-status'); } catch {}
       }
+      return this.customStatus;
+    }
+
+    // True when this user should not be interrupted: an explicit DND window
+    // that hasn't elapsed, or (when working hours are set) the current time
+    // falling outside them.
+    isDndActive() {
+      if (this.dndUntil && (this.dndUntil === Infinity || this.dndUntil > Date.now())) return true;
+      return this._outsideWorkingHours();
+    }
+
+    _outsideWorkingHours() {
+      const wh = this.workingHours;
+      if (!wh || !wh.enabled) return false;
+      // Evaluate in the user's configured timezone so "9–5" means their
+      // 9–5, not the machine's. Fall back to local time if the tz is bad.
+      let now;
+      try {
+        now = wh.tz
+          ? new Date(new Date().toLocaleString('en-US', { timeZone: wh.tz }))
+          : new Date();
+      } catch { now = new Date(); }
+      const day = now.getDay(); // 0=Sun
+      if (Array.isArray(wh.days) && wh.days.length && !wh.days.includes(day)) return true;
+      const mins = now.getHours() * 60 + now.getMinutes();
+      const [sh, sm] = (wh.start || '09:00').split(':').map(Number);
+      const [eh, em] = (wh.end || '17:00').split(':').map(Number);
+      return mins < (sh * 60 + sm) || mins >= (eh * 60 + em);
+    }
+
+    // Set / clear a free-form status. `expiresAt` is epoch-ms or null.
+    async setCustomStatus(emoji, text, expiresAt = null) {
+      const trimmed = (text || '').slice(0, 100);
+      if (!emoji && !trimmed) return this.clearCustomStatus();
+      this.customStatus = { emoji: emoji || '', text: trimmed, expiresAt: expiresAt || null };
+      try { localStorage.setItem('huddle:custom-status', JSON.stringify(this.customStatus)); } catch {}
+      this.dispatchEvent(new CustomEvent('presence-extras', { detail: this._selfExtras() }));
+      await this._retrackPresence();
+    }
+    async clearCustomStatus() {
+      this.customStatus = null;
+      try { localStorage.removeItem('huddle:custom-status'); } catch {}
+      this.dispatchEvent(new CustomEvent('presence-extras', { detail: this._selfExtras() }));
+      await this._retrackPresence();
+    }
+
+    // Enable DND until an epoch-ms deadline (Infinity = until turned off,
+    // 0 = off). Persists locally for the desktop gate and mirrors the
+    // deadline to user_integrations so the push edge function can honor it.
+    async setDnd(until) {
+      this.dndUntil = until || 0;
+      try {
+        if (this.dndUntil) localStorage.setItem('huddle:dnd-until', String(this.dndUntil));
+        else localStorage.removeItem('huddle:dnd-until');
+      } catch {}
+      this.dispatchEvent(new CustomEvent('presence-extras', { detail: this._selfExtras() }));
+      this._mirrorDndToServer();
+      await this._retrackPresence();
+    }
+
+    // Working hours come from user settings (cross-device), handed in by
+    // app.js after it loads them. Re-track so the derived DND state and
+    // the profile-card display refresh immediately.
+    async setWorkingHours(wh) {
+      this.workingHours = wh || null;
+      this.dispatchEvent(new CustomEvent('presence-extras', { detail: this._selfExtras() }));
+      await this._retrackPresence();
+    }
+
+    // Snapshot of the local user's status extras for UI (self rendering).
+    _selfExtras() {
+      const cs = this._activeCustomStatus();
+      return { emoji: cs?.emoji || null, text: cs?.text || null, dnd: this.isDndActive(), dndUntil: this.dndUntil };
+    }
+
+    // Mirror the DND deadline + working hours into user_integrations.settings
+    // (JSONB) so the service-role notify-on-message function can skip a
+    // recipient who's heads-down. Best-effort; the desktop gate never
+    // depends on this landing.
+    async _mirrorDndToServer() {
+      try {
+        const { data: { user } } = await this.supabase.auth.getUser();
+        if (!user) return;
+        const { data } = await this.supabase.from('user_integrations').select('settings').eq('user_id', user.id).maybeSingle();
+        const settings = data?.settings || {};
+        settings.presence = {
+          ...(settings.presence || {}),
+          dndUntil: this.dndUntil === Infinity ? 'forever' : (this.dndUntil || 0),
+          workingHours: this.workingHours || null,
+        };
+        await this.supabase.from('user_integrations').upsert({ user_id: user.id, settings });
+      } catch (e) { console.warn('DND server mirror failed', e); }
     }
 
     async uploadAvatar(file) {

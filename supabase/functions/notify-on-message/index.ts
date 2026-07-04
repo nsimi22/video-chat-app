@@ -49,6 +49,33 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+// Mirror of HuddleClient.isDndActive on the server: is this user currently
+// heads-down? `presence` is user_integrations.settings.presence, mirrored
+// from the desktop client. Absent/empty = available. Kept deliberately in
+// sync with the renderer's _outsideWorkingHours logic.
+// deno-lint-ignore no-explicit-any
+function isDndNow(presence: any): boolean {
+  if (!presence) return false;
+  const until = presence.dndUntil;
+  if (until === 'forever') return true;
+  if (typeof until === 'number' && until > Date.now()) return true;
+  const wh = presence.workingHours;
+  if (wh && wh.enabled) {
+    try {
+      const now = wh.tz
+        ? new Date(new Date().toLocaleString('en-US', { timeZone: wh.tz }))
+        : new Date();
+      const day = now.getDay();
+      if (Array.isArray(wh.days) && wh.days.length && !wh.days.includes(day)) return true;
+      const mins = now.getHours() * 60 + now.getMinutes();
+      const [sh, sm] = String(wh.start || '09:00').split(':').map(Number);
+      const [eh, em] = String(wh.end || '17:00').split(':').map(Number);
+      if (mins < sh * 60 + sm || mins >= eh * 60 + em) return true;
+    } catch { /* bad tz → treat as available */ }
+  }
+  return false;
+}
+
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
@@ -101,6 +128,21 @@ Deno.serve(async (req) => {
     return json({ ok: true, skipped: 'no dm/mention recipients' });
   }
   if (!recipientIds.length) return json({ ok: true, skipped: 'empty recipient set' });
+
+  // Respect Do Not Disturb / working hours: drop recipients who are heads-
+  // down right now. Prefs live in user_integrations.settings.presence,
+  // mirrored from the desktop client; a missing row means "available".
+  const { data: prefRows } = await admin
+    .from('user_integrations')
+    .select('user_id, settings')
+    .in('user_id', recipientIds);
+  const dndSet = new Set(
+    (prefRows ?? [])
+      .filter((r) => isDndNow((r.settings ?? {}).presence))
+      .map((r) => r.user_id),
+  );
+  recipientIds = recipientIds.filter((id) => !dndSet.has(id));
+  if (!recipientIds.length) return json({ ok: true, skipped: 'all recipients in DND' });
 
   const { data: author } = await admin.from('profiles').select('name').eq('user_id', msg.author_id).maybeSingle();
   const authorName = author?.name ?? 'Someone';

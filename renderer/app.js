@@ -238,6 +238,10 @@ const els = {
   setAiTicketRepo: $('#set-ai-ticket-repo'),
   setGithubToken: $('#set-github-token'),
   setGiphyKey: $('#set-giphy-key'),
+  setWhEnabled: $('#set-wh-enabled'),
+  setWhStart: $('#set-wh-start'),
+  setWhEnd: $('#set-wh-end'),
+  setWhTz: $('#set-wh-tz'),
   settingsStatus: $('#settings-status'),
   settingsCancel: $('#settings-cancel'),
   settingsSave: $('#settings-save'),
@@ -3553,6 +3557,10 @@ function onCallPresence({ channelId, count }) {
 // constructor (body, tag, silent, …).
 function notifyWithFocus(title, opts, channelId) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  // Do Not Disturb (an explicit window or being outside working hours)
+  // silences every desktop notification at the single choke point they
+  // all pass through. Mobile push is gated server-side in notify-on-message.
+  if (state.huddle?.isDndActive?.()) return;
   try {
     const n = new Notification(title, opts);
     n.onclick = () => { try { window.focus(); } catch {} focusChannel(channelId); n.close(); };
@@ -4798,8 +4806,14 @@ function presenceStatusLabel(s) {
 
 function renderMeStatus() {
   const s = state.huddle?.presenceStatus || 'active';
-  const title = `Status: ${presenceStatusLabel(s)} — click to change`;
+  const extras = state.huddle?._selfExtras?.() || {};
+  const cs = extras.emoji || extras.text
+    ? `${extras.emoji || ''} ${extras.text || ''}`.trim() : '';
+  const dnd = !!extras.dnd;
+  const base = dnd ? 'Do Not Disturb' : presenceStatusLabel(s);
+  const title = `Status: ${cs ? cs + ' · ' : ''}${base} — click to change`;
   els.me.dataset.status = s;
+  els.me.dataset.dnd = dnd ? '1' : '';
   els.me.title = title;
   // v2 nav-rail avatar (bottom-left) carries the same state — its dot is
   // a CSS ::after keyed off data-status, immune to the shell's initial
@@ -4807,6 +4821,7 @@ function renderMeStatus() {
   const railMe = document.getElementById('huddle-rail-me');
   if (railMe) {
     railMe.dataset.status = s;
+    railMe.dataset.dnd = dnd ? '1' : '';
     railMe.title = title;
   }
 }
@@ -4814,8 +4829,11 @@ function renderMeStatus() {
 function initMeStatus(huddle) {
   renderMeStatus();
   // Status flips re-render the me-row dot, the roster (self row), and
-  // the self avatars in rendered chat rows.
-  huddle.addEventListener('presence-status', () => { renderMeStatus(); renderRoster(); refreshMessagePresence(); });
+  // the self avatars in rendered chat rows. Custom-status / DND changes
+  // arrive as presence-extras; both funnel through the same repaint.
+  const repaint = () => { renderMeStatus(); renderRoster(); refreshMessagePresence(); };
+  huddle.addEventListener('presence-status', repaint);
+  huddle.addEventListener('presence-extras', repaint);
   // start() can run again after a team switch — wire the clicks once.
   // Under v2 the rail avatar is the ONLY trigger: the me-row sits in the
   // workspace header there, and a menu popping above it gets clipped to
@@ -4836,26 +4854,133 @@ function initMeStatus(huddle) {
   }
 }
 
+// Quick custom-status presets (emoji, text, minutes-to-expire | null).
+const CUSTOM_STATUS_PRESETS = [
+  { emoji: '🍕', text: 'Lunch', mins: 60 },
+  { emoji: '🎯', text: 'Focusing', mins: 120 },
+  { emoji: '📅', text: 'In a meeting', mins: 60 },
+  { emoji: '🏠', text: 'Working remotely', mins: null },
+  { emoji: '🤒', text: 'Out sick', mins: null },
+  { emoji: '🌴', text: 'On vacation', mins: null },
+];
+
+// DND duration choices → an absolute epoch-ms deadline (Infinity = until
+// turned off). "Until tomorrow" resolves to 8am the next local morning.
+function dndDeadlines() {
+  const now = Date.now();
+  const tomorrow8 = new Date();
+  tomorrow8.setDate(tomorrow8.getDate() + 1);
+  tomorrow8.setHours(8, 0, 0, 0);
+  return [
+    { label: 'For 30 minutes', until: now + 30 * 60 * 1000 },
+    { label: 'For 1 hour', until: now + 60 * 60 * 1000 },
+    { label: 'Until tomorrow', until: tomorrow8.getTime() },
+    { label: 'Until I turn it off', until: Infinity },
+  ];
+}
+
 // `side` anchors the menu beside the trigger (the v2 nav rail is too
 // narrow to host a dropdown); otherwise it pops above the me-row.
 function toggleStatusMenu(trigger, side) {
   const existing = document.querySelector('.status-menu');
   if (existing) { existing.remove(); return; }
+  const huddle = state.huddle;
   const menu = document.createElement('div');
   menu.className = 'status-menu';
+  const divider = () => { const d = document.createElement('div'); d.className = 'status-menu-divider'; menu.appendChild(d); };
+
+  // --- Custom status: emoji + text + quick presets ---
+  const extras = huddle?._selfExtras?.() || {};
+  const form = document.createElement('div');
+  form.className = 'status-custom-form';
+  const emojiIn = document.createElement('input');
+  emojiIn.className = 'status-custom-emoji';
+  emojiIn.maxLength = 2;
+  emojiIn.value = extras.emoji || '';
+  emojiIn.setAttribute('aria-label', 'Status emoji');
+  emojiIn.placeholder = '😀';
+  const textIn = document.createElement('input');
+  textIn.className = 'status-custom-text';
+  textIn.maxLength = 100;
+  textIn.value = extras.text || '';
+  textIn.placeholder = "What's your status?";
+  textIn.setAttribute('aria-label', 'Status text');
+  const saveCustom = () => {
+    menu.remove();
+    huddle?.setCustomStatus(emojiIn.value.trim(), textIn.value.trim(), null);
+  };
+  textIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveCustom(); });
+  const setBtn = document.createElement('button');
+  setBtn.type = 'button';
+  setBtn.className = 'status-custom-set';
+  setBtn.textContent = 'Set';
+  setBtn.onclick = saveCustom;
+  form.append(emojiIn, textIn, setBtn);
+  menu.appendChild(form);
+
+  const presetRow = document.createElement('div');
+  presetRow.className = 'status-preset-row';
+  for (const p of CUSTOM_STATUS_PRESETS) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'status-preset-chip';
+    chip.textContent = `${p.emoji} ${p.text}`;
+    chip.onclick = () => {
+      menu.remove();
+      huddle?.setCustomStatus(p.emoji, p.text, p.mins ? Date.now() + p.mins * 60000 : null);
+    };
+    presetRow.appendChild(chip);
+  }
+  menu.appendChild(presetRow);
+  if (extras.emoji || extras.text) {
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'status-menu-item status-menu-clear';
+    clear.textContent = 'Clear status';
+    clear.onclick = () => { menu.remove(); huddle?.clearCustomStatus(); };
+    menu.appendChild(clear);
+  }
+  divider();
+
+  // --- Presence presets ---
   for (const st of PRESENCE_STATES) {
     const item = document.createElement('button');
     item.type = 'button';
-    item.className = 'status-menu-item' + ((state.huddle?.presenceStatus || 'active') === st.id ? ' selected' : '');
+    item.className = 'status-menu-item' + ((huddle?.presenceStatus || 'active') === st.id ? ' selected' : '');
     const dot = document.createElement('span');
     dot.className = `status-menu-dot status-${st.id}`;
     item.append(dot, document.createTextNode(st.label));
     item.onclick = () => {
       menu.remove();
-      state.huddle?.setPresenceStatus(st.id);
+      huddle?.setPresenceStatus(st.id);
     };
     menu.appendChild(item);
   }
+  divider();
+
+  // --- Do Not Disturb ---
+  if (extras.dnd && extras.dndUntil) {
+    const off = document.createElement('button');
+    off.type = 'button';
+    off.className = 'status-menu-item status-dnd-off';
+    off.innerHTML = `${window.HuddleIcons?.bellOff || ''}<span>Turn off Do Not Disturb</span>`;
+    off.onclick = () => { menu.remove(); huddle?.setDnd(0); };
+    menu.appendChild(off);
+  } else {
+    const head = document.createElement('div');
+    head.className = 'status-dnd-head';
+    head.innerHTML = `${window.HuddleIcons?.bellOff || ''}<span>Do Not Disturb</span>`;
+    menu.appendChild(head);
+    for (const d of dndDeadlines()) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'status-menu-item status-dnd-item';
+      item.textContent = d.label;
+      item.onclick = () => { menu.remove(); huddle?.setDnd(d.until); };
+      menu.appendChild(item);
+    }
+  }
+
   if (side) {
     // Fixed positioning from the trigger's rect — the rail clips
     // absolutely-positioned children, and fixed also dodges z-index
@@ -7929,6 +8054,10 @@ async function refreshSettings() {
   // to :root as CSS custom properties so existing v2 tokens pick up
   // the change without each consumer re-rendering.
   applyAppearance(state.settings?.appearance || {});
+  // Hand persisted working hours to the presence client so its derived
+  // DND state + broadcast are correct from sign-in (guarded — the client
+  // re-tracks safely even before the team channel is up).
+  state.huddle?.setWorkingHours(state.settings?.presence?.workingHours || null);
 }
 
 // Apply density + accent hue to :root. CSS reads:
@@ -7971,6 +8100,31 @@ function collectAppearanceFromForm() {
   const activeSwatch = modal.querySelector('.settings-accent-swatch.is-active');
   const accentHue = activeSwatch ? Number(activeSwatch.dataset.hue) : null;
   return { density, accentHue };
+}
+
+// Read the Working Hours form into the { enabled, start, end, tz } shape
+// stored under state.settings.presence.workingHours. Outside these hours
+// the presence client reports DND (see HuddleClient._outsideWorkingHours).
+function collectWorkingHoursFromForm() {
+  const on = !!els.setWhEnabled?.checked;
+  return {
+    enabled: on,
+    start: els.setWhStart?.value || '09:00',
+    end: els.setWhEnd?.value || '17:00',
+    tz: (els.setWhTz?.value || '').trim() || null,
+  };
+}
+
+function hydrateWorkingHoursForm() {
+  const wh = state.settings?.presence?.workingHours || {};
+  if (els.setWhEnabled) els.setWhEnabled.checked = !!wh.enabled;
+  if (els.setWhStart) els.setWhStart.value = wh.start || '09:00';
+  if (els.setWhEnd) els.setWhEnd.value = wh.end || '17:00';
+  // Default the tz field to the user's own zone so most people can just
+  // tick the box without hunting for their IANA name.
+  let tz = wh.tz;
+  if (!tz) { try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { tz = ''; } }
+  if (els.setWhTz) els.setWhTz.value = tz || '';
 }
 
 // Activate one of the v2 settings tabs by id. No-op under legacy mode
@@ -8089,6 +8243,7 @@ async function openSettings() {
   els.setAiTicketRepo.value = s.aiTicket?.githubRepo || '';
   els.setGithubToken.value = s.github?.token || '';
   els.setGiphyKey.value = s.giphy?.key || '';
+  hydrateWorkingHoursForm();
   renderCalendarSettingsList();
   captionsModelUi.wire();
   captionsModelUi.refresh();
@@ -8252,6 +8407,12 @@ async function saveSettings() {
     // pass them through unchanged so save() persists the edits.
     calendar: state.settings?.calendar || {},
     appearance: collectAppearanceFromForm(),
+    // Presence prefs: working hours live here (cross-device). DND deadline
+    // is mirrored in by the client too; preserve it across a settings save.
+    presence: {
+      ...(state.settings?.presence || {}),
+      workingHours: collectWorkingHoursFromForm(),
+    },
   };
   try {
     // Upload pending avatar first so the URL is included in the
@@ -8286,6 +8447,9 @@ async function saveSettings() {
 
     await window.huddleApi.saveSettings(next);
     state.settings = next;
+    // Hand the (possibly changed) working hours to the presence client so
+    // the derived DND state + broadcast refresh right away.
+    state.huddle.setWorkingHours(next.presence.workingHours);
     rebuildJiraClient();
     rebuildAiClient();
     rebuildGitHubClient();
