@@ -1400,7 +1400,51 @@ class ChatView {
     if (!this.threadParentId && visible.length === 0 && pagination && !pagination.hasMore) {
       container.appendChild(this._buildEmptyState());
     }
+    this._renderReadReceipts();
     container.scrollTop = container.scrollHeight;
+  }
+
+  // Read receipts (DMs / group DMs only). app.js feeds the per-member
+  // last_read_at map (+ names) via setReadReceipts as it loads/streams
+  // channel_read_state; we render a subtle "Seen"/"Seen by …" line under
+  // the sender's most recent message.
+  setReadReceipts(map, nameById) {
+    this._readReceipts = map || new Map();
+    this._rcNames = nameById || new Map();
+    this._renderReadReceipts();
+  }
+
+  _renderReadReceipts() {
+    // Clear any prior indicator first — the anchor message changes as new
+    // messages arrive.
+    this.els.messages.querySelector('.msg-seen')?.remove();
+    if (this._currentChannelType !== 'dm' || this.threadParentId) return;
+    const receipts = this._readReceipts;
+    if (!receipts || !receipts.size) return;
+    const me = this.mesh.peerId;
+    // Anchor on my most recent top-level message — "Seen" answers "did they
+    // read what I said".
+    const mine = this._messages().filter((m) => !m.parentId && m.authorId === me);
+    const last = mine[mine.length - 1];
+    if (!last) return;
+    const node = this.nodeById.get(last.id);
+    if (!node) return;
+    const seers = [];
+    for (const [uid, readAt] of receipts) {
+      if (uid === me) continue;
+      if (readAt >= last.ts) seers.push(uid);
+    }
+    if (!seers.length) return;
+    const el = document.createElement('div');
+    el.className = 'msg-seen';
+    // 1:1 → just "Seen"; group DM → name who's caught up.
+    if (seers.length === 1 && receipts.size <= 2) {
+      el.textContent = 'Seen';
+    } else {
+      const names = seers.map((id) => this._rcNames.get(id) || 'someone');
+      el.textContent = `Seen by ${names.join(', ')}`;
+    }
+    node.insertAdjacentElement('afterend', el);
   }
 
   // Local-day equality. Date getters already operate in the user's
@@ -1549,6 +1593,8 @@ class ChatView {
       this.nodeById.set(m.id, node);
       this.els.messages.appendChild(node);
       this._lastRendered = m;
+      // The "Seen" anchor moves to my newest message; re-place it.
+      this._renderReadReceipts();
       this.els.messages.scrollTop = this.els.messages.scrollHeight;
       return;
     }

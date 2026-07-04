@@ -2050,6 +2050,15 @@ body.huddle-call-minimized #tiles .speaker-queue { display: none !important; }
 
 .popout-call .react-popover { right: 16px; bottom: 76px; top: auto; }
 
+/* Read receipts ("Seen by") under the sender's last DM message. */
+.msg-seen {
+  font-size: 11px;
+  color: var(--text-faint, #8a8f98);
+  text-align: right;
+  padding: 2px 14px 4px 0;
+  letter-spacing: 0.2px;
+}
+
 /* Ephemeral AI cards (/catchup): local-only rows that were never sent.
    Dashed accent strip + the "Only visible to you" note distinguish them
    from real posted messages; any re-render naturally drops them. */

@@ -1910,6 +1910,41 @@
       return ts;
     }
 
+    // Read receipts for a DM / group DM: every member's last_read_at for
+    // this channel, as Map<userId, epochMs>. RLS only returns rows for
+    // dm-type channels the caller belongs to (see the read-receipts
+    // migration), so calling this on a normal channel just yields your own
+    // row — callers gate on channel type before showing "Seen by".
+    async loadChannelReadReceipts(channelId) {
+      const out = new Map();
+      if (!this.team?.id || !channelId) return out;
+      const { data, error } = await this.supabase
+        .from('channel_read_state')
+        .select('user_id,last_read_at')
+        .eq('team_id', this.team.id)
+        .eq('channel_id', channelId);
+      if (error) { console.warn('loadChannelReadReceipts failed', error); return out; }
+      for (const row of data || []) out.set(row.user_id, Date.parse(row.last_read_at));
+      return out;
+    }
+
+    // Live receipt updates for the open DM: subscribes to channel_read_state
+    // row changes for this channel and fires cb(userId, epochMs) as peers
+    // read. RLS on the publication limits delivery to rows the caller may
+    // see. Returns an unsubscribe fn; caller tears it down on channel switch.
+    watchReadReceipts(channelId, cb) {
+      const ch = this.supabase
+        .channel(`rr:${this.team.id}:${channelId}`, { config: { private: true } })
+        .on('postgres_changes', {
+          event: '*', schema: 'public', table: 'channel_read_state',
+          filter: `channel_id=eq.${channelId}`,
+        }, ({ new: row }) => {
+          if (row?.user_id && row.last_read_at) cb(row.user_id, Date.parse(row.last_read_at));
+        });
+      ch.subscribe();
+      return () => { try { ch.unsubscribe(); } catch {} };
+    }
+
     // Bounded team-wide "messages newer than X" sweep, ascending. Used by
     // the sign-in unread seeder, which buckets rows against each
     // channel's own bookmark client-side. RLS keeps invisible channels'

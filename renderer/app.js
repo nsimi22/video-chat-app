@@ -3958,10 +3958,42 @@ function focusChannel(channelId) {
   renderHeaderMembers(channel);
   renderKnockButton(channel);
   refreshNotifyButton();
+  // Read receipts: only DMs / group DMs (type 'dm') get "Seen by".
+  setupReadReceipts(channel);
   // Visiting a channel clears its unread and advances the durable read
   // bookmark (unconditionally — every visit should freshen the bookmark,
   // even when nothing was unread).
   clearChannelUnread(channelId);
+}
+
+// Load + live-watch read receipts for a DM / group DM and feed them to the
+// chat view. Tears down the previous channel's subscription first so only
+// the open channel is watched. No-op (and clears any indicator) for normal
+// channels, keeping "Seen by" scoped to direct messages.
+function setupReadReceipts(channel) {
+  if (state.readReceiptSub) { state.readReceiptSub(); state.readReceiptSub = null; }
+  state.readReceipts = new Map();
+  if (!state.huddle || channel.type !== 'dm') {
+    state.chat.setReadReceipts(new Map(), new Map());
+    return;
+  }
+  const channelId = channel.id;
+  const nameById = new Map();
+  const meta = state.channelMeta.get(channelId) || channel;
+  (meta.memberIds || []).forEach((id, i) => {
+    nameById.set(id, (meta.members && meta.members[i]) || state.huddle.roster.get(id)?.name || 'someone');
+  });
+  const feed = () => state.chat.setReadReceipts(state.readReceipts, nameById);
+  state.huddle.loadChannelReadReceipts(channelId).then((map) => {
+    if (state.chat.currentChannel !== channelId) return; // switched away mid-fetch
+    state.readReceipts = map;
+    feed();
+  }).catch(() => {});
+  state.readReceiptSub = state.huddle.watchReadReceipts(channelId, (uid, readAt) => {
+    if (state.chat.currentChannel !== channelId) return;
+    state.readReceipts.set(uid, readAt);
+    feed();
+  });
 }
 
 // Clear a channel's unread everywhere it's tracked: the in-memory map, the
