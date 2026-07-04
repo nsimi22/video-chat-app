@@ -330,6 +330,9 @@
       });
 
       ch.on('broadcast', { event: 'raise-hand' }, ({ payload }) => {
+        // A malformed broadcast (no payload / no sender) must not crash
+        // the handler or plant an `undefined` entry in the queue maps.
+        if (!payload?.from) return;
         if (payload.raised) {
           this.raisedHands.add(payload.from);
           // First-seen wins: catch-up re-broadcasts (sent to late joiners)
@@ -1893,15 +1896,19 @@
     // rows out, same as everywhere else.
     async loadTeamMessagesSince(since, { limit = 500 } = {}) {
       if (!this.team?.id || !since) return [];
+      // Fetch descending so that when the window holds more rows than the
+      // cap we keep the NEWEST ones — those are the messages the badges
+      // are for; ancient overflow is what gets dropped. Reversed below to
+      // hand callers the ascending order they expect.
       const { data, error } = await this.supabase
         .from('messages')
         .select('*')
         .eq('team_id', this.team.id)
         .gt('ts', since)
-        .order('ts', { ascending: true })
+        .order('ts', { ascending: false })
         .limit(limit);
       if (error) { console.warn('loadTeamMessagesSince failed', error); return []; }
-      return (data || []).map((row) => this._marshalMessage(row));
+      return (data || []).reverse().map((row) => this._marshalMessage(row));
     }
 
     // Everything the user missed, per channel, for the /catchup digest:

@@ -193,13 +193,18 @@
           this.hooks.toast?.('Nothing was recorded — try again.');
           return;
         }
+        // Extension must follow the ACTUAL container: if MediaRecorder
+        // fell back past both webm candidates (pickAudioMimeType returned
+        // ''), the blob may be mp4/ogg, and a lying .webm suffix breaks
+        // players that trust the extension.
+        const ext = /mp4|m4a|aac/.test(type) ? 'm4a' : (/ogg/.test(type) ? 'ogg' : 'webm');
         // Fire-and-forget: _postVoiceNote toasts its own failures, and
         // unlike a 3-minute clip a voice note is cheap to re-record, so
         // there's no retained-take retry state here.
         Promise.resolve(this.hooks.onPost?.(blob, {
           durationSecs,
           mimeType: type,
-          name: `huddle-voice-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.webm`,
+          name: `huddle-voice-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${ext}`,
         })).catch((err) => console.warn('[voice] post failed', err));
       };
       try { recorder.stop(); } catch { this._releaseCapture(); }
@@ -240,7 +245,9 @@
       const buf = await res.arrayBuffer();
       decodeCtx = decodeCtx || new (window.AudioContext || window.webkitAudioContext)();
       const audio = await decodeCtx.decodeAudioData(buf);
-      const data = audio.getChannelData(0);
+      // A corrupt/empty file can decode to 0 channels; getChannelData(0)
+      // would throw INDEX_SIZE_ERR. Degrade to flat bars instead.
+      const data = audio.numberOfChannels > 0 ? audio.getChannelData(0) : new Float32Array(0);
       const peaks = new Float32Array(WAVE_BARS);
       const chunk = Math.max(1, Math.floor(data.length / WAVE_BARS));
       let max = 0;
@@ -334,9 +341,22 @@
       }
     }
 
-    function tick() {
-      draw();
+    function updateTimeDisplay() {
       time.textContent = formatClock(duration ? Math.max(0, duration - audio.currentTime) : audio.currentTime);
+    }
+
+    function tick() {
+      // The message list re-renders freely (pagination, reactions, channel
+      // switches) and drops this card without any teardown hook. A detached
+      // player must not keep talking from beyond the DOM — pause, which
+      // also cancels this loop and releases the module refs via onStopped,
+      // leaving the Audio object collectible.
+      if (!root.isConnected) {
+        audio.pause();
+        return;
+      }
+      draw();
+      updateTimeDisplay();
       if (!audio.paused && !audio.ended) rafId = requestAnimationFrame(tick);
     }
 
@@ -359,18 +379,20 @@
       if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
       if (currentlyPlaying === audio) currentlyPlaying = null;
       if (audio.ended) audio.currentTime = 0;
-      time.textContent = duration ? formatClock(duration) : formatClock(audio.currentTime);
+      updateTimeDisplay();
       draw();
     };
     audio.addEventListener('pause', onStopped);
     audio.addEventListener('ended', onStopped);
 
-    // Click-to-seek on the waveform.
+    // Click-to-seek on the waveform. Refresh the time label too — while
+    // paused there's no tick loop to pick the new position up.
     canvas.addEventListener('click', (ev) => {
       if (!duration) return;
       const rect = canvas.getBoundingClientRect();
       const frac = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
       audio.currentTime = frac * duration;
+      updateTimeDisplay();
       draw();
     });
 
