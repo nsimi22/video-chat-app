@@ -35,9 +35,6 @@
   const viewers = new Map(); // shareId -> viewer session (subset of sessions)
   let active = null;
   let seq = 0;
-  // The HuddleClient instance we've wired share listeners on. Re-wired if
-  // the app builds a fresh client (sign-out/in), stale otherwise.
-  let hudWired = null;
 
   function svg(name) {
     return (window.HuddleIcons && window.HuddleIcons[name]) || '';
@@ -45,6 +42,18 @@
 
   function engineReady() {
     return !!(window.huddle && window.huddle.terminal && typeof window.Terminal === 'function');
+  }
+
+  // Shared look for host + viewer terminals; callers add their own
+  // interaction flags (cursorBlink / disableStdin).
+  function makeTerm(extra) {
+    return new window.Terminal({
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", monospace',
+      fontSize: 13,
+      convertEol: false,
+      theme: { background: '#0b0e14', foreground: '#d5d8df' },
+      ...extra,
+    });
   }
 
   // --- DOM ---------------------------------------------------------
@@ -210,13 +219,7 @@
       return false;
     }
     if (!s.term) {
-      s.term = new window.Terminal({
-        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", monospace',
-        fontSize: 13,
-        cursorBlink: true,
-        convertEol: false,
-        theme: { background: '#0b0e14', foreground: '#d5d8df' },
-      });
+      s.term = makeTerm({ cursorBlink: true });
       const FitAddonCtor = window.FitAddon?.FitAddon;
       if (FitAddonCtor) { s.fit = new FitAddonCtor(); s.term.loadAddon(s.fit); }
       s.term.open(s.mountEl);
@@ -290,32 +293,29 @@
   const SHARE_MAX_BUF = 24 * 1024;  // …but flush a burst before it outgrows a broadcast message
   const SNAPSHOT_SCROLLBACK = 200;  // lines of history a late joiner gets
 
-  function getHud() { return window.huddleApp?.getHuddle?.() || null; }
+  // Narrow send-only facade exposed by app.js — the panel never touches
+  // the HuddleClient itself; inbound events are relayed in by app.js.
+  function shareApi() { return window.huddleApp?.terminalShare || null; }
   function inCall() { return !!window.huddleApp?.getActiveCallChannelId?.(); }
-
-  // Wire the share-transport listeners on the live HuddleClient once per
-  // client instance (a sign-out/in builds a new client; the old one is
-  // dropped along with its listeners).
-  function ensureHudWiring() {
-    const hud = getHud();
-    if (!hud || hud === hudWired) return hud;
-    hudWired = hud;
-    hud.addEventListener('terminal-join', (e) => onShareJoin(e.detail));
-    hud.addEventListener('terminal-frame', (e) => onViewerFrame(e.detail));
-    hud.addEventListener('terminal-snapshot', (e) => onViewerSnapshot(e.detail));
-    return hud;
-  }
 
   function notice(s, text, color = '36') {
     if (!s.closed && s.term) s.term.write(`\r\n\x1b[${color}m[share] ${text}\x1b[0m\r\n`);
+  }
+
+  // Remote-controlled strings (teammate display names) get written into a
+  // local xterm — strip control/escape characters so a crafted name can't
+  // inject escape sequences into the viewer's terminal.
+  function sanitizeRemoteText(text, fallback) {
+    const clean = String(text || '').replace(/[\x00-\x1F\x7F-\x9F]/g, '').trim();
+    return clean || fallback;
   }
 
   async function toggleShareActive() {
     const s = active;
     if (!s || s.viewer) return;
     if (s.share) { await unshareSession(s); updateHeaderButtons(); return; }
-    const hud = ensureHudWiring();
-    if (!hud || !inCall()) { notice(s, 'join a call first', '33'); return; }
+    const api = shareApi();
+    if (!api || !inCall()) { notice(s, 'join a call first', '33'); return; }
     if (!s.term && !(await ensureSession(s))) return;
     // Serialize addon renders the current screen+scrollback for late
     // joiners. Loaded lazily on first share; harmless if the vendor file
@@ -324,7 +324,7 @@
     if (SA && !s.serialize) { s.serialize = new SA(); s.term.loadAddon(s.serialize); }
     const shareId = crypto.randomUUID();
     try {
-      await hud.startTerminalShare(shareId);
+      await api.start(shareId);
     } catch (err) {
       notice(s, err?.message || 'failed to start sharing', '31');
       return;
@@ -335,13 +335,22 @@
     updateHeaderButtons();
   }
 
-  async function unshareSession(s, { silent } = {}) {
+  // Reset the host-side share state on `s` (timer, flag, chip badge) —
+  // shared by the user toggling off, the tab closing, and the call
+  // ending, so the three teardown paths can't drift.
+  function clearLocalShare(s) {
     const share = s.share;
-    if (!share) return;
+    if (!share) return null;
     s.share = null;
-    if (share.timer) { clearTimeout(share.timer); share.timer = null; }
+    if (share.timer) clearTimeout(share.timer);
     s.chipEl.classList.remove('is-shared');
-    try { await getHud()?.stopTerminalShare(share.id); } catch {}
+    return share;
+  }
+
+  async function unshareSession(s, { silent } = {}) {
+    const share = clearLocalShare(s);
+    if (!share) return;
+    try { await shareApi()?.stop(share.id); } catch {}
     if (!silent) notice(s, 'stopped sharing');
   }
 
@@ -359,17 +368,18 @@
     if (!share.buf) return;
     const data = share.buf;
     share.buf = '';
-    getHud()?.sendTerminalFrame(share.id, data, s.term.cols, s.term.rows);
+    shareApi()?.frame(share.id, data, s.term.cols, s.term.rows);
   }
 
   // A viewer joined one of our shares — answer with a snapshot so they
   // see the current screen instead of a blank terminal until new output.
+  // Relayed in by app.js from the client's terminal-join event.
   function onShareJoin(d) {
     const s = sessions.find((x) => x.share && x.share.id === d?.shareId);
     if (!s || !d?.from) return;
     let snap = '';
     try { snap = s.serialize ? s.serialize.serialize({ scrollback: SNAPSHOT_SCROLLBACK }) : ''; } catch {}
-    getHud()?.sendTerminalSnapshot(s.share.id, d.from, snap, s.term.cols, s.term.rows);
+    shareApi()?.snapshot(s.share.id, d.from, snap, s.term.cols, s.term.rows);
   }
 
   // --- watching a remote share (viewer side) ------------------------
@@ -381,26 +391,20 @@
   function remoteShareStarted(d) {
     if (!d?.shareId || viewers.has(d.shareId)) return;
     if (typeof window.Terminal !== 'function') return;
+    const api = shareApi();
+    if (!api) return;
     if (!root) buildDom();
-    const hud = ensureHudWiring();
-    if (!hud) return;
-    const s = makeSession({ viewer: true, label: `${d.fromName || 'Teammate'}'s terminal` });
+    const who = sanitizeRemoteText(d.fromName, 'a teammate');
+    const s = makeSession({ viewer: true, label: `${who}'s terminal` });
     s.shareId = d.shareId;
     // Fixed at the host's dims (synced from frame/snapshot payloads) —
     // no FitAddon: reflowing someone else's escape stream to our width
     // would garble it. The mount scrolls if the viewport is smaller.
-    s.term = new window.Terminal({
-      disableStdin: true,
-      cursorBlink: false,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", monospace',
-      fontSize: 13,
-      convertEol: false,
-      theme: { background: '#0b0e14', foreground: '#d5d8df' },
-    });
+    s.term = makeTerm({ disableStdin: true, cursorBlink: false });
     s.term.open(s.mountEl);
-    s.term.write(`\x1b[36m[watching ${d.fromName || 'a teammate'}'s terminal — read-only]\x1b[0m\r\n`);
+    s.term.write(`\x1b[36m[watching ${who}'s terminal — read-only]\x1b[0m\r\n`);
     viewers.set(d.shareId, s);
-    hud.joinTerminalShare(d.shareId).catch((err) => {
+    Promise.resolve(api.join(d.shareId)).catch((err) => {
       notice(s, `couldn't subscribe: ${err?.message || err}`, '31');
     });
     if (!active) activate(s);
@@ -411,13 +415,17 @@
     if (s) endViewer(s);
   }
 
-  // Keep the viewer term at the host's dimensions.
+  // Keep the viewer term at the host's dimensions. Dims arrive over the
+  // network — validate + bound them so a malformed/hostile broadcast
+  // can't force a degenerate or enormous resize.
   function syncViewerDims(s, cols, rows) {
-    if (!cols || !rows || !s.term) return;
+    if (!s.term || !Number.isInteger(cols) || !Number.isInteger(rows)) return;
+    if (cols < 2 || rows < 2 || cols > 500 || rows > 300) return;
     if (s.term.cols === cols && s.term.rows === rows) return;
     try { s.term.resize(cols, rows); } catch {}
   }
 
+  // Relayed in by app.js from the client's terminal-frame event.
   function onViewerFrame(d) {
     const s = viewers.get(d?.shareId);
     if (!s || s.ended || s.closed) return;
@@ -425,12 +433,12 @@
     if (d.data) s.term.write(d.data);
   }
 
+  // Relayed in by app.js, which already filtered out snapshots addressed
+  // to other joiners (applying someone else's would reset a view that's
+  // already streaming).
   function onViewerSnapshot(d) {
     const s = viewers.get(d?.shareId);
     if (!s || s.ended || s.closed || s.gotSnapshot) return;
-    // Snapshots are addressed to the joiner they answer — applying
-    // someone else's would reset a view that's already streaming.
-    if (d.to && d.to !== getHud()?.peerId) return;
     s.gotSnapshot = true;
     try { s.term.reset(); } catch {}
     syncViewerDims(s, d.cols, d.rows);
@@ -442,7 +450,7 @@
   function endViewer(s) {
     if (s.ended) return;
     s.ended = true;
-    Promise.resolve(getHud()?.leaveTerminalShare(s.shareId)).catch(() => {});
+    Promise.resolve(shareApi()?.leave(s.shareId)).catch(() => {});
     if (!s.closed && s.term) s.term.write('\r\n\x1b[90m[share ended]\x1b[0m\r\n');
   }
 
@@ -450,11 +458,7 @@
   // terminal-stop for our hosted shares) — reset both sides' UI state.
   function callEnded() {
     for (const s of sessions) {
-      if (!s.share) continue;
-      if (s.share.timer) clearTimeout(s.share.timer);
-      s.share = null;
-      s.chipEl.classList.remove('is-shared');
-      notice(s, 'stopped sharing (call ended)');
+      if (clearLocalShare(s)) notice(s, 'stopped sharing (call ended)');
     }
     for (const s of viewers.values()) endViewer(s);
     updateHeaderButtons();
@@ -591,9 +595,14 @@
     else close();
   }
 
-  // remoteShareStarted/remoteShareStopped/callEnded are relayed in by
-  // app.js from the HuddleClient's call-channel events.
-  window.HuddleTerminalPanel = { open, close, toggle, remoteShareStarted, remoteShareStopped, callEnded };
+  // Everything after `toggle` is a relay target: app.js wires the
+  // HuddleClient's terminal-share events at client creation and forwards
+  // them here (the panel never touches the client itself).
+  window.HuddleTerminalPanel = {
+    open, close, toggle,
+    remoteShareStarted, remoteShareStopped, callEnded,
+    onShareJoin, onViewerFrame, onViewerSnapshot,
+  };
 
   // ESC closes the panel (keystrokes inside xterm are captured by the
   // terminal itself, so this only fires when focus is elsewhere).

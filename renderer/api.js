@@ -446,10 +446,12 @@
       const wasIn = this._callChannelId;
       // Retract any terminal shares we're hosting BEFORE the call channel
       // goes away, so remaining participants' viewer tabs learn the share
-      // ended rather than watching a stream that silently stops.
-      for (const shareId of this._hostedTerminalShares) {
-        try { ch.send({ type: 'broadcast', event: 'terminal-stop', payload: { from: this.peerId, shareId } }); } catch {}
-      }
+      // ended rather than watching a stream that silently stops. send() is
+      // async — await the sends, or the unsubscribe below can tear the
+      // channel down under a broadcast that never leaves the client.
+      await Promise.allSettled(
+        [...this._hostedTerminalShares].map((shareId) => this._broadcastTerminalStop(ch, shareId))
+      );
       this._hostedTerminalShares.clear();
       this._callPeerInfo.clear();
       this.raisedHands.clear();
@@ -1291,15 +1293,23 @@
       ch.on('broadcast', { event: 'draw' }, ({ payload }) => {
         this.dispatchEvent(new CustomEvent('draw', { detail: payload }));
       });
+      return this._cacheSubscribe(this._screenChannels, streamId, ch);
+    }
+
+    // Shared tail of every per-resource channel helper: subscribe, cache
+    // the ready-PROMISE under `key` (so a second caller mid-handshake
+    // awaits the same subscription instead of grabbing an unsubscribed
+    // handle), and drop the cache entry on failure so the next caller
+    // retries. Used by the screen, terminal, and whiteboard channels.
+    _cacheSubscribe(map, key, ch) {
       const ready = new Promise((res, rej) => {
         ch.subscribe((s, e) => {
           if (s === 'SUBSCRIBED') res(ch);
           else if (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') rej(e);
         });
       });
-      this._screenChannels.set(streamId, ready);
-      // If the subscribe ever fails, drop the cache so the next caller can retry.
-      ready.catch(() => this._screenChannels.delete(streamId));
+      map.set(key, ready);
+      ready.catch(() => map.delete(key));
       return ready;
     }
 
@@ -1332,15 +1342,7 @@
       ch.on('broadcast', { event: 'join' }, ({ payload }) => {
         this.dispatchEvent(new CustomEvent('terminal-join', { detail: payload }));
       });
-      const ready = new Promise((res, rej) => {
-        ch.subscribe((s, e) => {
-          if (s === 'SUBSCRIBED') res(ch);
-          else if (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') rej(e);
-        });
-      });
-      this._terminalChannels.set(shareId, ready);
-      ready.catch(() => this._terminalChannels.delete(shareId));
-      return ready;
+      return this._cacheSubscribe(this._terminalChannels, shareId, ch);
     }
 
     // Host: open the frame channel and announce the share to the call.
@@ -1356,32 +1358,41 @@
       });
     }
 
+    // Single owner of the terminal-stop wire format — used by
+    // stopTerminalShare and by leaveCall's bulk retraction. Resolves once
+    // the send has been handed to the socket; never rejects.
+    _broadcastTerminalStop(ch, shareId) {
+      return Promise.resolve(
+        ch?.send({ type: 'broadcast', event: 'terminal-stop', payload: { from: this.peerId, shareId } })
+      ).catch(() => {});
+    }
+
     // Host: retract the share and tear down its frame channel.
     async stopTerminalShare(shareId) {
       this._hostedTerminalShares.delete(shareId);
-      this._callChannel?.send({
-        type: 'broadcast', event: 'terminal-stop',
-        payload: { from: this.peerId, shareId },
-      });
+      await this._broadcastTerminalStop(this._callChannel, shareId);
       await this.leaveTerminalShare(shareId);
+    }
+
+    // Fire-and-forget send on a share's frame channel.
+    _emitTerminal(shareId, event, payload) {
+      this._ensureTerminalChannel(shareId).then((ch) => {
+        ch.send({ type: 'broadcast', event, payload: { from: this.peerId, shareId, ...payload } });
+      }).catch((err) => console.warn(`[terminal-share] ${event} channel not ready`, err));
     }
 
     // cols/rows are the host terminal's dimensions — viewers pin their
     // read-only term to them (reflowing a foreign escape stream to a
     // different width would garble it).
     sendTerminalFrame(shareId, data, cols, rows) {
-      this._ensureTerminalChannel(shareId).then((ch) => {
-        ch.send({ type: 'broadcast', event: 'frame', payload: { from: this.peerId, shareId, data, cols, rows } });
-      }).catch((err) => console.warn('[terminal-share] frame channel not ready', err));
+      this._emitTerminal(shareId, 'frame', { data, cols, rows });
     }
 
     // Host → one late joiner: full serialized screen state. `to` scopes
     // the snapshot to the requesting viewer; others ignore it so a reset
     // meant for a newcomer can't clobber an already-streaming view.
     sendTerminalSnapshot(shareId, to, data, cols, rows) {
-      this._ensureTerminalChannel(shareId).then((ch) => {
-        ch.send({ type: 'broadcast', event: 'snapshot', payload: { from: this.peerId, shareId, to, data, cols, rows } });
-      }).catch((err) => console.warn('[terminal-share] snapshot channel not ready', err));
+      this._emitTerminal(shareId, 'snapshot', { to, data, cols, rows });
     }
 
     // Viewer: subscribe to a share's frames and ping the host for a
@@ -2449,15 +2460,7 @@
       ch.on('broadcast', { event: 'frame' }, ({ payload }) => ch._onFrame?.(payload));
       ch.on('broadcast', { event: 'vote' }, ({ payload }) => ch._onVote?.(payload));
       ch.on('broadcast', { event: 'cursor' }, ({ payload }) => ch._onCursor?.(payload));
-      const ready = new Promise((res, rej) => {
-        ch.subscribe((s, e) => {
-          if (s === 'SUBSCRIBED') res(ch);
-          else if (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') rej(e);
-        });
-      });
-      this._whiteboardChannels.set(whiteboardId, ready);
-      ready.catch(() => this._whiteboardChannels.delete(whiteboardId));
-      return ready;
+      return this._cacheSubscribe(this._whiteboardChannels, whiteboardId, ch);
     }
 
     sendWhiteboardStroke(whiteboardId, stroke, from = this.peerId) {

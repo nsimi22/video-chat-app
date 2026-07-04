@@ -9391,19 +9391,9 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 }
 .huddle-terminal-start:hover { filter: brightness(1.06); }
 .huddle-terminal-start svg { width: 15px; height: 15px; }
-.huddle-terminal-stop {
-  padding: 6px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  background: var(--bg-2);
-  color: var(--tx-mid);
-  font-family: var(--font);
-  font-weight: 600;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-.huddle-terminal-stop:hover { background: var(--bg-3); color: var(--tx-hi); }
-/* Share-to-call toggle: neutral like Stop; accented while broadcasting. */
+/* Stop + Share share the neutral header-button look; Share adds
+   disabled + is-sharing states below. */
+.huddle-terminal-stop,
 .huddle-terminal-share {
   padding: 6px 12px;
   border-radius: 8px;
@@ -9415,6 +9405,7 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   font-size: 12.5px;
   cursor: pointer;
 }
+.huddle-terminal-stop:hover,
 .huddle-terminal-share:hover:not(:disabled) { background: var(--bg-3); color: var(--tx-hi); }
 .huddle-terminal-share:disabled { opacity: 0.45; cursor: default; }
 .huddle-terminal-share.is-sharing {

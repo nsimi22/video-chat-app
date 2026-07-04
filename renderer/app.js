@@ -2098,11 +2098,14 @@ async function joinTeamAndStart(teamId) {
   huddle.addEventListener('knock-response', (e) => onKnockResponse(e.detail));
   huddle.addEventListener('knock-cancel', (e) => onKnockCancel(e.detail));
 
-  // Terminal shares (read-only): a call participant announced/retracted a
-  // terminal broadcast. The panel owns the viewer tab lifecycle; app.js
-  // just relays and toasts so the announcement is visible even when the
-  // Terminal panel is closed. call-left resets any share/viewer state the
-  // panel holds (api.js already tore the frame channels down).
+  // Terminal shares (read-only): all five inbound events are relayed to
+  // the panel here — the same "app.js wires the client at creation,
+  // modules only send" pattern the screen/whiteboard/caption features
+  // use, so the panel never has to track which client instance it wired.
+  // The panel owns the tab lifecycle; app.js toasts announcements so
+  // they're visible even when the Terminal panel is closed. call-left
+  // resets any share/viewer state the panel holds (api.js already tore
+  // the frame channels down).
   huddle.addEventListener('terminal-announce', (e) => {
     window.HuddleTerminalPanel?.remoteShareStarted?.(e.detail);
     const who = e.detail?.fromName || 'Someone';
@@ -2110,6 +2113,18 @@ async function joinTeamAndStart(teamId) {
   });
   huddle.addEventListener('terminal-stop', (e) => {
     window.HuddleTerminalPanel?.remoteShareStopped?.(e.detail);
+  });
+  huddle.addEventListener('terminal-join', (e) => {
+    window.HuddleTerminalPanel?.onShareJoin?.(e.detail);
+  });
+  huddle.addEventListener('terminal-frame', (e) => {
+    window.HuddleTerminalPanel?.onViewerFrame?.(e.detail);
+  });
+  huddle.addEventListener('terminal-snapshot', (e) => {
+    // Snapshots are addressed to the joiner they answer; filtering here
+    // means the panel never needs the local peerId at all.
+    if (e.detail?.to && e.detail.to !== huddle.peerId) return;
+    window.HuddleTerminalPanel?.onViewerSnapshot?.(e.detail);
   });
   huddle.addEventListener('call-left', () => {
     window.HuddleTerminalPanel?.callEnded?.();
@@ -8440,12 +8455,23 @@ window.huddleApp = {
   getGitHub: () => state.github,
   getAiTicketRepo: () => state.settings?.aiTicket?.githubRepo || '',
   getActiveChannelId: () => state.chat?.currentChannel,
-  // Live HuddleClient + the channel id of the call we're actually IN
-  // (getActiveChannelId is the *viewed* channel — wrong for call-scoped
-  // features once the user navigates away mid-call). Used by the
-  // terminal panel's share-to-call toggle.
-  getHuddle: () => state.huddle,
+  // Channel id of the call we're actually IN (getActiveChannelId is the
+  // *viewed* channel — wrong for call-scoped features once the user
+  // navigates away mid-call). Used by the terminal panel's share toggle.
   getActiveCallChannelId: () => state.inCallChannelId,
+  // Narrow send-only facade over the HuddleClient's terminal-share
+  // methods — the panel gets exactly the sends it needs (mirroring how
+  // drawing.js is handed a send closure) rather than the whole client.
+  // Receive-side events are relayed to the panel where the client's
+  // other listeners are wired (see joinTeamAndStart).
+  terminalShare: {
+    start:    (shareId) => state.huddle ? state.huddle.startTerminalShare(shareId) : Promise.reject(new Error('not signed in')),
+    stop:     (shareId) => state.huddle?.stopTerminalShare(shareId),
+    frame:    (shareId, data, cols, rows) => state.huddle?.sendTerminalFrame(shareId, data, cols, rows),
+    snapshot: (shareId, to, data, cols, rows) => state.huddle?.sendTerminalSnapshot(shareId, to, data, cols, rows),
+    join:     (shareId) => state.huddle ? state.huddle.joinTerminalShare(shareId) : Promise.reject(new Error('not signed in')),
+    leave:    (shareId) => state.huddle?.leaveTerminalShare(shareId),
+  },
   // True in-call participant count straight from the LiveKit room
   // (remote participants + self). The DOM-tile census the v2 header used
   // misses mic-only peers and screen-share states — the "1 person with
