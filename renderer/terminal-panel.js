@@ -275,6 +275,14 @@
           cleanupSubs(s);
           s.ptyId = null;
         });
+        // The mount may still have been settling when we measured cols for
+        // the spawn (the panel had just been shown), so re-fit now that the
+        // pty exists and push the true size to it — otherwise a full-width
+        // TUI like `claude` draws at the stale width and its right edge runs
+        // off the panel. fitSession resizes the pty (ptyId is set now);
+        // scheduleFit catches any layout that settles a frame later.
+        fitSession(s);
+        scheduleFit(s);
         if (s.bootWantsClaude) launchClaude(s);
         return true;
       } catch (err) {

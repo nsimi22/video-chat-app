@@ -7210,7 +7210,8 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
    the overlay's own header isn't hidden underneath. Dock is
    ~52px tall (10 top + 30 button + 10 bottom + 1 border). */
 [data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .huddle-ai-view,
-[data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .huddle-cal-view {
+[data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .huddle-cal-view,
+[data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .huddle-terminal-view {
   top: 52px;
 }
 /* When the dock surfaces over a non-call channel (no overlay),
@@ -7676,6 +7677,7 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 }
 [data-ui="v2"] .huddle-ai-view,
 [data-ui="v2"] .huddle-cal-view,
+[data-ui="v2"] .huddle-terminal-view,
 [data-ui="v2"] .huddle-call-return-dock {
   top: var(--titlebar-h, 0px);
 }
@@ -7684,8 +7686,10 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
    the titlebar height on top so the overlay's header isn't hidden. */
 [data-ui="v2"] body[data-platform="darwin"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-ai-view,
 [data-ui="v2"] body[data-platform="darwin"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-cal-view,
+[data-ui="v2"] body[data-platform="darwin"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-terminal-view,
 [data-ui="v2"] body[data-platform="win32"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-ai-view,
-[data-ui="v2"] body[data-platform="win32"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-cal-view {
+[data-ui="v2"] body[data-platform="win32"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-cal-view,
+[data-ui="v2"] body[data-platform="win32"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-terminal-view {
   top: calc(var(--titlebar-h, 0px) + 52px);
 }
 /* Login backdrop is fixed: inset(0); it'll cover the titlebar
