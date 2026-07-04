@@ -180,6 +180,7 @@ const els = {
   slashSuggest: $('#slash-suggest'),
   mentionSuggest: $('#mention-suggest'),
   send: $('#send-btn'),
+  scheduleBtn: $('#schedule-btn'),
   emojiBtn: $('#emoji-btn'),
   emojiPicker: $('#emoji-picker'),
   gifBtn: $('#gif-btn'),
@@ -3606,6 +3607,11 @@ function onWelcome({ peers, channels }) {
   // (channel_read_state) so they survive reloads. Realtime bumps take
   // over once seeded.
   seedUnreadFromReadState().catch((err) => console.warn('unread seed failed', err));
+  // Deliver any scheduled messages / reminders that came due while the app
+  // was closed, then keep flushing on an interval + on focus. The server
+  // cron (flush-scheduled) covers the fully-offline case; this covers a
+  // running desktop and fires reminder notifications locally.
+  startScheduledFlush();
   // Seed the calendar (internal scheduled-calls + ICS subscriptions)
   // once the team is up. Realtime + the 15-min ICS poller keep it
   // current after that.
@@ -4047,6 +4053,54 @@ async function seedUnreadFromReadState() {
     );
     bumpUnread(m.channelId, mentionsMe);
   }
+}
+
+// Poll for due scheduled messages + reminders while the app is open. The
+// server cron handles the closed-app case; this makes both fire promptly
+// for a running desktop and surfaces reminders as OS notifications. Every
+// due row is claimed atomically (status flip) so the client and cron never
+// double-fire.
+let scheduledFlushTimer = null;
+function startScheduledFlush() {
+  if (!state.huddle) return;
+  const tick = async () => {
+    if (!state.huddle) return;
+    try { await state.huddle.flushDueScheduledMessages(); } catch (e) { console.warn('scheduled flush', e); }
+    try {
+      const fired = await state.huddle.claimDueReminders();
+      for (const r of fired) fireReminder(r);
+    } catch (e) { console.warn('reminder flush', e); }
+  };
+  tick();
+  if (scheduledFlushTimer) clearInterval(scheduledFlushTimer);
+  // 45s cadence: reminders are minute-granular, and the cron backstops
+  // anything missed while the window is blurred/asleep.
+  scheduledFlushTimer = setInterval(tick, 45000);
+  if (!window._scheduledFlushFocusWired) {
+    window._scheduledFlushFocusWired = true;
+    window.addEventListener('focus', () => { if (state.huddle) tick(); });
+  }
+}
+
+// Surface a fired reminder. Reminders are self-requested, so they bypass
+// the DND gate (unlike incoming-message alerts) — the whole point is to
+// interrupt you. Clicking routes to the channel + message.
+function fireReminder(r) {
+  const channel = state.channelMeta.get(r.channel_id);
+  const where = channel ? displayLabelFor(channel) : '';
+  const body = r.note || (where ? `Reminder about a message in ${where}` : 'You asked to be reminded about a message.');
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      const n = new Notification('⏰ Reminder', { body, tag: `reminder:${r.id}` });
+      n.onclick = () => {
+        try { window.focus(); } catch {}
+        focusChannel(r.channel_id);
+        if (r.message_id) state.chat?.scrollToMessage(r.message_id);
+        n.close();
+      };
+    } catch (err) { console.warn('reminder notification failed', err); }
+  }
+  showToast(`⏰ ${body}`, { duration: 6000 });
 }
 
 // Bump unread for a channel when an incoming message lands there but isn't

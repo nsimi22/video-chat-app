@@ -360,6 +360,13 @@ class ChatView {
     const sig = { signal: this._listenerCtrl.signal };
     this._on(this.els.threadBack, 'click', () => this.closeThread());
     this._on(this.els.send, 'click', () => this._submit());
+    if (this.els.scheduleBtn) {
+      this._on(this.els.scheduleBtn, 'click', (e) => {
+        e.stopPropagation();
+        const r = this.els.scheduleBtn.getBoundingClientRect();
+        this._openTimePicker({ clientX: r.left, clientY: r.top - 8 }, (when) => this._scheduleSend(when));
+      });
+    }
     this._on(this.els.composer, 'keydown', (e) => {
       // Both autocomplete popups claim arrow keys, Tab, and Escape while
       // visible (they're mutually exclusive — a /command needs to be at
@@ -1198,6 +1205,7 @@ class ChatView {
       label: this.hooks.isMessageSaved?.(m.id) ? 'Edit saved labels' : 'Save message', icon: 'bookmark',
       onClick: () => this.hooks.openSavePopover?.({ messageId: m.id, teamId: this.mesh.teamMeta?.id, channelId: this.currentChannel, anchor: this.nodeById.get(m.id) }),
     });
+    items.push({ label: 'Remind me…', icon: 'bell', onClick: () => setTimeout(() => this._openTimePicker(at, (when) => this._remindMe(m, when)), 0) });
     if (m.text && (jiraOk || roadmapOk)) {
       items.push({ type: 'divider' });
       if (jiraOk) items.push({ label: 'Create Jira ticket', icon: 'ticket', onClick: () => this._prefillComposer(`/ai-ticket ${(m.text || '').trim()}`) });
@@ -1209,6 +1217,76 @@ class ChatView {
       items.push({ label: 'Delete message', icon: 'trash', danger: true, onClick: () => this._delete(m.id) });
     }
     return items;
+  }
+
+  // Relative time choices shared by "Remind me" and "Schedule send".
+  // Each resolves to an absolute epoch-ms deadline; the two clock-based
+  // options only appear when they're still in the future today.
+  _timePickerOptions() {
+    const now = new Date();
+    const opts = [
+      { label: 'In 20 minutes', at: now.getTime() + 20 * 60000 },
+      { label: 'In 1 hour', at: now.getTime() + 60 * 60000 },
+      { label: 'In 3 hours', at: now.getTime() + 3 * 60 * 60000 },
+    ];
+    const evening = new Date(now); evening.setHours(18, 0, 0, 0);
+    if (evening.getTime() > now.getTime() + 60000) opts.push({ label: 'This evening (6:00 PM)', at: evening.getTime() });
+    const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1); tomorrow.setHours(9, 0, 0, 0);
+    opts.push({ label: 'Tomorrow (9:00 AM)', at: tomorrow.getTime() });
+    return opts;
+  }
+
+  // Small floating menu of relative times anchored at a cursor point
+  // ({clientX, clientY}). Calls onPick(epochMs) with the chosen deadline.
+  _openTimePicker(at, onPick) {
+    document.querySelector('.time-picker-menu')?.remove();
+    const menu = document.createElement('div');
+    menu.className = 'time-picker-menu';
+    for (const o of this._timePickerOptions()) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'time-picker-item';
+      b.textContent = o.label;
+      b.onclick = () => { menu.remove(); onPick(o.at); };
+      menu.appendChild(b);
+    }
+    menu.style.position = 'fixed';
+    menu.style.left = `${Math.min(at?.clientX || 120, window.innerWidth - 220)}px`;
+    menu.style.top = `${Math.min(at?.clientY || 120, window.innerHeight - 220)}px`;
+    document.body.appendChild(menu);
+    const off = (e) => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('mousedown', off); } };
+    setTimeout(() => document.addEventListener('mousedown', off), 0);
+  }
+
+  async _remindMe(m, remindAt) {
+    try {
+      await this.mesh.createReminder({ channelId: this.currentChannel, messageId: m.id, remindAt });
+      this.hooks.toast?.(`Reminder set for ${new Date(remindAt).toLocaleString([], { hour: 'numeric', minute: '2-digit', weekday: 'short' })}`);
+    } catch (err) {
+      console.warn('createReminder failed', err);
+      this.hooks.toast?.('Could not set the reminder.');
+    }
+  }
+
+  // Schedule the current composer content to send later instead of now.
+  async _scheduleSend(sendAt) {
+    const text = this.els.composer.value.trim();
+    const attachments = this.composerAttachments.filter((a) => a.status === 'done').map((a) => a.info);
+    if (!text && !attachments.length) { this.hooks.toast?.('Nothing to schedule.'); return; }
+    try {
+      await this.mesh.createScheduledMessage({
+        channelId: this.currentChannel, parentId: this.threadParentId,
+        body: text, attachments, sendAt,
+      });
+      this.els.composer.value = '';
+      this.composerAttachments = [];
+      this._renderAttachmentChips();
+      this._autoResizeComposer();
+      this.hooks.toast?.(`Message scheduled for ${new Date(sendAt).toLocaleString([], { hour: 'numeric', minute: '2-digit', weekday: 'short' })}`);
+    } catch (err) {
+      console.warn('scheduleSend failed', err);
+      this.hooks.toast?.('Could not schedule the message.');
+    }
   }
 
   // Find a rendered message node in the active channel pane and scroll

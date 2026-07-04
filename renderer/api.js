@@ -1541,6 +1541,88 @@
       await this._insertMessage(args);
     }
 
+    // --- Scheduled messages + reminders -----------------------------------
+
+    async createScheduledMessage({ channelId, parentId, body, attachments, sendAt }) {
+      const { data, error } = await this.supabase.from('scheduled_messages').insert({
+        team_id: this.team.id, channel_id: channelId, parent_id: parentId || null,
+        author_id: this.peerId, body: body || '', attachments: attachments || [],
+        send_at: new Date(sendAt).toISOString(),
+      }).select().single();
+      if (error) throw error;
+      return data;
+    }
+
+    // My still-pending scheduled sends, soonest first (for the manage list).
+    async loadScheduledMessages() {
+      const { data, error } = await this.supabase.from('scheduled_messages')
+        .select('*').eq('author_id', this.peerId).eq('status', 'pending')
+        .order('send_at', { ascending: true });
+      if (error) { console.warn('loadScheduledMessages failed', error); return []; }
+      return data || [];
+    }
+
+    async cancelScheduledMessage(id) {
+      const { error } = await this.supabase.from('scheduled_messages')
+        .update({ status: 'canceled' }).eq('id', id).eq('author_id', this.peerId).eq('status', 'pending');
+      if (error) throw error;
+    }
+
+    // Deliver any of my scheduled messages whose time has come. Each row is
+    // *claimed* by an atomic pending→sent flip that returns the row only to
+    // the winner, so multiple open clients (or the server cron) never send
+    // the same message twice. Claim-first means a crash between claim and
+    // insert drops that one message rather than duplicating it.
+    async flushDueScheduledMessages() {
+      const nowIso = new Date().toISOString();
+      const { data: due } = await this.supabase.from('scheduled_messages')
+        .select('id').eq('author_id', this.peerId).eq('status', 'pending').lte('send_at', nowIso);
+      let sent = 0;
+      for (const { id } of due || []) {
+        const { data: claimed } = await this.supabase.from('scheduled_messages')
+          .update({ status: 'sent' }).eq('id', id).eq('status', 'pending').select().single();
+        if (!claimed) continue; // someone/something else won the race
+        try {
+          await this._insertMessage({
+            channelId: claimed.channel_id, parentId: claimed.parent_id,
+            text: claimed.body, attachments: claimed.attachments || [],
+          });
+          sent++;
+        } catch (e) {
+          console.warn('scheduled send failed', e);
+          await this.supabase.from('scheduled_messages')
+            .update({ status: 'failed', error: String(e?.message || e) }).eq('id', id);
+        }
+      }
+      return sent;
+    }
+
+    async createReminder({ channelId, messageId, note, remindAt }) {
+      const { data, error } = await this.supabase.from('message_reminders').insert({
+        user_id: this.peerId, team_id: this.team.id, channel_id: channelId,
+        message_id: messageId || null, note: note || '',
+        remind_at: new Date(remindAt).toISOString(),
+      }).select().single();
+      if (error) throw error;
+      return data;
+    }
+
+    // Claim + return my due reminders so the app can surface a desktop
+    // notification. Same atomic-flip claim as scheduled messages, so the
+    // server push path and an open desktop client don't both fire one.
+    async claimDueReminders() {
+      const nowIso = new Date().toISOString();
+      const { data: due } = await this.supabase.from('message_reminders')
+        .select('*').eq('user_id', this.peerId).eq('status', 'pending').lte('remind_at', nowIso);
+      const fired = [];
+      for (const r of due || []) {
+        const { data: claimed } = await this.supabase.from('message_reminders')
+          .update({ status: 'fired' }).eq('id', r.id).eq('status', 'pending').select().single();
+        if (claimed) fired.push(claimed);
+      }
+      return fired;
+    }
+
     // Same shape as sendMessage but flags the row as AI-generated. The
     // human author still owns the row (RLS-wise) so they can edit/delete;
     // the renderer styles it with a robot avatar + model badge. Throws on
