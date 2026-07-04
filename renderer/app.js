@@ -286,6 +286,11 @@ const state = {
   huddle: null,           // HuddleClient — alive while signed into a team
   mesh: null,             // LivekitCallClient — alive only while in a call
   inCallChannelId: null,  // channel.id of the active call, if any
+  // 'huddle' when the active call was entered via the sidebar huddle
+  // chip (audio-first: mic auto-on, camera controls hidden, minimized
+  // panel as the default surface); 'call' for the classic flow. null
+  // outside calls.
+  callMode: null,
   callStarting: false,    // re-entrancy guard for startCall()
   // True once THIS call observed a (non-failed) recording — meaning the server
   // will post a Meeting Recap, so the standalone "Call recap" should be
@@ -2232,10 +2237,16 @@ async function joinTeamAndStart(teamId) {
 // Every call joins with mic AND camera off — nothing is published until
 // the user turns them on with the toggle buttons, so a join (channel call
 // or knock-to-huddle) never leaks audio/video and the camera never lights.
-async function startCall(channelId) {
+// opts.huddle: audio-first entry (sidebar huddle chip) — same LiveKit
+// room + presence as a regular call in this channel (that's the point:
+// a huddle and a call in one channel are one conversation), but the
+// local surface is lighter: mic auto-on, camera controls hidden, and
+// the call opens as the floating mini panel instead of the tile grid.
+async function startCall(channelId, opts = {}) {
   if (!state.huddle || state.mesh) return; // already in a call or no team
   if (state.callStarting) return;          // double-click / re-entrancy guard
   state.callStarting = true;
+  state.callMode = opts.huddle ? 'huddle' : 'call';
   els.btnStartCall.disabled = true;
   els.btnJoinCall.disabled = true;
   // Each call starts with mic + camera off (nothing published yet), so the
@@ -2281,6 +2292,7 @@ async function startCall(channelId) {
     await mesh.connect(channelId);
   } catch (err) {
     state.mesh = null;
+    state.callMode = null;
     resetCallEphemera();
     console.warn('joinCall failed', err);
     // Surface the failure to the user (see showCallError) instead
@@ -2355,6 +2367,14 @@ async function startCall(channelId) {
     // the OS won't reprompt automatically.
     showCallError('Could not access camera/microphone: ' + (err?.message || err) + '. Check System Settings → Privacy & Security → Camera/Microphone.');
   }
+  // Huddle mode: drop straight into audio + the compact panel. The mic
+  // goes on via the normal toggle path so the mute-state broadcast, the
+  // self-tile overlay, and the first-enable denoise preference all run
+  // exactly as they would for a manual unmute.
+  if (state.callMode === 'huddle' && state.mesh) {
+    els.btnMic.onclick?.();
+    setCallMinimized(true);
+  }
   state.callStarting = false;
   els.btnStartCall.disabled = false;
   els.btnJoinCall.disabled = false;
@@ -2405,6 +2425,7 @@ async function leaveCall() {
   state.mesh.disconnect();
   state.mesh = null;
   state.inCallChannelId = null;
+  state.callMode = null;
   // Restore the stage if we left while minimized, so the next call
   // opens full-size and the body class doesn't linger.
   if (state.callMinimized) setCallMinimized(false);
@@ -3404,14 +3425,18 @@ function renderCallHeader() {
     count.textContent = String(lurkerCount);
   }
   els.btnMic.classList.toggle('hidden', !inCallHere);
-  els.btnCam.classList.toggle('hidden', !inCallHere);
+  // Huddles are audio-first: the camera (and its blur pipeline) stays
+  // hidden so the control row reads as a voice surface. Screen share,
+  // captions, notes, etc. all still apply.
+  const huddleHere = inCallHere && state.callMode === 'huddle';
+  els.btnCam.classList.toggle('hidden', !inCallHere || huddleHere);
   // Blur control is only relevant during a call and only if the
   // MediaPipe runtime is loaded (postinstall copies it into
   // renderer/vendor/mediapipe/). If the vendor copy is missing — e.g.
   // a checkout without `npm install` — we keep the button hidden
   // rather than letting users click into an inevitable failure.
   const blurAvail = !!window.BlurPipeline?.isAvailable();
-  els.btnBlur?.classList.toggle('hidden', !inCallHere || !blurAvail);
+  els.btnBlur?.classList.toggle('hidden', !inCallHere || huddleHere || !blurAvail);
   // Noise suppression: same in-call-only gate as blur. The Web-Audio
   // pipeline has no vendored runtime to miss, so isAvailable() is
   // effectively always true on desktop — but we still gate on it so a
@@ -3509,6 +3534,9 @@ function onCallPresence({ channelId, count }) {
   const prev = state.callCounts.get(channelId) || 0;
   state.callCounts.set(channelId, count);
   if (state.chat?.currentChannel === channelId) renderCallHeader();
+  // Live-count chip on every sidebar row for this channel (home list +
+  // a possible Favorites copy).
+  for (const li of sidebarRowsFor(channelId)) syncHuddleChip(li, count);
   const justStarted = known && prev === 0 && count > 0;
   const active = state.chat?.currentChannel === channelId && windowFocused;
   if (justStarted
@@ -3637,6 +3665,39 @@ function sidebarRowsFor(channelId) {
     .filter(Boolean);
 }
 
+// Paint a sidebar row's huddle chip for a live participant count:
+// count > 0 pins the chip visible (green, with the number) so a live
+// huddle is glanceable from anywhere; count 0 returns it to the
+// hover-revealed idle affordance.
+function syncHuddleChip(li, count) {
+  const chip = li.querySelector('.ch-huddle');
+  if (!chip) return;
+  chip.classList.toggle('live', count > 0);
+  chip.title = count > 0 ? `Join the huddle · ${count}` : 'Start a huddle (audio)';
+  const label = chip.querySelector('.ch-huddle-count');
+  if (label) label.textContent = count > 0 ? String(count) : '';
+}
+
+// Sidebar huddle chip click: audio-first join of this channel's call.
+// A huddle IS the channel's call (same LiveKit room), so if one is
+// already live this is simply "join it with the lightweight surface".
+async function joinHuddleFromSidebar(channelId) {
+  if (state.callStarting) return;
+  if (state.mesh) {
+    // Already in this channel's call — just bring it into view.
+    if (state.inCallChannelId === channelId) { focusChannel(channelId); return; }
+    showCallError('Leave your current call before starting a huddle somewhere else.');
+    return;
+  }
+  // A popout window owns this channel's call for this user; joining from
+  // the main window too would duplicate the participant.
+  if (state.poppedOutCalls.has(channelId)) { focusChannel(channelId); return; }
+  // Navigate first so the header controls, captions, and notes all mount
+  // against the huddle's channel.
+  focusChannel(channelId);
+  await startCall(channelId, { huddle: true });
+}
+
 function favoriteIds() {
   return state.settings?.favorites?.channelIds || [];
 }
@@ -3756,6 +3817,22 @@ function buildChannelRow(channel, { actions = true } = {}) {
   label.className = 'ch-name';
   label.textContent = displayLabelFor(channel);
   li.appendChild(label);
+
+  // Huddle chip: one-click audio-first join. Hover-revealed while the
+  // channel is quiet; pinned visible with a live participant count while
+  // anyone is in this channel's call (fed by the same call-presence
+  // lurkers that drive the "Join call · N" pill).
+  const hud = document.createElement('button');
+  hud.className = 'ch-huddle';
+  hud.title = 'Start a huddle (audio)';
+  hud.setAttribute('aria-label', 'Start a huddle');
+  hud.innerHTML = `${window.HuddleIcons.headphones}<span class="ch-huddle-count"></span>`;
+  hud.onclick = (e) => {
+    e.stopPropagation();
+    joinHuddleFromSidebar(channel.id);
+  };
+  li.appendChild(hud);
+  syncHuddleChip(li, state.callCounts.get(channel.id) || 0);
 
   // Unread badge slot — populated by updateUnreadBadge().
   const badge = document.createElement('span');
