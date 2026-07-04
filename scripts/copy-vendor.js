@@ -114,6 +114,7 @@ const xtermTargets = [
   ['@xterm/xterm/lib/xterm.js', 'xterm/xterm.js'],
   ['@xterm/xterm/css/xterm.css', 'xterm/xterm.css'],
   ['@xterm/addon-fit/lib/addon-fit.js', 'xterm/addon-fit.js'],
+  ['@xterm/addon-serialize/lib/addon-serialize.js', 'xterm/addon-serialize.js'],
 ];
 for (const [rel, dst] of xtermTargets) {
   const src = tryResolve(rel);

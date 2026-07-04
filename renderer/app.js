@@ -2098,6 +2098,23 @@ async function joinTeamAndStart(teamId) {
   huddle.addEventListener('knock-response', (e) => onKnockResponse(e.detail));
   huddle.addEventListener('knock-cancel', (e) => onKnockCancel(e.detail));
 
+  // Terminal shares (read-only): a call participant announced/retracted a
+  // terminal broadcast. The panel owns the viewer tab lifecycle; app.js
+  // just relays and toasts so the announcement is visible even when the
+  // Terminal panel is closed. call-left resets any share/viewer state the
+  // panel holds (api.js already tore the frame channels down).
+  huddle.addEventListener('terminal-announce', (e) => {
+    window.HuddleTerminalPanel?.remoteShareStarted?.(e.detail);
+    const who = e.detail?.fromName || 'Someone';
+    showToast(`${who} is sharing a terminal — open Terminal to view`, { kind: 'info' });
+  });
+  huddle.addEventListener('terminal-stop', (e) => {
+    window.HuddleTerminalPanel?.remoteShareStopped?.(e.detail);
+  });
+  huddle.addEventListener('call-left', () => {
+    window.HuddleTerminalPanel?.callEnded?.();
+  });
+
   // Construct ChatView + assign state BEFORE huddle.start(), because
   // start() dispatches `welcome` synchronously at the end of its
   // handshake. onWelcome auto-focuses #general via focusChannel, which
@@ -8423,6 +8440,12 @@ window.huddleApp = {
   getGitHub: () => state.github,
   getAiTicketRepo: () => state.settings?.aiTicket?.githubRepo || '',
   getActiveChannelId: () => state.chat?.currentChannel,
+  // Live HuddleClient + the channel id of the call we're actually IN
+  // (getActiveChannelId is the *viewed* channel — wrong for call-scoped
+  // features once the user navigates away mid-call). Used by the
+  // terminal panel's share-to-call toggle.
+  getHuddle: () => state.huddle,
+  getActiveCallChannelId: () => state.inCallChannelId,
   // True in-call participant count straight from the LiveKit room
   // (remote participants + self). The DOM-tile census the v2 header used
   // misses mic-only peers and screen-share states — the "1 person with
