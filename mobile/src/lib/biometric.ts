@@ -1,4 +1,5 @@
 import type * as LocalAuthentication from 'expo-local-authentication';
+import { requireOptionalNativeModule } from 'expo-modules-core';
 
 export type BiometricKind = 'face' | 'fingerprint' | 'iris' | 'generic';
 
@@ -9,28 +10,29 @@ export type BiometricCapability = {
   kind: BiometricKind;
 };
 
-// `expo-local-authentication` resolves its native binding
-// (requireNativeModule('ExpoLocalAuthentication')) at *import* time. A static
-// top-level import therefore runs that resolution the moment this module is
-// pulled into the graph — and because expo-router eagerly evaluates every
-// route file at launch to build the route tree, this module sits on the
-// cold-start path (via BiometricLockScreen + the You settings screen) for
-// every user, not just those who opted into biometric lock.
+// `expo-local-authentication`'s entry eagerly resolves its native binding
+// (`export default requireNativeModule('ExpoLocalAuthentication')`) at import
+// time. On a binary that doesn't contain the native module — e.g. an OTA JS
+// bundle delivered to a build that predates the dependency — resolving it is a
+// *fatal native crash*, NOT a catchable JS throw: a `try/catch` around the
+// `require()` does not save us.
 //
-// On any binary that doesn't contain the native module — e.g. an OTA JS bundle
-// delivered to a TestFlight build that predates the dependency — that
-// resolution throws synchronously and takes the whole startup module graph
-// down with it: the app crashes on open before anything renders. Loading the
-// module lazily (Metro defers a `require()` factory until first call) keeps it
-// off the cold-start path, and the try/catch turns a missing or broken native
-// module into a graceful "biometrics unavailable" rather than a crash — the UI
-// already routes `available: false` to the password sign-in fallback.
+// An earlier fix made the import lazy to keep it off the cold-start path, but
+// that only relocated the crash to the first `capability()`/`prompt()` call
+// (opening the You settings screen or the lock screen). The real guard is
+// `requireOptionalNativeModule`, which returns `null` instead of crashing when
+// the module is absent — so we probe first and only touch
+// `expo-local-authentication` when the native module actually exists. A missing
+// module degrades to "biometrics unavailable" (the UI already routes
+// `available: false` to the password sign-in fallback).
 let mod: typeof LocalAuthentication | null | undefined;
 function load(): typeof LocalAuthentication | null {
   if (mod !== undefined) return mod;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    mod = require('expo-local-authentication') as typeof LocalAuthentication;
+    mod = requireOptionalNativeModule('ExpoLocalAuthentication')
+      ? (require('expo-local-authentication') as typeof LocalAuthentication)
+      : null;
   } catch {
     mod = null;
   }
