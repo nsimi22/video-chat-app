@@ -28,7 +28,8 @@
 -- membership predicates below are the same as those helpers' bodies
 -- (verified against the initial schema).
 create or replace function public.can_see_channel(t text, c text)
-returns boolean language sql security definer stable as $$
+returns boolean language sql security definer stable
+set search_path = public as $$
   select exists (
     select 1
       from public.channels ch
@@ -59,7 +60,8 @@ create policy messages_update_own on public.messages for update to authenticated
   with check (author_id = auth.uid() and public.can_see_channel(team_id, channel_id));
 
 create or replace function public.messages_lock_immutable_cols()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql
+set search_path = public as $$
 begin
   -- These define the message's identity/placement and provenance and must
   -- never change on an edit. Author edits may only touch
