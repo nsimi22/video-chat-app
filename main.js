@@ -2,7 +2,7 @@
 // server is gone — main.js only opens the BrowserWindow, hands the renderer
 // a Supabase URL + publishable key, and exposes the desktopCapturer for
 // screen sharing.
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell, dialog, systemPreferences, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell, dialog, systemPreferences, clipboard, powerMonitor } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 
@@ -734,6 +734,135 @@ async function runWhisperJob(job) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Embedded terminal (in-app pty). The renderer is sandboxed
+// (contextIsolation + no nodeIntegration), so the real shell must live
+// here in main and stream over IPC — same shape as the whisper caption
+// engine above. Each pty is spawned by an explicit user click, runs as
+// the user's own uid with their own login-shell PATH, and never touches
+// the network from main. See the terminal panel in renderer/terminal-panel.js.
+//
+// node-pty is the app's first native addon, rebuilt against Electron's
+// ABI by the postinstall `electron-rebuild` step. We lazy-require it
+// inside the spawn handler so a failed rebuild degrades gracefully
+// (terminal unavailable) instead of crashing app boot — mirroring how
+// whisper tolerates a missing binary.
+// Cap concurrent shells PER WINDOW (each webContents), not globally — the
+// renderer's tab cap (MAX_TABS) is per-window too, so a global cap would let
+// one window's tabs starve another's. Matches MAX_TABS in terminal-panel.js.
+const TERMINAL_MAX_PTYS_PER_WINDOW = 8;
+const ptys = new Map();      // id -> { pty, wc, onDestroyed }
+let ptySeq = 0;
+
+function ptyCountForSender(senderId) {
+  let n = 0;
+  for (const rec of ptys.values()) if (rec.wc && rec.wc.id === senderId) n++;
+  return n;
+}
+
+ipcMain.handle('terminal-spawn', async (event, payload = {}) => {
+  if (ptyCountForSender(event.sender.id) >= TERMINAL_MAX_PTYS_PER_WINDOW) {
+    return { ok: false, error: 'too many open terminals' };
+  }
+  let pty;
+  try {
+    pty = require('node-pty');
+  } catch (err) {
+    console.warn('[terminal] node-pty unavailable (rebuild may have failed):', err && err.message);
+    return { ok: false, error: 'terminal engine unavailable' };
+  }
+  const os = require('os');
+  const isWin = process.platform === 'win32';
+  // Spawn a login + interactive shell so it sources the user's profile
+  // (~/.zprofile, ~/.zshrc, nvm, Homebrew shellenv, …). This is the fix
+  // for the macOS GUI-PATH gotcha: a launchd-started app inherits a
+  // truncated PATH, so npm-global / Homebrew binaries like `claude`
+  // wouldn't be found without a login shell resolving the real PATH.
+  // Fall back to bash (present on macOS + virtually all Linux) rather than
+  // zsh (a macOS-only assumption) when $SHELL is unset.
+  const shell = isWin
+    ? (process.env.ComSpec || 'powershell.exe')
+    : (process.env.SHELL || '/bin/bash');
+  // `-l -i` (login+interactive, needed to source the profile for PATH) is
+  // valid for bash/zsh/fish but rejected by dash/sh, which would exit the
+  // pty immediately. Pass it only to the shells that accept it; others
+  // still get an interactive shell.
+  const base = shell.replace(/.*[\\/]/, '');
+  const args = isWin ? [] : (/^(bash|zsh|fish)$/.test(base) ? ['-l', '-i'] : ['-i']);
+  const cols = Number(payload.cols) > 0 ? Math.floor(payload.cols) : 80;
+  const rows = Number(payload.rows) > 0 ? Math.floor(payload.rows) : 24;
+  let child;
+  try {
+    child = pty.spawn(shell, args, {
+      name: 'xterm-256color',
+      cols,
+      rows,
+      cwd: payload.cwd || os.homedir(),
+      env: { ...process.env, TERM: 'xterm-256color' },
+    });
+  } catch (err) {
+    console.warn('[terminal] spawn failed:', err && err.message);
+    return { ok: false, error: String(err && err.message || err) };
+  }
+
+  // If the renderer went away during the (async) spawn, don't leak the
+  // shell we just started.
+  const wc = event.sender;
+  if (wc.isDestroyed()) {
+    try { child.kill(); } catch {}
+    return { ok: false, error: 'sender destroyed' };
+  }
+
+  const id = `pty-${++ptySeq}`;
+  // Kill this pty if its owning renderer goes away (window closed /
+  // reloaded) so we never leak an orphaned shell. Removed on exit (normal
+  // or via terminal-kill) so these listeners don't pile up on the
+  // long-lived webContents. wc + onDestroyed are stored on the record so
+  // terminal-kill can detach the listener even if onExit never fires.
+  const onDestroyed = () => { try { child.kill(); } catch {} ptys.delete(id); };
+  ptys.set(id, { pty: child, wc, onDestroyed });
+  wc.once('destroyed', onDestroyed);
+
+  // Cache the webContents in the closure — terminal output is high
+  // frequency, so a webContents.fromId() lookup per chunk would add real
+  // overhead. isDestroyed() guards the case where the window closes
+  // between chunks.
+  child.onData((data) => {
+    if (!wc.isDestroyed()) wc.send('terminal-data', { id, data });
+  });
+  child.onExit(({ exitCode }) => {
+    ptys.delete(id);
+    try { wc.off('destroyed', onDestroyed); } catch {}
+    if (!wc.isDestroyed()) wc.send('terminal-exit', { id, exitCode });
+  });
+
+  return { ok: true, id };
+});
+
+ipcMain.handle('terminal-write', (_event, { id, data } = {}) => {
+  const rec = ptys.get(id);
+  if (rec) { try { rec.pty.write(data); } catch {} }
+  return { ok: !!rec };
+});
+
+ipcMain.handle('terminal-resize', (_event, { id, cols, rows } = {}) => {
+  const rec = ptys.get(id);
+  if (rec && cols > 0 && rows > 0) {
+    try { rec.pty.resize(Math.floor(cols), Math.floor(rows)); } catch {}
+  }
+  return { ok: !!rec };
+});
+
+ipcMain.handle('terminal-kill', (_event, { id } = {}) => {
+  const rec = ptys.get(id);
+  if (rec) {
+    try { rec.wc.off('destroyed', rec.onDestroyed); } catch {}
+    try { rec.pty.kill(); } catch {}
+    ptys.delete(id);
+  }
+  return { ok: !!rec };
+});
+
 // Generic fetch proxy. Some third-party APIs (notably Atlassian Cloud)
 // don't permit browser-origin requests via CORS; routing through main lets
 // the renderer hit them with stored credentials. We only proxy https URLs
@@ -1028,6 +1157,24 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+
+  // System wake / screen unlock: the Realtime WebSocket is frequently
+  // left half-open by a sleep (the OS reports the socket OPEN but it's
+  // dead), so no `focus`/`online`/`SUBSCRIBED` event in the renderer
+  // reliably fires to recover it. powerMonitor gives us the wake signal
+  // from the OS itself — relay it (with the reason, so the renderer can
+  // distinguish a true wake from a plain unlock) to every window, since
+  // popouts run their own renderer/client. (powerMonitor is only usable
+  // after `app` is ready.)
+  const notifyResume = (reason) => {
+    for (const w of [mainWindow, ...popouts.values()]) {
+      if (w && !w.isDestroyed() && w.webContents && !w.webContents.isLoading()) {
+        try { w.webContents.send('system-resume', { reason }); } catch {}
+      }
+    }
+  };
+  powerMonitor.on('resume', () => notifyResume('resume'));
+  powerMonitor.on('unlock-screen', () => notifyResume('unlock-screen'));
 });
 
 app.on('window-all-closed', () => {
