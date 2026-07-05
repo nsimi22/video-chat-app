@@ -113,15 +113,17 @@
       const labels = window.HUDDLE_PRESENCE_LABELS || {};
       const statusLabel = status ? (labels[status] || status) : 'Offline';
       const statusClass = status ? `status-${status}` : 'status-offline';
-      // Custom status + DND + working hours. Self reads its own extras;
-      // peers read the broadcast presence meta (emoji/text/dnd/wh).
+      // Custom status + DND + working hours. Self reads its own extras
+      // ({ emoji, text, dnd }); peers read the broadcast presence meta
+      // ({ statusEmoji, statusText, dnd, wh }). Select the shape per
+      // branch — the two never coexist in one object.
       const extras = isSelf
         ? (this.huddle._selfExtras?.() || {})
         : (live || {});
-      const dnd = isSelf ? !!extras.dnd : !!extras.dnd;
-      const customLine = (extras.statusEmoji || extras.emoji || extras.statusText || extras.text)
-        ? `${extras.statusEmoji || extras.emoji || ''} ${extras.statusText || extras.text || ''}`.trim()
-        : '';
+      const dnd = !!extras.dnd;
+      const csEmoji = isSelf ? extras.emoji : extras.statusEmoji;
+      const csText = isSelf ? extras.text : extras.statusText;
+      const customLine = `${csEmoji || ''} ${csText || ''}`.trim();
       const wh = isSelf
         ? (this.huddle.workingHours && this.huddle.workingHours.enabled ? this.huddle.workingHours : null)
         : (extras.wh || null);

@@ -1238,27 +1238,14 @@ class ChatView {
 
   // Small floating menu of relative times anchored at a cursor point
   // ({clientX, clientY}). Calls onPick(epochMs) with the chosen deadline.
+  // Rides the shared HuddleContextMenu primitive (positioning, outside-
+  // click/Escape teardown, keyboard nav) rather than hand-rolling a menu.
   _openTimePicker(at, onPick) {
-    document.querySelector('.time-picker-menu')?.remove();
-    const menu = document.createElement('div');
-    menu.className = 'time-picker-menu';
-    // Single teardown for every close path (pick or click-outside) so the
-    // document listener never outlives the menu.
-    const off = (e) => { if (!e || !menu.contains(e.target)) close(); };
-    const close = () => { menu.remove(); document.removeEventListener('mousedown', off); };
-    for (const o of this._timePickerOptions()) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'time-picker-item';
-      b.textContent = o.label;
-      b.onclick = () => { close(); onPick(o.at); };
-      menu.appendChild(b);
-    }
-    menu.style.position = 'fixed';
-    menu.style.left = `${Math.min(at?.clientX || 120, window.innerWidth - 220)}px`;
-    menu.style.top = `${Math.min(at?.clientY || 120, window.innerHeight - 220)}px`;
-    document.body.appendChild(menu);
-    setTimeout(() => document.addEventListener('mousedown', off), 0);
+    window.HuddleContextMenu?.show(
+      this._timePickerOptions().map((o) => ({ label: o.label, onClick: () => onPick(o.at) })),
+      at?.clientX || 120,
+      at?.clientY || 120,
+    );
   }
 
   async _remindMe(m, remindAt) {
@@ -1504,9 +1491,14 @@ class ChatView {
     if (!receipts || !receipts.size) return;
     const me = this.mesh.peerId;
     // Anchor on my most recent top-level message — "Seen" answers "did they
-    // read what I said".
-    const mine = this._messages().filter((m) => !m.parentId && m.authorId === me);
-    const last = mine[mine.length - 1];
+    // read what I said". Scan backwards: this runs on every appended message
+    // and every receipt event, and my latest message is near the tail, so
+    // this is O(1) in practice instead of filtering the whole history.
+    const all = this._messages();
+    let last = null;
+    for (let i = all.length - 1; i >= 0; i--) {
+      if (!all[i].parentId && all[i].authorId === me) { last = all[i]; break; }
+    }
     if (!last) return;
     const node = this.nodeById.get(last.id);
     if (!node) return;
@@ -1518,8 +1510,11 @@ class ChatView {
     if (!seers.length) return;
     const el = document.createElement('div');
     el.className = 'msg-seen';
-    // 1:1 → just "Seen"; group DM → name who's caught up.
-    if (seers.length === 1 && receipts.size <= 2) {
+    // 1:1 → just "Seen"; group DM → name who's caught up. "Is this a 1:1"
+    // reads the member roster (_rcNames covers every DM member), not the
+    // receipt map — a group where only one peer has ever opened the DM
+    // must still show the name.
+    if (this._rcNames.size <= 2) {
       el.textContent = 'Seen';
     } else {
       const names = seers.map((id) => this._rcNames.get(id) || 'someone');

@@ -105,9 +105,10 @@
       this.presenceStatus = PRESENCE_VALUES.includes(savedStatus) ? savedStatus : 'active';
       // Free-form custom status ({ emoji, text, expiresAt }) — persisted
       // per-device like the preset status and broadcast in presence meta so
-      // teammates see "🍕 lunch" next to the name. Cleared automatically
-      // once expiresAt passes (see _readCustomStatus).
-      this.customStatus = this._readCustomStatus();
+      // teammates see "🍕 lunch" next to the name. Parsed raw here; expiry
+      // is enforced lazily on every read (see _activeCustomStatus).
+      try { this.customStatus = JSON.parse(localStorage.getItem('huddle:custom-status') || 'null'); }
+      catch { this.customStatus = null; }
       // Do Not Disturb until this epoch-ms (or Infinity for "until I turn it
       // off", or 0 for off). Silences this user's own desktop notifications
       // and — mirrored to user_integrations — their mobile push. Broadcast
@@ -797,7 +798,7 @@
             // sync with the same key — without this branch the sidebar
             // would never reflect an Away/BRB/DND change.
             const peer = this.peerInfo.get(key);
-            const whChanged = JSON.stringify(peer.wh || null) !== JSON.stringify(wh);
+            const whChanged = peer.wh?.start !== wh?.start || peer.wh?.end !== wh?.end || peer.wh?.tz !== wh?.tz;
             if (peer.name !== meta.name || peer.color !== meta.color || peer.status !== metaStatus
                 || peer.statusEmoji !== emoji || peer.statusText !== text || peer.dnd !== dnd || whChanged) {
               peer.name = meta.name;
@@ -2870,17 +2871,8 @@
       } catch (e) { console.warn('presence re-track threw', e); }
     }
 
-    // Read the stored custom status, dropping it if its expiry has passed.
-    _readCustomStatus() {
-      try {
-        const raw = JSON.parse(localStorage.getItem('huddle:custom-status') || 'null');
-        if (raw && (!raw.expiresAt || raw.expiresAt > Date.now())) return raw;
-      } catch {}
-      return null;
-    }
-
-    // Same, but also lazily clears an expired one from storage so a stale
-    // "🍕 lunch" doesn't linger past its window.
+    // The current custom status, lazily clearing an expired one from memory
+    // and storage so a stale "🍕 lunch" doesn't linger past its window.
     _activeCustomStatus() {
       if (this.customStatus && this.customStatus.expiresAt && this.customStatus.expiresAt <= Date.now()) {
         this.customStatus = null;
@@ -2916,20 +2908,25 @@
       return mins < (sh * 60 + sm) || mins >= (eh * 60 + em);
     }
 
+    // Shared tail for every status-extras mutation: tell local UI, then
+    // re-broadcast presence so teammates see the change.
+    async _emitExtras() {
+      this.dispatchEvent(new CustomEvent('presence-extras', { detail: this._selfExtras() }));
+      await this._retrackPresence();
+    }
+
     // Set / clear a free-form status. `expiresAt` is epoch-ms or null.
     async setCustomStatus(emoji, text, expiresAt = null) {
       const trimmed = (text || '').slice(0, 100);
       if (!emoji && !trimmed) return this.clearCustomStatus();
       this.customStatus = { emoji: emoji || '', text: trimmed, expiresAt: expiresAt || null };
       try { localStorage.setItem('huddle:custom-status', JSON.stringify(this.customStatus)); } catch {}
-      this.dispatchEvent(new CustomEvent('presence-extras', { detail: this._selfExtras() }));
-      await this._retrackPresence();
+      await this._emitExtras();
     }
     async clearCustomStatus() {
       this.customStatus = null;
       try { localStorage.removeItem('huddle:custom-status'); } catch {}
-      this.dispatchEvent(new CustomEvent('presence-extras', { detail: this._selfExtras() }));
-      await this._retrackPresence();
+      await this._emitExtras();
     }
 
     // Enable DND until an epoch-ms deadline (Infinity = until turned off,
@@ -2941,9 +2938,8 @@
         if (this.dndUntil) localStorage.setItem('huddle:dnd-until', String(this.dndUntil));
         else localStorage.removeItem('huddle:dnd-until');
       } catch {}
-      this.dispatchEvent(new CustomEvent('presence-extras', { detail: this._selfExtras() }));
       this._mirrorDndToServer();
-      await this._retrackPresence();
+      await this._emitExtras();
     }
 
     // Working hours come from user settings (cross-device), handed in by
@@ -2951,8 +2947,7 @@
     // the profile-card display refresh immediately.
     async setWorkingHours(wh) {
       this.workingHours = wh || null;
-      this.dispatchEvent(new CustomEvent('presence-extras', { detail: this._selfExtras() }));
-      await this._retrackPresence();
+      await this._emitExtras();
     }
 
     // Snapshot of the local user's status extras for UI (self rendering).

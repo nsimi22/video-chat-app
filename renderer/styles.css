@@ -2050,23 +2050,6 @@ body.huddle-call-minimized #tiles .speaker-queue { display: none !important; }
 
 .popout-call .react-popover { right: 16px; bottom: 76px; top: auto; }
 
-/* Relative-time picker (Remind me / Schedule send). */
-.time-picker-menu {
-  z-index: 1200;
-  min-width: 190px;
-  background: var(--bg-elev); border: 1px solid var(--line-strong);
-  border-radius: 10px; padding: 4px;
-  box-shadow: var(--shadow-2);
-  backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
-  display: flex; flex-direction: column; gap: 2px;
-}
-.time-picker-item {
-  background: transparent; border: none; color: var(--text);
-  font: inherit; font-size: 13px; text-align: left;
-  padding: 7px 10px; border-radius: 7px; cursor: pointer;
-}
-.time-picker-item:hover { background: rgba(255, 255, 255, 0.08); }
-
 /* Read receipts ("Seen by") under the sender's last DM message. */
 .msg-seen {
   font-size: 11px;

@@ -13,22 +13,14 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { json } from '../_shared/cors.ts';
+import { EXPO_PUSH, EXPO_TOKEN_RE, timingSafeEqual } from '../_shared/webhook.ts';
 
-const EXPO_PUSH = 'https://exp.host/--/api/v2/push/send';
-const EXPO_TOKEN_RE = /^Ex(?:ponent|po)PushToken\[[^\]]+\]$/;
 const SECRET = Deno.env.get('FLUSH_SECRET') ?? Deno.env.get('NOTIFY_WEBHOOK_SECRET') ?? '';
 
 const admin = createClient(
   Deno.env.get('SUPABASE_URL')!,
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
 );
-
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
 
 // Claim a row by flipping its status only if still pending; returns true to
 // exactly one caller, so message delivery never duplicates.

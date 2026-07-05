@@ -3978,7 +3978,6 @@ function focusChannel(channelId) {
 // channels, keeping "Seen by" scoped to direct messages.
 function setupReadReceipts(channel) {
   if (state.readReceiptSub) { state.readReceiptSub(); state.readReceiptSub = null; }
-  state.readReceipts = new Map();
   if (!state.huddle || channel.type !== 'dm') {
     state.chat.setReadReceipts(new Map(), new Map());
     return;
@@ -3989,15 +3988,18 @@ function setupReadReceipts(channel) {
   (meta.memberIds || []).forEach((id, i) => {
     nameById.set(id, (meta.members && meta.members[i]) || state.huddle.roster.get(id)?.name || 'someone');
   });
-  const feed = () => state.chat.setReadReceipts(state.readReceipts, nameById);
+  // The receipts map lives in this closure — the chat view holds the only
+  // other reference. Nothing else in the app reads it, so it isn't state.
+  let receipts = new Map();
+  const feed = () => state.chat.setReadReceipts(receipts, nameById);
   state.huddle.loadChannelReadReceipts(channelId).then((map) => {
     if (state.chat.currentChannel !== channelId) return; // switched away mid-fetch
-    state.readReceipts = map;
+    receipts = map;
     feed();
   }).catch(() => {});
   state.readReceiptSub = state.huddle.watchReadReceipts(channelId, (uid, readAt) => {
     if (state.chat.currentChannel !== channelId) return;
-    state.readReceipts.set(uid, readAt);
+    receipts.set(uid, readAt);
     feed();
   });
 }
@@ -4062,8 +4064,9 @@ async function seedUnreadFromReadState() {
 // double-fire.
 let scheduledFlushTimer = null;
 function startScheduledFlush() {
-  if (!state.huddle) return;
   const tick = async () => {
+    // Guarded per-fire (not just at start): the interval + focus listener
+    // outlive a sign-out, and this is the check that matters then.
     if (!state.huddle) return;
     try { await state.huddle.flushDueScheduledMessages(); } catch (e) { console.warn('scheduled flush', e); }
     try {
@@ -4974,6 +4977,16 @@ function toggleStatusMenu(trigger, side) {
   const menu = document.createElement('div');
   menu.className = 'status-menu';
   const divider = () => { const d = document.createElement('div'); d.className = 'status-menu-divider'; menu.appendChild(d); };
+  // Every actionable row is "a button that closes the menu, then acts" —
+  // one builder instead of five copies of the boilerplate. Callers set
+  // textContent/innerHTML on the returned button.
+  const mkBtn = (cls, onClick) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = cls;
+    b.onclick = () => { menu.remove(); onClick(); };
+    return b;
+  };
 
   // --- Custom status: emoji + text + quick presets ---
   const extras = huddle?._selfExtras?.() || {};
@@ -5007,50 +5020,34 @@ function toggleStatusMenu(trigger, side) {
   const presetRow = document.createElement('div');
   presetRow.className = 'status-preset-row';
   for (const p of CUSTOM_STATUS_PRESETS) {
-    const chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = 'status-preset-chip';
+    const chip = mkBtn('status-preset-chip', () =>
+      huddle?.setCustomStatus(p.emoji, p.text, p.mins ? Date.now() + p.mins * 60000 : null));
     chip.textContent = `${p.emoji} ${p.text}`;
-    chip.onclick = () => {
-      menu.remove();
-      huddle?.setCustomStatus(p.emoji, p.text, p.mins ? Date.now() + p.mins * 60000 : null);
-    };
     presetRow.appendChild(chip);
   }
   menu.appendChild(presetRow);
   if (extras.emoji || extras.text) {
-    const clear = document.createElement('button');
-    clear.type = 'button';
-    clear.className = 'status-menu-item status-menu-clear';
+    const clear = mkBtn('status-menu-item status-menu-clear', () => huddle?.clearCustomStatus());
     clear.textContent = 'Clear status';
-    clear.onclick = () => { menu.remove(); huddle?.clearCustomStatus(); };
     menu.appendChild(clear);
   }
   divider();
 
   // --- Presence presets ---
   for (const st of PRESENCE_STATES) {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'status-menu-item' + ((huddle?.presenceStatus || 'active') === st.id ? ' selected' : '');
+    const selected = (huddle?.presenceStatus || 'active') === st.id;
+    const item = mkBtn('status-menu-item' + (selected ? ' selected' : ''), () => huddle?.setPresenceStatus(st.id));
     const dot = document.createElement('span');
     dot.className = `status-menu-dot status-${st.id}`;
     item.append(dot, document.createTextNode(st.label));
-    item.onclick = () => {
-      menu.remove();
-      huddle?.setPresenceStatus(st.id);
-    };
     menu.appendChild(item);
   }
   divider();
 
   // --- Do Not Disturb ---
   if (extras.dnd && extras.dndUntil) {
-    const off = document.createElement('button');
-    off.type = 'button';
-    off.className = 'status-menu-item status-dnd-off';
+    const off = mkBtn('status-menu-item status-dnd-off', () => huddle?.setDnd(0));
     off.innerHTML = `${window.HuddleIcons?.bellOff || ''}<span>Turn off Do Not Disturb</span>`;
-    off.onclick = () => { menu.remove(); huddle?.setDnd(0); };
     menu.appendChild(off);
   } else {
     const head = document.createElement('div');
@@ -5058,11 +5055,8 @@ function toggleStatusMenu(trigger, side) {
     head.innerHTML = `${window.HuddleIcons?.bellOff || ''}<span>Do Not Disturb</span>`;
     menu.appendChild(head);
     for (const d of dndDeadlines()) {
-      const item = document.createElement('button');
-      item.type = 'button';
-      item.className = 'status-menu-item status-dnd-item';
+      const item = mkBtn('status-menu-item status-dnd-item', () => huddle?.setDnd(d.until));
       item.textContent = d.label;
-      item.onclick = () => { menu.remove(); huddle?.setDnd(d.until); };
       menu.appendChild(item);
     }
   }
@@ -8866,6 +8860,13 @@ async function pickScreenSourceForClip() {
 // v2 UI accessor surface — the Huddle AI panel reads the AiClient and
 // active channel from here. Kept narrow on purpose so legacy code
 // paths don't accidentally couple to the panel.
+// Wrap text in a markdown code fence, defanging inner ``` with a zero-width
+// space (\u200b) so a stray fence in the content can't break out of the
+// block. Used by both terminal → chat/AI actions below.
+function fenceCodeBlock(text) {
+  return '```\n' + String(text).replace(/```/g, '``\u200b`') + '\n```';
+}
+
 window.huddleApp = {
   getAi: () => state.ai,
   getMe: () => state.me,
@@ -8902,8 +8903,7 @@ window.huddleApp = {
   terminalToChat: (text) => {
     const cid = state.chat?.currentChannel;
     if (!state.huddle || !cid) { showToast('Open a channel first.', { kind: 'error' }); return; }
-    const fenced = '```\n' + String(text).replace(/```/g, '``\u200b`') + '\n```';
-    state.huddle.sendMessage({ channelId: cid, parentId: null, text: fenced, attachments: [] });
+    state.huddle.sendMessage({ channelId: cid, parentId: null, text: fenceCodeBlock(text), attachments: [] });
     showToast('Posted terminal output to chat.');
   },
   // Terminal → AI: draft an /ai request from the captured output and drop
@@ -8911,8 +8911,7 @@ window.huddleApp = {
   // rather than adding a second AI surface.
   terminalExplain: (text) => {
     if (!state.ai || !state.ai.isConfigured()) { showToast('Add an AI provider in Settings first.', { kind: 'error' }); return; }
-    const fenced = '```\n' + String(text).replace(/```/g, '``\u200b`') + '\n```';
-    state.chat?._prefillComposer(`/ai Explain this terminal output and suggest fixes if something looks wrong:\n${fenced}`);
+    state.chat?._prefillComposer(`/ai Explain this terminal output and suggest fixes if something looks wrong:\n${fenceCodeBlock(text)}`);
     try { window.HuddleTerminalPanel?.close(); } catch {}
     showToast('Drafted an /ai request — review and send.');
   },
