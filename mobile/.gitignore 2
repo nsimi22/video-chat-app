@@ -1,9 +1,0 @@
-node_modules/
-.expo/
-dist/
-web-build/
-*.orig.*
-.env*.local
-ios/
-android/
-expo-env.d.ts
