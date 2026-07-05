@@ -180,6 +180,7 @@ const els = {
   slashSuggest: $('#slash-suggest'),
   mentionSuggest: $('#mention-suggest'),
   send: $('#send-btn'),
+  scheduleBtn: $('#schedule-btn'),
   emojiBtn: $('#emoji-btn'),
   emojiPicker: $('#emoji-picker'),
   gifBtn: $('#gif-btn'),
@@ -238,6 +239,10 @@ const els = {
   setAiTicketRepo: $('#set-ai-ticket-repo'),
   setGithubToken: $('#set-github-token'),
   setGiphyKey: $('#set-giphy-key'),
+  setWhEnabled: $('#set-wh-enabled'),
+  setWhStart: $('#set-wh-start'),
+  setWhEnd: $('#set-wh-end'),
+  setWhTz: $('#set-wh-tz'),
   settingsStatus: $('#settings-status'),
   settingsCancel: $('#settings-cancel'),
   settingsSave: $('#settings-save'),
@@ -3553,6 +3558,10 @@ function onCallPresence({ channelId, count }) {
 // constructor (body, tag, silent, …).
 function notifyWithFocus(title, opts, channelId) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  // Do Not Disturb (an explicit window or being outside working hours)
+  // silences every desktop notification at the single choke point they
+  // all pass through. Mobile push is gated server-side in notify-on-message.
+  if (state.huddle?.isDndActive?.()) return;
   try {
     const n = new Notification(title, opts);
     n.onclick = () => { try { window.focus(); } catch {} focusChannel(channelId); n.close(); };
@@ -3598,6 +3607,11 @@ function onWelcome({ peers, channels }) {
   // (channel_read_state) so they survive reloads. Realtime bumps take
   // over once seeded.
   seedUnreadFromReadState().catch((err) => console.warn('unread seed failed', err));
+  // Deliver any scheduled messages / reminders that came due while the app
+  // was closed, then keep flushing on an interval + on focus. The server
+  // cron (flush-scheduled) covers the fully-offline case; this covers a
+  // running desktop and fires reminder notifications locally.
+  startScheduledFlush();
   // Seed the calendar (internal scheduled-calls + ICS subscriptions)
   // once the team is up. Realtime + the 15-min ICS poller keep it
   // current after that.
@@ -3950,10 +3964,44 @@ function focusChannel(channelId) {
   renderHeaderMembers(channel);
   renderKnockButton(channel);
   refreshNotifyButton();
+  // Read receipts: only DMs / group DMs (type 'dm') get "Seen by".
+  setupReadReceipts(channel);
   // Visiting a channel clears its unread and advances the durable read
   // bookmark (unconditionally — every visit should freshen the bookmark,
   // even when nothing was unread).
   clearChannelUnread(channelId);
+}
+
+// Load + live-watch read receipts for a DM / group DM and feed them to the
+// chat view. Tears down the previous channel's subscription first so only
+// the open channel is watched. No-op (and clears any indicator) for normal
+// channels, keeping "Seen by" scoped to direct messages.
+function setupReadReceipts(channel) {
+  if (state.readReceiptSub) { state.readReceiptSub(); state.readReceiptSub = null; }
+  if (!state.huddle || channel.type !== 'dm') {
+    state.chat.setReadReceipts(new Map(), new Map());
+    return;
+  }
+  const channelId = channel.id;
+  const nameById = new Map();
+  const meta = state.channelMeta.get(channelId) || channel;
+  (meta.memberIds || []).forEach((id, i) => {
+    nameById.set(id, (meta.members && meta.members[i]) || state.huddle.roster.get(id)?.name || 'someone');
+  });
+  // The receipts map lives in this closure — the chat view holds the only
+  // other reference. Nothing else in the app reads it, so it isn't state.
+  let receipts = new Map();
+  const feed = () => state.chat.setReadReceipts(receipts, nameById);
+  state.huddle.loadChannelReadReceipts(channelId).then((map) => {
+    if (state.chat.currentChannel !== channelId) return; // switched away mid-fetch
+    receipts = map;
+    feed();
+  }).catch(() => {});
+  state.readReceiptSub = state.huddle.watchReadReceipts(channelId, (uid, readAt) => {
+    if (state.chat.currentChannel !== channelId) return;
+    receipts.set(uid, readAt);
+    feed();
+  });
 }
 
 // Clear a channel's unread everywhere it's tracked: the in-memory map, the
@@ -4007,6 +4055,55 @@ async function seedUnreadFromReadState() {
     );
     bumpUnread(m.channelId, mentionsMe);
   }
+}
+
+// Poll for due scheduled messages + reminders while the app is open. The
+// server cron handles the closed-app case; this makes both fire promptly
+// for a running desktop and surfaces reminders as OS notifications. Every
+// due row is claimed atomically (status flip) so the client and cron never
+// double-fire.
+let scheduledFlushTimer = null;
+function startScheduledFlush() {
+  const tick = async () => {
+    // Guarded per-fire (not just at start): the interval + focus listener
+    // outlive a sign-out, and this is the check that matters then.
+    if (!state.huddle) return;
+    try { await state.huddle.flushDueScheduledMessages(); } catch (e) { console.warn('scheduled flush', e); }
+    try {
+      const fired = await state.huddle.claimDueReminders();
+      for (const r of fired) fireReminder(r);
+    } catch (e) { console.warn('reminder flush', e); }
+  };
+  tick();
+  if (scheduledFlushTimer) clearInterval(scheduledFlushTimer);
+  // 45s cadence: reminders are minute-granular, and the cron backstops
+  // anything missed while the window is blurred/asleep.
+  scheduledFlushTimer = setInterval(tick, 45000);
+  if (!window._scheduledFlushFocusWired) {
+    window._scheduledFlushFocusWired = true;
+    window.addEventListener('focus', () => { if (state.huddle) tick(); });
+  }
+}
+
+// Surface a fired reminder. Reminders are self-requested, so they bypass
+// the DND gate (unlike incoming-message alerts) — the whole point is to
+// interrupt you. Clicking routes to the channel + message.
+function fireReminder(r) {
+  const channel = state.channelMeta.get(r.channel_id);
+  const where = channel ? displayLabelFor(channel) : '';
+  const body = r.note || (where ? `Reminder about a message in ${where}` : 'You asked to be reminded about a message.');
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      const n = new Notification('⏰ Reminder', { body, tag: `reminder:${r.id}` });
+      n.onclick = () => {
+        try { window.focus(); } catch {}
+        focusChannel(r.channel_id);
+        if (r.message_id) state.chat?.scrollToMessage(r.message_id);
+        n.close();
+      };
+    } catch (err) { console.warn('reminder notification failed', err); }
+  }
+  showToast(`⏰ ${body}`, { duration: 6000 });
 }
 
 // Bump unread for a channel when an incoming message lands there but isn't
@@ -4798,8 +4895,14 @@ function presenceStatusLabel(s) {
 
 function renderMeStatus() {
   const s = state.huddle?.presenceStatus || 'active';
-  const title = `Status: ${presenceStatusLabel(s)} — click to change`;
+  const extras = state.huddle?._selfExtras?.() || {};
+  const cs = extras.emoji || extras.text
+    ? `${extras.emoji || ''} ${extras.text || ''}`.trim() : '';
+  const dnd = !!extras.dnd;
+  const base = dnd ? 'Do Not Disturb' : presenceStatusLabel(s);
+  const title = `Status: ${cs ? cs + ' · ' : ''}${base} — click to change`;
   els.me.dataset.status = s;
+  els.me.dataset.dnd = dnd ? '1' : '';
   els.me.title = title;
   // v2 nav-rail avatar (bottom-left) carries the same state — its dot is
   // a CSS ::after keyed off data-status, immune to the shell's initial
@@ -4807,6 +4910,7 @@ function renderMeStatus() {
   const railMe = document.getElementById('huddle-rail-me');
   if (railMe) {
     railMe.dataset.status = s;
+    railMe.dataset.dnd = dnd ? '1' : '';
     railMe.title = title;
   }
 }
@@ -4814,8 +4918,11 @@ function renderMeStatus() {
 function initMeStatus(huddle) {
   renderMeStatus();
   // Status flips re-render the me-row dot, the roster (self row), and
-  // the self avatars in rendered chat rows.
-  huddle.addEventListener('presence-status', () => { renderMeStatus(); renderRoster(); refreshMessagePresence(); });
+  // the self avatars in rendered chat rows. Custom-status / DND changes
+  // arrive as presence-extras; both funnel through the same repaint.
+  const repaint = () => { renderMeStatus(); renderRoster(); refreshMessagePresence(); };
+  huddle.addEventListener('presence-status', repaint);
+  huddle.addEventListener('presence-extras', repaint);
   // start() can run again after a team switch — wire the clicks once.
   // Under v2 the rail avatar is the ONLY trigger: the me-row sits in the
   // workspace header there, and a menu popping above it gets clipped to
@@ -4836,26 +4943,124 @@ function initMeStatus(huddle) {
   }
 }
 
+// Quick custom-status presets (emoji, text, minutes-to-expire | null).
+const CUSTOM_STATUS_PRESETS = [
+  { emoji: '🍕', text: 'Lunch', mins: 60 },
+  { emoji: '🎯', text: 'Focusing', mins: 120 },
+  { emoji: '📅', text: 'In a meeting', mins: 60 },
+  { emoji: '🏠', text: 'Working remotely', mins: null },
+  { emoji: '🤒', text: 'Out sick', mins: null },
+  { emoji: '🌴', text: 'On vacation', mins: null },
+];
+
+// DND duration choices → an absolute epoch-ms deadline (Infinity = until
+// turned off). "Until tomorrow" resolves to 8am the next local morning.
+function dndDeadlines() {
+  const now = Date.now();
+  const tomorrow8 = new Date();
+  tomorrow8.setDate(tomorrow8.getDate() + 1);
+  tomorrow8.setHours(8, 0, 0, 0);
+  return [
+    { label: 'For 30 minutes', until: now + 30 * 60 * 1000 },
+    { label: 'For 1 hour', until: now + 60 * 60 * 1000 },
+    { label: 'Until tomorrow', until: tomorrow8.getTime() },
+    { label: 'Until I turn it off', until: Infinity },
+  ];
+}
+
 // `side` anchors the menu beside the trigger (the v2 nav rail is too
 // narrow to host a dropdown); otherwise it pops above the me-row.
 function toggleStatusMenu(trigger, side) {
   const existing = document.querySelector('.status-menu');
   if (existing) { existing.remove(); return; }
+  const huddle = state.huddle;
   const menu = document.createElement('div');
   menu.className = 'status-menu';
+  const divider = () => { const d = document.createElement('div'); d.className = 'status-menu-divider'; menu.appendChild(d); };
+  // Every actionable row is "a button that closes the menu, then acts" —
+  // one builder instead of five copies of the boilerplate. Callers set
+  // textContent/innerHTML on the returned button.
+  const mkBtn = (cls, onClick) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = cls;
+    b.onclick = () => { menu.remove(); onClick(); };
+    return b;
+  };
+
+  // --- Custom status: emoji + text + quick presets ---
+  const extras = huddle?._selfExtras?.() || {};
+  const form = document.createElement('div');
+  form.className = 'status-custom-form';
+  const emojiIn = document.createElement('input');
+  emojiIn.className = 'status-custom-emoji';
+  emojiIn.maxLength = 2;
+  emojiIn.value = extras.emoji || '';
+  emojiIn.setAttribute('aria-label', 'Status emoji');
+  emojiIn.placeholder = '😀';
+  const textIn = document.createElement('input');
+  textIn.className = 'status-custom-text';
+  textIn.maxLength = 100;
+  textIn.value = extras.text || '';
+  textIn.placeholder = "What's your status?";
+  textIn.setAttribute('aria-label', 'Status text');
+  const saveCustom = () => {
+    menu.remove();
+    huddle?.setCustomStatus(emojiIn.value.trim(), textIn.value.trim(), null);
+  };
+  textIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveCustom(); });
+  const setBtn = document.createElement('button');
+  setBtn.type = 'button';
+  setBtn.className = 'status-custom-set';
+  setBtn.textContent = 'Set';
+  setBtn.onclick = saveCustom;
+  form.append(emojiIn, textIn, setBtn);
+  menu.appendChild(form);
+
+  const presetRow = document.createElement('div');
+  presetRow.className = 'status-preset-row';
+  for (const p of CUSTOM_STATUS_PRESETS) {
+    const chip = mkBtn('status-preset-chip', () =>
+      huddle?.setCustomStatus(p.emoji, p.text, p.mins ? Date.now() + p.mins * 60000 : null));
+    chip.textContent = `${p.emoji} ${p.text}`;
+    presetRow.appendChild(chip);
+  }
+  menu.appendChild(presetRow);
+  if (extras.emoji || extras.text) {
+    const clear = mkBtn('status-menu-item status-menu-clear', () => huddle?.clearCustomStatus());
+    clear.textContent = 'Clear status';
+    menu.appendChild(clear);
+  }
+  divider();
+
+  // --- Presence presets ---
   for (const st of PRESENCE_STATES) {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'status-menu-item' + ((state.huddle?.presenceStatus || 'active') === st.id ? ' selected' : '');
+    const selected = (huddle?.presenceStatus || 'active') === st.id;
+    const item = mkBtn('status-menu-item' + (selected ? ' selected' : ''), () => huddle?.setPresenceStatus(st.id));
     const dot = document.createElement('span');
     dot.className = `status-menu-dot status-${st.id}`;
     item.append(dot, document.createTextNode(st.label));
-    item.onclick = () => {
-      menu.remove();
-      state.huddle?.setPresenceStatus(st.id);
-    };
     menu.appendChild(item);
   }
+  divider();
+
+  // --- Do Not Disturb ---
+  if (extras.dnd && extras.dndUntil) {
+    const off = mkBtn('status-menu-item status-dnd-off', () => huddle?.setDnd(0));
+    off.innerHTML = `${window.HuddleIcons?.bellOff || ''}<span>Turn off Do Not Disturb</span>`;
+    menu.appendChild(off);
+  } else {
+    const head = document.createElement('div');
+    head.className = 'status-dnd-head';
+    head.innerHTML = `${window.HuddleIcons?.bellOff || ''}<span>Do Not Disturb</span>`;
+    menu.appendChild(head);
+    for (const d of dndDeadlines()) {
+      const item = mkBtn('status-menu-item status-dnd-item', () => huddle?.setDnd(d.until));
+      item.textContent = d.label;
+      menu.appendChild(item);
+    }
+  }
+
   if (side) {
     // Fixed positioning from the trigger's rect — the rail clips
     // absolutely-positioned children, and fixed also dodges z-index
@@ -7929,6 +8134,10 @@ async function refreshSettings() {
   // to :root as CSS custom properties so existing v2 tokens pick up
   // the change without each consumer re-rendering.
   applyAppearance(state.settings?.appearance || {});
+  // Hand persisted working hours to the presence client so its derived
+  // DND state + broadcast are correct from sign-in (guarded — the client
+  // re-tracks safely even before the team channel is up).
+  state.huddle?.setWorkingHours(state.settings?.presence?.workingHours || null);
 }
 
 // Apply density + accent hue to :root. CSS reads:
@@ -7971,6 +8180,31 @@ function collectAppearanceFromForm() {
   const activeSwatch = modal.querySelector('.settings-accent-swatch.is-active');
   const accentHue = activeSwatch ? Number(activeSwatch.dataset.hue) : null;
   return { density, accentHue };
+}
+
+// Read the Working Hours form into the { enabled, start, end, tz } shape
+// stored under state.settings.presence.workingHours. Outside these hours
+// the presence client reports DND (see HuddleClient._outsideWorkingHours).
+function collectWorkingHoursFromForm() {
+  const on = !!els.setWhEnabled?.checked;
+  return {
+    enabled: on,
+    start: els.setWhStart?.value || '09:00',
+    end: els.setWhEnd?.value || '17:00',
+    tz: (els.setWhTz?.value || '').trim() || null,
+  };
+}
+
+function hydrateWorkingHoursForm() {
+  const wh = state.settings?.presence?.workingHours || {};
+  if (els.setWhEnabled) els.setWhEnabled.checked = !!wh.enabled;
+  if (els.setWhStart) els.setWhStart.value = wh.start || '09:00';
+  if (els.setWhEnd) els.setWhEnd.value = wh.end || '17:00';
+  // Default the tz field to the user's own zone so most people can just
+  // tick the box without hunting for their IANA name.
+  let tz = wh.tz;
+  if (!tz) { try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { tz = ''; } }
+  if (els.setWhTz) els.setWhTz.value = tz || '';
 }
 
 // Activate one of the v2 settings tabs by id. No-op under legacy mode
@@ -8089,6 +8323,7 @@ async function openSettings() {
   els.setAiTicketRepo.value = s.aiTicket?.githubRepo || '';
   els.setGithubToken.value = s.github?.token || '';
   els.setGiphyKey.value = s.giphy?.key || '';
+  hydrateWorkingHoursForm();
   renderCalendarSettingsList();
   captionsModelUi.wire();
   captionsModelUi.refresh();
@@ -8252,6 +8487,12 @@ async function saveSettings() {
     // pass them through unchanged so save() persists the edits.
     calendar: state.settings?.calendar || {},
     appearance: collectAppearanceFromForm(),
+    // Presence prefs: working hours live here (cross-device). DND deadline
+    // is mirrored in by the client too; preserve it across a settings save.
+    presence: {
+      ...(state.settings?.presence || {}),
+      workingHours: collectWorkingHoursFromForm(),
+    },
   };
   try {
     // Upload pending avatar first so the URL is included in the
@@ -8286,6 +8527,9 @@ async function saveSettings() {
 
     await window.huddleApi.saveSettings(next);
     state.settings = next;
+    // Hand the (possibly changed) working hours to the presence client so
+    // the derived DND state + broadcast refresh right away.
+    state.huddle.setWorkingHours(next.presence.workingHours);
     rebuildJiraClient();
     rebuildAiClient();
     rebuildGitHubClient();
@@ -8616,6 +8860,13 @@ async function pickScreenSourceForClip() {
 // v2 UI accessor surface — the Huddle AI panel reads the AiClient and
 // active channel from here. Kept narrow on purpose so legacy code
 // paths don't accidentally couple to the panel.
+// Wrap text in a markdown code fence, defanging inner ``` with a zero-width
+// space (\u200b) so a stray fence in the content can't break out of the
+// block. Used by both terminal → chat/AI actions below.
+function fenceCodeBlock(text) {
+  return '```\n' + String(text).replace(/```/g, '``\u200b`') + '\n```';
+}
+
 window.huddleApp = {
   getAi: () => state.ai,
   getMe: () => state.me,
@@ -8645,6 +8896,24 @@ window.huddleApp = {
     snapshot: (shareId, to, data, cols, rows) => state.huddle?.sendTerminalSnapshot(shareId, to, data, cols, rows),
     join:     (shareId) => state.huddle ? state.huddle.joinTerminalShare(shareId) : Promise.reject(new Error('not signed in')),
     leave:    (shareId) => state.huddle?.leaveTerminalShare(shareId),
+  },
+  // Terminal → chat: post captured output to the currently-viewed channel
+  // as a fenced code block. Inner ``` are defanged with a zero-width space
+  // so a stray fence in the output can't break out of the block.
+  terminalToChat: (text) => {
+    const cid = state.chat?.currentChannel;
+    if (!state.huddle || !cid) { showToast('Open a channel first.', { kind: 'error' }); return; }
+    state.huddle.sendMessage({ channelId: cid, parentId: null, text: fenceCodeBlock(text), attachments: [] });
+    showToast('Posted terminal output to chat.');
+  },
+  // Terminal → AI: draft an /ai request from the captured output and drop
+  // the user back in chat to review + send. Reuses the existing /ai path
+  // rather than adding a second AI surface.
+  terminalExplain: (text) => {
+    if (!state.ai || !state.ai.isConfigured()) { showToast('Add an AI provider in Settings first.', { kind: 'error' }); return; }
+    state.chat?._prefillComposer(`/ai Explain this terminal output and suggest fixes if something looks wrong:\n${fenceCodeBlock(text)}`);
+    try { window.HuddleTerminalPanel?.close(); } catch {}
+    showToast('Drafted an /ai request — review and send.');
   },
   // True in-call participant count straight from the LiveKit room
   // (remote participants + self). The DOM-tile census the v2 header used

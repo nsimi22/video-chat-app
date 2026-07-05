@@ -360,6 +360,13 @@ class ChatView {
     const sig = { signal: this._listenerCtrl.signal };
     this._on(this.els.threadBack, 'click', () => this.closeThread());
     this._on(this.els.send, 'click', () => this._submit());
+    if (this.els.scheduleBtn) {
+      this._on(this.els.scheduleBtn, 'click', (e) => {
+        e.stopPropagation();
+        const r = this.els.scheduleBtn.getBoundingClientRect();
+        this._openTimePicker({ clientX: r.left, clientY: r.top - 8 }, (when) => this._scheduleSend(when));
+      });
+    }
     this._on(this.els.composer, 'keydown', (e) => {
       // Both autocomplete popups claim arrow keys, Tab, and Escape while
       // visible (they're mutually exclusive — a /command needs to be at
@@ -1198,6 +1205,7 @@ class ChatView {
       label: this.hooks.isMessageSaved?.(m.id) ? 'Edit saved labels' : 'Save message', icon: 'bookmark',
       onClick: () => this.hooks.openSavePopover?.({ messageId: m.id, teamId: this.mesh.teamMeta?.id, channelId: this.currentChannel, anchor: this.nodeById.get(m.id) }),
     });
+    items.push({ label: 'Remind me…', icon: 'bell', onClick: () => setTimeout(() => this._openTimePicker(at, (when) => this._remindMe(m, when)), 0) });
     if (m.text && (jiraOk || roadmapOk)) {
       items.push({ type: 'divider' });
       if (jiraOk) items.push({ label: 'Create Jira ticket', icon: 'ticket', onClick: () => this._prefillComposer(`/ai-ticket ${(m.text || '').trim()}`) });
@@ -1209,6 +1217,66 @@ class ChatView {
       items.push({ label: 'Delete message', icon: 'trash', danger: true, onClick: () => this._delete(m.id) });
     }
     return items;
+  }
+
+  // Relative time choices shared by "Remind me" and "Schedule send".
+  // Each resolves to an absolute epoch-ms deadline; the two clock-based
+  // options only appear when they're still in the future today.
+  _timePickerOptions() {
+    const now = new Date();
+    const opts = [
+      { label: 'In 20 minutes', at: now.getTime() + 20 * 60000 },
+      { label: 'In 1 hour', at: now.getTime() + 60 * 60000 },
+      { label: 'In 3 hours', at: now.getTime() + 3 * 60 * 60000 },
+    ];
+    const evening = new Date(now); evening.setHours(18, 0, 0, 0);
+    if (evening.getTime() > now.getTime() + 60000) opts.push({ label: 'This evening (6:00 PM)', at: evening.getTime() });
+    const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1); tomorrow.setHours(9, 0, 0, 0);
+    opts.push({ label: 'Tomorrow (9:00 AM)', at: tomorrow.getTime() });
+    return opts;
+  }
+
+  // Small floating menu of relative times anchored at a cursor point
+  // ({clientX, clientY}). Calls onPick(epochMs) with the chosen deadline.
+  // Rides the shared HuddleContextMenu primitive (positioning, outside-
+  // click/Escape teardown, keyboard nav) rather than hand-rolling a menu.
+  _openTimePicker(at, onPick) {
+    window.HuddleContextMenu?.show(
+      this._timePickerOptions().map((o) => ({ label: o.label, onClick: () => onPick(o.at) })),
+      at?.clientX || 120,
+      at?.clientY || 120,
+    );
+  }
+
+  async _remindMe(m, remindAt) {
+    try {
+      await this.mesh.createReminder({ channelId: this.currentChannel, messageId: m.id, remindAt });
+      this.hooks.toast?.(`Reminder set for ${new Date(remindAt).toLocaleString([], { hour: 'numeric', minute: '2-digit', weekday: 'short' })}`);
+    } catch (err) {
+      console.warn('createReminder failed', err);
+      this.hooks.toast?.('Could not set the reminder.');
+    }
+  }
+
+  // Schedule the current composer content to send later instead of now.
+  async _scheduleSend(sendAt) {
+    const text = this.els.composer.value.trim();
+    const attachments = this.composerAttachments.filter((a) => a.status === 'done').map((a) => a.info);
+    if (!text && !attachments.length) { this.hooks.toast?.('Nothing to schedule.'); return; }
+    try {
+      await this.mesh.createScheduledMessage({
+        channelId: this.currentChannel, parentId: this.threadParentId,
+        body: text, attachments, sendAt,
+      });
+      this.els.composer.value = '';
+      this.composerAttachments = [];
+      this._renderAttachmentChips();
+      this._autoResizeComposer();
+      this.hooks.toast?.(`Message scheduled for ${new Date(sendAt).toLocaleString([], { hour: 'numeric', minute: '2-digit', weekday: 'short' })}`);
+    } catch (err) {
+      console.warn('scheduleSend failed', err);
+      this.hooks.toast?.('Could not schedule the message.');
+    }
   }
 
   // Find a rendered message node in the active channel pane and scroll
@@ -1400,7 +1468,59 @@ class ChatView {
     if (!this.threadParentId && visible.length === 0 && pagination && !pagination.hasMore) {
       container.appendChild(this._buildEmptyState());
     }
+    this._renderReadReceipts();
     container.scrollTop = container.scrollHeight;
+  }
+
+  // Read receipts (DMs / group DMs only). app.js feeds the per-member
+  // last_read_at map (+ names) via setReadReceipts as it loads/streams
+  // channel_read_state; we render a subtle "Seen"/"Seen by …" line under
+  // the sender's most recent message.
+  setReadReceipts(map, nameById) {
+    this._readReceipts = map || new Map();
+    this._rcNames = nameById || new Map();
+    this._renderReadReceipts();
+  }
+
+  _renderReadReceipts() {
+    // Clear any prior indicator first — the anchor message changes as new
+    // messages arrive.
+    this.els.messages.querySelector('.msg-seen')?.remove();
+    if (this._currentChannelType !== 'dm' || this.threadParentId) return;
+    const receipts = this._readReceipts;
+    if (!receipts || !receipts.size) return;
+    const me = this.mesh.peerId;
+    // Anchor on my most recent top-level message — "Seen" answers "did they
+    // read what I said". Scan backwards: this runs on every appended message
+    // and every receipt event, and my latest message is near the tail, so
+    // this is O(1) in practice instead of filtering the whole history.
+    const all = this._messages();
+    let last = null;
+    for (let i = all.length - 1; i >= 0; i--) {
+      if (!all[i].parentId && all[i].authorId === me) { last = all[i]; break; }
+    }
+    if (!last) return;
+    const node = this.nodeById.get(last.id);
+    if (!node) return;
+    const seers = [];
+    for (const [uid, readAt] of receipts) {
+      if (uid === me) continue;
+      if (readAt >= last.ts) seers.push(uid);
+    }
+    if (!seers.length) return;
+    const el = document.createElement('div');
+    el.className = 'msg-seen';
+    // 1:1 → just "Seen"; group DM → name who's caught up. "Is this a 1:1"
+    // reads the member roster (_rcNames covers every DM member), not the
+    // receipt map — a group where only one peer has ever opened the DM
+    // must still show the name.
+    if (this._rcNames.size <= 2) {
+      el.textContent = 'Seen';
+    } else {
+      const names = seers.map((id) => this._rcNames.get(id) || 'someone');
+      el.textContent = `Seen by ${names.join(', ')}`;
+    }
+    node.insertAdjacentElement('afterend', el);
   }
 
   // Local-day equality. Date getters already operate in the user's
@@ -1549,6 +1669,8 @@ class ChatView {
       this.nodeById.set(m.id, node);
       this.els.messages.appendChild(node);
       this._lastRendered = m;
+      // The "Seen" anchor moves to my newest message; re-place it.
+      this._renderReadReceipts();
       this.els.messages.scrollTop = this.els.messages.scrollHeight;
       return;
     }

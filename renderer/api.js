@@ -103,7 +103,23 @@
       // the same field. Persisted per-device so a restart keeps your state.
       const savedStatus = localStorage.getItem('huddle:presence-status');
       this.presenceStatus = PRESENCE_VALUES.includes(savedStatus) ? savedStatus : 'active';
-      this.peerInfo = new Map(); // user_id -> { id, name, color, status }
+      // Free-form custom status ({ emoji, text, expiresAt }) — persisted
+      // per-device like the preset status and broadcast in presence meta so
+      // teammates see "🍕 lunch" next to the name. Parsed raw here; expiry
+      // is enforced lazily on every read (see _activeCustomStatus).
+      try { this.customStatus = JSON.parse(localStorage.getItem('huddle:custom-status') || 'null'); }
+      catch { this.customStatus = null; }
+      // Do Not Disturb until this epoch-ms (or Infinity for "until I turn it
+      // off", or 0 for off). Silences this user's own desktop notifications
+      // and — mirrored to user_integrations — their mobile push. Broadcast
+      // as a boolean so teammates get a DND indicator without leaking the
+      // exact end time.
+      this.dndUntil = Number(localStorage.getItem('huddle:dnd-until')) || 0;
+      // Working hours { start, end, days, tz } from user settings (loaded
+      // by app.js after start(), then handed over via setWorkingHours).
+      // Outside them the user reads as DND. null = always available.
+      this.workingHours = null;
+      this.peerInfo = new Map(); // user_id -> { id, name, color, status, statusEmoji, statusText, dnd }
       // Full team roster, populated on start() and read by the
       // sidebar + DM picker + member picker so offline teammates
       // are visible. Keyed by user_id, value: { id, name, color,
@@ -768,20 +784,30 @@
           seen.add(key);
           if (key === this.peerId) continue;
           const metaStatus = PRESENCE_VALUES.includes(meta.status) ? meta.status : 'active';
+          const emoji = typeof meta.statusEmoji === 'string' ? meta.statusEmoji : null;
+          const text = typeof meta.statusText === 'string' ? meta.statusText : null;
+          const dnd = !!meta.dnd;
+          const wh = meta.wh && typeof meta.wh === 'object' ? meta.wh : null;
           if (!this.peerInfo.has(key)) {
-            const peer = { id: key, name: meta.name, color: meta.color, status: metaStatus };
+            const peer = { id: key, name: meta.name, color: meta.color, status: metaStatus, statusEmoji: emoji, statusText: text, dnd, wh };
             this.peerInfo.set(key, peer);
             this.dispatchEvent(new CustomEvent('member-online', { detail: peer }));
           } else {
-            // Meta change on an existing peer (status flip, profile
-            // rename). Re-tracks arrive as another sync with the same
-            // key — without this branch the sidebar would never reflect
-            // an Away/BRB change.
+            // Meta change on an existing peer (status flip, custom-status
+            // or DND change, profile rename). Re-tracks arrive as another
+            // sync with the same key — without this branch the sidebar
+            // would never reflect an Away/BRB/DND change.
             const peer = this.peerInfo.get(key);
-            if (peer.name !== meta.name || peer.color !== meta.color || peer.status !== metaStatus) {
+            const whChanged = peer.wh?.start !== wh?.start || peer.wh?.end !== wh?.end || peer.wh?.tz !== wh?.tz;
+            if (peer.name !== meta.name || peer.color !== meta.color || peer.status !== metaStatus
+                || peer.statusEmoji !== emoji || peer.statusText !== text || peer.dnd !== dnd || whChanged) {
               peer.name = meta.name;
               peer.color = meta.color;
               peer.status = metaStatus;
+              peer.statusEmoji = emoji;
+              peer.statusText = text;
+              peer.dnd = dnd;
+              peer.wh = wh;
               this.dispatchEvent(new CustomEvent('member-online', { detail: peer }));
             }
           }
@@ -801,7 +827,7 @@
       await new Promise((resolve, reject) => {
         ch.subscribe(async (status, err) => {
           if (status === 'SUBSCRIBED') {
-            await ch.track({ name: this.name, color: this.color, online_at: new Date().toISOString(), status: this.presenceStatus });
+            await ch.track(this._presenceMeta());
             resolve();
           } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
             reject(err || new Error('realtime ' + status));
@@ -1516,6 +1542,88 @@
       await this._insertMessage(args);
     }
 
+    // --- Scheduled messages + reminders -----------------------------------
+
+    async createScheduledMessage({ channelId, parentId, body, attachments, sendAt }) {
+      const { data, error } = await this.supabase.from('scheduled_messages').insert({
+        team_id: this.team.id, channel_id: channelId, parent_id: parentId || null,
+        author_id: this.peerId, body: body || '', attachments: attachments || [],
+        send_at: new Date(sendAt).toISOString(),
+      }).select().single();
+      if (error) throw error;
+      return data;
+    }
+
+    // My still-pending scheduled sends, soonest first (for the manage list).
+    async loadScheduledMessages() {
+      const { data, error } = await this.supabase.from('scheduled_messages')
+        .select('*').eq('author_id', this.peerId).eq('status', 'pending')
+        .order('send_at', { ascending: true });
+      if (error) { console.warn('loadScheduledMessages failed', error); return []; }
+      return data || [];
+    }
+
+    async cancelScheduledMessage(id) {
+      const { error } = await this.supabase.from('scheduled_messages')
+        .update({ status: 'canceled' }).eq('id', id).eq('author_id', this.peerId).eq('status', 'pending');
+      if (error) throw error;
+    }
+
+    // Deliver any of my scheduled messages whose time has come. Each row is
+    // *claimed* by an atomic pending→sent flip that returns the row only to
+    // the winner, so multiple open clients (or the server cron) never send
+    // the same message twice. Claim-first means a crash between claim and
+    // insert drops that one message rather than duplicating it.
+    async flushDueScheduledMessages() {
+      const nowIso = new Date().toISOString();
+      const { data: due } = await this.supabase.from('scheduled_messages')
+        .select('id').eq('author_id', this.peerId).eq('status', 'pending').lte('send_at', nowIso);
+      let sent = 0;
+      for (const { id } of due || []) {
+        const { data: claimed } = await this.supabase.from('scheduled_messages')
+          .update({ status: 'sent' }).eq('id', id).eq('status', 'pending').select().single();
+        if (!claimed) continue; // someone/something else won the race
+        try {
+          await this._insertMessage({
+            channelId: claimed.channel_id, parentId: claimed.parent_id,
+            text: claimed.body, attachments: claimed.attachments || [],
+          });
+          sent++;
+        } catch (e) {
+          console.warn('scheduled send failed', e);
+          await this.supabase.from('scheduled_messages')
+            .update({ status: 'failed', error: String(e?.message || e) }).eq('id', id);
+        }
+      }
+      return sent;
+    }
+
+    async createReminder({ channelId, messageId, note, remindAt }) {
+      const { data, error } = await this.supabase.from('message_reminders').insert({
+        user_id: this.peerId, team_id: this.team.id, channel_id: channelId,
+        message_id: messageId || null, note: note || '',
+        remind_at: new Date(remindAt).toISOString(),
+      }).select().single();
+      if (error) throw error;
+      return data;
+    }
+
+    // Claim + return my due reminders so the app can surface a desktop
+    // notification. Same atomic-flip claim as scheduled messages, so the
+    // server push path and an open desktop client don't both fire one.
+    async claimDueReminders() {
+      const nowIso = new Date().toISOString();
+      const { data: due } = await this.supabase.from('message_reminders')
+        .select('*').eq('user_id', this.peerId).eq('status', 'pending').lte('remind_at', nowIso);
+      const fired = [];
+      for (const r of due || []) {
+        const { data: claimed } = await this.supabase.from('message_reminders')
+          .update({ status: 'fired' }).eq('id', r.id).eq('status', 'pending').select().single();
+        if (claimed) fired.push(claimed);
+      }
+      return fired;
+    }
+
     // Same shape as sendMessage but flags the row as AI-generated. The
     // human author still owns the row (RLS-wise) so they can edit/delete;
     // the renderer styles it with a robot avatar + model badge. Throws on
@@ -1883,6 +1991,41 @@
         }, { onConflict: 'team_id,channel_id,user_id' });
       if (error) { console.warn('markChannelRead failed', error); return null; }
       return ts;
+    }
+
+    // Read receipts for a DM / group DM: every member's last_read_at for
+    // this channel, as Map<userId, epochMs>. RLS only returns rows for
+    // dm-type channels the caller belongs to (see the read-receipts
+    // migration), so calling this on a normal channel just yields your own
+    // row — callers gate on channel type before showing "Seen by".
+    async loadChannelReadReceipts(channelId) {
+      const out = new Map();
+      if (!this.team?.id || !channelId) return out;
+      const { data, error } = await this.supabase
+        .from('channel_read_state')
+        .select('user_id,last_read_at')
+        .eq('team_id', this.team.id)
+        .eq('channel_id', channelId);
+      if (error) { console.warn('loadChannelReadReceipts failed', error); return out; }
+      for (const row of data || []) out.set(row.user_id, Date.parse(row.last_read_at));
+      return out;
+    }
+
+    // Live receipt updates for the open DM: subscribes to channel_read_state
+    // row changes for this channel and fires cb(userId, epochMs) as peers
+    // read. RLS on the publication limits delivery to rows the caller may
+    // see. Returns an unsubscribe fn; caller tears it down on channel switch.
+    watchReadReceipts(channelId, cb) {
+      const ch = this.supabase
+        .channel(`rr:${this.team.id}:${channelId}`, { config: { private: true } })
+        .on('postgres_changes', {
+          event: '*', schema: 'public', table: 'channel_read_state',
+          filter: `channel_id=eq.${channelId}`,
+        }, ({ new: row }) => {
+          if (row?.user_id && row.last_read_at) cb(row.user_id, Date.parse(row.last_read_at));
+        });
+      ch.subscribe();
+      return () => { try { ch.unsubscribe(); } catch {} };
     }
 
     // Bounded team-wide "messages newer than X" sweep, ascending. Used by
@@ -2677,7 +2820,7 @@
       // but we should at least surface it so the silent-failure
       // mode is visible during debugging.
       try {
-        const trackResult = await this._teamChannel?.track({ name: this.name, color: this.color, online_at: new Date().toISOString(), status: this.presenceStatus });
+        const trackResult = await this._teamChannel?.track(this._presenceMeta());
         if (trackResult && trackResult !== 'ok') {
           console.warn('updateProfile: presence re-track returned', trackResult);
         }
@@ -2694,14 +2837,142 @@
       this.presenceStatus = status;
       try { localStorage.setItem('huddle:presence-status', status); } catch {}
       this.dispatchEvent(new CustomEvent('presence-status', { detail: status }));
+      await this._retrackPresence();
+    }
+
+    // --- Custom status + Do Not Disturb + working hours -------------------
+
+    // The presence meta every track() call sends. Single builder so the
+    // three track sites (initial join, profile re-track, status changes)
+    // always broadcast the same shape. `dnd` is the *effective* state —
+    // an explicit DND window OR being outside working hours — so teammates
+    // and the notification gate agree without re-deriving it.
+    _presenceMeta() {
+      const cs = this._activeCustomStatus();
+      const wh = this.workingHours;
+      return {
+        name: this.name,
+        color: this.color,
+        online_at: new Date().toISOString(),
+        status: this.presenceStatus,
+        statusEmoji: cs?.emoji || null,
+        statusText: cs?.text || null,
+        dnd: this.isDndActive(),
+        // Compact working-hours summary so teammates' profile cards can
+        // show "🕘 9:00–17:00" + the viewer can reason about overlap.
+        wh: wh && wh.enabled ? { start: wh.start, end: wh.end, tz: wh.tz || null } : null,
+      };
+    }
+
+    async _retrackPresence() {
       try {
-        const trackResult = await this._teamChannel?.track({ name: this.name, color: this.color, online_at: new Date().toISOString(), status });
-        if (trackResult && trackResult !== 'ok') {
-          console.warn('setPresenceStatus: presence re-track returned', trackResult);
-        }
-      } catch (e) {
-        console.warn('setPresenceStatus: presence re-track threw', e);
+        const trackResult = await this._teamChannel?.track(this._presenceMeta());
+        if (trackResult && trackResult !== 'ok') console.warn('presence re-track returned', trackResult);
+      } catch (e) { console.warn('presence re-track threw', e); }
+    }
+
+    // The current custom status, lazily clearing an expired one from memory
+    // and storage so a stale "🍕 lunch" doesn't linger past its window.
+    _activeCustomStatus() {
+      if (this.customStatus && this.customStatus.expiresAt && this.customStatus.expiresAt <= Date.now()) {
+        this.customStatus = null;
+        try { localStorage.removeItem('huddle:custom-status'); } catch {}
       }
+      return this.customStatus;
+    }
+
+    // True when this user should not be interrupted: an explicit DND window
+    // that hasn't elapsed, or (when working hours are set) the current time
+    // falling outside them.
+    isDndActive() {
+      if (this.dndUntil && (this.dndUntil === Infinity || this.dndUntil > Date.now())) return true;
+      return this._outsideWorkingHours();
+    }
+
+    _outsideWorkingHours() {
+      const wh = this.workingHours;
+      if (!wh || !wh.enabled) return false;
+      // Evaluate in the user's configured timezone so "9–5" means their
+      // 9–5, not the machine's. Fall back to local time if the tz is bad.
+      let now;
+      try {
+        now = wh.tz
+          ? new Date(new Date().toLocaleString('en-US', { timeZone: wh.tz }))
+          : new Date();
+      } catch { now = new Date(); }
+      const day = now.getDay(); // 0=Sun
+      if (Array.isArray(wh.days) && wh.days.length && !wh.days.includes(day)) return true;
+      const mins = now.getHours() * 60 + now.getMinutes();
+      const [sh, sm] = (wh.start || '09:00').split(':').map(Number);
+      const [eh, em] = (wh.end || '17:00').split(':').map(Number);
+      return mins < (sh * 60 + sm) || mins >= (eh * 60 + em);
+    }
+
+    // Shared tail for every status-extras mutation: tell local UI, then
+    // re-broadcast presence so teammates see the change.
+    async _emitExtras() {
+      this.dispatchEvent(new CustomEvent('presence-extras', { detail: this._selfExtras() }));
+      await this._retrackPresence();
+    }
+
+    // Set / clear a free-form status. `expiresAt` is epoch-ms or null.
+    async setCustomStatus(emoji, text, expiresAt = null) {
+      const trimmed = (text || '').slice(0, 100);
+      if (!emoji && !trimmed) return this.clearCustomStatus();
+      this.customStatus = { emoji: emoji || '', text: trimmed, expiresAt: expiresAt || null };
+      try { localStorage.setItem('huddle:custom-status', JSON.stringify(this.customStatus)); } catch {}
+      await this._emitExtras();
+    }
+    async clearCustomStatus() {
+      this.customStatus = null;
+      try { localStorage.removeItem('huddle:custom-status'); } catch {}
+      await this._emitExtras();
+    }
+
+    // Enable DND until an epoch-ms deadline (Infinity = until turned off,
+    // 0 = off). Persists locally for the desktop gate and mirrors the
+    // deadline to user_integrations so the push edge function can honor it.
+    async setDnd(until) {
+      this.dndUntil = until || 0;
+      try {
+        if (this.dndUntil) localStorage.setItem('huddle:dnd-until', String(this.dndUntil));
+        else localStorage.removeItem('huddle:dnd-until');
+      } catch {}
+      this._mirrorDndToServer();
+      await this._emitExtras();
+    }
+
+    // Working hours come from user settings (cross-device), handed in by
+    // app.js after it loads them. Re-track so the derived DND state and
+    // the profile-card display refresh immediately.
+    async setWorkingHours(wh) {
+      this.workingHours = wh || null;
+      await this._emitExtras();
+    }
+
+    // Snapshot of the local user's status extras for UI (self rendering).
+    _selfExtras() {
+      const cs = this._activeCustomStatus();
+      return { emoji: cs?.emoji || null, text: cs?.text || null, dnd: this.isDndActive(), dndUntil: this.dndUntil };
+    }
+
+    // Mirror the DND deadline + working hours into user_integrations.settings
+    // (JSONB) so the service-role notify-on-message function can skip a
+    // recipient who's heads-down. Best-effort; the desktop gate never
+    // depends on this landing.
+    async _mirrorDndToServer() {
+      try {
+        const { data: { user } } = await this.supabase.auth.getUser();
+        if (!user) return;
+        const { data } = await this.supabase.from('user_integrations').select('settings').eq('user_id', user.id).maybeSingle();
+        const settings = data?.settings || {};
+        settings.presence = {
+          ...(settings.presence || {}),
+          dndUntil: this.dndUntil === Infinity ? 'forever' : (this.dndUntil || 0),
+          workingHours: this.workingHours || null,
+        };
+        await this.supabase.from('user_integrations').upsert({ user_id: user.id, settings });
+      } catch (e) { console.warn('DND server mirror failed', e); }
     }
 
     async uploadAvatar(file) {
