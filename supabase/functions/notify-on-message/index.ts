@@ -89,12 +89,44 @@ Deno.serve(async (req) => {
   if (isDm) {
     recipientIds = [...memberIds].filter((id) => id !== msg.author_id);
   } else if (msg.mentions?.length) {
-    // For private channels, channel_members is the gate. For public channels
-    // there are no member rows, so fall back to "any team member who was
-    // mentioned" — but never notify someone who isn't on the channel when the
-    // channel does have a membership list.
+    // `mentions` is a client-supplied array on the message row. Resolve each
+    // entry to a user_id belonging to THIS message's team, which does two
+    // things at once:
+    //   1. Maps entries to ids. Clients store resolved display names (desktop
+    //      renderer + mobile), older mobile builds stored raw user_ids — accept
+    //      either by matching against the team roster's names and ids.
+    //   2. Scopes the fan-out to the team. Previously, on public channels
+    //      (which have no channel_members rows) the raw mentions[] was used as
+    //      the recipient set with no membership check, so a crafted message
+    //      could push to arbitrary users on *other* teams. Resolving strictly
+    //      within team_members closes that.
+    const { data: teamMembers } = await admin
+      .from('team_members')
+      .select('user_id')
+      .eq('team_id', msg.team_id);
+    const teamIds = new Set((teamMembers ?? []).map((m) => m.user_id));
+
+    const { data: profs } = teamIds.size
+      ? await admin.from('profiles').select('user_id, name').in('user_id', [...teamIds])
+      : { data: [] as Array<{ user_id: string; name: string | null }> };
+    const nameToId = new Map<string, string>();
+    for (const p of profs ?? []) {
+      if (p.name) nameToId.set(p.name.trim().toLowerCase(), p.user_id);
+    }
+
+    const resolved = new Set<string>();
+    for (const raw of msg.mentions) {
+      const entry = String(raw).trim();
+      if (!entry || entry === '@here' || entry === '@channel') continue; // broadcast tokens handled elsewhere
+      const byName = nameToId.get(entry.toLowerCase());
+      if (byName) resolved.add(byName);
+      else if (teamIds.has(entry)) resolved.add(entry); // legacy: entry is a user_id
+    }
+
+    // For private channels channel_members is the gate; never notify someone
+    // off the channel when the channel has a membership list.
     const hasMemberList = memberIds.size > 0;
-    recipientIds = msg.mentions.filter(
+    recipientIds = [...resolved].filter(
       (id) => id !== msg.author_id && (!hasMemberList || memberIds.has(id)),
     );
   } else {
