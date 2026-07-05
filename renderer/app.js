@@ -104,6 +104,7 @@ const els = {
   btnLayout: $('#btn-layout'),
   btnFullscreen: $('#btn-fullscreen'),
   btnHand: $('#btn-hand'),
+  speakerQueue: $('#speaker-queue'),
   btnRecord: $('#btn-record'),
   btnReact: $('#btn-react'),
   reactPopover: $('#react-popover'),
@@ -179,6 +180,7 @@ const els = {
   slashSuggest: $('#slash-suggest'),
   mentionSuggest: $('#mention-suggest'),
   send: $('#send-btn'),
+  scheduleBtn: $('#schedule-btn'),
   emojiBtn: $('#emoji-btn'),
   emojiPicker: $('#emoji-picker'),
   gifBtn: $('#gif-btn'),
@@ -215,6 +217,12 @@ const els = {
   clipStop: $('#clip-stop'),
   clipRetake: $('#clip-retake'),
   clipPost: $('#clip-post'),
+  // Voice notes (composer → #voice-btn); logic in voice-note.js.
+  voiceBtn: $('#voice-btn'),
+  voicePill: $('#voice-pill'),
+  voicePillTimer: $('#voice-pill-timer'),
+  voicePillCancel: $('#voice-pill-cancel'),
+  voicePillSend: $('#voice-pill-send'),
   // Settings
   openSettings: $('#open-settings'),
   settingsModal: $('#settings-modal'),
@@ -231,6 +239,10 @@ const els = {
   setAiTicketRepo: $('#set-ai-ticket-repo'),
   setGithubToken: $('#set-github-token'),
   setGiphyKey: $('#set-giphy-key'),
+  setWhEnabled: $('#set-wh-enabled'),
+  setWhStart: $('#set-wh-start'),
+  setWhEnd: $('#set-wh-end'),
+  setWhTz: $('#set-wh-tz'),
   settingsStatus: $('#settings-status'),
   settingsCancel: $('#settings-cancel'),
   settingsSave: $('#settings-save'),
@@ -279,6 +291,11 @@ const state = {
   huddle: null,           // HuddleClient — alive while signed into a team
   mesh: null,             // LivekitCallClient — alive only while in a call
   inCallChannelId: null,  // channel.id of the active call, if any
+  // 'huddle' when the active call was entered via the sidebar huddle
+  // chip (audio-first: mic auto-on, camera controls hidden, minimized
+  // panel as the default surface); 'call' for the classic flow. null
+  // outside calls.
+  callMode: null,
   callStarting: false,    // re-entrancy guard for startCall()
   // True once THIS call observed a (non-failed) recording — meaning the server
   // will post a Meeting Recap, so the standalone "Call recap" should be
@@ -482,9 +499,7 @@ function channelContextMenu(channelId) {
 
 function markChannelReadFromMenu(channelId) {
   if (!state.unread.has(channelId)) return;
-  state.unread.delete(channelId);
-  updateUnreadBadge(channelId);
-  updateUnreadTitle();
+  clearChannelUnread(channelId);
 }
 
 function setChannelNotifyFromMenu(channelId, mode) {
@@ -2098,6 +2113,42 @@ async function joinTeamAndStart(teamId) {
   huddle.addEventListener('knock-response', (e) => onKnockResponse(e.detail));
   huddle.addEventListener('knock-cancel', (e) => onKnockCancel(e.detail));
 
+  // Terminal shares (read-only): all five inbound events are relayed to
+  // the panel here — the same "app.js wires the client at creation,
+  // modules only send" pattern the screen/whiteboard/caption features
+  // use, so the panel never has to track which client instance it wired.
+  // The panel owns the tab lifecycle; app.js toasts announcements so
+  // they're visible even when the Terminal panel is closed. call-left
+  // resets any share/viewer state the panel holds (api.js already tore
+  // the frame channels down).
+  huddle.addEventListener('terminal-announce', (e) => {
+    window.HuddleTerminalPanel?.remoteShareStarted?.(e.detail);
+    // Only promise a viewer if this build can actually render one (the
+    // panel no-ops without the xterm engine). Avoids "open Terminal to
+    // view" pointing at a tab that will never appear.
+    if (typeof window.Terminal !== 'function') return;
+    const who = e.detail?.fromName || 'Someone';
+    showToast(`${who} is sharing a terminal — open Terminal to view`, { kind: 'info' });
+  });
+  huddle.addEventListener('terminal-stop', (e) => {
+    window.HuddleTerminalPanel?.remoteShareStopped?.(e.detail);
+  });
+  huddle.addEventListener('terminal-join', (e) => {
+    window.HuddleTerminalPanel?.onShareJoin?.(e.detail);
+  });
+  huddle.addEventListener('terminal-frame', (e) => {
+    window.HuddleTerminalPanel?.onViewerFrame?.(e.detail);
+  });
+  huddle.addEventListener('terminal-snapshot', (e) => {
+    // Snapshots are addressed to the joiner they answer; filtering here
+    // means the panel never needs the local peerId at all.
+    if (e.detail?.to && e.detail.to !== huddle.peerId) return;
+    window.HuddleTerminalPanel?.onViewerSnapshot?.(e.detail);
+  });
+  huddle.addEventListener('call-left', () => {
+    window.HuddleTerminalPanel?.callEnded?.();
+  });
+
   // Construct ChatView + assign state BEFORE huddle.start(), because
   // start() dispatches `welcome` synchronously at the end of its
   // handshake. onWelcome auto-focuses #general via focusChannel, which
@@ -2189,10 +2240,16 @@ async function joinTeamAndStart(teamId) {
 // Every call joins with mic AND camera off — nothing is published until
 // the user turns them on with the toggle buttons, so a join (channel call
 // or knock-to-huddle) never leaks audio/video and the camera never lights.
-async function startCall(channelId) {
+// opts.huddle: audio-first entry (sidebar huddle chip) — same LiveKit
+// room + presence as a regular call in this channel (that's the point:
+// a huddle and a call in one channel are one conversation), but the
+// local surface is lighter: mic auto-on, camera controls hidden, and
+// the call opens as the floating mini panel instead of the tile grid.
+async function startCall(channelId, opts = {}) {
   if (!state.huddle || state.mesh) return; // already in a call or no team
   if (state.callStarting) return;          // double-click / re-entrancy guard
   state.callStarting = true;
+  state.callMode = opts.huddle ? 'huddle' : 'call';
   els.btnStartCall.disabled = true;
   els.btnJoinCall.disabled = true;
   // Each call starts with mic + camera off (nothing published yet), so the
@@ -2238,6 +2295,7 @@ async function startCall(channelId) {
     await mesh.connect(channelId);
   } catch (err) {
     state.mesh = null;
+    state.callMode = null;
     resetCallEphemera();
     console.warn('joinCall failed', err);
     // Surface the failure to the user (see showCallError) instead
@@ -2312,6 +2370,14 @@ async function startCall(channelId) {
     // the OS won't reprompt automatically.
     showCallError('Could not access camera/microphone: ' + (err?.message || err) + '. Check System Settings → Privacy & Security → Camera/Microphone.');
   }
+  // Huddle mode: drop straight into audio + the compact panel. The mic
+  // goes on via the normal toggle path so the mute-state broadcast, the
+  // self-tile overlay, and the first-enable denoise preference all run
+  // exactly as they would for a manual unmute.
+  if (state.callMode === 'huddle' && state.mesh) {
+    els.btnMic.onclick?.();
+    setCallMinimized(true);
+  }
   state.callStarting = false;
   els.btnStartCall.disabled = false;
   els.btnJoinCall.disabled = false;
@@ -2362,6 +2428,7 @@ async function leaveCall() {
   state.mesh.disconnect();
   state.mesh = null;
   state.inCallChannelId = null;
+  state.callMode = null;
   // Restore the stage if we left while minimized, so the next call
   // opens full-size and the body class doesn't linger.
   if (state.callMinimized) setCallMinimized(false);
@@ -3361,14 +3428,18 @@ function renderCallHeader() {
     count.textContent = String(lurkerCount);
   }
   els.btnMic.classList.toggle('hidden', !inCallHere);
-  els.btnCam.classList.toggle('hidden', !inCallHere);
+  // Huddles are audio-first: the camera (and its blur pipeline) stays
+  // hidden so the control row reads as a voice surface. Screen share,
+  // captions, notes, etc. all still apply.
+  const huddleHere = inCallHere && state.callMode === 'huddle';
+  els.btnCam.classList.toggle('hidden', !inCallHere || huddleHere);
   // Blur control is only relevant during a call and only if the
   // MediaPipe runtime is loaded (postinstall copies it into
   // renderer/vendor/mediapipe/). If the vendor copy is missing — e.g.
   // a checkout without `npm install` — we keep the button hidden
   // rather than letting users click into an inevitable failure.
   const blurAvail = !!window.BlurPipeline?.isAvailable();
-  els.btnBlur?.classList.toggle('hidden', !inCallHere || !blurAvail);
+  els.btnBlur?.classList.toggle('hidden', !inCallHere || huddleHere || !blurAvail);
   // Noise suppression: same in-call-only gate as blur. The Web-Audio
   // pipeline has no vendored runtime to miss, so isAvailable() is
   // effectively always true on desktop — but we still gate on it so a
@@ -3437,6 +3508,7 @@ function removePersonFromCall(peerId) {
   removeTile(`peer:${peerId}`);
   stopCamOffDetection(peerId);
   state.raisedHands.delete(peerId);
+  renderSpeakerQueue();
   state.peerPlatforms.delete(peerId);
   if (state.speakingPeer === peerId) setSpeakingPeer(null);
   // Drop any screen tiles owned by this peer too.
@@ -3465,6 +3537,9 @@ function onCallPresence({ channelId, count }) {
   const prev = state.callCounts.get(channelId) || 0;
   state.callCounts.set(channelId, count);
   if (state.chat?.currentChannel === channelId) renderCallHeader();
+  // Live-count chip on every sidebar row for this channel (home list +
+  // a possible Favorites copy).
+  for (const li of sidebarRowsFor(channelId)) syncHuddleChip(li, count);
   const justStarted = known && prev === 0 && count > 0;
   const active = state.chat?.currentChannel === channelId && windowFocused;
   if (justStarted
@@ -3483,6 +3558,10 @@ function onCallPresence({ channelId, count }) {
 // constructor (body, tag, silent, …).
 function notifyWithFocus(title, opts, channelId) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  // Do Not Disturb (an explicit window or being outside working hours)
+  // silences every desktop notification at the single choke point they
+  // all pass through. Mobile push is gated server-side in notify-on-message.
+  if (state.huddle?.isDndActive?.()) return;
   try {
     const n = new Notification(title, opts);
     n.onclick = () => { try { window.focus(); } catch {} focusChannel(channelId); n.close(); };
@@ -3524,6 +3603,15 @@ function onWelcome({ peers, channels }) {
   // recent mentions list and seed the sidebar badge. Realtime
   // bumps from onCrossChannelMessage take over after this.
   refreshMentionsUnread().catch((err) => console.warn('mentions unread seed failed', err));
+  // Per-channel unread badges — rebuild from the durable read bookmarks
+  // (channel_read_state) so they survive reloads. Realtime bumps take
+  // over once seeded.
+  seedUnreadFromReadState().catch((err) => console.warn('unread seed failed', err));
+  // Deliver any scheduled messages / reminders that came due while the app
+  // was closed, then keep flushing on an interval + on focus. The server
+  // cron (flush-scheduled) covers the fully-offline case; this covers a
+  // running desktop and fires reminder notifications locally.
+  startScheduledFlush();
   // Seed the calendar (internal scheduled-calls + ICS subscriptions)
   // once the team is up. Realtime + the 15-min ICS poller keep it
   // current after that.
@@ -3591,6 +3679,39 @@ function sidebarRowsFor(channelId) {
   return [els.favorites, els.channels, els.dms]
     .map((list) => list.querySelector(sel))
     .filter(Boolean);
+}
+
+// Paint a sidebar row's huddle chip for a live participant count:
+// count > 0 pins the chip visible (green, with the number) so a live
+// huddle is glanceable from anywhere; count 0 returns it to the
+// hover-revealed idle affordance.
+function syncHuddleChip(li, count) {
+  const chip = li.querySelector('.ch-huddle');
+  if (!chip) return;
+  chip.classList.toggle('live', count > 0);
+  chip.title = count > 0 ? `Join the huddle · ${count}` : 'Start a huddle (audio)';
+  const label = chip.querySelector('.ch-huddle-count');
+  if (label) label.textContent = count > 0 ? String(count) : '';
+}
+
+// Sidebar huddle chip click: audio-first join of this channel's call.
+// A huddle IS the channel's call (same LiveKit room), so if one is
+// already live this is simply "join it with the lightweight surface".
+async function joinHuddleFromSidebar(channelId) {
+  if (state.callStarting) return;
+  if (state.mesh) {
+    // Already in this channel's call — just bring it into view.
+    if (state.inCallChannelId === channelId) { focusChannel(channelId); return; }
+    showCallError('Leave your current call before starting a huddle somewhere else.');
+    return;
+  }
+  // A popout window owns this channel's call for this user; joining from
+  // the main window too would duplicate the participant.
+  if (state.poppedOutCalls.has(channelId)) { focusChannel(channelId); return; }
+  // Navigate first so the header controls, captions, and notes all mount
+  // against the huddle's channel.
+  focusChannel(channelId);
+  await startCall(channelId, { huddle: true });
 }
 
 function favoriteIds() {
@@ -3713,6 +3834,22 @@ function buildChannelRow(channel, { actions = true } = {}) {
   label.textContent = displayLabelFor(channel);
   li.appendChild(label);
 
+  // Huddle chip: one-click audio-first join. Hover-revealed while the
+  // channel is quiet; pinned visible with a live participant count while
+  // anyone is in this channel's call (fed by the same call-presence
+  // lurkers that drive the "Join call · N" pill).
+  const hud = document.createElement('button');
+  hud.className = 'ch-huddle';
+  hud.title = 'Start a huddle (audio)';
+  hud.setAttribute('aria-label', 'Start a huddle');
+  hud.innerHTML = `${window.HuddleIcons.headphones}<span class="ch-huddle-count"></span>`;
+  hud.onclick = (e) => {
+    e.stopPropagation();
+    joinHuddleFromSidebar(channel.id);
+  };
+  li.appendChild(hud);
+  syncHuddleChip(li, state.callCounts.get(channel.id) || 0);
+
   // Unread badge slot — populated by updateUnreadBadge().
   const badge = document.createElement('span');
   badge.className = 'ch-badge';
@@ -3827,8 +3964,55 @@ function focusChannel(channelId) {
   renderHeaderMembers(channel);
   renderKnockButton(channel);
   refreshNotifyButton();
-  // Visiting a channel clears its unread.
+  // Read receipts: only DMs / group DMs (type 'dm') get "Seen by".
+  setupReadReceipts(channel);
+  // Visiting a channel clears its unread and advances the durable read
+  // bookmark (unconditionally — every visit should freshen the bookmark,
+  // even when nothing was unread).
+  clearChannelUnread(channelId);
+}
+
+// Load + live-watch read receipts for a DM / group DM and feed them to the
+// chat view. Tears down the previous channel's subscription first so only
+// the open channel is watched. No-op (and clears any indicator) for normal
+// channels, keeping "Seen by" scoped to direct messages.
+function setupReadReceipts(channel) {
+  if (state.readReceiptSub) { state.readReceiptSub(); state.readReceiptSub = null; }
+  if (!state.huddle || channel.type !== 'dm') {
+    state.chat.setReadReceipts(new Map(), new Map());
+    return;
+  }
+  const channelId = channel.id;
+  const nameById = new Map();
+  const meta = state.channelMeta.get(channelId) || channel;
+  (meta.memberIds || []).forEach((id, i) => {
+    nameById.set(id, (meta.members && meta.members[i]) || state.huddle.roster.get(id)?.name || 'someone');
+  });
+  // The receipts map lives in this closure — the chat view holds the only
+  // other reference. Nothing else in the app reads it, so it isn't state.
+  let receipts = new Map();
+  const feed = () => state.chat.setReadReceipts(receipts, nameById);
+  state.huddle.loadChannelReadReceipts(channelId).then((map) => {
+    if (state.chat.currentChannel !== channelId) return; // switched away mid-fetch
+    receipts = map;
+    feed();
+  }).catch(() => {});
+  state.readReceiptSub = state.huddle.watchReadReceipts(channelId, (uid, readAt) => {
+    if (state.chat.currentChannel !== channelId) return;
+    receipts.set(uid, readAt);
+    feed();
+  });
+}
+
+// Clear a channel's unread everywhere it's tracked: the in-memory map, the
+// durable read bookmark (so the cleared state survives reload and anchors
+// /catchup), and the sidebar badge + window title. Centralized so a future
+// "mark read" site can't drop the badge yet forget the durable write — the
+// two must always move together, which is exactly what channel_read_state
+// exists to guarantee.
+function clearChannelUnread(channelId) {
   state.unread.delete(channelId);
+  state.huddle?.markChannelRead(channelId).catch(() => {});
   updateUnreadBadge(channelId);
   updateUnreadTitle();
 }
@@ -3837,11 +4021,89 @@ function focusChannel(channelId) {
 function clearUnreadIfActive() {
   if (!state.chat || !state.huddle) return;
   const id = state.chat.currentChannel;
-  if (state.unread.has(id)) {
-    state.unread.delete(id);
-    updateUnreadBadge(id);
-    updateUnreadTitle();
+  if (state.unread.has(id)) clearChannelUnread(id);
+}
+
+// Rebuild the per-channel unread badges from the durable read bookmarks
+// at sign-in. state.unread is in-memory, so before channel_read_state
+// existed every reload wiped the badges; now we replay messages newer
+// than each channel's bookmark (one bounded team-wide query, bucketed
+// client-side). Channels with no bookmark yet are treated as read —
+// flooding every badge on the migration's first run helps nobody.
+// Bounded to a 48h horizon so a long vacation doesn't pull the whole
+// history; /catchup is the tool for that.
+async function seedUnreadFromReadState() {
+  if (!state.huddle) return;
+  const readState = await state.huddle.loadChannelReadState();
+  if (!readState.size) return;
+  const horizon = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+  let since = null;
+  for (const ts of readState.values()) if (!since || ts < since) since = ts;
+  if (since < horizon) since = horizon;
+  const messages = await state.huddle.loadTeamMessagesSince(since);
+  for (const m of messages) {
+    const bookmark = readState.get(m.channelId);
+    if (!bookmark || m.ts <= bookmark) continue;
+    if (m.authorId === state.huddle.peerId) continue;
+    // The channel we're looking at right now is being read, not missed.
+    if (state.chat?.currentChannel === m.channelId && windowFocused) continue;
+    const channel = state.channelMeta.get(m.channelId);
+    const isDm = channel?.type === 'dm';
+    const mentionsMe = Array.isArray(m.mentions) && (
+      m.mentions.includes(state.myName)
+      || (!isDm && (m.mentions.includes('@here') || m.mentions.includes('@channel')))
+    );
+    bumpUnread(m.channelId, mentionsMe);
   }
+}
+
+// Poll for due scheduled messages + reminders while the app is open. The
+// server cron handles the closed-app case; this makes both fire promptly
+// for a running desktop and surfaces reminders as OS notifications. Every
+// due row is claimed atomically (status flip) so the client and cron never
+// double-fire.
+let scheduledFlushTimer = null;
+function startScheduledFlush() {
+  const tick = async () => {
+    // Guarded per-fire (not just at start): the interval + focus listener
+    // outlive a sign-out, and this is the check that matters then.
+    if (!state.huddle) return;
+    try { await state.huddle.flushDueScheduledMessages(); } catch (e) { console.warn('scheduled flush', e); }
+    try {
+      const fired = await state.huddle.claimDueReminders();
+      for (const r of fired) fireReminder(r);
+    } catch (e) { console.warn('reminder flush', e); }
+  };
+  tick();
+  if (scheduledFlushTimer) clearInterval(scheduledFlushTimer);
+  // 45s cadence: reminders are minute-granular, and the cron backstops
+  // anything missed while the window is blurred/asleep.
+  scheduledFlushTimer = setInterval(tick, 45000);
+  if (!window._scheduledFlushFocusWired) {
+    window._scheduledFlushFocusWired = true;
+    window.addEventListener('focus', () => { if (state.huddle) tick(); });
+  }
+}
+
+// Surface a fired reminder. Reminders are self-requested, so they bypass
+// the DND gate (unlike incoming-message alerts) — the whole point is to
+// interrupt you. Clicking routes to the channel + message.
+function fireReminder(r) {
+  const channel = state.channelMeta.get(r.channel_id);
+  const where = channel ? displayLabelFor(channel) : '';
+  const body = r.note || (where ? `Reminder about a message in ${where}` : 'You asked to be reminded about a message.');
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      const n = new Notification('⏰ Reminder', { body, tag: `reminder:${r.id}` });
+      n.onclick = () => {
+        try { window.focus(); } catch {}
+        focusChannel(r.channel_id);
+        if (r.message_id) state.chat?.scrollToMessage(r.message_id);
+        n.close();
+      };
+    } catch (err) { console.warn('reminder notification failed', err); }
+  }
+  showToast(`⏰ ${body}`, { duration: 6000 });
 }
 
 // Bump unread for a channel when an incoming message lands there but isn't
@@ -4633,8 +4895,14 @@ function presenceStatusLabel(s) {
 
 function renderMeStatus() {
   const s = state.huddle?.presenceStatus || 'active';
-  const title = `Status: ${presenceStatusLabel(s)} — click to change`;
+  const extras = state.huddle?._selfExtras?.() || {};
+  const cs = extras.emoji || extras.text
+    ? `${extras.emoji || ''} ${extras.text || ''}`.trim() : '';
+  const dnd = !!extras.dnd;
+  const base = dnd ? 'Do Not Disturb' : presenceStatusLabel(s);
+  const title = `Status: ${cs ? cs + ' · ' : ''}${base} — click to change`;
   els.me.dataset.status = s;
+  els.me.dataset.dnd = dnd ? '1' : '';
   els.me.title = title;
   // v2 nav-rail avatar (bottom-left) carries the same state — its dot is
   // a CSS ::after keyed off data-status, immune to the shell's initial
@@ -4642,6 +4910,7 @@ function renderMeStatus() {
   const railMe = document.getElementById('huddle-rail-me');
   if (railMe) {
     railMe.dataset.status = s;
+    railMe.dataset.dnd = dnd ? '1' : '';
     railMe.title = title;
   }
 }
@@ -4649,8 +4918,11 @@ function renderMeStatus() {
 function initMeStatus(huddle) {
   renderMeStatus();
   // Status flips re-render the me-row dot, the roster (self row), and
-  // the self avatars in rendered chat rows.
-  huddle.addEventListener('presence-status', () => { renderMeStatus(); renderRoster(); refreshMessagePresence(); });
+  // the self avatars in rendered chat rows. Custom-status / DND changes
+  // arrive as presence-extras; both funnel through the same repaint.
+  const repaint = () => { renderMeStatus(); renderRoster(); refreshMessagePresence(); };
+  huddle.addEventListener('presence-status', repaint);
+  huddle.addEventListener('presence-extras', repaint);
   // start() can run again after a team switch — wire the clicks once.
   // Under v2 the rail avatar is the ONLY trigger: the me-row sits in the
   // workspace header there, and a menu popping above it gets clipped to
@@ -4671,26 +4943,124 @@ function initMeStatus(huddle) {
   }
 }
 
+// Quick custom-status presets (emoji, text, minutes-to-expire | null).
+const CUSTOM_STATUS_PRESETS = [
+  { emoji: '🍕', text: 'Lunch', mins: 60 },
+  { emoji: '🎯', text: 'Focusing', mins: 120 },
+  { emoji: '📅', text: 'In a meeting', mins: 60 },
+  { emoji: '🏠', text: 'Working remotely', mins: null },
+  { emoji: '🤒', text: 'Out sick', mins: null },
+  { emoji: '🌴', text: 'On vacation', mins: null },
+];
+
+// DND duration choices → an absolute epoch-ms deadline (Infinity = until
+// turned off). "Until tomorrow" resolves to 8am the next local morning.
+function dndDeadlines() {
+  const now = Date.now();
+  const tomorrow8 = new Date();
+  tomorrow8.setDate(tomorrow8.getDate() + 1);
+  tomorrow8.setHours(8, 0, 0, 0);
+  return [
+    { label: 'For 30 minutes', until: now + 30 * 60 * 1000 },
+    { label: 'For 1 hour', until: now + 60 * 60 * 1000 },
+    { label: 'Until tomorrow', until: tomorrow8.getTime() },
+    { label: 'Until I turn it off', until: Infinity },
+  ];
+}
+
 // `side` anchors the menu beside the trigger (the v2 nav rail is too
 // narrow to host a dropdown); otherwise it pops above the me-row.
 function toggleStatusMenu(trigger, side) {
   const existing = document.querySelector('.status-menu');
   if (existing) { existing.remove(); return; }
+  const huddle = state.huddle;
   const menu = document.createElement('div');
   menu.className = 'status-menu';
+  const divider = () => { const d = document.createElement('div'); d.className = 'status-menu-divider'; menu.appendChild(d); };
+  // Every actionable row is "a button that closes the menu, then acts" —
+  // one builder instead of five copies of the boilerplate. Callers set
+  // textContent/innerHTML on the returned button.
+  const mkBtn = (cls, onClick) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = cls;
+    b.onclick = () => { menu.remove(); onClick(); };
+    return b;
+  };
+
+  // --- Custom status: emoji + text + quick presets ---
+  const extras = huddle?._selfExtras?.() || {};
+  const form = document.createElement('div');
+  form.className = 'status-custom-form';
+  const emojiIn = document.createElement('input');
+  emojiIn.className = 'status-custom-emoji';
+  emojiIn.maxLength = 2;
+  emojiIn.value = extras.emoji || '';
+  emojiIn.setAttribute('aria-label', 'Status emoji');
+  emojiIn.placeholder = '😀';
+  const textIn = document.createElement('input');
+  textIn.className = 'status-custom-text';
+  textIn.maxLength = 100;
+  textIn.value = extras.text || '';
+  textIn.placeholder = "What's your status?";
+  textIn.setAttribute('aria-label', 'Status text');
+  const saveCustom = () => {
+    menu.remove();
+    huddle?.setCustomStatus(emojiIn.value.trim(), textIn.value.trim(), null);
+  };
+  textIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveCustom(); });
+  const setBtn = document.createElement('button');
+  setBtn.type = 'button';
+  setBtn.className = 'status-custom-set';
+  setBtn.textContent = 'Set';
+  setBtn.onclick = saveCustom;
+  form.append(emojiIn, textIn, setBtn);
+  menu.appendChild(form);
+
+  const presetRow = document.createElement('div');
+  presetRow.className = 'status-preset-row';
+  for (const p of CUSTOM_STATUS_PRESETS) {
+    const chip = mkBtn('status-preset-chip', () =>
+      huddle?.setCustomStatus(p.emoji, p.text, p.mins ? Date.now() + p.mins * 60000 : null));
+    chip.textContent = `${p.emoji} ${p.text}`;
+    presetRow.appendChild(chip);
+  }
+  menu.appendChild(presetRow);
+  if (extras.emoji || extras.text) {
+    const clear = mkBtn('status-menu-item status-menu-clear', () => huddle?.clearCustomStatus());
+    clear.textContent = 'Clear status';
+    menu.appendChild(clear);
+  }
+  divider();
+
+  // --- Presence presets ---
   for (const st of PRESENCE_STATES) {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'status-menu-item' + ((state.huddle?.presenceStatus || 'active') === st.id ? ' selected' : '');
+    const selected = (huddle?.presenceStatus || 'active') === st.id;
+    const item = mkBtn('status-menu-item' + (selected ? ' selected' : ''), () => huddle?.setPresenceStatus(st.id));
     const dot = document.createElement('span');
     dot.className = `status-menu-dot status-${st.id}`;
     item.append(dot, document.createTextNode(st.label));
-    item.onclick = () => {
-      menu.remove();
-      state.huddle?.setPresenceStatus(st.id);
-    };
     menu.appendChild(item);
   }
+  divider();
+
+  // --- Do Not Disturb ---
+  if (extras.dnd && extras.dndUntil) {
+    const off = mkBtn('status-menu-item status-dnd-off', () => huddle?.setDnd(0));
+    off.innerHTML = `${window.HuddleIcons?.bellOff || ''}<span>Turn off Do Not Disturb</span>`;
+    menu.appendChild(off);
+  } else {
+    const head = document.createElement('div');
+    head.className = 'status-dnd-head';
+    head.innerHTML = `${window.HuddleIcons?.bellOff || ''}<span>Do Not Disturb</span>`;
+    menu.appendChild(head);
+    for (const d of dndDeadlines()) {
+      const item = mkBtn('status-menu-item status-dnd-item', () => huddle?.setDnd(d.until));
+      item.textContent = d.label;
+      menu.appendChild(item);
+    }
+  }
+
   if (side) {
     // Fixed positioning from the trigger's rect — the rail clips
     // absolutely-positioned children, and fixed also dodges z-index
@@ -5243,6 +5613,8 @@ function setSpeakingPeer(peerId) {
     // Follow the speaker in the minimized panel (silence → keep last).
     if (state.callMinimized) updateMiniCallFocus(peerId);
   }
+  // Keep the queue's "now speaking" highlight in step with the tiles.
+  renderSpeakerQueue();
 }
 
 // Raise hand: maintained as a Set of peerIds locally. Self toggles via the
@@ -5251,6 +5623,10 @@ function setSpeakingPeer(peerId) {
 function setHandRaised(peerId, raised) {
   if (raised) state.raisedHands.add(peerId);
   else state.raisedHands.delete(peerId);
+  // The queue panel re-renders on every hand change even when the
+  // peer's tile hasn't mounted yet (broadcast-before-track race) —
+  // the queue lists people, not tiles, so it must not wait for one.
+  renderSpeakerQueue();
   const tile = tileForPeer(peerId);
   if (!tile) return;
   let badge = tile.querySelector('.tile-hand');
@@ -5261,6 +5637,37 @@ function setHandRaised(peerId, raised) {
     tile.appendChild(badge);
   } else if (!raised && badge) {
     badge.remove();
+  }
+}
+
+// Ordered raise-hand queue: hands listed first-raised-first, so a busy
+// call gets a fair "who talks next" order instead of a pile of badges.
+// Order comes from HuddleClient.speakerQueue (raise timestamps shared
+// via the raise-hand broadcast); the active speaker gets a highlight so
+// it's obvious when the person up next has started talking.
+function renderSpeakerQueue() {
+  const panel = els.speakerQueue;
+  if (!panel) return;
+  const queue = state.mesh?.speakerQueue || [];
+  panel.classList.toggle('hidden', queue.length === 0);
+  panel.replaceChildren();
+  if (!queue.length) return;
+  const title = document.createElement('div');
+  title.className = 'speaker-queue-title';
+  title.innerHTML = (window.HuddleIcons?.hand || '') + '<span>Speaker queue</span>';
+  panel.appendChild(title);
+  for (const [i, entry] of queue.entries()) {
+    const row = document.createElement('div');
+    row.className = 'speaker-queue-row';
+    if (entry.id === state.speakingPeer) row.classList.add('speaking');
+    const pos = document.createElement('span');
+    pos.className = 'speaker-queue-pos';
+    pos.textContent = String(i + 1);
+    const name = document.createElement('span');
+    name.className = 'speaker-queue-name';
+    name.textContent = entry.id === state.huddle?.peerId ? 'You' : resolveTileLabel(entry.id);
+    row.append(pos, name);
+    panel.appendChild(row);
   }
 }
 
@@ -6306,6 +6713,10 @@ function resetCallEphemera() {
   state.raisedHands.clear();
   state.peerPlatforms.clear();
   if (els.btnHand) els.btnHand.classList.remove('active');
+  if (els.speakerQueue) {
+    els.speakerQueue.classList.add('hidden');
+    els.speakerQueue.replaceChildren();
+  }
   // Drop the in-call team board overlay — it's only relevant mid-call.
   window.HuddleJiraBoard?.hideInCall();
   if (els.btnBoard) els.btnBoard.classList.remove('active');
@@ -7723,6 +8134,10 @@ async function refreshSettings() {
   // to :root as CSS custom properties so existing v2 tokens pick up
   // the change without each consumer re-rendering.
   applyAppearance(state.settings?.appearance || {});
+  // Hand persisted working hours to the presence client so its derived
+  // DND state + broadcast are correct from sign-in (guarded — the client
+  // re-tracks safely even before the team channel is up).
+  state.huddle?.setWorkingHours(state.settings?.presence?.workingHours || null);
 }
 
 // Apply density + accent hue to :root. CSS reads:
@@ -7765,6 +8180,31 @@ function collectAppearanceFromForm() {
   const activeSwatch = modal.querySelector('.settings-accent-swatch.is-active');
   const accentHue = activeSwatch ? Number(activeSwatch.dataset.hue) : null;
   return { density, accentHue };
+}
+
+// Read the Working Hours form into the { enabled, start, end, tz } shape
+// stored under state.settings.presence.workingHours. Outside these hours
+// the presence client reports DND (see HuddleClient._outsideWorkingHours).
+function collectWorkingHoursFromForm() {
+  const on = !!els.setWhEnabled?.checked;
+  return {
+    enabled: on,
+    start: els.setWhStart?.value || '09:00',
+    end: els.setWhEnd?.value || '17:00',
+    tz: (els.setWhTz?.value || '').trim() || null,
+  };
+}
+
+function hydrateWorkingHoursForm() {
+  const wh = state.settings?.presence?.workingHours || {};
+  if (els.setWhEnabled) els.setWhEnabled.checked = !!wh.enabled;
+  if (els.setWhStart) els.setWhStart.value = wh.start || '09:00';
+  if (els.setWhEnd) els.setWhEnd.value = wh.end || '17:00';
+  // Default the tz field to the user's own zone so most people can just
+  // tick the box without hunting for their IANA name.
+  let tz = wh.tz;
+  if (!tz) { try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { tz = ''; } }
+  if (els.setWhTz) els.setWhTz.value = tz || '';
 }
 
 // Activate one of the v2 settings tabs by id. No-op under legacy mode
@@ -7883,6 +8323,7 @@ async function openSettings() {
   els.setAiTicketRepo.value = s.aiTicket?.githubRepo || '';
   els.setGithubToken.value = s.github?.token || '';
   els.setGiphyKey.value = s.giphy?.key || '';
+  hydrateWorkingHoursForm();
   renderCalendarSettingsList();
   captionsModelUi.wire();
   captionsModelUi.refresh();
@@ -8046,6 +8487,12 @@ async function saveSettings() {
     // pass them through unchanged so save() persists the edits.
     calendar: state.settings?.calendar || {},
     appearance: collectAppearanceFromForm(),
+    // Presence prefs: working hours live here (cross-device). DND deadline
+    // is mirrored in by the client too; preserve it across a settings save.
+    presence: {
+      ...(state.settings?.presence || {}),
+      workingHours: collectWorkingHoursFromForm(),
+    },
   };
   try {
     // Upload pending avatar first so the URL is included in the
@@ -8080,6 +8527,9 @@ async function saveSettings() {
 
     await window.huddleApi.saveSettings(next);
     state.settings = next;
+    // Hand the (possibly changed) working hours to the presence client so
+    // the derived DND state + broadcast refresh right away.
+    state.huddle.setWorkingHours(next.presence.workingHours);
     rebuildJiraClient();
     rebuildAiClient();
     rebuildGitHubClient();
@@ -8410,6 +8860,13 @@ async function pickScreenSourceForClip() {
 // v2 UI accessor surface — the Huddle AI panel reads the AiClient and
 // active channel from here. Kept narrow on purpose so legacy code
 // paths don't accidentally couple to the panel.
+// Wrap text in a markdown code fence, defanging inner ``` with a zero-width
+// space (\u200b) so a stray fence in the content can't break out of the
+// block. Used by both terminal → chat/AI actions below.
+function fenceCodeBlock(text) {
+  return '```\n' + String(text).replace(/```/g, '``\u200b`') + '\n```';
+}
+
 window.huddleApp = {
   getAi: () => state.ai,
   getMe: () => state.me,
@@ -8423,6 +8880,41 @@ window.huddleApp = {
   getGitHub: () => state.github,
   getAiTicketRepo: () => state.settings?.aiTicket?.githubRepo || '',
   getActiveChannelId: () => state.chat?.currentChannel,
+  // Channel id of the call we're actually IN (getActiveChannelId is the
+  // *viewed* channel — wrong for call-scoped features once the user
+  // navigates away mid-call). Used by the terminal panel's share toggle.
+  getActiveCallChannelId: () => state.inCallChannelId,
+  // Narrow send-only facade over the HuddleClient's terminal-share
+  // methods — the panel gets exactly the sends it needs (mirroring how
+  // drawing.js is handed a send closure) rather than the whole client.
+  // Receive-side events are relayed to the panel where the client's
+  // other listeners are wired (see joinTeamAndStart).
+  terminalShare: {
+    start:    (shareId) => state.huddle ? state.huddle.startTerminalShare(shareId) : Promise.reject(new Error('not signed in')),
+    stop:     (shareId) => state.huddle?.stopTerminalShare(shareId),
+    frame:    (shareId, data, cols, rows) => state.huddle?.sendTerminalFrame(shareId, data, cols, rows),
+    snapshot: (shareId, to, data, cols, rows) => state.huddle?.sendTerminalSnapshot(shareId, to, data, cols, rows),
+    join:     (shareId) => state.huddle ? state.huddle.joinTerminalShare(shareId) : Promise.reject(new Error('not signed in')),
+    leave:    (shareId) => state.huddle?.leaveTerminalShare(shareId),
+  },
+  // Terminal → chat: post captured output to the currently-viewed channel
+  // as a fenced code block. Inner ``` are defanged with a zero-width space
+  // so a stray fence in the output can't break out of the block.
+  terminalToChat: (text) => {
+    const cid = state.chat?.currentChannel;
+    if (!state.huddle || !cid) { showToast('Open a channel first.', { kind: 'error' }); return; }
+    state.huddle.sendMessage({ channelId: cid, parentId: null, text: fenceCodeBlock(text), attachments: [] });
+    showToast('Posted terminal output to chat.');
+  },
+  // Terminal → AI: draft an /ai request from the captured output and drop
+  // the user back in chat to review + send. Reuses the existing /ai path
+  // rather than adding a second AI surface.
+  terminalExplain: (text) => {
+    if (!state.ai || !state.ai.isConfigured()) { showToast('Add an AI provider in Settings first.', { kind: 'error' }); return; }
+    state.chat?._prefillComposer(`/ai Explain this terminal output and suggest fixes if something looks wrong:\n${fenceCodeBlock(text)}`);
+    try { window.HuddleTerminalPanel?.close(); } catch {}
+    showToast('Drafted an /ai request — review and send.');
+  },
   // True in-call participant count straight from the LiveKit room
   // (remote participants + self). The DOM-tile census the v2 header used
   // misses mic-only peers and screen-share states — the "1 person with
