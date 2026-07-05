@@ -911,7 +911,15 @@
       // calls, and settle on the wrong state (a double-tap meant to end muted
       // ends unmuted).
       this._micOn = next;
-      this.room.localParticipant.setMicrophoneEnabled(next).catch((err) => console.warn('[livekit] toggleMic', err));
+      this.room.localParticipant.setMicrophoneEnabled(next).catch((err) => {
+        console.warn('[livekit] toggleMic', err);
+        // The toggle failed (device busy, permission revoked, ...) and no
+        // publication event will fire to reconcile, so roll the optimistic
+        // flag back to ground truth — otherwise _micOn is stuck wrong and the
+        // next tap does the opposite of what the user intended.
+        const pub = this.room?.localParticipant?.getTrackPublication(LK.Track.Source.Microphone);
+        this._micOn = pub ? !pub.isMuted : false;
+      });
       return next;
     }
 
@@ -921,7 +929,12 @@
       // Optimistic update — see toggleMic; guards against a double-tap reading
       // stale _camOn twice. _syncLocalMuteFromPub reconciles to ground truth.
       this._camOn = next;
-      this.room.localParticipant.setCameraEnabled(next).catch((err) => console.warn('[livekit] toggleCam', err));
+      this.room.localParticipant.setCameraEnabled(next).catch((err) => {
+        console.warn('[livekit] toggleCam', err);
+        // Roll the optimistic flag back to ground truth on failure — see toggleMic.
+        const pub = this.room?.localParticipant?.getTrackPublication(LK.Track.Source.Camera);
+        this._camOn = pub ? !pub.isMuted : false;
+      });
       return next;
     }
 
