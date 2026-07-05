@@ -148,7 +148,10 @@ function lockNavigationToIndex(contents) {
   const isIndex = (raw) => {
     try {
       const u = new URL(raw);
-      return u.protocol === 'file:' && decodeURIComponent(u.pathname) === INDEX_FILE;
+      // fileURLToPath normalizes to a platform-native absolute path (handles
+      // the leading-slash + forward-slash form of file: URLs on Windows,
+      // which a raw pathname compare against path.join() would miss).
+      return u.protocol === 'file:' && require('url').fileURLToPath(u) === INDEX_FILE;
     } catch { return false; }
   };
   const block = (e, url) => {
@@ -869,18 +872,42 @@ ipcMain.handle('fetch-proxy', async (_event, { url, method = 'GET', headers = {}
     // the user's Authorization/x-api-key headers. (Default redirect:'follow'
     // would have already leaked them to the redirect target.)
     let current = first.url;
+    let curMethod = method;
+    let curHeaders = { ...headers };
+    let curBody = body;
     let res;
     for (let hop = 0; ; hop++) {
       if (hop > FETCH_PROXY_MAX_REDIRECTS) {
         return { ok: false, status: 0, error: 'too many redirects' };
       }
-      res = await fetch(current, { method, headers, body, redirect: 'manual' });
+      res = await fetch(current, { method: curMethod, headers: curHeaders, body: curBody, redirect: 'manual' });
       if (res.status < 300 || res.status >= 400) break;
       const location = res.headers.get('location');
       if (!location) break; // e.g. 304 Not Modified — nothing to follow
-      const next = validateProxyTarget(new URL(location, current).toString());
+      const nextUrl = new URL(location, current);
+      const next = validateProxyTarget(nextUrl.toString());
       if (next.error) return { ok: false, status: res.status, error: `redirect ${next.error}` };
       try { res.body?.cancel?.(); } catch {}
+      // Cross-host redirect: never resend the user's credentials to a
+      // different origin, even an allowlisted one (each integration's key
+      // is scoped to its own host).
+      if (nextUrl.hostname !== new URL(current).hostname) {
+        curHeaders = { ...curHeaders };
+        for (const k of Object.keys(curHeaders)) {
+          const kl = k.toLowerCase();
+          if (kl === 'authorization' || kl === 'x-api-key' || kl === 'cookie') delete curHeaders[k];
+        }
+      }
+      // Per RFC 9110, 301/302/303 turn the follow-up into a bodyless GET.
+      if (res.status === 301 || res.status === 302 || res.status === 303) {
+        curMethod = 'GET';
+        curBody = null;
+        curHeaders = { ...curHeaders };
+        for (const k of Object.keys(curHeaders)) {
+          const kl = k.toLowerCase();
+          if (kl === 'content-type' || kl === 'content-length') delete curHeaders[k];
+        }
+      }
       current = next.url;
     }
     // Bounded read so a rogue server can't OOM the main process.
