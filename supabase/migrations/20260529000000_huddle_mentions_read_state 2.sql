@@ -1,0 +1,21 @@
+-- Mentions inbox read state (PR β of UI v2 Batch C — design item 4.1).
+--
+-- A single timestamp per user marks the last time they opened the
+-- Mentions inbox. Any message in `messages` where the user's name
+-- appears in `mentions` (or `@here` / `@channel` is set on a channel
+-- they belong to) with `ts > mentions_last_read_at` counts as unread.
+--
+-- Why a single column instead of a per-message reads table:
+--   - The inbox semantic is "show me all my mentions; let me clear
+--     the unread badge with one action". A single bookmark timestamp
+--     is enough; we don't need per-message read state.
+--   - Cheap on writes (one row per inbox-open) and reads (one column
+--     join in the unread count query).
+--
+-- The desktop client degrades gracefully when this column is missing:
+-- a nullable read returns null → treated as "never read" → every
+-- mention shows as unread until the user opens the inbox once. So
+-- the migration can land at any time without coordinating a client
+-- release.
+alter table public.profiles
+  add column if not exists mentions_last_read_at timestamptz;

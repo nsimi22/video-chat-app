@@ -19,15 +19,31 @@
 -- guard for exactly this reason — those become harmless no-ops now.
 --
 -- `security definer stable` is preserved from the original definition.
+--
+-- Implemented as a single EXISTS rather than delegating to
+-- is_team_member/is_channel_member: those helpers are themselves SECURITY
+-- DEFINER (non-inlinable), so calling them per row inside an RLS-gated scan
+-- added a nested context switch for every candidate message. Running with
+-- definer rights here we can read team_members/channel_members directly. The
+-- membership predicates below are the same as those helpers' bodies
+-- (verified against the initial schema).
 create or replace function public.can_see_channel(t text, c text)
 returns boolean language sql security definer stable as $$
-  select coalesce(
-    (select case when ch.type = 'public' then public.is_team_member(t)
-                 else public.is_channel_member(t, c)
-            end
-       from public.channels ch
-      where ch.team_id = t and ch.id = c),
-    false
+  select exists (
+    select 1
+      from public.channels ch
+     where ch.team_id = t
+       and ch.id = c
+       and case
+             when ch.type = 'public' then exists (
+               select 1 from public.team_members tm
+                where tm.team_id = t and tm.user_id = auth.uid()
+             )
+             else exists (
+               select 1 from public.channel_members cm
+                where cm.team_id = t and cm.channel_id = c and cm.user_id = auth.uid()
+             )
+           end
   );
 $$;
 
@@ -45,11 +61,19 @@ create policy messages_update_own on public.messages for update to authenticated
 create or replace function public.messages_lock_immutable_cols()
 returns trigger language plpgsql as $$
 begin
-  -- These define the message's identity/placement and must never change on
-  -- an edit. Author edits may only touch body/attachments/edited_ts/etc.
+  -- These define the message's identity/placement and provenance and must
+  -- never change on an edit. Author edits may only touch
+  -- body/attachments/edited_ts/reactions/meta/pinned_*.
+  new.id           := old.id;           -- primary key
   new.team_id      := old.team_id;
   new.channel_id   := old.channel_id;
+  new.parent_id    := old.parent_id;    -- can't re-thread or de-thread a message
   new.author_id    := old.author_id;
+  -- author_name/author_color are denormalized author snapshots; leaving them
+  -- writable let an author relabel their own message to impersonate someone
+  -- else even with author_id pinned.
+  new.author_name  := old.author_name;
+  new.author_color := old.author_color;
   new.ts           := old.ts;
   new.ai_generated := old.ai_generated;
   return new;
