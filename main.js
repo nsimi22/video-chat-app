@@ -600,23 +600,45 @@ ipcMain.handle('whisper-model-download', async (event, modelId) => {
     }
     const total = Number(res.headers.get('content-length')) || spec.size;
     const writeStream = fs.createWriteStream(tmpPath);
+    // Without an 'error' listener a mid-download write failure (disk full on a
+    // model up to ~1.5 GB) emits an unhandled 'error' that crashes the whole
+    // main process. Capture it and route it through the normal catch below.
+    let streamError = null;
+    writeStream.on('error', (e) => { streamError = e; });
     let received = 0;
     let lastEmit = 0;
     const reader = res.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      writeStream.write(Buffer.from(value));
-      received += value.length;
-      const now = Date.now();
-      if (now - lastEmit > 100) {
-        lastEmit = now;
-        try { wc.send('whisper-model-progress', { modelId: id, received, total, percent: received / total }); } catch {}
+    try {
+      while (true) {
+        if (streamError) throw streamError;
+        const { done, value } = await reader.read();
+        if (done) break;
+        writeStream.write(Buffer.from(value));
+        received += value.length;
+        const now = Date.now();
+        if (now - lastEmit > 100) {
+          lastEmit = now;
+          try { wc.send('whisper-model-progress', { modelId: id, received, total, percent: received / total }); } catch {}
+        }
       }
+      await new Promise((resolve, reject) => {
+        writeStream.end((err) => err ? reject(err) : resolve());
+      });
+    } catch (err) {
+      // A reader abort (cancel) or write error leaves the HTTP body reader and
+      // the write stream open. Cancel the reader so the socket is reclaimed
+      // promptly, then wait for the write stream to fully close before
+      // rethrowing — the outer catch unlinks tmpPath synchronously, which on
+      // Windows fails while the fd is still held (destroy() closes on a later
+      // tick, so we can't just fire-and-forget it).
+      try { await reader.cancel(); } catch {}
+      await new Promise((resolve) => {
+        if (writeStream.destroyed) return resolve();
+        writeStream.once('close', resolve);
+        writeStream.destroy();
+      });
+      throw err;
     }
-    await new Promise((resolve, reject) => {
-      writeStream.end((err) => err ? reject(err) : resolve());
-    });
     const finalSize = fs.statSync(tmpPath).size;
     if (finalSize < spec.size * 0.9) {
       try { fs.unlinkSync(tmpPath); } catch {}

@@ -2230,7 +2230,18 @@ async function joinTeamAndStart(teamId) {
   // start() and flow into onWelcome — which can safely auto-focus
   // #general now that state.chat is wired up.
   try { await huddle.start(); }
-  catch (err) { showError(err.message || 'Could not start huddle.'); return; }
+  catch (err) {
+    // We already revealed the app shell (start() dispatches `welcome`
+    // synchronously, so state.chat had to be constructed first). On failure,
+    // showError alone would write into #login-error while #login is hidden —
+    // stranding the user in an empty workspace with no channels and no
+    // message. Reuse the canonical "back to team picker" path (teardownTeam +
+    // reveal login + team step + re-render the team list) so this error path
+    // can't drift from it, then surface the error on the now-visible login.
+    try { await leave(); } catch {}
+    showError(err.message || 'Could not start huddle.');
+    return;
+  }
 }
 
 // User clicked "Start call" or "Join call". Construct the call client
@@ -7425,14 +7436,21 @@ function wireControls() {
   };
 
   // Pre-call entry: starts (or joins) a call in the active channel.
-  els.btnStartCall.onclick = () => {
+  // Both entry points call startCall, which silently no-ops when state.mesh is
+  // already set (you're in a call in another channel). renderCallHeader gates
+  // Start/Join on this channel's call state, not on "already in a call
+  // elsewhere", so the button can look live while doing nothing — surface why.
+  const startCallFromHeader = () => {
     const ch = state.chat?.currentChannel;
-    if (ch) startCall(ch);
+    if (!ch) return;
+    if (state.mesh && state.inCallChannelId !== ch) {
+      showToast('Leave your current call before joining another.');
+      return;
+    }
+    startCall(ch);
   };
-  els.btnJoinCall.onclick = () => {
-    const ch = state.chat?.currentChannel;
-    if (ch) startCall(ch);
-  };
+  els.btnStartCall.onclick = startCallFromHeader;
+  els.btnJoinCall.onclick = startCallFromHeader;
   els.btnKnockDm.onclick = () => {
     // Peer is resolved + reachability-checked in renderKnockButton; bail
     // if it went stale between render and click. knockTeammate re-checks
@@ -7486,7 +7504,11 @@ function wireControls() {
     state.meeting.panelOpen = false;
     renderMeetingNotesPanel();
   });
-  els.meetingNotesComposer && els.meetingNotesComposer.addEventListener('submit', (e) => {
+  // Plain assignment, not addEventListener — wireControls re-runs on every
+  // team (re)join, so addEventListener would stack a duplicate handler each
+  // time (the Nth join would fire N sends per submit). Same rule as the
+  // avatar-file input below.
+  els.meetingNotesComposer && (els.meetingNotesComposer.onsubmit = (e) => {
     e.preventDefault();
     sendMeetingNote();
   });
@@ -7494,7 +7516,7 @@ function wireControls() {
   // e.isComposing / keyCode 229 guards IME composition: CJK and other
   // composing-input users press Enter to commit a partial composition,
   // and we mustn't intercept that as a send.
-  els.meetingNotesInput && els.meetingNotesInput.addEventListener('keydown', (e) => {
+  els.meetingNotesInput && (els.meetingNotesInput.onkeydown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
       e.preventDefault();
       sendMeetingNote();
