@@ -109,17 +109,24 @@ Deno.serve(async (req) => {
     const { data: profs } = teamIds.size
       ? await admin.from('profiles').select('user_id, name').in('user_id', [...teamIds])
       : { data: [] as Array<{ user_id: string; name: string | null }> };
-    const nameToId = new Map<string, string>();
+    // Map display name -> ALL user_ids with that name. profiles.name isn't
+    // unique, so two teammates can share one; notify every match rather than
+    // silently picking one (arbitrary profs order) and dropping the other —
+    // this matches the desktop unread inbox, which flags both via
+    // `mentions.cs.{"<name>"}`.
+    const nameToIds = new Map<string, string[]>();
     for (const p of profs ?? []) {
-      if (p.name) nameToId.set(p.name.trim().toLowerCase(), p.user_id);
+      if (!p.name) continue;
+      const key = p.name.trim().toLowerCase();
+      (nameToIds.get(key) ?? nameToIds.set(key, []).get(key)!).push(p.user_id);
     }
 
     const resolved = new Set<string>();
     for (const raw of msg.mentions) {
       const entry = String(raw).trim();
       if (!entry || entry === '@here' || entry === '@channel') continue; // broadcast tokens handled elsewhere
-      const byName = nameToId.get(entry.toLowerCase());
-      if (byName) resolved.add(byName);
+      const byName = nameToIds.get(entry.toLowerCase());
+      if (byName) for (const id of byName) resolved.add(id);
       else if (teamIds.has(entry)) resolved.add(entry); // legacy: entry is a user_id
     }
 

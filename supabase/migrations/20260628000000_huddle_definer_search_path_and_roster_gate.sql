@@ -25,13 +25,20 @@ alter function public.close_poll(uuid) set search_path = public;
 
 -- (2) Deny anon EXECUTE on the read-only membership helpers.
 --
--- They default to EXECUTE for PUBLIC, so an unauthenticated PostgREST RPC
--- caller can probe them. They return false for anon in most cases, but e.g.
--- can_see_channel(team, public_channel) would confirm a channel's existence.
--- Defense in depth — the app only ever calls these as `authenticated`.
-revoke execute on function public.is_team_member(text) from anon;
-revoke execute on function public.is_channel_member(text, text) from anon;
-revoke execute on function public.can_see_channel(text, text) from anon;
+-- They were created with no grant management, so they carry the Postgres
+-- default GRANT EXECUTE TO PUBLIC. `anon` is a member of PUBLIC, so revoking
+-- only `from anon` is a no-op (the PUBLIC grant remains) — revoke from PUBLIC
+-- and re-grant to the roles that legitimately call them. Every RLS policy that
+-- invokes these helpers is `to authenticated`, and no anon/role-unqualified
+-- policy references them, so anon loses nothing it could use; service_role is
+-- kept for edge functions. Defense in depth (can_see_channel already returns
+-- false when auth.uid() is null after the PR-283 rewrite).
+revoke execute on function public.is_team_member(text) from public;
+revoke execute on function public.is_channel_member(text, text) from public;
+revoke execute on function public.can_see_channel(text, text) from public;
+grant execute on function public.is_team_member(text) to authenticated, service_role;
+grant execute on function public.is_channel_member(text, text) to authenticated, service_role;
+grant execute on function public.can_see_channel(text, text) to authenticated, service_role;
 
 -- (3) Gate channel_members reads on channel visibility, not just team
 --     membership.
