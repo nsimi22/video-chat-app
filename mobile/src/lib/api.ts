@@ -669,7 +669,13 @@ export function extractMentions(body: string, roster: Profile[]): string[] {
     const re = new RegExp(`(^|[^a-zA-Z0-9_])@${esc(name)}(?![a-zA-Z0-9_])`, 'gi');
     const next = scan.replace(re, '$1\uE000');
     if (next !== scan) {
-      out.add(p.user_id);
+      // Store the resolved display name, not the user_id. `messages.mentions`
+      // is a name array everywhere else: the desktop renderer stores names
+      // (renderer/api.js extractMentions), the mentions-inbox query filters
+      // `mentions.cs.{"<name>"}`, and UnreadContext matches the viewer's name.
+      // Emitting UUIDs here made mobile-authored mentions invisible to all of
+      // them (no loud unread, no @-mention push).
+      out.add(name);
       scan = next;
     }
   }
