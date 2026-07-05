@@ -2,7 +2,7 @@
 // server is gone — main.js only opens the BrowserWindow, hands the renderer
 // a Supabase URL + publishable key, and exposes the desktopCapturer for
 // screen sharing.
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell, dialog, systemPreferences } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell, dialog, systemPreferences, clipboard } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 
@@ -939,6 +939,15 @@ ipcMain.handle('fetch-proxy', async (_event, { url, method = 'GET', headers = {}
     return { ok: false, status: 0, error: String(err && err.message || err) };
   }
 });
+
+// Clipboard bridge for the text-input context menu (cut/copy/paste). The
+// renderer preload runs sandboxed (sandbox: true), where require('electron')
+// exposes only {contextBridge, crashReporter, ipcRenderer, nativeImage,
+// webFrame, webUtils} — NOT `clipboard` — so the clipboard has to live in the
+// main process and be reached over IPC. Read is sendSync because the paste
+// handler consumes the string synchronously (renderer/app.js textInputContextMenu).
+ipcMain.on('clipboard-read-text', (e) => { e.returnValue = clipboard.readText(); });
+ipcMain.on('clipboard-write-text', (_e, text) => { clipboard.writeText(String(text ?? '')); });
 
 // Render caller-supplied HTML to a PDF and save it where the user picks
 // (used by the board's roadmap export). The HTML is loaded from a temp

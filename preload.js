@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer, clipboard } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
 // Cross-window event relay for popouts. The main process echoes
 // these to every window except the sender; consumers can subscribe
@@ -93,10 +93,13 @@ contextBridge.exposeInMainWorld('huddle', {
   // Main-process-backed clipboard for the text-input context menu. Using
   // Electron's clipboard (rather than navigator.clipboard / execCommand)
   // sidesteps the renderer permission handler and works reliably for
-  // cut/copy/paste against the focused field.
+  // cut/copy/paste against the focused field. The `clipboard` module isn't
+  // available to a sandboxed preload, so these hop to the main process via
+  // IPC; readText stays synchronous (sendSync) because the paste handler
+  // splices the returned string inline.
   clipboard: {
-    readText: () => clipboard.readText(),
-    writeText: (text) => clipboard.writeText(String(text ?? '')),
+    readText: () => ipcRenderer.sendSync('clipboard-read-text'),
+    writeText: (text) => ipcRenderer.send('clipboard-write-text', String(text ?? '')),
   },
   // ICS calendar subscription fetch. Separate from fetchProxy because
   // it accepts any HTTPS host (user-supplied URL in Settings) — the
