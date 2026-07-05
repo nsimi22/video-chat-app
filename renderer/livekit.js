@@ -443,6 +443,12 @@
         this._noiseSuppressionOn = on;
         return;
       }
+      // Snapshot the publication's mute state up front. The dead-mic recovery
+      // path below re-acquires the mic via setMicrophoneEnabled(true), which
+      // also *unmutes* it — so without restoring this a self-muted user would
+      // be silently put live just by toggling suppression. Honors the method's
+      // contract: "a muted mic stays muted across a suppression toggle."
+      const wasMuted = !!micPub.isMuted;
 
       if (on) {
         if (!window.DenoisePipeline?.isAvailable()) {
@@ -499,6 +505,9 @@
           // brand-new capture track on the existing publication.
           try {
             await this.room.localParticipant.setMicrophoneEnabled(true);
+            // setMicrophoneEnabled(true) unmutes as a side effect; if the user
+            // was muted before this toggle, re-mute so they aren't put live.
+            if (wasMuted) await this.room.localParticipant.setMicrophoneEnabled(false);
           } catch (err) {
             console.warn('[livekit] re-acquire mic after dead raw track failed', err);
           }
@@ -550,6 +559,13 @@
       this._wireRoomEvents(room);
 
       await room.connect(data.url, data.token);
+      // disconnect() may have run during the await (user hit leave before the
+      // connection resolved): it sets _closing, empties _audioEls and nulls
+      // this.room. Without this guard the bootstrap below still runs against
+      // the local `room` const — re-subscribing tracks, re-appending hidden
+      // <audio> elements and repopulating _audioEls after teardown emptied it,
+      // so remote voices keep playing and ghost tiles appear after leaving.
+      if (this._closing || this.room !== room) return;
       // Pull existing remote participants into the renderer right away
       // — participantConnected only fires for joins AFTER our connect
       // resolves, so anyone already in the room would be invisible
@@ -897,16 +913,37 @@
     toggleMic() {
       if (!this.room) return false;
       const next = !this._micOn;
-      // Fire-and-forget on the promise. _syncLocalMuteFromPub will
-      // emit mute-state when the publication state actually flips.
-      this.room.localParticipant.setMicrophoneEnabled(next).catch((err) => console.warn('[livekit] toggleMic', err));
+      // Update the flag optimistically before the fire-and-forget call.
+      // _syncLocalMuteFromPub reconciles to ground truth when the publication
+      // actually flips, but until then a fast double-tap would otherwise read
+      // the same stale _micOn twice, issue two identical setMicrophoneEnabled
+      // calls, and settle on the wrong state (a double-tap meant to end muted
+      // ends unmuted).
+      this._micOn = next;
+      this.room.localParticipant.setMicrophoneEnabled(next).catch((err) => {
+        console.warn('[livekit] toggleMic', err);
+        // The toggle failed (device busy, permission revoked, ...) and no
+        // publication event will fire to reconcile, so roll the optimistic
+        // flag back to ground truth — otherwise _micOn is stuck wrong and the
+        // next tap does the opposite of what the user intended.
+        const pub = this.room?.localParticipant?.getTrackPublication(LK.Track.Source.Microphone);
+        this._micOn = pub ? !pub.isMuted : false;
+      });
       return next;
     }
 
     toggleCam() {
       if (!this.room) return false;
       const next = !this._camOn;
-      this.room.localParticipant.setCameraEnabled(next).catch((err) => console.warn('[livekit] toggleCam', err));
+      // Optimistic update — see toggleMic; guards against a double-tap reading
+      // stale _camOn twice. _syncLocalMuteFromPub reconciles to ground truth.
+      this._camOn = next;
+      this.room.localParticipant.setCameraEnabled(next).catch((err) => {
+        console.warn('[livekit] toggleCam', err);
+        // Roll the optimistic flag back to ground truth on failure — see toggleMic.
+        const pub = this.room?.localParticipant?.getTrackPublication(LK.Track.Source.Camera);
+        this._camOn = pub ? !pub.isMuted : false;
+      });
       return next;
     }
 
