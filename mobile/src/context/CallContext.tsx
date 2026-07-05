@@ -106,8 +106,14 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       setStarting(true);
       setError(null);
       if (activeCall) {
-        // Last-wins: starting a new call ends the current one.
+        // Last-wins: starting a new call ends the current one. endCall()
+        // clears startingRef/starting as part of its teardown, so re-assert
+        // them — the setActiveCall(null) it triggers re-renders the call
+        // screen, whose effect would otherwise see startingRef===false and
+        // fire a second, parallel startCall for the same channel.
         endCall();
+        startingRef.current = true;
+        setStarting(true);
       }
       const startTeamId = activeTeam.id;
       try {
