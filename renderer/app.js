@@ -2184,11 +2184,10 @@ async function joinTeamAndStart(teamId) {
     // synchronously, so state.chat had to be constructed first). On failure,
     // showError alone would write into #login-error while #login is hidden —
     // stranding the user in an empty workspace with no channels and no
-    // message. Tear the half-started huddle down (closes its realtime
-    // channel) and fall back to the team picker with a visible error.
-    try { await teardownTeam(); } catch {}
-    els.app.classList.add('hidden');
-    els.login.classList.remove('hidden');
+    // message. Reuse the canonical "back to team picker" path (teardownTeam +
+    // reveal login + team step + re-render the team list) so this error path
+    // can't drift from it, then surface the error on the now-visible login.
+    try { await leave(); } catch {}
     showError(err.message || 'Could not start huddle.');
     return;
   }

@@ -597,10 +597,18 @@ ipcMain.handle('whisper-model-download', async (event, modelId) => {
         writeStream.end((err) => err ? reject(err) : resolve());
       });
     } catch (err) {
-      // Reader abort (cancel) or a write error leaves the stream open — close
-      // it before the catch unlinks tmpPath, or the fd leaks (and on Windows
-      // the unlink fails while the handle is held).
-      try { writeStream.destroy(); } catch {}
+      // A reader abort (cancel) or write error leaves the HTTP body reader and
+      // the write stream open. Cancel the reader so the socket is reclaimed
+      // promptly, then wait for the write stream to fully close before
+      // rethrowing — the outer catch unlinks tmpPath synchronously, which on
+      // Windows fails while the fd is still held (destroy() closes on a later
+      // tick, so we can't just fire-and-forget it).
+      try { await reader.cancel(); } catch {}
+      await new Promise((resolve) => {
+        if (writeStream.destroyed) return resolve();
+        writeStream.once('close', resolve);
+        writeStream.destroy();
+      });
       throw err;
     }
     const finalSize = fs.statSync(tmpPath).size;
