@@ -160,6 +160,7 @@
     get teamMeta() { return this.huddle.team; }
     get url() { return this.huddle.url; }
     get raisedHands() { return this.huddle.raisedHands; }
+    get speakerQueue() { return this.huddle.speakerQueue; }
     get screenStreams() { return this._screenStreams; }
     get blurOn() { return this._blurOn; }
     get noiseSuppressionOn() { return this._noiseSuppressionOn; }
@@ -669,6 +670,14 @@
       // overlay shows the right icons without waiting for our next toggle.
       if (this.room?.localParticipant) {
         this.huddle.sendMuteState(this._micOn, this._camOn);
+      }
+      // Same catch-up for a raised hand: the raise-hand broadcast is
+      // transient, so a joiner who arrived after we raised would never
+      // see it (and the speaker queue would disagree across clients).
+      // sendRaiseHand(true) keeps the original raise timestamp, so this
+      // re-emit doesn't reshuffle the queue order.
+      if (this.huddle.raisedHands.has(this.huddle.peerId)) {
+        this.huddle.sendRaiseHand(true);
       }
     }
 

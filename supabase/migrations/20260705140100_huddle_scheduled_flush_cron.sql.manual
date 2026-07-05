@@ -1,0 +1,32 @@
+-- OPTIONAL / MANUAL: schedule the flush-scheduled edge function every minute
+-- so scheduled messages + reminders fire while the author's app is closed.
+--
+-- Not auto-applied: it depends on the flush-scheduled function being deployed
+-- (`supabase functions deploy flush-scheduled --no-verify-jwt`) and on a
+-- secret being available to pg_net. Apply by hand after that setup. Open
+-- desktop clients flush on their own timer regardless, so this only adds the
+-- offline case. (File suffixed .manual so the normal migration runner skips it.)
+--
+-- Prereqs (run once, as a superuser / via the dashboard):
+--   create extension if not exists pg_cron;
+--   create extension if not exists pg_net;
+--   -- store the shared secret + function URL in Vault so they aren't inlined:
+--   select vault.create_secret('<FLUSH_SECRET value>', 'flush_secret');
+--
+-- Then schedule the minute-ly POST:
+select cron.schedule(
+  'huddle-flush-scheduled',
+  '* * * * *',
+  $$
+  select net.http_post(
+    url    := 'https://jwqvrdgjpftjiwvgdrck.supabase.co/functions/v1/flush-scheduled',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-webhook-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'flush_secret')
+    ),
+    body := '{}'::jsonb
+  );
+  $$
+);
+
+-- To remove:  select cron.unschedule('huddle-flush-scheduled');

@@ -18,6 +18,7 @@
     calendar: 'calendar',
     board: 'kanban',
     ai: 'sparkles',
+    terminal: 'terminal',
     settings: 'settings',
   };
 
@@ -32,6 +33,11 @@
       sel: '.huddle-ai-view',
       open: () => window.HuddleAIPanel?.open?.(),
       close: () => window.HuddleAIPanel?.close?.(),
+    },
+    terminal: {
+      sel: '.huddle-terminal-view',
+      open: () => window.HuddleTerminalPanel?.open?.(),
+      close: () => window.HuddleTerminalPanel?.close?.(),
     },
     calendar: {
       sel: '.huddle-cal-view',
@@ -90,13 +96,15 @@
   // the highlight can't drift: an open overlay wins; else a live,
   // non-minimized call → calls; else the base chat view.
   function recomputeActiveView() {
-    let view = 'chat';
-    if (isSurfaceOpen('ai')) view = 'ai';
-    else if (isSurfaceOpen('calendar')) view = 'calendar';
-    else if (isSurfaceOpen('board')) view = 'board';
-    else if (isSurfaceOpen('whiteboard')) view = 'whiteboard';
-    else if (document.body.classList.contains('huddle-in-call')
-             && !document.body.classList.contains('huddle-call-minimized')) view = 'calls';
+    // First open surface wins (setActiveView keeps at most one open), in
+    // SURFACES declaration order; else a live non-minimized call → calls;
+    // else chat. Derived from SURFACES so a new surface needs no edit here.
+    let view = Object.keys(SURFACES).find((k) => isSurfaceOpen(k));
+    if (!view) {
+      view = (document.body.classList.contains('huddle-in-call')
+              && !document.body.classList.contains('huddle-call-minimized'))
+        ? 'calls' : 'chat';
+    }
     highlightRail(view);
   }
 
@@ -312,7 +320,10 @@
       new MutationObserver(schedule).observe(el, { attributes: true, attributeFilter: ['class'] });
       schedule();
     };
-    const ROOT_SEL = '.huddle-ai-view, .huddle-cal-view, .jb-drawer-root';
+    // Derive the watched roots from SURFACES (the single source of truth)
+    // so registering a new surface there wires this observer too — no
+    // parallel hardcoded list to drift out of sync.
+    const ROOT_SEL = Object.values(SURFACES).map((s) => s.sel).join(', ');
     // Static root present at load; lazy overlay roots watched as they appear.
     watch(document.getElementById('whiteboard-stage'));
     document.querySelectorAll(ROOT_SEL).forEach(watch);
@@ -572,9 +583,12 @@
       const onCallChannel = document.body.classList.contains('huddle-on-call-channel');
       const ai = document.querySelector('.huddle-ai-view');
       const cal = document.querySelector('.huddle-cal-view');
+      const term = document.querySelector('.huddle-terminal-view');
       const aiOpen = ai && !ai.classList.contains('hidden');
       const calOpen = cal && !cal.classList.contains('hidden');
-      const overlayOpen = aiOpen || calOpen;
+      const termOpen = term && !term.classList.contains('hidden');
+      // Any full-cover surface hiding the call → show the return dock.
+      const overlayOpen = aiOpen || calOpen || termOpen;
       const show = !onCallChannel || overlayOpen;
       dock.classList.toggle('hidden', !show);
       if (show) {

@@ -146,6 +146,7 @@ const SLASH_COMMANDS = [
   { name: 'ai',         usage: '/ai <question>',           desc: 'Ask the configured AI provider; the answer is posted as a teammate-visible message. When Jira is configured, the AI can read tickets, post comments, update fields, and trigger transitions on its own.' },
   { name: 'ai-ticket',  usage: '/ai-ticket <description>', desc: 'AI structures the description into a Jira ticket and creates it in your default project.', aliases: ['ait'] },
   { name: 'summarize',  usage: '/summarize',               desc: 'Summarize the last few messages in this channel.', aliases: ['summary'] },
+  { name: 'catchup',    usage: '/catchup',                 desc: 'Private AI briefing of everything you missed across your channels — only you see it.', aliases: ['catch-up'] },
   { name: 'jira',       usage: '/jira',                    desc: 'Open the Jira create-ticket modal.', extras: [
       { usage: '/jira create <summary>', desc: 'Open the create-ticket modal pre-filled with a summary.' },
       { usage: '/jira <KEY>',            desc: 'Post the issue URL — auto-unfurls into a status card for everyone.' },
@@ -233,6 +234,7 @@ class ChatView {
     this._initGifPicker();
     this._initPollComposer();
     this._initClipRecorder();
+    this._initVoiceNotes();
   }
 
   // --- Public API ---------------------------------------------------------
@@ -358,6 +360,13 @@ class ChatView {
     const sig = { signal: this._listenerCtrl.signal };
     this._on(this.els.threadBack, 'click', () => this.closeThread());
     this._on(this.els.send, 'click', () => this._submit());
+    if (this.els.scheduleBtn) {
+      this._on(this.els.scheduleBtn, 'click', (e) => {
+        e.stopPropagation();
+        const r = this.els.scheduleBtn.getBoundingClientRect();
+        this._openTimePicker({ clientX: r.left, clientY: r.top - 8 }, (when) => this._scheduleSend(when));
+      });
+    }
     this._on(this.els.composer, 'keydown', (e) => {
       // Both autocomplete popups claim arrow keys, Tab, and Escape while
       // visible (they're mutually exclusive — a /command needs to be at
@@ -522,6 +531,9 @@ class ChatView {
     // would strand the camera/screen tracks on.
     try { this._clipRecorder?.close(true); } catch {}
     this._clipRecorder = null;
+    // Same for a voice note mid-recording: discard it and release the mic.
+    try { this._voiceRecorder?.destroy(); } catch {}
+    this._voiceRecorder = null;
     this._listenerCtrl?.abort();
     this._listenerCtrl = null;
   }
@@ -1193,6 +1205,7 @@ class ChatView {
       label: this.hooks.isMessageSaved?.(m.id) ? 'Edit saved labels' : 'Save message', icon: 'bookmark',
       onClick: () => this.hooks.openSavePopover?.({ messageId: m.id, teamId: this.mesh.teamMeta?.id, channelId: this.currentChannel, anchor: this.nodeById.get(m.id) }),
     });
+    items.push({ label: 'Remind me…', icon: 'bell', onClick: () => setTimeout(() => this._openTimePicker(at, (when) => this._remindMe(m, when)), 0) });
     if (m.text && (jiraOk || roadmapOk)) {
       items.push({ type: 'divider' });
       if (jiraOk) items.push({ label: 'Create Jira ticket', icon: 'ticket', onClick: () => this._prefillComposer(`/ai-ticket ${(m.text || '').trim()}`) });
@@ -1204,6 +1217,66 @@ class ChatView {
       items.push({ label: 'Delete message', icon: 'trash', danger: true, onClick: () => this._delete(m.id) });
     }
     return items;
+  }
+
+  // Relative time choices shared by "Remind me" and "Schedule send".
+  // Each resolves to an absolute epoch-ms deadline; the two clock-based
+  // options only appear when they're still in the future today.
+  _timePickerOptions() {
+    const now = new Date();
+    const opts = [
+      { label: 'In 20 minutes', at: now.getTime() + 20 * 60000 },
+      { label: 'In 1 hour', at: now.getTime() + 60 * 60000 },
+      { label: 'In 3 hours', at: now.getTime() + 3 * 60 * 60000 },
+    ];
+    const evening = new Date(now); evening.setHours(18, 0, 0, 0);
+    if (evening.getTime() > now.getTime() + 60000) opts.push({ label: 'This evening (6:00 PM)', at: evening.getTime() });
+    const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1); tomorrow.setHours(9, 0, 0, 0);
+    opts.push({ label: 'Tomorrow (9:00 AM)', at: tomorrow.getTime() });
+    return opts;
+  }
+
+  // Small floating menu of relative times anchored at a cursor point
+  // ({clientX, clientY}). Calls onPick(epochMs) with the chosen deadline.
+  // Rides the shared HuddleContextMenu primitive (positioning, outside-
+  // click/Escape teardown, keyboard nav) rather than hand-rolling a menu.
+  _openTimePicker(at, onPick) {
+    window.HuddleContextMenu?.show(
+      this._timePickerOptions().map((o) => ({ label: o.label, onClick: () => onPick(o.at) })),
+      at?.clientX || 120,
+      at?.clientY || 120,
+    );
+  }
+
+  async _remindMe(m, remindAt) {
+    try {
+      await this.mesh.createReminder({ channelId: this.currentChannel, messageId: m.id, remindAt });
+      this.hooks.toast?.(`Reminder set for ${new Date(remindAt).toLocaleString([], { hour: 'numeric', minute: '2-digit', weekday: 'short' })}`);
+    } catch (err) {
+      console.warn('createReminder failed', err);
+      this.hooks.toast?.('Could not set the reminder.');
+    }
+  }
+
+  // Schedule the current composer content to send later instead of now.
+  async _scheduleSend(sendAt) {
+    const text = this.els.composer.value.trim();
+    const attachments = this.composerAttachments.filter((a) => a.status === 'done').map((a) => a.info);
+    if (!text && !attachments.length) { this.hooks.toast?.('Nothing to schedule.'); return; }
+    try {
+      await this.mesh.createScheduledMessage({
+        channelId: this.currentChannel, parentId: this.threadParentId,
+        body: text, attachments, sendAt,
+      });
+      this.els.composer.value = '';
+      this.composerAttachments = [];
+      this._renderAttachmentChips();
+      this._autoResizeComposer();
+      this.hooks.toast?.(`Message scheduled for ${new Date(sendAt).toLocaleString([], { hour: 'numeric', minute: '2-digit', weekday: 'short' })}`);
+    } catch (err) {
+      console.warn('scheduleSend failed', err);
+      this.hooks.toast?.('Could not schedule the message.');
+    }
   }
 
   // Find a rendered message node in the active channel pane and scroll
@@ -1395,7 +1468,59 @@ class ChatView {
     if (!this.threadParentId && visible.length === 0 && pagination && !pagination.hasMore) {
       container.appendChild(this._buildEmptyState());
     }
+    this._renderReadReceipts();
     container.scrollTop = container.scrollHeight;
+  }
+
+  // Read receipts (DMs / group DMs only). app.js feeds the per-member
+  // last_read_at map (+ names) via setReadReceipts as it loads/streams
+  // channel_read_state; we render a subtle "Seen"/"Seen by …" line under
+  // the sender's most recent message.
+  setReadReceipts(map, nameById) {
+    this._readReceipts = map || new Map();
+    this._rcNames = nameById || new Map();
+    this._renderReadReceipts();
+  }
+
+  _renderReadReceipts() {
+    // Clear any prior indicator first — the anchor message changes as new
+    // messages arrive.
+    this.els.messages.querySelector('.msg-seen')?.remove();
+    if (this._currentChannelType !== 'dm' || this.threadParentId) return;
+    const receipts = this._readReceipts;
+    if (!receipts || !receipts.size) return;
+    const me = this.mesh.peerId;
+    // Anchor on my most recent top-level message — "Seen" answers "did they
+    // read what I said". Scan backwards: this runs on every appended message
+    // and every receipt event, and my latest message is near the tail, so
+    // this is O(1) in practice instead of filtering the whole history.
+    const all = this._messages();
+    let last = null;
+    for (let i = all.length - 1; i >= 0; i--) {
+      if (!all[i].parentId && all[i].authorId === me) { last = all[i]; break; }
+    }
+    if (!last) return;
+    const node = this.nodeById.get(last.id);
+    if (!node) return;
+    const seers = [];
+    for (const [uid, readAt] of receipts) {
+      if (uid === me) continue;
+      if (readAt >= last.ts) seers.push(uid);
+    }
+    if (!seers.length) return;
+    const el = document.createElement('div');
+    el.className = 'msg-seen';
+    // 1:1 → just "Seen"; group DM → name who's caught up. "Is this a 1:1"
+    // reads the member roster (_rcNames covers every DM member), not the
+    // receipt map — a group where only one peer has ever opened the DM
+    // must still show the name.
+    if (this._rcNames.size <= 2) {
+      el.textContent = 'Seen';
+    } else {
+      const names = seers.map((id) => this._rcNames.get(id) || 'someone');
+      el.textContent = `Seen by ${names.join(', ')}`;
+    }
+    node.insertAdjacentElement('afterend', el);
   }
 
   // Local-day equality. Date getters already operate in the user's
@@ -1544,6 +1669,8 @@ class ChatView {
       this.nodeById.set(m.id, node);
       this.els.messages.appendChild(node);
       this._lastRendered = m;
+      // The "Seen" anchor moves to my newest message; re-place it.
+      this._renderReadReceipts();
       this.els.messages.scrollTop = this.els.messages.scrollHeight;
       return;
     }
@@ -1773,11 +1900,17 @@ class ChatView {
       for (const a of m.attachments) {
         const ct = a.contentType || '';
         const isImage = ct.startsWith('image/');
+        // Voice notes (and any other audio upload) get the inline
+        // waveform player. Checked before video: a voice note's
+        // audio/webm contentType must not fall through to the chip.
+        const isAudio = ct.startsWith('audio/') || a.kind === 'voice';
         // Huddle Clips (and any other video upload) render as an inline
         // player. We key off the MIME type so plain video uploads work too,
         // not just clips recorded in-app (which also carry kind === 'clip').
         const isVideo = ct.startsWith('video/') || a.kind === 'clip' || a.kind === 'video';
-        if (isVideo) {
+        if (isAudio && window.HuddleVoiceNote) {
+          attachmentsEl.appendChild(window.HuddleVoiceNote.renderVoiceAttachment(a));
+        } else if (isVideo) {
           const video = document.createElement('video');
           video.src = a.url;
           video.controls = true;
@@ -2295,6 +2428,59 @@ class ChatView {
     }
   }
 
+  // --- Voice notes ----------------------------------------------------------
+
+  // Wire the composer's 🎙 button to the inline voice-note recorder
+  // (renderer/voice-note.js). Same division of labor as clips: the module
+  // owns capture, we own the "upload + post the finished blob" hand-off.
+  _initVoiceNotes() {
+    if (!this.els.voiceBtn || !window.HuddleVoiceNote) return;
+    this._voiceRecorder = new window.HuddleVoiceNote.VoiceNoteRecorder({
+      els: this.els,
+      signal: this._listenerCtrl.signal,
+      hooks: {
+        denoiseEnabled: () => this.hooks.denoiseEnabled?.() ?? true,
+        toast: (msg) => this.hooks.toast?.(msg),
+        onPost: (blob, meta) => this._postVoiceNote(blob, meta),
+      },
+    });
+    this._on(this.els.voiceBtn, 'click', (e) => {
+      e.stopPropagation();
+      this._voiceRecorder.toggle();
+    });
+  }
+
+  // Upload a recorded voice Blob and post it as an audio attachment.
+  // Mirrors _postClip: rides the normal attachments JSONB (no schema
+  // change), rendering keys off the audio/* contentType + kind 'voice'.
+  async _postVoiceNote(blob, meta) {
+    const channelId = this.currentChannel;
+    const parentId = this.threadParentId;
+    const file = new File([blob], meta.name, { type: meta.mimeType || blob.type });
+    let info;
+    try {
+      info = await this.mesh.uploadFile(file);
+    } catch (err) {
+      console.warn('voice note upload failed', err);
+      this.hooks.toast?.('Voice note upload failed — try again.');
+      throw err;
+    }
+    info.kind = 'voice';
+    if (meta.durationSecs) info.durationSecs = meta.durationSecs;
+    try {
+      await this.mesh.sendMessageStrict({
+        channelId,
+        parentId,
+        text: '',
+        attachments: [info],
+      });
+    } catch (err) {
+      console.warn('voice note post failed', err);
+      this.hooks.toast?.('Couldn’t post the voice note.');
+      throw err;
+    }
+  }
+
   _openPollComposer() {
     this.els.pollQuestion.value = '';
     this.els.pollMulti.checked = false;
@@ -2506,6 +2692,7 @@ class ChatView {
     if (cmd === 'ai') return this._runSlashAi(arg);
     if (cmd === 'ai-ticket' || cmd === 'ait') return this._runSlashAiTicket(arg);
     if (cmd === 'summarize' || cmd === 'summary') return this._runSlashSummarize();
+    if (cmd === 'catchup' || cmd === 'catch-up') return this._runSlashCatchup();
     if (cmd === 'gh' || cmd === 'github') return this._runSlashGh(arg);
     if (cmd === 'jira') {
       // /jira create [summary]    -> open the create-ticket modal
@@ -2817,6 +3004,74 @@ class ChatView {
       alert('Summary failed to post to chat: ' + (err?.message || err));
     }
     return true;
+  }
+
+  // /catchup — private cross-channel digest. Gathers everything newer
+  // than each channel's read bookmark (gatherCatchUp) plus unread
+  // @-mentions, asks the AI for a briefing, and renders it as an
+  // ephemeral local-only card: there is no server-side private-message
+  // primitive, and a personal digest posted to the channel would be
+  // noise for everyone else.
+  async _runSlashCatchup() {
+    const ai = this.hooks.getAi?.();
+    if (!ai || !ai.isConfigured()) {
+      alert('No AI provider is configured. Open Settings to add an Anthropic or OpenRouter API key.');
+      return true;
+    }
+    this.els.composer.value = '';
+    this.els.composer.style.height = 'auto';
+    this._beginAiThinking();
+    let result;
+    try {
+      const [sections, mentionCutoff] = await Promise.all([
+        this.mesh.gatherCatchUp(),
+        this.mesh.getMentionsLastReadAt(),
+      ]);
+      // Unread mentions = newer than the mentions bookmark and not mine.
+      // They're usually also inside a section, but calling them out
+      // separately lets the briefing lead with "you were asked to…".
+      const mentions = (await this.mesh.loadMentions({ limit: 30 })).filter((m) =>
+        m.authorId !== this.mesh.peerId
+        && (!mentionCutoff || m.ts > mentionCutoff));
+      if (!sections.length && !mentions.length) {
+        this._renderEphemeralAiCard('You’re all caught up — nothing new in your channels. 🎉');
+        return true;
+      }
+      result = await ai.catchUp(sections, { mentions, myName: this.mesh.name });
+    } catch (err) {
+      alert('Catch-up failed: ' + (err?.message || err));
+      return true;
+    } finally {
+      this._endAiThinking();
+    }
+    this._renderEphemeralAiCard(result.text || '(no briefing)');
+    return true;
+  }
+
+  // Append a local-only AI card to the message list. It's not a
+  // messages row: nothing is sent, and any re-render (channel switch,
+  // history refresh) naturally drops it — same lifetime as Slack's
+  // "only visible to you" ephemerals.
+  _renderEphemeralAiCard(markdownText) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg msg-ai msg-ephemeral';
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar avatar-ai';
+    avatar.style.background = '#3a3f47';
+    avatar.innerHTML = window.HuddleIcons.robot;
+    // Same column layout as _renderMessage: avatar + an unclassed right
+    // column holding head/body, so the existing .msg CSS applies as-is.
+    const right = document.createElement('div');
+    const head = document.createElement('div');
+    head.className = 'msg-head';
+    head.innerHTML = '<span class="msg-author">Huddle AI</span><span class="msg-ephemeral-note">Only visible to you</span>';
+    const body = document.createElement('div');
+    body.className = 'msg-body';
+    body.innerHTML = window.renderMarkdown(markdownText, { mentionNames: this._knownNames() });
+    right.append(head, body);
+    wrap.append(avatar, right);
+    this.els.messages.appendChild(wrap);
+    this.els.messages.scrollTop = this.els.messages.scrollHeight;
   }
 
   async _runSlashGh(arg) {
