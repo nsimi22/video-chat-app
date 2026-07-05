@@ -30,6 +30,16 @@ ipcRenderer.on('protocol-url', (_e, url) => {
   }
 });
 
+// System wake / screen-unlock relay. main.js forwards Electron
+// powerMonitor 'resume'/'unlock-screen' as a `system-resume` IPC so the
+// renderer can recover a WebSocket the OS left half-open across sleep.
+const resumeListeners = new Set();
+ipcRenderer.on('system-resume', (_e, msg) => {
+  for (const cb of resumeListeners) {
+    try { cb(msg); } catch {}
+  }
+});
+
 contextBridge.exposeInMainWorld('huddle', {
   // Synchronously-known platform string (matches Node's
   // `process.platform`: 'darwin', 'win32', 'linux', ...). Used by the
@@ -86,6 +96,27 @@ contextBridge.exposeInMainWorld('huddle', {
       return () => ipcRenderer.removeListener('caption-line', handler);
     },
   },
+  // In-app terminal. The real shell runs in main (the renderer is
+  // sandboxed); this narrow bridge is the only surface it exposes.
+  // spawn/write/resize/kill are request/response; onData/onExit are
+  // push subscriptions that return an unsubscribe fn — same shape as
+  // whisperEngine.onCaptionLine above.
+  terminal: {
+    spawn:  (opts) => ipcRenderer.invoke('terminal-spawn', opts || {}),
+    write:  (id, data) => ipcRenderer.invoke('terminal-write', { id, data }),
+    resize: (id, cols, rows) => ipcRenderer.invoke('terminal-resize', { id, cols, rows }),
+    kill:   (id) => ipcRenderer.invoke('terminal-kill', { id }),
+    onData: (cb) => {
+      const handler = (_e, payload) => { try { cb(payload); } catch {} };
+      ipcRenderer.on('terminal-data', handler);
+      return () => ipcRenderer.removeListener('terminal-data', handler);
+    },
+    onExit: (cb) => {
+      const handler = (_e, payload) => { try { cb(payload); } catch {} };
+      ipcRenderer.on('terminal-exit', handler);
+      return () => ipcRenderer.removeListener('terminal-exit', handler);
+    },
+  },
   fetchProxy: (req) => ipcRenderer.invoke('fetch-proxy', req),
   // Render HTML to a PDF via a hidden window + native save dialog
   // (roadmap export). Returns { ok, path } or { ok:false, canceled|error }.
@@ -129,5 +160,14 @@ contextBridge.exposeInMainWorld('huddle', {
       try { cb(url); } catch {}
     }
     return () => protocolListeners.delete(cb);
+  },
+
+  // Fires when the OS wakes from sleep or the screen is unlocked. The
+  // renderer uses this to force a Realtime reconnect + message gap-fill,
+  // since a half-open socket won't trigger focus/online/SUBSCRIBED.
+  // Returns an unsubscribe function, matching onPopoutEvent/onProtocolUrl.
+  onSystemResume: (cb) => {
+    resumeListeners.add(cb);
+    return () => resumeListeners.delete(cb);
   },
 });

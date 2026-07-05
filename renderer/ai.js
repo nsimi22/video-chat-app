@@ -262,6 +262,43 @@
         messages: [{ role: 'user', content: user }],
       });
     }
+
+    // /catchup: personal cross-channel briefing. `sections` is the
+    // gatherCatchUp() shape ([{ name, type, since, messages }]); `mentions`
+    // is an optional list of unread @-mention messages (same marshalled
+    // message shape). Same reasoning as summarize() for living here: the
+    // prompt stays next to the API surface, chat.js just feeds data in.
+    async catchUp(sections, { mentions = [], myName = '' } = {}) {
+      const system =
+        'You are a personal "catch me up" assistant for a team-chat app. '
+        + 'The user has been away; brief them on what they missed. '
+        + 'Structure the briefing per channel with a short "#channel" heading per section, '
+        + 'most important channels first. Lead with anything that needs the user personally '
+        + '(direct mentions, questions addressed to them, decisions affecting them), then '
+        + 'decisions, then brief context. Skip pleasantries and channels with nothing of substance '
+        + '— it is fine to say a channel was just chatter in a few words. Use tight bullet points. '
+        + 'Keep the whole briefing under 400 words.';
+      const fmt = (m) => {
+        const ts = new Date(m.ts || Date.now()).toISOString().slice(5, 16).replace('T', ' ');
+        const txt = (m.text || '(attachment)').replace(/\n+/g, ' ');
+        return `[${ts}] ${m.authorName || 'someone'}: ${txt}`;
+      };
+      const parts = [];
+      if (myName) parts.push(`The user's name is ${myName}.`);
+      if (mentions.length) {
+        parts.push('Unread @-mentions of the user:\n'
+          + mentions.map((m) => `(#${m.channelId}) ${fmt(m)}`).join('\n'));
+      }
+      for (const s of sections) {
+        const label = s.type === 'dm' ? `DM ${s.name || s.channelId}` : `#${s.name || s.channelId}`;
+        parts.push(`Channel ${label} — new messages since ${s.since}:\n`
+          + s.messages.filter((m) => m.text || m.attachments?.length).map(fmt).join('\n'));
+      }
+      return this.chat({
+        system,
+        messages: [{ role: 'user', content: parts.join('\n\n') || '(nothing new)' }],
+      });
+    }
   }
 
   function parseProviderError(body) {
