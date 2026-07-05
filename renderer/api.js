@@ -103,16 +103,34 @@
       // the same field. Persisted per-device so a restart keeps your state.
       const savedStatus = localStorage.getItem('huddle:presence-status');
       this.presenceStatus = PRESENCE_VALUES.includes(savedStatus) ? savedStatus : 'active';
-      this.peerInfo = new Map(); // user_id -> { id, name, color, status }
+      // Free-form custom status ({ emoji, text, expiresAt }) — persisted
+      // per-device like the preset status and broadcast in presence meta so
+      // teammates see "🍕 lunch" next to the name. Parsed raw here; expiry
+      // is enforced lazily on every read (see _activeCustomStatus).
+      try { this.customStatus = JSON.parse(localStorage.getItem('huddle:custom-status') || 'null'); }
+      catch { this.customStatus = null; }
+      // Do Not Disturb until this epoch-ms (or Infinity for "until I turn it
+      // off", or 0 for off). Silences this user's own desktop notifications
+      // and — mirrored to user_integrations — their mobile push. Broadcast
+      // as a boolean so teammates get a DND indicator without leaking the
+      // exact end time.
+      this.dndUntil = Number(localStorage.getItem('huddle:dnd-until')) || 0;
+      // Working hours { start, end, days, tz } from user settings (loaded
+      // by app.js after start(), then handed over via setWorkingHours).
+      // Outside them the user reads as DND. null = always available.
+      this.workingHours = null;
+      this.peerInfo = new Map(); // user_id -> { id, name, color, status, statusEmoji, statusText, dnd }
       // Full team roster, populated on start() and read by the
       // sidebar + DM picker + member picker so offline teammates
       // are visible. Keyed by user_id, value: { id, name, color,
       // avatar_url }.
       this.roster = new Map();
       this.remoteScreenLabels = new Map();
-      // Peer ids whose hand is currently raised. Cleared when the peer
+      // peerId -> epoch-ms of when the hand went up. Single source of
+      // truth for both "is this hand raised" (raisedHands getter) and the
+      // ordered speaker queue (speakerQueue getter). Cleared when the peer
       // lowers their hand or leaves the call.
-      this.raisedHands = new Set();
+      this.raisedHandTimes = new Map();
       // Per-peer mic/cam state in the active call. Default assumption for
       // a newly-joined peer is both on; the peer broadcasts a mute-state
       // event when their tracks change, and the call client rebroadcasts
@@ -124,6 +142,8 @@
       this._knockChannel = null;            // private knock:<peerId> receive topic
       this._screenChannels = new Map();     // streamId -> RealtimeChannel
       this._whiteboardChannels = new Map(); // whiteboardId -> RealtimeChannel
+      this._terminalChannels = new Map();   // shareId -> promise<RealtimeChannel> (terminal share frames)
+      this._hostedTerminalShares = new Set(); // shareIds this client is broadcasting
       this._dbChannel = null;               // postgres_changes subscription
       this._myChannelIds = new Set();       // channel ids we have a membership row in (private + dm)
       this._memberRefreshTimers = new Map(); // channelId -> debounce timer, coalescing realtime member-change events
@@ -211,10 +231,20 @@
         document.removeEventListener('visibilitychange', this._onVisibilityChange);
         this._onVisibilityChange = null;
       }
+      if (this._onForegroundResync && typeof window !== 'undefined') {
+        window.removeEventListener('focus', this._onForegroundResync);
+        window.removeEventListener('online', this._onForegroundResync);
+        this._onForegroundResync = null;
+      }
+      if (this._resumeUnsub) {
+        try { this._resumeUnsub(); } catch {}
+        this._resumeUnsub = null;
+        this._onSystemResume = null;
+      }
       const direct = [this._teamChannel, this._knockChannel, this._dbChannel, this._callChannel];
       // Screen + whiteboard maps still store raw promise<RealtimeChannel>;
       // _lurkers values are now {channel, ready} pairs.
-      const indirectPromises = [...this._screenChannels.values(), ...this._whiteboardChannels.values()];
+      const indirectPromises = [...this._screenChannels.values(), ...this._whiteboardChannels.values(), ...this._terminalChannels.values()];
       const lurkerChannels = [...this._lurkers.values()].map((l) => l.channel);
       const work = direct
         .map((ch) => ch ? Promise.resolve().then(() => ch.unsubscribe()).catch(() => {}) : null)
@@ -230,6 +260,8 @@
       this._callPeerInfo.clear();
       this._screenChannels.clear();
       this._whiteboardChannels.clear();
+      this._terminalChannels.clear();
+      this._hostedTerminalShares.clear();
       this._lurkers.clear();
       this._lurkerCounts.clear();
       for (const t of this._memberRefreshTimers.values()) clearTimeout(t);
@@ -303,15 +335,26 @@
         for (const id of [...this._callPeerInfo.keys()]) {
           if (!seen.has(id)) {
             this._callPeerInfo.delete(id);
-            this.raisedHands.delete(id);
+            this.raisedHandTimes.delete(id);
             this.peerMediaState.delete(id);
           }
         }
       });
 
       ch.on('broadcast', { event: 'raise-hand' }, ({ payload }) => {
-        if (payload.raised) this.raisedHands.add(payload.from);
-        else this.raisedHands.delete(payload.from);
+        // A malformed broadcast (no payload / no sender) must not crash
+        // the handler or plant an `undefined` entry in the queue maps.
+        if (!payload?.from) return;
+        if (payload.raised) {
+          // First-seen wins: catch-up re-broadcasts (sent to late joiners)
+          // carry the original raise time, but if we already saw this hand
+          // go up, keep our existing stamp so the queue order is stable.
+          if (!this.raisedHandTimes.has(payload.from)) {
+            this.raisedHandTimes.set(payload.from, payload.ts || Date.now());
+          }
+        } else {
+          this.raisedHandTimes.delete(payload.from);
+        }
         this.dispatchEvent(new CustomEvent('raise-hand', { detail: payload }));
       });
       // Mic/cam state for remote peers. WebRTC's `track.enabled = false`
@@ -347,6 +390,21 @@
       ch.on('broadcast', { event: 'meeting-root' }, ({ payload }) => {
         if (payload?.from === this.peerId) return;
         this.dispatchEvent(new CustomEvent('meeting-root', { detail: payload }));
+      });
+
+      // Terminal shares: a host announces (and retracts) a read-only
+      // terminal broadcast. The output frames themselves ride a dedicated
+      // team:<team>:term:<shareId> channel (see _ensureTerminalChannel) so
+      // non-viewers don't pay the bandwidth — this pair only carries the
+      // "a share exists" signal, mirroring how screens announce via track
+      // metadata.
+      ch.on('broadcast', { event: 'terminal-announce' }, ({ payload }) => {
+        if (payload?.from === this.peerId) return;
+        this.dispatchEvent(new CustomEvent('terminal-announce', { detail: payload }));
+      });
+      ch.on('broadcast', { event: 'terminal-stop' }, ({ payload }) => {
+        if (payload?.from === this.peerId) return;
+        this.dispatchEvent(new CustomEvent('terminal-stop', { detail: payload }));
       });
 
       await new Promise((resolve, reject) => {
@@ -415,15 +473,24 @@
       if (!this._callChannel) return;
       const ch = this._callChannel;
       const wasIn = this._callChannelId;
+      // Retract any terminal shares we're hosting BEFORE the call channel
+      // goes away, so remaining participants' viewer tabs learn the share
+      // ended rather than watching a stream that silently stops. send() is
+      // async — await the sends, or the unsubscribe below can tear the
+      // channel down under a broadcast that never leaves the client.
+      await Promise.allSettled(
+        [...this._hostedTerminalShares].map((shareId) => this._broadcastTerminalStop(ch, shareId))
+      );
+      this._hostedTerminalShares.clear();
       this._callPeerInfo.clear();
-      this.raisedHands.clear();
+      this.raisedHandTimes.clear();
       this.peerMediaState.clear();
       this._callChannel = null;
       this._callChannelId = null;
-      // Await the call channel + every per-screen channel before clearing
-      // their maps, otherwise we can drop the references mid-handshake
-      // and leave subscriptions hanging server-side.
-      const screenUnsubs = [...this._screenChannels.values()].map(
+      // Await the call channel + every per-screen/per-terminal channel
+      // before clearing their maps, otherwise we can drop the references
+      // mid-handshake and leave subscriptions hanging server-side.
+      const screenUnsubs = [...this._screenChannels.values(), ...this._terminalChannels.values()].map(
         (p) => Promise.resolve(p).then((c) => c.unsubscribe()).catch(() => {})
       );
       await Promise.allSettled([
@@ -431,6 +498,7 @@
         ...screenUnsubs,
       ]);
       this._screenChannels.clear();
+      this._terminalChannels.clear();
       this.remoteScreenLabels.clear();
       // Drop the recording watcher too — the indicator is call-scoped.
       // (App-level leaveCall re-establishes a watcher for the channel the
@@ -716,20 +784,30 @@
           seen.add(key);
           if (key === this.peerId) continue;
           const metaStatus = PRESENCE_VALUES.includes(meta.status) ? meta.status : 'active';
+          const emoji = typeof meta.statusEmoji === 'string' ? meta.statusEmoji : null;
+          const text = typeof meta.statusText === 'string' ? meta.statusText : null;
+          const dnd = !!meta.dnd;
+          const wh = meta.wh && typeof meta.wh === 'object' ? meta.wh : null;
           if (!this.peerInfo.has(key)) {
-            const peer = { id: key, name: meta.name, color: meta.color, status: metaStatus };
+            const peer = { id: key, name: meta.name, color: meta.color, status: metaStatus, statusEmoji: emoji, statusText: text, dnd, wh };
             this.peerInfo.set(key, peer);
             this.dispatchEvent(new CustomEvent('member-online', { detail: peer }));
           } else {
-            // Meta change on an existing peer (status flip, profile
-            // rename). Re-tracks arrive as another sync with the same
-            // key — without this branch the sidebar would never reflect
-            // an Away/BRB change.
+            // Meta change on an existing peer (status flip, custom-status
+            // or DND change, profile rename). Re-tracks arrive as another
+            // sync with the same key — without this branch the sidebar
+            // would never reflect an Away/BRB/DND change.
             const peer = this.peerInfo.get(key);
-            if (peer.name !== meta.name || peer.color !== meta.color || peer.status !== metaStatus) {
+            const whChanged = peer.wh?.start !== wh?.start || peer.wh?.end !== wh?.end || peer.wh?.tz !== wh?.tz;
+            if (peer.name !== meta.name || peer.color !== meta.color || peer.status !== metaStatus
+                || peer.statusEmoji !== emoji || peer.statusText !== text || peer.dnd !== dnd || whChanged) {
               peer.name = meta.name;
               peer.color = meta.color;
               peer.status = metaStatus;
+              peer.statusEmoji = emoji;
+              peer.statusText = text;
+              peer.dnd = dnd;
+              peer.wh = wh;
               this.dispatchEvent(new CustomEvent('member-online', { detail: peer }));
             }
           }
@@ -749,7 +827,7 @@
       await new Promise((resolve, reject) => {
         ch.subscribe(async (status, err) => {
           if (status === 'SUBSCRIBED') {
-            await ch.track({ name: this.name, color: this.color, online_at: new Date().toISOString(), status: this.presenceStatus });
+            await ch.track(this._presenceMeta());
             resolve();
           } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
             reject(err || new Error('realtime ' + status));
@@ -940,17 +1018,73 @@
         });
       });
 
-      // Belt-and-suspenders: when the window has been backgrounded and
-      // returns to the foreground, the WS sometimes auto-reconnects
-      // silently *before* our SUBSCRIBED handler observes it. Run
-      // catch-up on visibility regain too.
+      // Belt-and-suspenders for a silently-dropped WS. When the machine
+      // idles or sleeps (laptop lid, network switch), the Realtime socket
+      // can die without our SUBSCRIBED handler ever observing a reconnect —
+      // and on desktop the window commonly stays *foreground-visible* the
+      // whole time (the user just walked away and came back), so no
+      // `visibilitychange` fires either. The result is the reported bug:
+      // new messages don't appear until a manual refresh re-subscribes.
+      //
+      // On any foreground/connectivity signal, nudge Realtime to reconnect
+      // — a no-op when the socket is healthy, and it revives a closed one
+      // so live delivery resumes (the rejoin fires SUBSCRIBED, which runs
+      // its own catch-up) — then run the dedup-safe catch-up here too so
+      // anything missed during the gap appears immediately, independent of
+      // whether the WS has come back yet.
+      this._onForegroundResync = () => {
+        try { this.supabase.realtime.connect(); } catch { /* already connected */ }
+        this._catchUpMessages().catch((e) => console.warn('chat catch-up failed', e));
+      };
       this._onVisibilityChange = () => {
         if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-          this._catchUpMessages().catch((e) => console.warn('chat catch-up failed', e));
+          this._onForegroundResync();
         }
       };
       if (typeof document !== 'undefined') {
         document.addEventListener('visibilitychange', this._onVisibilityChange);
+      }
+      // `focus` covers the dominant desktop case the visibility path misses:
+      // clicking back into an idle window that never went hidden. `online`
+      // covers a network drop/restore with the window already focused.
+      if (typeof window !== 'undefined') {
+        window.addEventListener('focus', this._onForegroundResync);
+        window.addEventListener('online', this._onForegroundResync);
+      }
+
+      // Strongest signal: Electron powerMonitor, relayed by main.js as
+      // `system-resume` with a `reason`. This fires even when the window
+      // stayed focused through the sleep — the one case `focus`/`online`/
+      // `visibilitychange` all miss.
+      //
+      // A true wake (`reason === 'resume'`) frequently leaves the socket
+      // *half-open* — readyState still OPEN but dead — which the gentle
+      // `connect()` no-ops on (it only revives a socket that has fully
+      // closed). Force a clean reconnect so the dead socket is torn down and
+      // every channel rejoins and re-SUBSCRIBEs (presence re-tracks in its
+      // subscribe callback; the messages channel re-runs catch-up on
+      // SUBSCRIBED). `disconnect()` MUST be awaited before `connect()`:
+      // disconnect flips the socket to CLOSING synchronously and connect()
+      // bails while it's disconnecting, so a synchronous `disconnect();
+      // connect()` pair no-ops and leaves the socket dead (realtime-js
+      // 2.105.3 / phoenix 0.4.1).
+      //
+      // A plain screen unlock (`reason === 'unlock-screen'`) fires far more
+      // often and doesn't imply a dead socket, so it takes the gentle path
+      // instead of thrashing every channel (and everyone's presence) on each
+      // unlock.
+      this._onSystemResume = (msg) => {
+        if (msg && msg.reason === 'resume') {
+          Promise.resolve(this.supabase.realtime.disconnect())
+            .then(() => this.supabase.realtime.connect())
+            .catch(() => { /* best-effort reconnect */ });
+          this._catchUpMessages().catch((e) => console.warn('chat catch-up failed', e));
+          return;
+        }
+        this._onForegroundResync();
+      };
+      if (typeof window !== 'undefined' && window.huddle && typeof window.huddle.onSystemResume === 'function') {
+        this._resumeUnsub = window.huddle.onSystemResume(this._onSystemResume);
       }
     }
 
@@ -1089,9 +1223,31 @@
     // --- Outgoing operations --------------------------------------------
 
     sendRaiseHand(raised) {
-      if (raised) this.raisedHands.add(this.peerId);
-      else this.raisedHands.delete(this.peerId);
-      this._callChannel?.send({ type: 'broadcast', event: 'raise-hand', payload: { from: this.peerId, raised: !!raised } });
+      if (raised) {
+        // Re-broadcasts for late joiners must carry the ORIGINAL raise
+        // time, not now() — otherwise every new participant would bump
+        // us to the back of the speaker queue.
+        if (!this.raisedHandTimes.has(this.peerId)) {
+          this.raisedHandTimes.set(this.peerId, Date.now());
+        }
+      } else {
+        this.raisedHandTimes.delete(this.peerId);
+      }
+      this._callChannel?.send({
+        type: 'broadcast', event: 'raise-hand',
+        payload: { from: this.peerId, raised: !!raised, ts: this.raisedHandTimes.get(this.peerId) || null },
+      });
+    }
+    // Membership view of the raised-hand map for has()-style consumers
+    // (e.g. livekit re-broadcasting our own hand to late joiners). The
+    // ordered queue is speakerQueue; both derive from raisedHandTimes.
+    get raisedHands() { return new Set(this.raisedHandTimes.keys()); }
+    // Raised hands ordered first-raised-first, ties broken by peerId so
+    // every participant computes the same order. This IS the speaker queue.
+    get speakerQueue() {
+      return [...this.raisedHandTimes.entries()]
+        .sort((a, b) => (a[1] - b[1]) || (a[0] < b[0] ? -1 : 1))
+        .map(([id, ts]) => ({ id, ts }));
     }
     sendMuteState(micOn, camOn) {
       // Call channel is { broadcast: { self: false } }, so this never
@@ -1198,16 +1354,127 @@
       ch.on('broadcast', { event: 'draw' }, ({ payload }) => {
         this.dispatchEvent(new CustomEvent('draw', { detail: payload }));
       });
+      return this._cacheSubscribe(this._screenChannels, streamId, ch);
+    }
+
+    // Shared tail of every per-resource channel helper: subscribe, cache
+    // the ready-PROMISE under `key` (so a second caller mid-handshake
+    // awaits the same subscription instead of grabbing an unsubscribed
+    // handle), and drop the cache entry on failure so the next caller
+    // retries. Used by the screen, terminal, and whiteboard channels.
+    _cacheSubscribe(map, key, ch) {
       const ready = new Promise((res, rej) => {
         ch.subscribe((s, e) => {
           if (s === 'SUBSCRIBED') res(ch);
           else if (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') rej(e);
         });
       });
-      this._screenChannels.set(streamId, ready);
-      // If the subscribe ever fails, drop the cache so the next caller can retry.
-      ready.catch(() => this._screenChannels.delete(streamId));
+      map.set(key, ready);
+      ready.catch(() => map.delete(key));
       return ready;
+    }
+
+    // --- Terminal sharing (read-only broadcast) --------------------------
+    //
+    // A host streams its in-app terminal OUTPUT to call participants.
+    // Output frames ride a dedicated per-share channel (like screen
+    // drawing) so non-viewers don't pay the bandwidth; the share is
+    // announced/retracted over the call channel (terminal-announce /
+    // terminal-stop, see _joinCallInner). Strictly one-directional:
+    // there is no event that carries viewer input back to the host.
+    //
+    // Topic is team-prefixed (team:<team>:term:<shareId>) so the existing
+    // realtime broadcast RLS gates it by team membership — same reasoning
+    // as the whiteboard topics, and no policy change needed.
+    _ensureTerminalChannel(shareId) {
+      const cached = this._terminalChannels.get(shareId);
+      if (cached) return Promise.resolve(cached);
+      const ch = this.supabase.channel(`team:${this.team.id}:term:${shareId}`, { config: { broadcast: { self: false }, private: true } });
+      // frame: a batch of raw terminal output bytes (host → viewers).
+      // snapshot: full serialized screen state, addressed to one late
+      //           joiner (host → the viewer whose join it answers).
+      // join: a viewer arrived and wants a snapshot (viewer → host).
+      ch.on('broadcast', { event: 'frame' }, ({ payload }) => {
+        this.dispatchEvent(new CustomEvent('terminal-frame', { detail: payload }));
+      });
+      ch.on('broadcast', { event: 'snapshot' }, ({ payload }) => {
+        this.dispatchEvent(new CustomEvent('terminal-snapshot', { detail: payload }));
+      });
+      ch.on('broadcast', { event: 'join' }, ({ payload }) => {
+        this.dispatchEvent(new CustomEvent('terminal-join', { detail: payload }));
+      });
+      return this._cacheSubscribe(this._terminalChannels, shareId, ch);
+    }
+
+    // Host: open the frame channel and announce the share to the call.
+    // Resolves once the frame channel is subscribed, so the first
+    // sendTerminalFrame after this cannot land in the void.
+    async startTerminalShare(shareId) {
+      if (!this._callChannel) throw new Error('not in a call');
+      await this._ensureTerminalChannel(shareId);
+      // The call may have ended during the subscribe handshake — don't
+      // register a hosted share against a torn-down call; drop the channel.
+      if (!this._callChannel) {
+        await this.leaveTerminalShare(shareId);
+        throw new Error('call ended');
+      }
+      this._hostedTerminalShares.add(shareId);
+      this._callChannel.send({
+        type: 'broadcast', event: 'terminal-announce',
+        payload: { from: this.peerId, fromName: this.name, shareId },
+      });
+    }
+
+    // Single owner of the terminal-stop wire format — used by
+    // stopTerminalShare and by leaveCall's bulk retraction. Resolves once
+    // the send has been handed to the socket; never rejects.
+    _broadcastTerminalStop(ch, shareId) {
+      return Promise.resolve(
+        ch?.send({ type: 'broadcast', event: 'terminal-stop', payload: { from: this.peerId, shareId } })
+      ).catch(() => {});
+    }
+
+    // Host: retract the share and tear down its frame channel.
+    async stopTerminalShare(shareId) {
+      this._hostedTerminalShares.delete(shareId);
+      await this._broadcastTerminalStop(this._callChannel, shareId);
+      await this.leaveTerminalShare(shareId);
+    }
+
+    // Fire-and-forget send on a share's frame channel.
+    _emitTerminal(shareId, event, payload) {
+      this._ensureTerminalChannel(shareId).then((ch) => {
+        ch.send({ type: 'broadcast', event, payload: { from: this.peerId, shareId, ...payload } });
+      }).catch((err) => console.warn(`[terminal-share] ${event} channel not ready`, err));
+    }
+
+    // cols/rows are the host terminal's dimensions — viewers pin their
+    // read-only term to them (reflowing a foreign escape stream to a
+    // different width would garble it).
+    sendTerminalFrame(shareId, data, cols, rows) {
+      this._emitTerminal(shareId, 'frame', { data, cols, rows });
+    }
+
+    // Host → one late joiner: full serialized screen state. `to` scopes
+    // the snapshot to the requesting viewer; others ignore it so a reset
+    // meant for a newcomer can't clobber an already-streaming view.
+    sendTerminalSnapshot(shareId, to, data, cols, rows) {
+      this._emitTerminal(shareId, 'snapshot', { to, data, cols, rows });
+    }
+
+    // Viewer: subscribe to a share's frames and ping the host for a
+    // catch-up snapshot.
+    async joinTerminalShare(shareId) {
+      const ch = await this._ensureTerminalChannel(shareId);
+      ch.send({ type: 'broadcast', event: 'join', payload: { from: this.peerId, shareId } });
+    }
+
+    // Viewer or host: drop the share's frame channel.
+    async leaveTerminalShare(shareId) {
+      const cached = this._terminalChannels.get(shareId);
+      if (!cached) return;
+      this._terminalChannels.delete(shareId);
+      await Promise.resolve(cached).then((ch) => ch.unsubscribe()).catch(() => {});
     }
 
     // --- Chat operations (DB-backed) ------------------------------------
@@ -1273,6 +1540,88 @@
     // posts) where there's nothing for the user to recover.
     async sendMessageStrict(args) {
       await this._insertMessage(args);
+    }
+
+    // --- Scheduled messages + reminders -----------------------------------
+
+    async createScheduledMessage({ channelId, parentId, body, attachments, sendAt }) {
+      const { data, error } = await this.supabase.from('scheduled_messages').insert({
+        team_id: this.team.id, channel_id: channelId, parent_id: parentId || null,
+        author_id: this.peerId, body: body || '', attachments: attachments || [],
+        send_at: new Date(sendAt).toISOString(),
+      }).select().single();
+      if (error) throw error;
+      return data;
+    }
+
+    // My still-pending scheduled sends, soonest first (for the manage list).
+    async loadScheduledMessages() {
+      const { data, error } = await this.supabase.from('scheduled_messages')
+        .select('*').eq('author_id', this.peerId).eq('status', 'pending')
+        .order('send_at', { ascending: true });
+      if (error) { console.warn('loadScheduledMessages failed', error); return []; }
+      return data || [];
+    }
+
+    async cancelScheduledMessage(id) {
+      const { error } = await this.supabase.from('scheduled_messages')
+        .update({ status: 'canceled' }).eq('id', id).eq('author_id', this.peerId).eq('status', 'pending');
+      if (error) throw error;
+    }
+
+    // Deliver any of my scheduled messages whose time has come. Each row is
+    // *claimed* by an atomic pending→sent flip that returns the row only to
+    // the winner, so multiple open clients (or the server cron) never send
+    // the same message twice. Claim-first means a crash between claim and
+    // insert drops that one message rather than duplicating it.
+    async flushDueScheduledMessages() {
+      const nowIso = new Date().toISOString();
+      const { data: due } = await this.supabase.from('scheduled_messages')
+        .select('id').eq('author_id', this.peerId).eq('status', 'pending').lte('send_at', nowIso);
+      let sent = 0;
+      for (const { id } of due || []) {
+        const { data: claimed } = await this.supabase.from('scheduled_messages')
+          .update({ status: 'sent' }).eq('id', id).eq('status', 'pending').select().single();
+        if (!claimed) continue; // someone/something else won the race
+        try {
+          await this._insertMessage({
+            channelId: claimed.channel_id, parentId: claimed.parent_id,
+            text: claimed.body, attachments: claimed.attachments || [],
+          });
+          sent++;
+        } catch (e) {
+          console.warn('scheduled send failed', e);
+          await this.supabase.from('scheduled_messages')
+            .update({ status: 'failed', error: String(e?.message || e) }).eq('id', id);
+        }
+      }
+      return sent;
+    }
+
+    async createReminder({ channelId, messageId, note, remindAt }) {
+      const { data, error } = await this.supabase.from('message_reminders').insert({
+        user_id: this.peerId, team_id: this.team.id, channel_id: channelId,
+        message_id: messageId || null, note: note || '',
+        remind_at: new Date(remindAt).toISOString(),
+      }).select().single();
+      if (error) throw error;
+      return data;
+    }
+
+    // Claim + return my due reminders so the app can surface a desktop
+    // notification. Same atomic-flip claim as scheduled messages, so the
+    // server push path and an open desktop client don't both fire one.
+    async claimDueReminders() {
+      const nowIso = new Date().toISOString();
+      const { data: due } = await this.supabase.from('message_reminders')
+        .select('*').eq('user_id', this.peerId).eq('status', 'pending').lte('remind_at', nowIso);
+      const fired = [];
+      for (const r of due || []) {
+        const { data: claimed } = await this.supabase.from('message_reminders')
+          .update({ status: 'fired' }).eq('id', r.id).eq('status', 'pending').select().single();
+        if (claimed) fired.push(claimed);
+      }
+      return fired;
     }
 
     // Same shape as sendMessage but flags the row as AI-generated. The
@@ -1601,6 +1950,136 @@
         return null;
       }
       return data?.mentions_last_read_at || null;
+    }
+
+    // --- Per-channel read bookmarks (channel_read_state) ------------------
+    //
+    // One timestamp per (team, channel, user): when this user last viewed
+    // the channel. Written on every focused visit (markChannelRead), read
+    // in bulk at sign-in (unread badges that survive reloads) and by
+    // /catchup (the per-channel "since you last looked" window). All
+    // methods tolerate the table not existing yet (migration not applied)
+    // by degrading to "no bookmarks".
+
+    // Map of channelId -> last_read_at ISO string for the current team.
+    async loadChannelReadState() {
+      const out = new Map();
+      if (!this.peerId || !this.team?.id) return out;
+      const { data, error } = await this.supabase
+        .from('channel_read_state')
+        .select('channel_id,last_read_at')
+        .eq('team_id', this.team.id)
+        .eq('user_id', this.peerId);
+      if (error) { console.warn('loadChannelReadState failed', error); return out; }
+      for (const row of data || []) out.set(row.channel_id, row.last_read_at);
+      return out;
+    }
+
+    // Bump this channel's bookmark to now. Fire-and-forget from the
+    // renderer's visit/focus paths — a lost write just means a slightly
+    // stale digest window, never a broken UI.
+    async markChannelRead(channelId) {
+      if (!this.peerId || !this.team?.id || !channelId) return null;
+      const ts = new Date().toISOString();
+      const { error } = await this.supabase
+        .from('channel_read_state')
+        .upsert({
+          team_id: this.team.id,
+          channel_id: channelId,
+          user_id: this.peerId,
+          last_read_at: ts,
+        }, { onConflict: 'team_id,channel_id,user_id' });
+      if (error) { console.warn('markChannelRead failed', error); return null; }
+      return ts;
+    }
+
+    // Read receipts for a DM / group DM: every member's last_read_at for
+    // this channel, as Map<userId, epochMs>. RLS only returns rows for
+    // dm-type channels the caller belongs to (see the read-receipts
+    // migration), so calling this on a normal channel just yields your own
+    // row — callers gate on channel type before showing "Seen by".
+    async loadChannelReadReceipts(channelId) {
+      const out = new Map();
+      if (!this.team?.id || !channelId) return out;
+      const { data, error } = await this.supabase
+        .from('channel_read_state')
+        .select('user_id,last_read_at')
+        .eq('team_id', this.team.id)
+        .eq('channel_id', channelId);
+      if (error) { console.warn('loadChannelReadReceipts failed', error); return out; }
+      for (const row of data || []) out.set(row.user_id, Date.parse(row.last_read_at));
+      return out;
+    }
+
+    // Live receipt updates for the open DM: subscribes to channel_read_state
+    // row changes for this channel and fires cb(userId, epochMs) as peers
+    // read. RLS on the publication limits delivery to rows the caller may
+    // see. Returns an unsubscribe fn; caller tears it down on channel switch.
+    watchReadReceipts(channelId, cb) {
+      const ch = this.supabase
+        .channel(`rr:${this.team.id}:${channelId}`, { config: { private: true } })
+        .on('postgres_changes', {
+          event: '*', schema: 'public', table: 'channel_read_state',
+          filter: `channel_id=eq.${channelId}`,
+        }, ({ new: row }) => {
+          if (row?.user_id && row.last_read_at) cb(row.user_id, Date.parse(row.last_read_at));
+        });
+      ch.subscribe();
+      return () => { try { ch.unsubscribe(); } catch {} };
+    }
+
+    // Bounded team-wide "messages newer than X" sweep, ascending. Used by
+    // the sign-in unread seeder, which buckets rows against each
+    // channel's own bookmark client-side. RLS keeps invisible channels'
+    // rows out, same as everywhere else.
+    async loadTeamMessagesSince(since, { limit = 500 } = {}) {
+      if (!this.team?.id || !since) return [];
+      // Fetch descending so that when the window holds more rows than the
+      // cap we keep the NEWEST ones — those are the messages the badges
+      // are for; ancient overflow is what gets dropped. Reversed below to
+      // hand callers the ascending order they expect.
+      const { data, error } = await this.supabase
+        .from('messages')
+        .select('*')
+        .eq('team_id', this.team.id)
+        .gt('ts', since)
+        .order('ts', { ascending: false })
+        .limit(limit);
+      if (error) { console.warn('loadTeamMessagesSince failed', error); return []; }
+      return (data || []).reverse().map((row) => this._marshalMessage(row));
+    }
+
+    // Everything the user missed, per channel, for the /catchup digest:
+    // [{ channelId, name, type, since, messages }] — only channels that
+    // actually have new messages from someone else. Channels without a
+    // bookmark default to a 24h window so a first run (or a fresh
+    // teammate) gets a bounded briefing, not the whole history. Message
+    // visibility rides the messages RLS (can_see_channel), so channels
+    // this user can't read simply come back empty and are skipped.
+    async gatherCatchUp({ perChannelLimit = 80, defaultWindowHours = 24 } = {}) {
+      if (!this.team?.id) return [];
+      const readState = await this.loadChannelReadState();
+      const fallbackSince = new Date(Date.now() - defaultWindowHours * 3600 * 1000).toISOString();
+      const { data: channels, error } = await this.supabase
+        .from('channels').select('id,name,type').eq('team_id', this.team.id);
+      if (error) { console.warn('gatherCatchUp channels failed', error); return []; }
+      const sections = await Promise.all((channels || []).map(async (c) => {
+        const since = readState.get(c.id) || fallbackSince;
+        const { data: rows, error: mErr } = await this.supabase
+          .from('messages')
+          .select('*')
+          .eq('team_id', this.team.id)
+          .eq('channel_id', c.id)
+          .gt('ts', since)
+          .order('ts', { ascending: true })
+          .limit(perChannelLimit);
+        if (mErr || !rows?.length) return null;
+        const messages = rows.map((r) => this._marshalMessage(r));
+        // A channel where the only news is your own messages isn't news.
+        if (!messages.some((m) => m.authorId !== this.peerId)) return null;
+        return { channelId: c.id, name: c.name, type: c.type, since, messages };
+      }));
+      return sections.filter(Boolean);
     }
 
     // Mark all mentions read by bumping the per-user timestamp to now.
@@ -2260,15 +2739,7 @@
       ch.on('broadcast', { event: 'frame' }, ({ payload }) => ch._onFrame?.(payload));
       ch.on('broadcast', { event: 'vote' }, ({ payload }) => ch._onVote?.(payload));
       ch.on('broadcast', { event: 'cursor' }, ({ payload }) => ch._onCursor?.(payload));
-      const ready = new Promise((res, rej) => {
-        ch.subscribe((s, e) => {
-          if (s === 'SUBSCRIBED') res(ch);
-          else if (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') rej(e);
-        });
-      });
-      this._whiteboardChannels.set(whiteboardId, ready);
-      ready.catch(() => this._whiteboardChannels.delete(whiteboardId));
-      return ready;
+      return this._cacheSubscribe(this._whiteboardChannels, whiteboardId, ch);
     }
 
     sendWhiteboardStroke(whiteboardId, stroke, from = this.peerId) {
@@ -2349,7 +2820,7 @@
       // but we should at least surface it so the silent-failure
       // mode is visible during debugging.
       try {
-        const trackResult = await this._teamChannel?.track({ name: this.name, color: this.color, online_at: new Date().toISOString(), status: this.presenceStatus });
+        const trackResult = await this._teamChannel?.track(this._presenceMeta());
         if (trackResult && trackResult !== 'ok') {
           console.warn('updateProfile: presence re-track returned', trackResult);
         }
@@ -2366,14 +2837,142 @@
       this.presenceStatus = status;
       try { localStorage.setItem('huddle:presence-status', status); } catch {}
       this.dispatchEvent(new CustomEvent('presence-status', { detail: status }));
+      await this._retrackPresence();
+    }
+
+    // --- Custom status + Do Not Disturb + working hours -------------------
+
+    // The presence meta every track() call sends. Single builder so the
+    // three track sites (initial join, profile re-track, status changes)
+    // always broadcast the same shape. `dnd` is the *effective* state —
+    // an explicit DND window OR being outside working hours — so teammates
+    // and the notification gate agree without re-deriving it.
+    _presenceMeta() {
+      const cs = this._activeCustomStatus();
+      const wh = this.workingHours;
+      return {
+        name: this.name,
+        color: this.color,
+        online_at: new Date().toISOString(),
+        status: this.presenceStatus,
+        statusEmoji: cs?.emoji || null,
+        statusText: cs?.text || null,
+        dnd: this.isDndActive(),
+        // Compact working-hours summary so teammates' profile cards can
+        // show "🕘 9:00–17:00" + the viewer can reason about overlap.
+        wh: wh && wh.enabled ? { start: wh.start, end: wh.end, tz: wh.tz || null } : null,
+      };
+    }
+
+    async _retrackPresence() {
       try {
-        const trackResult = await this._teamChannel?.track({ name: this.name, color: this.color, online_at: new Date().toISOString(), status });
-        if (trackResult && trackResult !== 'ok') {
-          console.warn('setPresenceStatus: presence re-track returned', trackResult);
-        }
-      } catch (e) {
-        console.warn('setPresenceStatus: presence re-track threw', e);
+        const trackResult = await this._teamChannel?.track(this._presenceMeta());
+        if (trackResult && trackResult !== 'ok') console.warn('presence re-track returned', trackResult);
+      } catch (e) { console.warn('presence re-track threw', e); }
+    }
+
+    // The current custom status, lazily clearing an expired one from memory
+    // and storage so a stale "🍕 lunch" doesn't linger past its window.
+    _activeCustomStatus() {
+      if (this.customStatus && this.customStatus.expiresAt && this.customStatus.expiresAt <= Date.now()) {
+        this.customStatus = null;
+        try { localStorage.removeItem('huddle:custom-status'); } catch {}
       }
+      return this.customStatus;
+    }
+
+    // True when this user should not be interrupted: an explicit DND window
+    // that hasn't elapsed, or (when working hours are set) the current time
+    // falling outside them.
+    isDndActive() {
+      if (this.dndUntil && (this.dndUntil === Infinity || this.dndUntil > Date.now())) return true;
+      return this._outsideWorkingHours();
+    }
+
+    _outsideWorkingHours() {
+      const wh = this.workingHours;
+      if (!wh || !wh.enabled) return false;
+      // Evaluate in the user's configured timezone so "9–5" means their
+      // 9–5, not the machine's. Fall back to local time if the tz is bad.
+      let now;
+      try {
+        now = wh.tz
+          ? new Date(new Date().toLocaleString('en-US', { timeZone: wh.tz }))
+          : new Date();
+      } catch { now = new Date(); }
+      const day = now.getDay(); // 0=Sun
+      if (Array.isArray(wh.days) && wh.days.length && !wh.days.includes(day)) return true;
+      const mins = now.getHours() * 60 + now.getMinutes();
+      const [sh, sm] = (wh.start || '09:00').split(':').map(Number);
+      const [eh, em] = (wh.end || '17:00').split(':').map(Number);
+      return mins < (sh * 60 + sm) || mins >= (eh * 60 + em);
+    }
+
+    // Shared tail for every status-extras mutation: tell local UI, then
+    // re-broadcast presence so teammates see the change.
+    async _emitExtras() {
+      this.dispatchEvent(new CustomEvent('presence-extras', { detail: this._selfExtras() }));
+      await this._retrackPresence();
+    }
+
+    // Set / clear a free-form status. `expiresAt` is epoch-ms or null.
+    async setCustomStatus(emoji, text, expiresAt = null) {
+      const trimmed = (text || '').slice(0, 100);
+      if (!emoji && !trimmed) return this.clearCustomStatus();
+      this.customStatus = { emoji: emoji || '', text: trimmed, expiresAt: expiresAt || null };
+      try { localStorage.setItem('huddle:custom-status', JSON.stringify(this.customStatus)); } catch {}
+      await this._emitExtras();
+    }
+    async clearCustomStatus() {
+      this.customStatus = null;
+      try { localStorage.removeItem('huddle:custom-status'); } catch {}
+      await this._emitExtras();
+    }
+
+    // Enable DND until an epoch-ms deadline (Infinity = until turned off,
+    // 0 = off). Persists locally for the desktop gate and mirrors the
+    // deadline to user_integrations so the push edge function can honor it.
+    async setDnd(until) {
+      this.dndUntil = until || 0;
+      try {
+        if (this.dndUntil) localStorage.setItem('huddle:dnd-until', String(this.dndUntil));
+        else localStorage.removeItem('huddle:dnd-until');
+      } catch {}
+      this._mirrorDndToServer();
+      await this._emitExtras();
+    }
+
+    // Working hours come from user settings (cross-device), handed in by
+    // app.js after it loads them. Re-track so the derived DND state and
+    // the profile-card display refresh immediately.
+    async setWorkingHours(wh) {
+      this.workingHours = wh || null;
+      await this._emitExtras();
+    }
+
+    // Snapshot of the local user's status extras for UI (self rendering).
+    _selfExtras() {
+      const cs = this._activeCustomStatus();
+      return { emoji: cs?.emoji || null, text: cs?.text || null, dnd: this.isDndActive(), dndUntil: this.dndUntil };
+    }
+
+    // Mirror the DND deadline + working hours into user_integrations.settings
+    // (JSONB) so the service-role notify-on-message function can skip a
+    // recipient who's heads-down. Best-effort; the desktop gate never
+    // depends on this landing.
+    async _mirrorDndToServer() {
+      try {
+        const { data: { user } } = await this.supabase.auth.getUser();
+        if (!user) return;
+        const { data } = await this.supabase.from('user_integrations').select('settings').eq('user_id', user.id).maybeSingle();
+        const settings = data?.settings || {};
+        settings.presence = {
+          ...(settings.presence || {}),
+          dndUntil: this.dndUntil === Infinity ? 'forever' : (this.dndUntil || 0),
+          workingHours: this.workingHours || null,
+        };
+        await this.supabase.from('user_integrations').upsert({ user_id: user.id, settings });
+      } catch (e) { console.warn('DND server mirror failed', e); }
     }
 
     async uploadAvatar(file) {
