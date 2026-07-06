@@ -767,31 +767,33 @@
     }
 
     // Single recording INCLUDING the (potentially large) transcript, for the
-    // library's detail view. Returns null when not found / not visible.
+    // library's detail view. Returns null when not found / not visible;
+    // throws on query failure so the caller can tell the two apart.
     async getRecording(id) {
       const { data, error } = await this.supabase
         .from('call_recordings')
         .select('*')
         .eq('id', id)
         .maybeSingle();
-      if (error) { console.warn('[recording] getRecording failed', error); return null; }
+      if (error) throw new Error(`getRecording failed: ${error.message || error}`);
       return data;
     }
 
     // Server-side substring search over recap + transcript so the library's
     // search box can match spoken content without shipping every transcript
-    // to the client. PostgREST's .or() filter string treats `,()` as syntax,
-    // so those are stripped from the term rather than escaped (supabase-js
-    // exposes no escaping helper); a search term losing a comma still
-    // matches what the user meant more often than a 400 helps them.
+    // to the client. PostgREST's .or() filter string treats `,()"` as
+    // syntax; double-quoting the value (with \ and " backslash-escaped)
+    // makes the term literal, so searches like "10:30" or "Mr. Smith, PhD"
+    // don't 400.
     async searchRecordings(query, { limit = 50 } = {}) {
-      const q = String(query || '').replace(/[,()]/g, ' ').trim();
+      const q = String(query || '').trim();
       if (!q) return this.listRecordings({ limit });
+      const quoted = `"%${q.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}%"`;
       const { data, error } = await this.supabase
         .from('call_recordings')
         .select('id, channel_id, started_by, status, started_at, ended_at, storage_path, recap, error')
         .eq('team_id', this.team.id)
-        .or(`recap.ilike.%${q}%,transcript.ilike.%${q}%`)
+        .or(`recap.ilike.${quoted},transcript.ilike.${quoted}`)
         .order('started_at', { ascending: false })
         .limit(limit);
       if (error) throw new Error(`searchRecordings failed: ${error.message || error}`);

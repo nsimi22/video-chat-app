@@ -32,6 +32,9 @@
 
   function fmtWhen(iso) {
     const d = new Date(iso);
+    // started_at is NOT NULL server-side, but an invalid Date's
+    // toLocale* throws in Chromium — never let one bad row kill the list.
+    if (!iso || isNaN(d.getTime())) return '';
     const now = new Date();
     const sameDay = d.toDateString() === now.toDateString();
     const yest = new Date(now); yest.setDate(now.getDate() - 1);
@@ -90,10 +93,17 @@
       searchTimer = setTimeout(() => refresh(), 300);
     });
 
-    // Delegated list clicks → detail view.
-    root.querySelector('.huddle-rec-list').addEventListener('click', (e) => {
+    // Delegated list clicks → detail view. Cards are tabbable divs, so
+    // Enter/Space must activate them too (divs don't get that for free).
+    const listEl = root.querySelector('.huddle-rec-list');
+    listEl.addEventListener('click', (e) => {
       const card = e.target.closest('.huddle-rec-card');
       if (card?.dataset.id) openDetail(card.dataset.id);
+    });
+    listEl.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const card = e.target.closest('.huddle-rec-card');
+      if (card?.dataset.id) { e.preventDefault(); openDetail(card.dataset.id); }
     });
   }
 
@@ -157,7 +167,16 @@
     detailEl.classList.remove('hidden');
     detailEl.innerHTML = `<div class="huddle-rec-empty">Loading…</div>`;
 
-    const r = await window.huddleApp.recordings.detail(id);
+    let r;
+    try {
+      r = await window.huddleApp.recordings.detail(id);
+    } catch (err) {
+      console.warn('[recordings] detail load failed', err);
+      if (openDetailId === id) {
+        detailEl.innerHTML = `<div class="huddle-rec-empty">Couldn’t load this recording — ${escapeHtml(err?.message || 'unknown error')}</div>`;
+      }
+      return;
+    }
     if (openDetailId !== id) return; // user navigated away meanwhile
     if (!r) {
       detailEl.innerHTML = `<div class="huddle-rec-empty">Recording not found.</div>`;
@@ -197,7 +216,12 @@
     // permanent public link; storage RLS re-checks membership per mint).
     const playerEl = detailEl.querySelector('.huddle-rec-player');
     if (r.status === 'completed' && r.storage_path) {
-      const url = await window.huddleApp.recordings.signedUrl(r.storage_path);
+      let url = null;
+      try {
+        url = await window.huddleApp.recordings.signedUrl(r.storage_path);
+      } catch (err) {
+        console.warn('[recordings] signedUrl failed', err);
+      }
       if (openDetailId !== id) return;
       if (url) {
         const video = document.createElement('video');
