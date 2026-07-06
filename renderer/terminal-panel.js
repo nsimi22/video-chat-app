@@ -158,8 +158,8 @@
       unsubData: null,
       unsubExit: null,
       bootPromise: null,
-      bootWantsClaude: false,
-      claudePending: false, // a settled claude launch is scheduled (dedup latch)
+      bootCommand: null,     // command to type once the shell is up (e.g. 'claude'); null = plain shell
+      commandPending: false, // a settled post-boot command launch is scheduled (dedup latch)
       fitScheduled: false,
       // Set true once the tab is closed; the async boot re-checks it after
       // spawn so a shell that finishes booting into a closed tab is killed
@@ -250,32 +250,30 @@
     else go();
   }
 
-  function launchClaude(s) {
-    if (s.ptyId) window.huddle.terminal.write(s.ptyId, 'claude\r');
-  }
-
-  // Launch claude into s's current shell once the layout has settled — its
-  // one-shot welcome banner is static output drawn at start, so the pty must
-  // be at its final width first. Single path for both the fresh-boot and the
-  // reopen/running-shell cases. Pins the ptyId so a shell that exits and
-  // respawns during the settle window doesn't get claude injected, and
-  // latches (claudePending) so a double request can't launch twice.
-  function launchClaudeWhenReady(s) {
+  // Type a command into s's current shell once the layout has settled. Used
+  // for `claude` (whose one-shot welcome banner is static output drawn at
+  // start, so the pty must be at its final width first) and the Settings
+  // "sign in this account" command. Single path for both the fresh-boot and
+  // the reopen/running-shell cases. Pins the ptyId so a shell that exits and
+  // respawns during the settle window doesn't get the command injected, and
+  // latches (commandPending) so a double request can't launch twice.
+  function launchCommandWhenReady(s, command) {
     const pid = s.ptyId;
-    if (!pid || s.claudePending) return;
-    s.claudePending = true;
+    if (!pid || s.commandPending) return;
+    s.commandPending = true;
     whenSettled(() => {
-      s.claudePending = false;
+      s.commandPending = false;
       if (s.closed || s.ptyId !== pid) return;
       fitSession(s);
-      launchClaude(s);
+      if (s.ptyId) window.huddle.terminal.write(s.ptyId, command + '\r');
     });
   }
 
-  // Ensure session `s` has a live shell. `mode==='claude'` launches Claude
-  // Code once the shell is up. Concurrent claude-mode callers fold into the
-  // single bootWantsClaude flag so a double-click can't launch it twice.
-  async function ensureSession(s, mode) {
+  // Ensure session `s` has a live shell. A truthy `command` is typed into
+  // the shell once it's up (e.g. 'claude', or the account sign-in command).
+  // Concurrent callers fold into the single bootCommand slot + commandPending
+  // latch so a double-click can't launch it twice.
+  async function ensureSession(s, command) {
     // Viewer tabs have no shell to ensure — they render a remote stream.
     if (s.viewer) return !!s.term;
     if (!engineReady()) {
@@ -296,10 +294,10 @@
       });
     }
 
-    if (mode === 'claude') s.bootWantsClaude = true;
+    if (command) s.bootCommand = command;
 
     if (s.ptyId) {
-      if (mode === 'claude') { s.bootWantsClaude = false; launchClaudeWhenReady(s); }
+      if (command) { s.bootCommand = null; launchCommandWhenReady(s, command); }
       return true;
     }
     if (s.bootPromise) return s.bootPromise;
@@ -336,24 +334,24 @@
           s.ptyId = null;
         });
         // Rough-fit immediately so a plain shell is close, then re-fit once
-        // the layout has truly settled. claude (if requested) launches only
-        // after settle via launchClaudeWhenReady — its welcome banner is
-        // static output drawn once at start, so the pty must be at its final
-        // width first.
+        // the layout has truly settled. A boot command (if requested)
+        // launches only after settle via launchCommandWhenReady — claude's
+        // welcome banner is static output drawn once at start, so the pty
+        // must be at its final width first.
         fitSession(s);
         whenSettled(() => { if (!s.closed && s.ptyId) fitSession(s); });
-        if (s.bootWantsClaude) launchClaudeWhenReady(s);
+        if (s.bootCommand) launchCommandWhenReady(s, s.bootCommand);
         return true;
       } catch (err) {
         if (!s.closed) s.term.write(`\r\n\x1b[31m[terminal] ${err && err.message ? err.message : 'failed to start shell'}\x1b[0m\r\n`);
         return false;
       }
     })();
-    // The deferred claude launch captured its intent in a local, so it's
-    // safe to always clear the flag here — this prevents a stale intent
-    // (failed/closed boot) from auto-launching claude on a later respawn.
+    // The deferred launch captured its command in a local, so it's safe to
+    // always clear the slot here — this prevents a stale intent (failed/
+    // closed boot) from auto-running the command on a later respawn.
     try { return await s.bootPromise; }
-    finally { s.bootPromise = null; s.bootWantsClaude = false; }
+    finally { s.bootPromise = null; s.bootCommand = null; }
   }
 
   function killSessionShell(s) {
@@ -688,38 +686,19 @@
   function open(mode) { revealAndEnsure(mode); }
   function startClaude() { revealAndEnsure('claude'); }
 
-  // Public: open the panel, spin up a NEW shell tab, and type `command`
-  // into it once the shell is live. Used by Settings' guided "Add Claude
-  // account" flow to run `CLAUDE_CONFIG_DIR=… claude` so the user only has
-  // to complete /login. The command is written to the pty exactly as the
-  // user would type it (via stdin), never interpolated into a shell string
-  // by us. No-op if the terminal engine is unavailable.
+  // Public: open the panel and run `command` in a fresh shell tab. Used by
+  // Settings' guided "Add Claude account" flow to run `CLAUDE_CONFIG_DIR=…
+  // claude` so the user only has to complete /login. newTab(command) hands
+  // the command to ensureSession, which types it (via stdin, never a shell
+  // string we build) once the shell is up — same boot-launch path claude
+  // uses. No-op if the terminal engine is unavailable.
   function runInNewTab(command) {
     const cmd = typeof command === 'string' ? command.trim() : '';
     if (!cmd) return;
     if (!root) buildDom();
     root.classList.remove('hidden');
     root.setAttribute('aria-hidden', 'false');
-    const s = newTab();
-    if (!s) return; // tab cap reached
-    // Poll for the async shell boot, then write once at final width. Pin
-    // the ptyId so a shell that respawns during the wait doesn't get the
-    // command injected mid-boot (mirrors launchClaudeWhenReady's guard).
-    let tries = 0;
-    const tick = () => {
-      if (!s || s.closed) return;
-      if (s.ptyId) {
-        const pid = s.ptyId;
-        whenSettled(() => {
-          if (s.closed || s.ptyId !== pid) return;
-          fitSession(s);
-          window.huddle.terminal.write(s.ptyId, cmd + '\r');
-        });
-        return;
-      }
-      if (tries++ < 120) setTimeout(tick, 50); // up to ~6s for the shell
-    };
-    tick();
+    newTab(cmd);
   }
 
   // Strip ANSI SGR/CSI sequences + OSC strings so captured output reads as
@@ -771,7 +750,7 @@
       killSessionShell(s);
     } else if (s.bootPromise) {
       s.stopRequested = true;
-      s.bootWantsClaude = false;
+      s.bootCommand = null;
     } else {
       return;
     }

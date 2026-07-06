@@ -143,9 +143,8 @@
   // and the stage whiteboard are left to focusChannel's own channel-aware
   // handling (a drawer doesn't cover chat; the whiteboard is channel-bound).
   function exitToolOverlays() {
-    const anyOpen = Object.keys(SURFACES)
-      .some((k) => !DOCK_EXCLUDED_SURFACES.has(k) && isSurfaceOpen(k));
-    if (!anyOpen) return;
+    // closeDockOverlays is already a no-op when nothing's open, and
+    // recomputeActiveView is idempotent — no separate open-check needed.
     closeDockOverlays();
     recomputeActiveView();
   }
