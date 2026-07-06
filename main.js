@@ -1051,6 +1051,28 @@ async function listJsonlFiles(dir, cutoffMs, out) {
   }
 }
 
+// Best-effort read of the signed-in plan tier for a config dir, so the
+// usage panel can label whose limits these are ("Claude Max", "Pro").
+// The tier string lives in <base>/.claude.json (or legacy ~/.claude.json)
+// under oauthAccount.organizationRateLimitTier. That file also stores
+// per-project history and can be multi-MB, so we regex for the one field
+// rather than JSON.parse the whole thing, and skip anything absurdly large.
+function readClaudePlanTier(base) {
+  const fs = require('fs');
+  const os = require('os');
+  const candidates = [path.join(base, '.claude.json'), path.join(os.homedir(), '.claude.json')];
+  for (const file of candidates) {
+    try {
+      const st = fs.statSync(file);
+      if (!st.isFile() || st.size > 25 * 1024 * 1024) continue;
+      const txt = fs.readFileSync(file, 'utf8');
+      const m = txt.match(/"organizationRateLimitTier"\s*:\s*"([^"]+)"/);
+      if (m) return m[1];
+    } catch { /* missing / unreadable → next candidate */ }
+  }
+  return null;
+}
+
 // Stream one transcript, folding usage-bearing assistant lines into `entries`
 // keyed by message.id:requestId. Streaming lines repeat the same message with
 // growing usage — LAST occurrence wins (most complete), exactly one count per
@@ -1126,7 +1148,7 @@ ipcMain.handle('claude-usage-scan', async (_event, payload = {}) => {
     const base = prof.base;
     const projectsDir = path.join(base, 'projects');
     if (!fs.existsSync(projectsDir)) {
-      return { name: prof.name, found: false, totals: null, byDay: {}, byModel: {}, files: 0, truncated: false };
+      return { name: prof.name, found: false, totals: null, byDay: {}, byModel: {}, files: 0, truncated: false, planTier: null, window5h: null, window7d: null };
     }
     const files = [];
     await listJsonlFiles(projectsDir, cutoffMs, files);
@@ -1147,15 +1169,28 @@ ipcMain.handle('claude-usage-scan', async (_event, payload = {}) => {
     const totals = zero();
     const byDay = {};
     const byModel = {};
+    // Rolling-window sums for the "current usage" view. These are a LOCAL
+    // approximation of how much this account has spent in the trailing 5h
+    // (Claude's session window) and 7d (weekly window) — NOT the account's
+    // official remaining allowance, which isn't on disk (see the usage
+    // panel's disclaimer). Computed from the same entries we already fold.
+    const nowMs = Date.now();
+    const cut5h = nowMs - 5 * 3600 * 1000;
+    const cut7d = nowMs - 7 * 24 * 3600 * 1000;
+    const window5h = zero();
+    const window7d = zero();
     for (const e of entries.values()) {
       const day = new Date(e.ts).toISOString().slice(0, 10);
       const cost = estimateCostUsd(e.model, e);
       const cacheWrite = e.cacheWrite5m + e.cacheWrite1h;
-      for (const b of [
+      const buckets = [
         byDay[day] || (byDay[day] = zero()),
         byModel[e.model] || (byModel[e.model] = zero()),
         totals,
-      ]) {
+      ];
+      if (e.ts >= cut5h) buckets.push(window5h);
+      if (e.ts >= cut7d) buckets.push(window7d);
+      for (const b of buckets) {
         b.input += e.input; b.output += e.output;
         b.cacheRead += e.cacheRead; b.cacheWrite += cacheWrite;
         b.costUsd += cost; b.messages += 1;
@@ -1164,6 +1199,9 @@ ipcMain.handle('claude-usage-scan', async (_event, payload = {}) => {
     return {
       name: prof.name,
       found: true,
+      planTier: readClaudePlanTier(base),
+      window5h,
+      window7d,
       totals,
       byDay,
       byModel,
