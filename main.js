@@ -949,13 +949,24 @@ function resolveClaudeBinary() {
 
 // The one binary-selection policy both handlers share: an explicit
 // Settings override wins, else login-shell PATH resolution; either way
-// the file must exist on disk. Returns null when nothing usable does.
+// the file must exist on disk AND look like the claude CLI. Returns null
+// when nothing usable does.
+//
+// The basename check is hygiene, not a security boundary — the override
+// arrives from the renderer (settings live behind its Supabase session,
+// so main can't read them independently), and a fully compromised
+// renderer already has the terminal-spawn IPC's interactive shell. What
+// it buys: this privileged exec path can't be casually repointed at an
+// arbitrary binary, and a mistyped Settings path fails loud instead of
+// running something unexpected.
+const CLAUDE_BIN_NAME_RE = /^claude(?:\.(?:cmd|exe|bat))?$/i;
 async function resolveExistingClaudeBin(overridePath) {
   const fs = require('fs');
   const bin = (typeof overridePath === 'string' && overridePath.trim())
     ? overridePath.trim()
     : await resolveClaudeBinary();
-  return bin && fs.existsSync(bin) ? bin : null;
+  if (!bin || !fs.existsSync(bin)) return null;
+  return CLAUDE_BIN_NAME_RE.test(path.basename(bin)) ? bin : null;
 }
 
 // Account profiles: each profile is an isolated CLAUDE_CONFIG_DIR — its own
@@ -1260,7 +1271,6 @@ ipcMain.handle('claude-code-run', async (_event, payload = {}) => {
       finish({
         ok: true,
         text: String(text),
-        sessionId: json?.session_id || null,
         costUsd: typeof json?.total_cost_usd === 'number' ? json.total_cost_usd : null,
         // Diagnostics for the Settings "Test" button: which binary ran,
         // and whether API-key env vars were present (billing signal).

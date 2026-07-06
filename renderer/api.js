@@ -751,9 +751,13 @@
     // deliberately excluded — see listRecordings), team scope, ordering,
     // and starter-name resolution; search just adds an .or() filter.
     async _queryRecordings({ limit, or }) {
+      // recap_snippet (generated column, left(recap, 200)) instead of the
+      // full recap: the list renders ~180 chars per card, and full recaps
+      // × 100 rows shipped hundreds of KB per open. The detail view's
+      // getRecording() selects * and gets the real thing.
       let q = this.supabase
         .from('call_recordings')
-        .select('id, channel_id, started_by, status, started_at, ended_at, storage_path, recap, error')
+        .select('id, channel_id, started_by, status, started_at, ended_at, storage_path, recap_snippet, error')
         .eq('team_id', this.team.id);
       if (or) q = q.or(or);
       const { data, error } = await q
@@ -787,7 +791,9 @@
     // syntax; double-quoting the value (with \ and " backslash-escaped)
     // makes the term literal, so searches like "10:30" or "Mr. Smith, PhD"
     // don't 400.
-    async searchRecordings(query, { limit = 50 } = {}) {
+    async searchRecordings(query, { limit = 100 } = {}) {
+      // Default limit matches listRecordings — a cleared search box must
+      // show the same rows as the initial list, not a differently-sized one.
       const q = String(query || '').trim();
       if (!q) return this._queryRecordings({ limit });
       const quoted = `"%${q.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}%"`;
@@ -823,6 +829,17 @@
       });
       if (error) throw new Error(`createTeamIntegration failed: ${error.message || error}`);
       return data;
+    }
+
+    // Swap the webhook secret keeping the integration id/URL intact.
+    // Returns the NEW secret — visible this once, same contract as create.
+    // The old secret stops working immediately.
+    async rotateTeamIntegrationSecret(id) {
+      const { data, error } = await this.supabase.rpc('rotate_team_integration_secret', {
+        p_integration_id: id,
+      });
+      if (error) throw new Error(`rotateTeamIntegrationSecret failed: ${error.message || error}`);
+      return data?.secret || null;
     }
 
     async updateTeamIntegration(id, patch) {
