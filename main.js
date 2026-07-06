@@ -944,12 +944,181 @@ async function resolveExistingClaudeBin(overridePath) {
   return bin && fs.existsSync(bin) ? bin : null;
 }
 
+// Account profiles: each profile is an isolated CLAUDE_CONFIG_DIR — its own
+// login (personal Max vs work Team), its own MCP servers, its own transcript
+// history. Normalize a user-supplied dir: expand leading ~, require an
+// absolute path, else fall back to the default (empty → CLI default ~/.claude).
+function normalizeClaudeConfigDir(dir) {
+  if (typeof dir !== 'string' || !dir.trim()) return '';
+  const os = require('os');
+  let d = dir.trim();
+  if (d === '~') d = os.homedir();
+  else if (d.startsWith('~/') || d.startsWith('~\\')) d = path.join(os.homedir(), d.slice(2));
+  return path.isAbsolute(d) ? d : '';
+}
+
 // Cheap presence probe for the Settings auto-default: is a claude binary
 // reachable (PATH via login shell, or the explicit override)? No spawn of
 // the CLI itself — just resolution + existence.
 ipcMain.handle('claude-code-detect', async (_event, payload = {}) => {
   const bin = await resolveExistingClaudeBin(payload.binPath);
   return { found: !!bin, path: bin };
+});
+
+// Local Claude usage scan for the Usage dashboard. Claude Code writes a
+// JSONL transcript per session under <config-dir>/projects/**; every
+// assistant turn carries message.usage (tokens) + message.model + a
+// timestamp. Aggregating those locally gives a usage dashboard with no
+// API calls and no credentials — the same data source ccusage uses.
+// Only AGGREGATES cross the IPC boundary (per-day / per-model token sums
+// and cost estimates), never transcript content.
+//
+// Cost is an API-LIST-PRICE EQUIVALENT (what the tokens would have cost
+// via API-key billing): $/MTok in/out per model family, cache reads at
+// 0.1x input, cache writes at 1.25x (5m TTL) / 2x (1h TTL). Subscription
+// usage has no per-request charge — the estimate sizes the value of the
+// plan, and is labeled as an estimate in the UI.
+const CLAUDE_PRICING = [
+  { re: /fable|mythos/i, inp: 10, out: 50 },
+  { re: /opus-4-[5-9]/i, inp: 5, out: 25 },
+  { re: /opus/i, inp: 15, out: 75 },        // opus 4.1 and older
+  { re: /sonnet/i, inp: 3, out: 15 },
+  { re: /haiku-4/i, inp: 1, out: 5 },
+  { re: /haiku-3-5/i, inp: 0.8, out: 4 },
+  { re: /haiku/i, inp: 0.25, out: 1.25 },
+];
+const DEFAULT_PRICING = { inp: 5, out: 25 };
+const USAGE_MAX_FILES_PER_PROFILE = 2000;
+
+function pricingFor(model) {
+  return CLAUDE_PRICING.find((p) => p.re.test(model || ''))
+    || DEFAULT_PRICING;
+}
+
+function estimateCostUsd(model, t) {
+  const p = pricingFor(model);
+  return (t.input * p.inp
+    + t.output * p.out
+    + t.cacheRead * p.inp * 0.1
+    + t.cacheWrite5m * p.inp * 1.25
+    + t.cacheWrite1h * p.inp * 2) / 1e6;
+}
+
+function listJsonlFiles(dir, cutoffMs, out) {
+  const fs = require('fs');
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    if (out.length >= USAGE_MAX_FILES_PER_PROFILE) return;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) listJsonlFiles(p, cutoffMs, out);
+    else if (e.isFile() && e.name.endsWith('.jsonl')) {
+      try {
+        if (fs.statSync(p).mtimeMs >= cutoffMs) out.push(p);
+      } catch { /* raced deletion */ }
+    }
+  }
+}
+
+// Stream one transcript, folding usage-bearing assistant lines into `entries`
+// keyed by message.id:requestId. Streaming lines repeat the same message with
+// growing usage — LAST occurrence wins (most complete), exactly one count per
+// API request.
+function scanTranscript(file, cutoffMs, entries) {
+  const fs = require('fs');
+  const readline = require('readline');
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: fs.createReadStream(file),
+      crlfDelay: Infinity,
+    });
+    rl.on('line', (line) => {
+      if (!line.includes('"usage"')) return; // cheap pre-filter
+      let d;
+      try { d = JSON.parse(line); } catch { return; }
+      if (d?.type !== 'assistant') return;
+      const m = d.message;
+      const u = m?.usage;
+      if (!u || !m.model) return;
+      const ts = Date.parse(d.timestamp || 0);
+      if (!Number.isFinite(ts) || ts < cutoffMs) return;
+      const key = `${m.id || d.uuid || 'x'}:${d.requestId || 'x'}`;
+      const cc = u.cache_creation || {};
+      const cacheWriteTotal = u.cache_creation_input_tokens || 0;
+      const w1h = cc.ephemeral_1h_input_tokens || 0;
+      entries.set(key, {
+        ts,
+        model: m.model,
+        input: u.input_tokens || 0,
+        output: u.output_tokens || 0,
+        cacheRead: u.cache_read_input_tokens || 0,
+        // When the TTL breakdown is absent, treat the whole write as 5m
+        // (the cheaper multiplier — under- rather than over-estimates).
+        cacheWrite5m: Math.max(0, cacheWriteTotal - w1h),
+        cacheWrite1h: w1h,
+      });
+    });
+    rl.on('close', resolve);
+    rl.on('error', resolve);
+  });
+}
+
+ipcMain.handle('claude-usage-scan', async (_event, payload = {}) => {
+  const os = require('os');
+  const fs = require('fs');
+  const days = Math.min(90, Math.max(1, Math.floor(payload.days) || 30));
+  const cutoffMs = Date.now() - days * 24 * 3600 * 1000;
+  // Always scan the default dir; extra profiles come from Settings.
+  const wanted = [{ name: 'Default', configDir: '' }];
+  for (const p of Array.isArray(payload.profiles) ? payload.profiles : []) {
+    const dir = normalizeClaudeConfigDir(p?.configDir);
+    if (dir && typeof p.name === 'string' && p.name.trim()) {
+      wanted.push({ name: p.name.trim(), configDir: dir });
+    }
+  }
+
+  const profiles = [];
+  for (const prof of wanted) {
+    const base = prof.configDir || path.join(os.homedir(), '.claude');
+    const projectsDir = path.join(base, 'projects');
+    if (!fs.existsSync(projectsDir)) {
+      profiles.push({ name: prof.name, configDir: prof.configDir, found: false, totals: null, byDay: {}, byModel: {}, files: 0 });
+      continue;
+    }
+    const files = [];
+    listJsonlFiles(projectsDir, cutoffMs, files);
+    const entries = new Map();
+    for (const f of files) await scanTranscript(f, cutoffMs, entries);
+
+    const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, messages: 0 };
+    const byDay = {};
+    const byModel = {};
+    for (const e of entries.values()) {
+      const day = new Date(e.ts).toISOString().slice(0, 10);
+      const cost = estimateCostUsd(e.model, e);
+      const cacheWrite = e.cacheWrite5m + e.cacheWrite1h;
+      for (const [bucketKey, bucket] of [[day, byDay], [e.model, byModel]]) {
+        const b = bucket[bucketKey] || (bucket[bucketKey] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, messages: 0 });
+        b.input += e.input; b.output += e.output;
+        b.cacheRead += e.cacheRead; b.cacheWrite += cacheWrite;
+        b.costUsd += cost; b.messages += 1;
+      }
+      totals.input += e.input; totals.output += e.output;
+      totals.cacheRead += e.cacheRead; totals.cacheWrite += cacheWrite;
+      totals.costUsd += cost; totals.messages += 1;
+    }
+    profiles.push({
+      name: prof.name,
+      configDir: prof.configDir,
+      found: true,
+      totals,
+      byDay,
+      byModel,
+      files: files.length,
+      truncated: files.length >= USAGE_MAX_FILES_PER_PROFILE,
+    });
+  }
+  return { days, profiles };
 });
 
 ipcMain.handle('claude-code-run', async (_event, payload = {}) => {
@@ -985,6 +1154,10 @@ ipcMain.handle('claude-code-run', async (_event, payload = {}) => {
     delete childEnv.ANTHROPIC_API_KEY;
     delete childEnv.ANTHROPIC_AUTH_TOKEN;
   }
+  // Account profile: an isolated config dir carries its own /login
+  // credentials and MCP servers (personal Max vs work Team).
+  const configDir = normalizeClaudeConfigDir(payload.configDir);
+  if (configDir) childEnv.CLAUDE_CONFIG_DIR = configDir;
   return await new Promise((resolve) => {
     let cp;
     try {

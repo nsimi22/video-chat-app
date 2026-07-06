@@ -21,6 +21,7 @@
     terminal: 'terminal',
     recordings: 'film',
     integrations: 'zap',
+    usage: 'activity',
     settings: 'settings',
   };
 
@@ -50,6 +51,11 @@
       sel: '.huddle-integrations-view',
       open: () => window.HuddleIntegrations?.open?.(),
       close: () => window.HuddleIntegrations?.close?.(),
+    },
+    usage: {
+      sel: '.huddle-usage-view',
+      open: () => window.HuddleUsage?.open?.(),
+      close: () => window.HuddleUsage?.close?.(),
     },
     calendar: {
       sel: '.huddle-cal-view',

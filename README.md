@@ -101,8 +101,18 @@ shared with teammates.
     your **already-connected MCP servers** (user-scope config, OAuth'd
     remotes, and claude.ai connectors on the same account) — so the
     assistant can reach Linear, Notion, Gmail, or whatever you've
-    connected, with no keys stored in Huddle. Pre-approve tools in
-    Settings (`mcp__linear__*,WebSearch`); anything unlisted is denied.
+    connected, with no keys stored in Huddle. On a Pro/Max login,
+    usage bills your **subscription** — no API spend. Pre-approve
+    tools in Settings (`mcp__linear__*,WebSearch`); anything unlisted
+    is denied.
+  - **Multiple Claude accounts** — add profiles in Settings (`Name =
+    /path/to/config-dir`, e.g. a personal Max account and a work Team
+    account, each an isolated `CLAUDE_CONFIG_DIR` with its own login
+    and MCP servers) and pick which one answers `/ai`.
+  - **Claude usage dashboard** — the 📈 rail item aggregates your local
+    Claude Code transcripts (all profiles) into per-day/per-model token
+    charts with an API-list-price cost equivalent. Local files only; no
+    API calls.
   - All AI traffic is routed through the Electron main process so the
     renderer never touches third-party origins directly.
 - **GitHub** (Personal Access Token)

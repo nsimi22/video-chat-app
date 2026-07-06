@@ -238,6 +238,8 @@ const els = {
   setClaudeCodeTools: $('#set-claude-code-tools'),
   setClaudeCodeBin: $('#set-claude-code-bin'),
   setClaudeCodePreferSub: $('#set-claude-code-prefer-sub'),
+  setClaudeCodeProfiles: $('#set-claude-code-profiles'),
+  setClaudeCodeActive: $('#set-claude-code-active'),
   setClaudeCodeTest: $('#set-claude-code-test'),
   setClaudeCodeTestResult: $('#set-claude-code-test-result'),
   setAiTicketContext: $('#set-ai-ticket-context'),
@@ -7640,6 +7642,8 @@ function wireControls() {
   els.settingsSave.onclick = saveSettings;
   els.setPasswordUpdate.onclick = updatePasswordFromSettings;
   els.setClaudeCodeTest.onclick = testClaudeCodeFromSettings;
+  // Keep the account picker in sync while the profiles textarea is edited.
+  els.setClaudeCodeProfiles.oninput = () => rebuildClaudeProfileSelect(null);
 
   // Settings v2 tab sidebar — delegate clicks once on the sidebar
   // rather than per-button so the handler survives any re-render.
@@ -8336,6 +8340,33 @@ function rebuildAiClient() {
   });
 }
 
+// Claude account profiles: "Name = /path/to/config-dir" per line. Each dir
+// is an isolated CLAUDE_CONFIG_DIR (own /login, own MCP servers).
+function parseClaudeProfiles(text) {
+  return String(text || '').split('\n').map((line) => {
+    const i = line.indexOf('=');
+    if (i < 1) return null;
+    const name = line.slice(0, i).trim();
+    const configDir = line.slice(i + 1).trim();
+    return name && configDir ? { name, configDir } : null;
+  }).filter(Boolean);
+}
+
+// Rebuild the "Account for /ai" select from the profiles textarea, keeping
+// the selection when the named profile still exists.
+function rebuildClaudeProfileSelect(selected) {
+  const sel = els.setClaudeCodeActive;
+  const keep = selected ?? sel.value;
+  sel.innerHTML = '<option value="">Default (~/.claude)</option>';
+  for (const p of parseClaudeProfiles(els.setClaudeCodeProfiles.value)) {
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    opt.textContent = `${p.name} (${p.configDir})`;
+    sel.appendChild(opt);
+  }
+  sel.value = [...sel.options].some((o) => o.value === keep) ? keep : '';
+}
+
 // Settings "Test Claude Code": fire a one-word prompt through the same
 // path /ai uses (reading the CURRENT form values, not yet-saved settings)
 // and report which binary ran and how it's billed. total_cost_usd > 0
@@ -8345,10 +8376,14 @@ async function testClaudeCodeFromSettings() {
   els.setClaudeCodeTest.disabled = true;
   out.textContent = 'Testing… (first run can take ~10s)';
   try {
+    const activeName = els.setClaudeCodeActive.value;
+    const profile = parseClaudeProfiles(els.setClaudeCodeProfiles.value)
+      .find((p) => p.name === activeName);
     const res = await window.huddle.claudeCode.run({
       prompt: 'Reply with exactly the word: ok',
       binPath: els.setClaudeCodeBin.value.trim(),
       preferSubscription: els.setClaudeCodePreferSub.checked,
+      configDir: profile?.configDir || '',
     });
     if (!res?.ok) {
       out.textContent = `✗ ${res?.error || 'failed'}`;
@@ -8399,6 +8434,9 @@ async function openSettings() {
   els.setClaudeCodeTools.value = s.ai?.claudeCode?.allowedTools || '';
   els.setClaudeCodeBin.value = s.ai?.claudeCode?.binPath || '';
   els.setClaudeCodePreferSub.checked = !!s.ai?.claudeCode?.preferSubscription;
+  els.setClaudeCodeProfiles.value = (s.ai?.claudeCode?.profiles || [])
+    .map((p) => `${p.name} = ${p.configDir}`).join('\n');
+  rebuildClaudeProfileSelect(s.ai?.claudeCode?.activeProfile || '');
   els.setClaudeCodeTestResult.textContent = '';
   els.setAiTicketContext.value = s.aiTicket?.context || '';
   els.setAiTicketRepo.value = s.aiTicket?.githubRepo || '';
@@ -8554,6 +8592,8 @@ async function saveSettings() {
         allowedTools: els.setClaudeCodeTools.value.trim(),
         binPath: els.setClaudeCodeBin.value.trim(),
         preferSubscription: els.setClaudeCodePreferSub.checked,
+        profiles: parseClaudeProfiles(els.setClaudeCodeProfiles.value),
+        activeProfile: els.setClaudeCodeActive.value,
       },
     },
     aiTicket: {
@@ -9014,6 +9054,14 @@ window.huddleApp = {
     search:    (q, opts) => state.huddle ? state.huddle.searchRecordings(q, opts) : Promise.resolve([]),
     detail:    (id) => state.huddle ? state.huddle.getRecording(id) : Promise.resolve(null),
     signedUrl: (path) => state.huddle ? state.huddle.recordingSignedUrl(path) : Promise.resolve(null),
+  },
+  // Usage dashboard (usage.js): local Claude Code transcript aggregates.
+  // Profiles ride along from Settings so every signed-in account is scanned.
+  claudeUsage: {
+    scan: (opts) => window.huddle.claudeCode?.usageScan?.({
+      ...opts,
+      profiles: state.settings?.ai?.claudeCode?.profiles || [],
+    }) ?? Promise.resolve({ days: 0, profiles: [] }),
   },
   // Integrations view (integrations.js): team-scoped inbound webhooks.
   // Same narrow-facade pattern. channels() feeds the create form's target

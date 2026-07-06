@@ -98,11 +98,16 @@
         if (!text) continue;
         parts.push(messages.length > 1 ? `${m.role === 'assistant' ? 'Assistant' : 'User'}: ${text}` : text);
       }
+      // Account profiles: the active profile's config dir selects which
+      // signed-in Claude account (and its MCP servers) answers.
+      const profiles = Array.isArray(this.claudeCode.profiles) ? this.claudeCode.profiles : [];
+      const active = profiles.find((p) => p.name === this.claudeCode.activeProfile);
       const res = await window.huddle.claudeCode.run({
         prompt: parts.join('\n\n'),
         allowedTools: this.claudeCode.allowedTools || '',
         binPath: this.claudeCode.binPath || '',
         preferSubscription: !!this.claudeCode.preferSubscription,
+        configDir: active?.configDir || '',
       });
       if (!res?.ok) {
         throw new Error(`Claude Code: ${res?.error || 'request failed'}`);
