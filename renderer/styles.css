@@ -470,6 +470,30 @@ input:focus, textarea:focus {
   width: 14px;
   height: 14px;
 }
+
+/* Custom-status surfaces (refreshHeaderStatus / refreshDmPresence /
+   renderMeStatus): the peer's "🍕 Lunch" beside the DM header title,
+   the emoji suffix on DM sidebar rows, and your own chip on the
+   me-row. Full text always rides the hover title. */
+.channel-status {
+  margin-left: 8px;
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--text-dim);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 0 1 auto;
+}
+.channel-list li .ch-status { flex: none; font-size: 12px; line-height: 1; }
+.me .me-status-chip {
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-dim);
+}
+
 .section-header-row button.ghost {
   background: transparent; border: none; color: var(--text-dim);
   font-size: 14px; line-height: 1; padding: 2px 6px; cursor: pointer;
