@@ -244,6 +244,30 @@
         </div>
         ${h > 38 ? `<div class="huddle-cal-event-meta mono">${escapeHtml(timeLabel)} · ${meta}</div>` : ''}
       `;
+
+      // External meetings (Teams/Zoom/Meet/Webex) whose feed carried a
+      // join link get a Join button when imminent — same window as the
+      // list drawer. window.open routes the URL through the main-process
+      // window-open handler → shell.openExternal (default browser / native
+      // meeting app). stopPropagation guards against a future block click.
+      if (e.kind === 'ics' && e.joinUrl && /^https?:\/\//i.test(e.joinUrl)) {
+        const startMs = e.start.getTime();
+        const nowMs = now.getTime();
+        const imminent = (startMs - nowMs <= 15 * 60 * 1000) && (nowMs - startMs <= 60 * 60 * 1000);
+        if (imminent) {
+          const join = document.createElement('button');
+          join.className = 'huddle-cal-event-join';
+          join.type = 'button';
+          join.textContent = e.provider ? `Join in ${e.provider}` : 'Join';
+          join.title = e.joinUrl;
+          join.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            try { window.open(e.joinUrl, '_blank', 'noopener'); }
+            catch (err) { console.warn('open meeting link failed', err); }
+          });
+          block.appendChild(join);
+        }
+      }
       col.appendChild(block);
     }
 
