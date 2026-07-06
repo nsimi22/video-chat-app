@@ -3951,6 +3951,11 @@ function focusChannel(channelId) {
   for (const x of els.channels.children) x.classList.remove('active');
   for (const x of els.dms.children) x.classList.remove('active');
   for (const li of sidebarRowsFor(channel.id)) li.classList.add('active');
+  // A full-cover tool overlay (recordings / usage / integrations / AI /
+  // terminal / calendar) sits above the chat stage — dismiss it so the
+  // channel the user just clicked actually appears (otherwise the click
+  // silently does nothing). No-op when nothing's open / in legacy UI.
+  try { window.HuddleShell?.exitToolOverlays?.(); } catch {}
   // Stage-mode whiteboard is bound to a channel — switching channels
   // implicitly closes any open stage board so the new channel's chat
   // is visible. Tile-mode boards live alongside a call and stay open
