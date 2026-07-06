@@ -1227,6 +1227,10 @@
          that pulls events from HuddleCalendar.listEvents() and lays
          them out per huddle/calendar.jsx in the design bundle. -->
     <script src="calendar-grid.js"></script>
+    <!-- Shared helpers for the nav-rail surface panels below (escaping,
+         icon lookup, channel labels, the Escape-to-close lifecycle). Must
+         load before them. -->
+    <script src="surface.js"></script>
     <!-- v2 Recordings library — nav-rail destination listing the team's
          call recordings (call_recordings) with recap/transcript search
          and inline playback off short-lived signed URLs. -->

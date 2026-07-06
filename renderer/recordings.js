@@ -16,19 +16,8 @@
   let searchSeq = 0;        // stale-response guard for the debounced search
   let searchTimer = null;
 
-  function svg(name) {
-    return (window.HuddleIcons && window.HuddleIcons[name]) || '';
-  }
-
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[c]));
-  }
-
-  function channelLabel(id) {
-    return window.huddleApp?.getChannelName?.(id) || id || 'unknown';
-  }
+  const { escapeHtml, svg } = window.HuddleSurface;
+  const channelLabel = (id) => window.HuddleSurface.channelLabel(id, 'unknown');
 
   function fmtWhen(iso) {
     const d = new Date(iso);
@@ -271,13 +260,10 @@
 
   window.HuddleRecordings = { open, close };
 
-  document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || !root || root.classList.contains('hidden')) return;
-    // Escape while typing in the search field blurs it rather than
-    // closing the whole panel (same activeElement rule as terminal-panel).
-    const a = document.activeElement;
-    if (a && root.contains(a) && /^(input|textarea|select)$/i.test(a.tagName)) { a.blur(); return; }
-    if (openDetailId) closeDetail();
-    else close();
+  // Escape closes an open detail view first, then the panel (the shared
+  // helper handles the "blur a focused field instead" guard).
+  window.HuddleSurface.wireEscClose(() => root, {
+    onEscape: () => { if (openDetailId) { closeDetail(); return true; } return false; },
+    close,
   });
 })();
