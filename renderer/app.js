@@ -8951,6 +8951,18 @@ window.huddleApp = {
     detail:    (id) => state.huddle ? state.huddle.getRecording(id) : Promise.resolve(null),
     signedUrl: (path) => state.huddle ? state.huddle.recordingSignedUrl(path) : Promise.resolve(null),
   },
+  // Integrations view (integrations.js): team-scoped inbound webhooks.
+  // Same narrow-facade pattern. channels() feeds the create form's target
+  // picker — DMs excluded (a webhook posting into a DM makes no sense and
+  // the RPC's can_see_channel check would allow it, so filter here).
+  integrations: {
+    list:       () => state.huddle ? state.huddle.listTeamIntegrations() : Promise.resolve([]),
+    create:     (opts) => state.huddle ? state.huddle.createTeamIntegration(opts) : Promise.reject(new Error('not signed in')),
+    update:     (id, patch) => state.huddle ? state.huddle.updateTeamIntegration(id, patch) : Promise.reject(new Error('not signed in')),
+    remove:     (id) => state.huddle ? state.huddle.deleteTeamIntegration(id) : Promise.reject(new Error('not signed in')),
+    webhookUrl: (id) => state.huddle ? state.huddle.integrationWebhookUrl(id) : '',
+    channels:   () => Array.from(state.channelMeta?.values?.() || []).filter((c) => c.type !== 'dm'),
+  },
   // Channel-name lookup, used by calendar-grid.js to derive event
   // categories from channel naming. Returns null for unknown ids
   // (e.g. an event in a channel the user isn't a member of yet).

@@ -20,6 +20,7 @@
     ai: 'sparkles',
     terminal: 'terminal',
     recordings: 'film',
+    integrations: 'zap',
     settings: 'settings',
   };
 
@@ -44,6 +45,11 @@
       sel: '.huddle-recordings-view',
       open: () => window.HuddleRecordings?.open?.(),
       close: () => window.HuddleRecordings?.close?.(),
+    },
+    integrations: {
+      sel: '.huddle-integrations-view',
+      open: () => window.HuddleIntegrations?.open?.(),
+      close: () => window.HuddleIntegrations?.close?.(),
     },
     calendar: {
       sel: '.huddle-cal-view',

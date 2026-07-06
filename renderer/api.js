@@ -800,6 +800,64 @@
       return this._withStarterNames(data || []);
     }
 
+    // --- Team integrations (inbound webhooks) ----------------------------
+    //
+    // Team-scoped config rows (migration 20260706130000). Reads/updates/
+    // deletes are plain RLS-gated table ops; CREATION goes through the
+    // create_team_integration RPC so the webhook secret is generated
+    // server-side and returned exactly once — it's stored in a
+    // service-role-only table the client can never read back.
+
+    async listTeamIntegrations() {
+      const { data, error } = await this.supabase
+        .from('team_integrations')
+        .select('*')
+        .eq('team_id', this.team.id)
+        .order('created_at', { ascending: false });
+      if (error) throw new Error(`listTeamIntegrations failed: ${error.message || error}`);
+      return data || [];
+    }
+
+    // Returns { integration, secret } — the ONLY time the secret is visible.
+    async createTeamIntegration({ kind = 'inbound_webhook', name, channelId, config = {} }) {
+      const { data, error } = await this.supabase.rpc('create_team_integration', {
+        p_team_id: this.team.id,
+        p_kind: kind,
+        p_name: name,
+        p_channel_id: channelId,
+        p_config: config,
+      });
+      if (error) throw new Error(`createTeamIntegration failed: ${error.message || error}`);
+      return data;
+    }
+
+    async updateTeamIntegration(id, patch) {
+      const allowed = {};
+      if ('name' in patch) allowed.name = patch.name;
+      if ('channelId' in patch) allowed.channel_id = patch.channelId;
+      if ('config' in patch) allowed.config = patch.config;
+      if ('enabled' in patch) allowed.enabled = patch.enabled;
+      const { error } = await this.supabase
+        .from('team_integrations')
+        .update(allowed)
+        .eq('id', id);
+      if (error) throw new Error(`updateTeamIntegration failed: ${error.message || error}`);
+    }
+
+    async deleteTeamIntegration(id) {
+      const { error } = await this.supabase
+        .from('team_integrations')
+        .delete()
+        .eq('id', id);
+      if (error) throw new Error(`deleteTeamIntegration failed: ${error.message || error}`);
+    }
+
+    // The URL external services POST to. Path-routed by integration id;
+    // authenticated by the secret (header / ?secret= / GitHub HMAC).
+    integrationWebhookUrl(id) {
+      return `${this.url}/functions/v1/integration-inbound/${id}`;
+    }
+
     // Submit the local caption-transcript snapshot for a recording so the
     // server (livekit-egress-webhook) can build the AI recap even if this
     // client leaves before the egress completes. The transcript lives only in
@@ -3076,6 +3134,9 @@
         pinnedBy: row.pinned_by || null,
         aiGenerated: !!row.ai_generated,
         aiModel: row.ai_model || null,
+        // Non-null marks an app-authored message (inbound webhook posted by
+        // the integration-inbound function; author_id is null there).
+        appIntegrationId: row.app_integration_id || null,
         // Generic JSONB metadata. First consumer: meeting threads
         // (meta.meeting_root = true for call-start anchors). Default
         // to empty object so consumers don't have to null-guard.

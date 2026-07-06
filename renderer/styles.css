@@ -7450,7 +7450,8 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 [data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .huddle-ai-view,
 [data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .huddle-cal-view,
 [data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .huddle-terminal-view,
-[data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .huddle-recordings-view {
+[data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .huddle-recordings-view,
+[data-ui="v2"] body:has(.huddle-call-return-dock:not(.hidden)) .huddle-integrations-view {
   top: 52px;
 }
 /* When the dock surfaces over a non-call channel (no overlay),
@@ -7918,6 +7919,7 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 [data-ui="v2"] .huddle-cal-view,
 [data-ui="v2"] .huddle-terminal-view,
 [data-ui="v2"] .huddle-recordings-view,
+[data-ui="v2"] .huddle-integrations-view,
 [data-ui="v2"] .huddle-call-return-dock {
   top: var(--titlebar-h, 0px);
 }
@@ -7928,10 +7930,12 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 [data-ui="v2"] body[data-platform="darwin"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-cal-view,
 [data-ui="v2"] body[data-platform="darwin"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-terminal-view,
 [data-ui="v2"] body[data-platform="darwin"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-recordings-view,
+[data-ui="v2"] body[data-platform="darwin"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-integrations-view,
 [data-ui="v2"] body[data-platform="win32"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-ai-view,
 [data-ui="v2"] body[data-platform="win32"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-cal-view,
 [data-ui="v2"] body[data-platform="win32"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-terminal-view,
-[data-ui="v2"] body[data-platform="win32"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-recordings-view {
+[data-ui="v2"] body[data-platform="win32"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-recordings-view,
+[data-ui="v2"] body[data-platform="win32"]:has(.huddle-call-return-dock:not(.hidden)) .huddle-integrations-view {
   top: calc(var(--titlebar-h, 0px) + 52px);
 }
 /* Login backdrop is fixed: inset(0); it'll cover the titlebar
@@ -9987,3 +9991,219 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   word-break: break-word;
   margin: 0;
 }
+
+/* ============================================================
+   v2 Integrations view.
+   Full-stage overlay opened by the nav-rail's "Integrations"
+   item. Same layer + positioning contract as the recordings /
+   calendar / AI overlays (see the shared rules above).
+   ============================================================ */
+.huddle-integrations-view {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: calc(var(--rail-w, 68px) + var(--panel-w, 256px));
+  z-index: 100;
+  background: var(--bg-0);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font);
+  animation: huddle-fade-up 0.22s ease forwards;
+}
+.huddle-integrations-view.hidden { display: none; }
+@media (max-width: 900px) {
+  .huddle-integrations-view { left: 0; }
+}
+
+.huddle-int-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+.huddle-int-header-icon { display: flex; color: var(--accent); }
+.huddle-int-header-icon svg { width: 18px; height: 18px; }
+.huddle-int-title { font-size: 15px; font-weight: 700; color: var(--tx-hi); }
+.huddle-int-spacer { flex: 1; }
+.huddle-int-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--tx-hi);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.huddle-int-new svg { width: 13px; height: 13px; }
+.huddle-int-iconbtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--tx-lo);
+  cursor: pointer;
+  flex: none;
+}
+.huddle-int-iconbtn:hover { background: var(--bg-2); color: var(--tx-hi); }
+
+.huddle-int-body { flex: 1; min-height: 0; display: flex; }
+.huddle-int-list,
+.huddle-int-editor {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-content: start;
+}
+.huddle-int-list.hidden,
+.huddle-int-editor.hidden { display: none; }
+.huddle-int-empty {
+  color: var(--tx-lo);
+  font-size: 13px;
+  padding: 24px;
+  text-align: center;
+  line-height: 1.6;
+}
+
+/* Integration cards. */
+.huddle-int-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-1);
+  padding: 12px 14px;
+  max-width: 860px;
+}
+.huddle-int-card.is-disabled { opacity: 0.55; }
+.huddle-int-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.huddle-int-card-name { font-weight: 600; font-size: 13px; color: var(--tx-hi); }
+.huddle-int-chip {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+.huddle-int-card-target { font-size: 12px; color: var(--tx-lo); }
+.huddle-int-card-spacer { flex: 1; }
+.huddle-int-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--tx-lo);
+  cursor: pointer;
+}
+.huddle-int-card-url {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.huddle-int-card-url code,
+.huddle-int-reveal code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--tx-mid);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 8px;
+  overflow-x: auto;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Create form + one-time secret reveal. */
+.huddle-int-form {
+  max-width: 620px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.huddle-int-h { margin: 0; font-size: 14px; font-weight: 700; color: var(--tx-hi); }
+.huddle-int-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--tx-mid);
+}
+.huddle-int-form label.hidden { display: none; }
+.huddle-int-sub { font-weight: 400; color: var(--tx-lo); }
+.huddle-int-form input[type="text"],
+.huddle-int-form select,
+.huddle-int-form textarea {
+  font: inherit;
+  font-size: 13px;
+  color: var(--tx-hi);
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 10px;
+  outline: none;
+}
+.huddle-int-form input:focus,
+.huddle-int-form select:focus,
+.huddle-int-form textarea:focus { border-color: var(--accent); }
+.huddle-int-form-actions { display: flex; gap: 8px; margin-top: 4px; }
+.huddle-int-primary {
+  padding: 7px 14px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--tx-hi);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.huddle-int-secondary {
+  padding: 7px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: none;
+  color: var(--tx-mid);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.huddle-int-error {
+  color: #e5484d;
+  font-size: 12.5px;
+}
+.huddle-int-error.hidden { display: none; }
+.huddle-int-reveal { display: flex; align-items: center; gap: 8px; }
+.huddle-int-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--tx-lo);
+  line-height: 1.55;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+/* App-authored chat messages: match the AI avatar treatment. */
+.avatar.avatar-app svg { width: 16px; height: 16px; color: var(--tx-mid); }

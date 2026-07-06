@@ -212,6 +212,7 @@
           <button class="huddle-rail-item" data-view="ai" aria-label="Huddle AI" title="Huddle AI"></button>
           <button class="huddle-rail-item" data-view="terminal" aria-label="Terminal" title="Terminal"></button>
           <button class="huddle-rail-item" data-view="recordings" aria-label="Recordings" title="Recordings"></button>
+          <button class="huddle-rail-item" data-view="integrations" aria-label="Integrations" title="Integrations"></button>
         </div>
         <div class="huddle-rail-footer">
           <button class="huddle-rail-item" data-action="settings" aria-label="Settings" title="Settings"></button>
@@ -1213,6 +1214,10 @@
          call recordings (call_recordings) with recap/transcript search
          and inline playback off short-lived signed URLs. -->
     <script src="recordings.js"></script>
+    <!-- v2 Integrations view — nav-rail destination for managing the
+         team's inbound webhooks (team_integrations): create with a
+         one-time secret reveal, toggle, delete. -->
+    <script src="integrations.js"></script>
     <!-- v2 Terminal panel — nav-rail destination that mounts an xterm.js
          terminal backed by a real pty in main (window.huddle.terminal.*),
          so `claude` and any shell command run inside Huddle. xterm vendor

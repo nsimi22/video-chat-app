@@ -1179,7 +1179,10 @@ class ChatView {
   contextMenuItems(messageId, ev) {
     const m = this._messages().find((x) => x.id === messageId);
     if (!m) return [];
-    const isMine = m.authorId ? m.authorId === this.mesh.peerId : m.authorName === this.mesh.name;
+    // App messages have authorId null, so the name-compare fallback could
+    // false-positive on an integration named like the user — exclude them.
+    const isMine = !m.appIntegrationId
+      && (m.authorId ? m.authorId === this.mesh.peerId : m.authorName === this.mesh.name);
     const inThread = this.threadParentId !== null;
     const jiraOk = !!this.hooks.getJira?.()?.isConfigured?.();
     const roadmapOk = !!this.hooks.addRoadmapItem;
@@ -1214,6 +1217,11 @@ class ChatView {
     if (isMine) {
       items.push({ type: 'divider' });
       if (!m.meta?.poll) items.push({ label: 'Edit message', icon: 'pen', onClick: () => this._beginEdit(m.id) });
+      items.push({ label: 'Delete message', icon: 'trash', danger: true, onClick: () => this._delete(m.id) });
+    } else if (m.appIntegrationId) {
+      // Any team member may clean up an app (webhook) message — matches the
+      // messages_delete_app RLS policy; no edit (app bodies are immutable).
+      items.push({ type: 'divider' });
       items.push({ label: 'Delete message', icon: 'trash', danger: true, onClick: () => this._delete(m.id) });
     }
     return items;
@@ -1753,8 +1761,10 @@ class ChatView {
     // display name — two teammates can share a name, in which case a
     // name match would show Edit/Delete on each other's messages and
     // the Delete would no-op against RLS with no error surfaced. Fall
-    // back to name only for legacy rows that predate the trigger.
-    const isMine = m.authorId ? m.authorId === this.mesh.peerId : m.authorName === myName;
+    // back to name only for legacy rows that predate the trigger. App
+    // (webhook) messages have authorId null too — never "mine".
+    const isMine = !m.appIntegrationId
+      && (m.authorId ? m.authorId === this.mesh.peerId : m.authorName === myName);
     const mentionsMe = Array.isArray(m.mentions) && m.mentions.includes(myName);
     if (mentionsMe) wrap.classList.add('msg-mentions-me');
     if (m.pinnedAt) wrap.classList.add('msg-pinned');
@@ -1780,12 +1790,18 @@ class ChatView {
     }
 
     const initials = (m.authorName || '?').slice(0, 1).toUpperCase();
+    // App-authored message (inbound webhook): no human author to attach a
+    // profile/presence to; author_name carries the integration's name.
+    const isApp = !!m.appIntegrationId && !m.aiGenerated;
     const avatar = document.createElement('div');
-    avatar.className = 'avatar' + (m.aiGenerated ? ' avatar-ai' : '');
+    avatar.className = 'avatar' + (m.aiGenerated ? ' avatar-ai' : isApp ? ' avatar-app' : '');
     if (m.aiGenerated) {
       // Robot icon avatar; same size as the human ones so the grid stays aligned.
       avatar.style.background = '#3a3f47';
       avatar.innerHTML = window.HuddleIcons.robot;
+    } else if (isApp) {
+      avatar.style.background = '#3a3f47';
+      avatar.innerHTML = window.HuddleIcons.zap;
     } else {
       avatar.style.background = m.authorColor || '#666';
       avatar.textContent = initials;
@@ -1812,7 +1828,7 @@ class ChatView {
     const author = document.createElement('span');
     author.className = 'msg-author';
     author.textContent = m.aiGenerated ? 'Huddle AI' : m.authorName;
-    if (!m.aiGenerated) this.hooks.attachProfileTrigger?.(author, m.authorId);
+    if (!m.aiGenerated && !isApp) this.hooks.attachProfileTrigger?.(author, m.authorId);
     const time = document.createElement('span');
     time.className = 'msg-time';
     time.textContent = this._formatMessageTime(m.ts);
@@ -1824,6 +1840,13 @@ class ChatView {
       const badge = document.createElement('span');
       badge.className = 'msg-ai-badge mono';
       badge.textContent = 'ASSISTANT';
+      head.append(badge);
+    } else if (isApp) {
+      // Same badge chrome as ASSISTANT — visually marks the message as
+      // machine-posted so an integration named "Alice" can't pass as her.
+      const badge = document.createElement('span');
+      badge.className = 'msg-ai-badge mono';
+      badge.textContent = 'APP';
       head.append(badge);
     }
     head.append(time);
