@@ -933,26 +933,30 @@ function resolveClaudeBinary() {
   });
 }
 
+// The one binary-selection policy both handlers share: an explicit
+// Settings override wins, else login-shell PATH resolution; either way
+// the file must exist on disk. Returns null when nothing usable does.
+async function resolveExistingClaudeBin(overridePath) {
+  const fs = require('fs');
+  const bin = (typeof overridePath === 'string' && overridePath.trim())
+    ? overridePath.trim()
+    : await resolveClaudeBinary();
+  return bin && fs.existsSync(bin) ? bin : null;
+}
+
 // Cheap presence probe for the Settings auto-default: is a claude binary
 // reachable (PATH via login shell, or the explicit override)? No spawn of
 // the CLI itself — just resolution + existence.
 ipcMain.handle('claude-code-detect', async (_event, payload = {}) => {
-  const fs = require('fs');
-  const override = typeof payload.binPath === 'string' && payload.binPath.trim();
-  const bin = override || await resolveClaudeBinary();
-  const found = !!(bin && fs.existsSync(bin));
-  return { found, path: found ? bin : null };
+  const bin = await resolveExistingClaudeBin(payload.binPath);
+  return { found: !!bin, path: bin };
 });
 
 ipcMain.handle('claude-code-run', async (_event, payload = {}) => {
   const prompt = typeof payload.prompt === 'string' ? payload.prompt : '';
   if (!prompt.trim()) return { ok: false, error: 'empty prompt' };
 
-  const fs = require('fs');
-  let bin = typeof payload.binPath === 'string' && payload.binPath.trim()
-    ? payload.binPath.trim()
-    : await resolveClaudeBinary();
-  if (bin && !fs.existsSync(bin)) bin = null;
+  const bin = await resolveExistingClaudeBin(payload.binPath);
   if (!bin) {
     return {
       ok: false,

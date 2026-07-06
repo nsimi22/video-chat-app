@@ -744,25 +744,27 @@
     // the detail view. Starter names are resolved in one profiles batch,
     // tolerating null started_by (starter's account was deleted).
     async listRecordings({ limit = 100 } = {}) {
-      const { data, error } = await this.supabase
-        .from('call_recordings')
-        .select('id, channel_id, started_by, status, started_at, ended_at, storage_path, recap, error')
-        .eq('team_id', this.team.id)
-        .order('started_at', { ascending: false })
-        .limit(limit);
-      if (error) throw new Error(`listRecordings failed: ${error.message || error}`);
-      return this._withStarterNames(data || []);
+      return this._queryRecordings({ limit });
     }
 
-    // Resolve started_by uuids to display names in one profiles batch.
-    async _withStarterNames(rows) {
+    // Shared query core for list + search: same column set (transcript
+    // deliberately excluded — see listRecordings), team scope, ordering,
+    // and starter-name resolution; search just adds an .or() filter.
+    async _queryRecordings({ limit, or }) {
+      let q = this.supabase
+        .from('call_recordings')
+        .select('id, channel_id, started_by, status, started_at, ended_at, storage_path, recap, error')
+        .eq('team_id', this.team.id);
+      if (or) q = q.or(or);
+      const { data, error } = await q
+        .order('started_at', { ascending: false })
+        .limit(limit);
+      if (error) throw new Error(`recordings query failed: ${error.message || error}`);
+      const rows = data || [];
       const ids = [...new Set(rows.map((r) => r.started_by).filter(Boolean))];
-      let names = new Map();
-      if (ids.length) {
-        const { data: profs } = await this.supabase
-          .from('profiles').select('user_id, name').in('user_id', ids);
-        names = new Map((profs || []).map((p) => [p.user_id, p.name]));
-      }
+      // _resolveNames prefers live presence names and only hits profiles
+      // for peers we haven't seen — same helper group DMs use.
+      const names = ids.length ? await this._resolveNames(ids) : new Map();
       return rows.map((r) => ({ ...r, started_by_name: names.get(r.started_by) || null }));
     }
 
@@ -787,17 +789,9 @@
     // don't 400.
     async searchRecordings(query, { limit = 50 } = {}) {
       const q = String(query || '').trim();
-      if (!q) return this.listRecordings({ limit });
+      if (!q) return this._queryRecordings({ limit });
       const quoted = `"%${q.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}%"`;
-      const { data, error } = await this.supabase
-        .from('call_recordings')
-        .select('id, channel_id, started_by, status, started_at, ended_at, storage_path, recap, error')
-        .eq('team_id', this.team.id)
-        .or(`recap.ilike.${quoted},transcript.ilike.${quoted}`)
-        .order('started_at', { ascending: false })
-        .limit(limit);
-      if (error) throw new Error(`searchRecordings failed: ${error.message || error}`);
-      return this._withStarterNames(data || []);
+      return this._queryRecordings({ limit, or: `recap.ilike.${quoted},transcript.ilike.${quoted}` });
     }
 
     // --- Team integrations (inbound webhooks) ----------------------------

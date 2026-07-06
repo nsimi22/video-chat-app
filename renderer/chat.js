@@ -1176,13 +1176,22 @@ class ChatView {
   // dispatcher in app.js calls this and feeds it to HuddleContextMenu. `ev`
   // is the contextmenu event, passed through so the reaction picker can
   // anchor at the cursor.
+  // Message ownership — drives Edit/Delete in both the hover actions and
+  // the context menu, so it lives in exactly one place. Match on author_id
+  // (set by the messages_set_author trigger, what RLS gates on) rather
+  // than display name — two teammates can share a name. Fall back to the
+  // name only for legacy rows that predate the trigger. App (webhook)
+  // messages have authorId null too, so the name fallback could
+  // false-positive on an integration named like the user — never "mine".
+  _isMine(m) {
+    if (m.appIntegrationId) return false;
+    return m.authorId ? m.authorId === this.mesh.peerId : m.authorName === this.mesh.name;
+  }
+
   contextMenuItems(messageId, ev) {
     const m = this._messages().find((x) => x.id === messageId);
     if (!m) return [];
-    // App messages have authorId null, so the name-compare fallback could
-    // false-positive on an integration named like the user — exclude them.
-    const isMine = !m.appIntegrationId
-      && (m.authorId ? m.authorId === this.mesh.peerId : m.authorName === this.mesh.name);
+    const isMine = this._isMine(m);
     const inThread = this.threadParentId !== null;
     const jiraOk = !!this.hooks.getJira?.()?.isConfigured?.();
     const roadmapOk = !!this.hooks.addRoadmapItem;
@@ -1756,15 +1765,7 @@ class ChatView {
     wrap.className = 'msg';
     wrap.dataset.messageId = m.id;
     const myName = this.mesh.name;
-    // Ownership drives Edit/Delete. Match on author_id (set by the
-    // messages_set_author trigger, and what RLS gates on) rather than
-    // display name — two teammates can share a name, in which case a
-    // name match would show Edit/Delete on each other's messages and
-    // the Delete would no-op against RLS with no error surfaced. Fall
-    // back to name only for legacy rows that predate the trigger. App
-    // (webhook) messages have authorId null too — never "mine".
-    const isMine = !m.appIntegrationId
-      && (m.authorId ? m.authorId === this.mesh.peerId : m.authorName === myName);
+    const isMine = this._isMine(m);
     const mentionsMe = Array.isArray(m.mentions) && m.mentions.includes(myName);
     if (mentionsMe) wrap.classList.add('msg-mentions-me');
     if (m.pinnedAt) wrap.classList.add('msg-pinned');
