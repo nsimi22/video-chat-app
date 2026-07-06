@@ -103,6 +103,32 @@ button.subtle {
   box-shadow: none;
 }
 button.subtle:not([disabled]):hover { background: rgba(255,255,255,.07); color: var(--text); }
+
+/* Managed Claude account list in Settings (guided "Add account" flow). */
+.claude-accounts { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; }
+.claude-accounts-empty { font-size: 12px; color: var(--text-dim); padding: 4px 0; }
+.claude-account-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border: 1px solid var(--line, #2a2a2e); border-radius: 8px;
+  background: rgba(255,255,255,.02);
+}
+.claude-account-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.claude-account-name { font-size: 13px; font-weight: 600; color: var(--text); }
+.claude-account-dir { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.claude-account-signin { flex: 0 0 auto; font-size: 12px; padding: 4px 10px; }
+.claude-account-remove {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; border: none; border-radius: 6px;
+  background: transparent; color: var(--text-dim); cursor: pointer;
+}
+.claude-account-remove:hover { background: rgba(255,255,255,.08); color: var(--text); }
+.claude-account-remove svg { width: 14px; height: 14px; }
+.claude-account-add-input {
+  flex: 1; min-width: 0; height: 30px; padding: 0 10px;
+  border-radius: 7px; border: 1px solid var(--line-strong, #3a3a3e);
+  background: var(--bg-2, #1a1a1e); color: var(--text); font: inherit; font-size: 13px;
+}
+.claude-account-add-input:focus { outline: none; border-color: var(--accent-2, #6ea8fe); }
 /* Ghost: transparent chrome, kept usable on dark backgrounds. Used
    on header/sidebar icon-only controls. The .me-row + .section-header-row
    rules below add their own scoped tweaks for sidebar contexts. */

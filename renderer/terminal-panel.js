@@ -688,6 +688,40 @@
   function open(mode) { revealAndEnsure(mode); }
   function startClaude() { revealAndEnsure('claude'); }
 
+  // Public: open the panel, spin up a NEW shell tab, and type `command`
+  // into it once the shell is live. Used by Settings' guided "Add Claude
+  // account" flow to run `CLAUDE_CONFIG_DIR=… claude` so the user only has
+  // to complete /login. The command is written to the pty exactly as the
+  // user would type it (via stdin), never interpolated into a shell string
+  // by us. No-op if the terminal engine is unavailable.
+  function runInNewTab(command) {
+    const cmd = typeof command === 'string' ? command.trim() : '';
+    if (!cmd) return;
+    if (!root) buildDom();
+    root.classList.remove('hidden');
+    root.setAttribute('aria-hidden', 'false');
+    const s = newTab();
+    if (!s) return; // tab cap reached
+    // Poll for the async shell boot, then write once at final width. Pin
+    // the ptyId so a shell that respawns during the wait doesn't get the
+    // command injected mid-boot (mirrors launchClaudeWhenReady's guard).
+    let tries = 0;
+    const tick = () => {
+      if (!s || s.closed) return;
+      if (s.ptyId) {
+        const pid = s.ptyId;
+        whenSettled(() => {
+          if (s.closed || s.ptyId !== pid) return;
+          fitSession(s);
+          window.huddle.terminal.write(s.ptyId, cmd + '\r');
+        });
+        return;
+      }
+      if (tries++ < 120) setTimeout(tick, 50); // up to ~6s for the shell
+    };
+    tick();
+  }
+
   // Strip ANSI SGR/CSI sequences + OSC strings so captured output reads as
   // plain text in chat / an AI prompt rather than a wall of escape codes.
   function stripAnsi(str) {
@@ -761,7 +795,7 @@
   // HuddleClient's terminal-share events at client creation and forwards
   // them here (the panel never touches the client itself).
   window.HuddleTerminalPanel = {
-    open, close, toggle,
+    open, close, toggle, runInNewTab,
     remoteShareStarted, remoteShareStopped, callEnded,
     onShareJoin, onViewerFrame, onViewerSnapshot,
   };

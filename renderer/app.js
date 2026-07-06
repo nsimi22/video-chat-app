@@ -238,7 +238,8 @@ const els = {
   setClaudeCodeTools: $('#set-claude-code-tools'),
   setClaudeCodeBin: $('#set-claude-code-bin'),
   setClaudeCodePreferSub: $('#set-claude-code-prefer-sub'),
-  setClaudeCodeProfiles: $('#set-claude-code-profiles'),
+  setClaudeCodeAccounts: $('#set-claude-code-accounts'),
+  setClaudeCodeAdd: $('#set-claude-code-add'),
   setClaudeCodeActive: $('#set-claude-code-active'),
   setClaudeCodeTest: $('#set-claude-code-test'),
   setClaudeCodeTestResult: $('#set-claude-code-test-result'),
@@ -7736,8 +7737,7 @@ function wireControls() {
   els.settingsSave.onclick = saveSettings;
   els.setPasswordUpdate.onclick = updatePasswordFromSettings;
   els.setClaudeCodeTest.onclick = testClaudeCodeFromSettings;
-  // Keep the account picker in sync while the profiles textarea is edited.
-  els.setClaudeCodeProfiles.oninput = () => rebuildClaudeProfileSelect(null);
+  els.setClaudeCodeAdd.onclick = addClaudeAccount;
 
   // Settings v2 tab sidebar — delegate clicks once on the sidebar
   // rather than per-button so the handler survives any re-render.
@@ -8440,23 +8440,144 @@ function rebuildAiClient() {
 
 // Claude account profiles: "Name = /path/to/config-dir" per line. Each dir
 // is an isolated CLAUDE_CONFIG_DIR (own /login, own MCP servers).
-function parseClaudeProfiles(text) {
-  return String(text || '').split('\n').map((line) => {
-    const i = line.indexOf('=');
-    if (i < 1) return null;
-    const name = line.slice(0, i).trim();
-    const configDir = line.slice(i + 1).trim();
-    return name && configDir ? { name, configDir } : null;
-  }).filter(Boolean);
+// Working copy of the Claude account profiles while the Settings panel is
+// open ([{ name, configDir }]). openSettings loads it from saved settings,
+// saveSettings writes it back — kept out of the DOM so the guided add/
+// remove flow doesn't have to round-trip through a textarea.
+let claudeProfiles = [];
+
+// The shell command that signs a given account in: ensure its isolated
+// config dir exists, then run `claude` pointed at it so `/login` writes
+// credentials to that dir and nowhere else. A leading ~ becomes $HOME so
+// it expands inside the shell. Config dirs we generate are [a-z0-9-] slugs
+// (claudeConfigDirFor); the path is the user's own local setting, so
+// double-quoting is sufficient (worst case a self-inflicted broken path).
+function claudeLoginCommand(configDir) {
+  const dir = String(configDir || '').replace(/^~(?=\/|$)/, '$HOME');
+  return `mkdir -p "${dir}" && CLAUDE_CONFIG_DIR="${dir}" claude`;
 }
 
-// Rebuild the "Account for /ai" select from the profiles textarea, keeping
-// the selection when the named profile still exists.
+// Auto-derive a config dir from an account name so the user never types a
+// path: ~/.claude-huddle/<slug>. The default account keeps plain ~/.claude.
+function claudeConfigDirFor(name) {
+  const slug = String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'account';
+  return `~/.claude-huddle/${slug}`;
+}
+
+// Render the managed account list. Each row: name, its config dir, a
+// "Sign in" button (re-opens the terminal login), and a remove button.
+function renderClaudeAccounts() {
+  const wrap = els.setClaudeCodeAccounts;
+  if (!wrap) return;
+  wrap.replaceChildren();
+  if (!claudeProfiles.length) {
+    const empty = document.createElement('div');
+    empty.className = 'claude-accounts-empty';
+    empty.textContent = 'Just the Default account (~/.claude). Add another to switch between logins.';
+    wrap.appendChild(empty);
+    return;
+  }
+  claudeProfiles.forEach((p, idx) => {
+    const row = document.createElement('div');
+    row.className = 'claude-account-row';
+    const meta = document.createElement('div');
+    meta.className = 'claude-account-meta';
+    const nm = document.createElement('span');
+    nm.className = 'claude-account-name';
+    nm.textContent = p.name;
+    const dir = document.createElement('span');
+    dir.className = 'claude-account-dir mono';
+    dir.textContent = p.configDir;
+    meta.append(nm, dir);
+    const signin = document.createElement('button');
+    signin.type = 'button';
+    signin.className = 'subtle claude-account-signin';
+    signin.textContent = 'Sign in';
+    signin.title = 'Open the Terminal and run claude in this account to /login';
+    signin.onclick = () => launchClaudeLogin(p);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'claude-account-remove';
+    del.setAttribute('aria-label', `Remove ${p.name}`);
+    del.title = 'Remove from this list (does not delete the login on disk)';
+    del.innerHTML = window.HuddleIcons?.x || '✕';
+    del.onclick = () => {
+      claudeProfiles.splice(idx, 1);
+      if (els.setClaudeCodeActive.value === p.name) els.setClaudeCodeActive.value = '';
+      renderClaudeAccounts();
+      rebuildClaudeProfileSelect();
+    };
+    row.append(meta, signin, del);
+    wrap.appendChild(row);
+  });
+}
+
+// Open the Terminal signed-in to a specific account so the user runs
+// /login there. Reused by "Add account" and each row's "Sign in".
+function launchClaudeLogin(profile) {
+  try { window.HuddleTerminalPanel?.runInNewTab(claudeLoginCommand(profile.configDir)); } catch {}
+  showToast(`Terminal opened for “${profile.name}”. Run /login to sign in, then come back and Save.`);
+}
+
+// "Add account": reveal an inline name field (Electron renderers don't
+// support window.prompt), then create + select + open the login terminal.
+// Draft-only until the user clicks Save (the on-disk login the terminal
+// creates persists regardless).
+function addClaudeAccount() {
+  const wrap = els.setClaudeCodeAccounts;
+  if (!wrap || wrap.querySelector('.claude-account-add')) {
+    wrap.querySelector('.claude-account-add input')?.focus();
+    return;
+  }
+  const form = document.createElement('div');
+  form.className = 'claude-account-row claude-account-add';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'claude-account-add-input';
+  input.placeholder = 'Account name (e.g. Work)';
+  input.maxLength = 40;
+  const create = document.createElement('button');
+  create.type = 'button';
+  create.className = 'subtle';
+  create.textContent = 'Create & sign in';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'claude-account-remove';
+  cancel.setAttribute('aria-label', 'Cancel');
+  cancel.innerHTML = window.HuddleIcons?.x || '✕';
+  const submit = () => {
+    const name = input.value.trim();
+    if (!name) { input.focus(); return; }
+    if (claudeProfiles.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
+      showToast(`You already have an account named “${name}”.`, { kind: 'error' });
+      input.focus();
+      return;
+    }
+    const profile = { name, configDir: claudeConfigDirFor(name) };
+    claudeProfiles.push(profile);
+    renderClaudeAccounts();
+    rebuildClaudeProfileSelect();
+    els.setClaudeCodeActive.value = name; // make the new one active for /ai
+    launchClaudeLogin(profile);
+  };
+  create.onclick = submit;
+  cancel.onclick = () => renderClaudeAccounts();
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    else if (e.key === 'Escape') { e.preventDefault(); renderClaudeAccounts(); }
+  });
+  form.append(input, create, cancel);
+  wrap.appendChild(form);
+  input.focus();
+}
+
+// Rebuild the "Account for /ai" select from claudeProfiles, keeping the
+// selection when the named profile still exists.
 function rebuildClaudeProfileSelect(selected) {
   const sel = els.setClaudeCodeActive;
   const keep = selected ?? sel.value;
   sel.innerHTML = '<option value="">Default (~/.claude)</option>';
-  for (const p of parseClaudeProfiles(els.setClaudeCodeProfiles.value)) {
+  for (const p of claudeProfiles) {
     const opt = document.createElement('option');
     opt.value = p.name;
     opt.textContent = `${p.name} (${p.configDir})`;
@@ -8475,8 +8596,7 @@ async function testClaudeCodeFromSettings() {
   out.textContent = 'Testing… (first run can take ~10s)';
   try {
     const activeName = els.setClaudeCodeActive.value;
-    const profile = parseClaudeProfiles(els.setClaudeCodeProfiles.value)
-      .find((p) => p.name === activeName);
+    const profile = claudeProfiles.find((p) => p.name === activeName);
     const res = await window.huddle.claudeCode.run({
       prompt: 'Reply with exactly the word: ok',
       binPath: els.setClaudeCodeBin.value.trim(),
@@ -8542,8 +8662,10 @@ async function openSettings() {
   els.setClaudeCodeTools.value = s.ai?.claudeCode?.allowedTools || '';
   els.setClaudeCodeBin.value = s.ai?.claudeCode?.binPath || '';
   els.setClaudeCodePreferSub.checked = !!s.ai?.claudeCode?.preferSubscription;
-  els.setClaudeCodeProfiles.value = (s.ai?.claudeCode?.profiles || [])
-    .map((p) => `${p.name} = ${p.configDir}`).join('\n');
+  claudeProfiles = (s.ai?.claudeCode?.profiles || [])
+    .filter((p) => p && p.name && p.configDir)
+    .map((p) => ({ name: p.name, configDir: p.configDir }));
+  renderClaudeAccounts();
   rebuildClaudeProfileSelect(s.ai?.claudeCode?.activeProfile || '');
   els.setClaudeCodeTestResult.textContent = '';
   els.setAiTicketContext.value = s.aiTicket?.context || '';
@@ -8700,7 +8822,7 @@ async function saveSettings() {
         allowedTools: els.setClaudeCodeTools.value.trim(),
         binPath: els.setClaudeCodeBin.value.trim(),
         preferSubscription: els.setClaudeCodePreferSub.checked,
-        profiles: parseClaudeProfiles(els.setClaudeCodeProfiles.value),
+        profiles: claudeProfiles,
         activeProfile: els.setClaudeCodeActive.value,
       },
     },

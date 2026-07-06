@@ -799,9 +799,10 @@
                 <label>Claude Code binary path <span class="hint-inline">(optional — auto-detected from your shell PATH)</span></label>
                 <input id="set-claude-code-bin" type="text" autocomplete="off" placeholder="/usr/local/bin/claude" />
                 <label class="settings-check"><input id="set-claude-code-prefer-sub" type="checkbox" /> Use my Claude subscription even if <code>ANTHROPIC_API_KEY</code> is set <span class="hint-inline">(strips API-key env vars so your <code>claude /login</code> account — and its claude.ai connectors — are used)</span></label>
-                <label>Claude accounts <span class="hint-inline">(optional — one per line, <code>Name = /path/to/config-dir</code>; each dir is a separate signed-in account, e.g. personal Max vs work Team)</span></label>
-                <textarea id="set-claude-code-profiles" rows="2" autocomplete="off" placeholder="Personal = ~/.claude&#10;Work = ~/.claude-work"></textarea>
-                <p class="hint">Sign each account in once from the in-app Terminal: run <code>CLAUDE_CONFIG_DIR=~/.claude-work claude</code>, then <code>/login</code>. Each account keeps its own login and MCP servers.</p>
+                <label>Claude accounts <span class="hint-inline">(each is a separate signed-in login — e.g. personal Max vs work Team, with its own MCP servers)</span></label>
+                <div id="set-claude-code-accounts" class="claude-accounts"></div>
+                <button id="set-claude-code-add" type="button" class="subtle">+ Add account</button>
+                <p class="hint"><strong>Add account</strong> makes a separate login for you (no paths to type) and opens the Terminal running <code>claude</code> in it — just run <code>/login</code> there once and sign in. Then pick it below and Save.</p>
                 <label>Account for <code>/ai</code></label>
                 <select id="set-claude-code-active"><option value="">Default (~/.claude)</option></select>
                 <div style="display:flex;align-items:center;gap:10px;margin-top:6px;">
