@@ -102,6 +102,7 @@
         prompt: parts.join('\n\n'),
         allowedTools: this.claudeCode.allowedTools || '',
         binPath: this.claudeCode.binPath || '',
+        preferSubscription: !!this.claudeCode.preferSubscription,
       });
       if (!res?.ok) {
         throw new Error(`Claude Code: ${res?.error || 'request failed'}`);

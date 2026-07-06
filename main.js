@@ -933,6 +933,17 @@ function resolveClaudeBinary() {
   });
 }
 
+// Cheap presence probe for the Settings auto-default: is a claude binary
+// reachable (PATH via login shell, or the explicit override)? No spawn of
+// the CLI itself — just resolution + existence.
+ipcMain.handle('claude-code-detect', async (_event, payload = {}) => {
+  const fs = require('fs');
+  const override = typeof payload.binPath === 'string' && payload.binPath.trim();
+  const bin = override || await resolveClaudeBinary();
+  const found = !!(bin && fs.existsSync(bin));
+  return { found, path: found ? bin : null };
+});
+
 ipcMain.handle('claude-code-run', async (_event, payload = {}) => {
   const prompt = typeof payload.prompt === 'string' ? payload.prompt : '';
   if (!prompt.trim()) return { ok: false, error: 'empty prompt' };
@@ -960,13 +971,23 @@ ipcMain.handle('claude-code-run', async (_event, payload = {}) => {
 
   const { spawn } = require('child_process');
   const os = require('os');
+  // The CLI silently prefers ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN over
+  // the subscription login when either is in the environment — which also
+  // drops claude.ai connectors. preferSubscription (Settings checkbox)
+  // strips them from the child env so the /login credentials win.
+  const childEnv = { ...process.env };
+  const apiKeyEnv = !!(childEnv.ANTHROPIC_API_KEY || childEnv.ANTHROPIC_AUTH_TOKEN);
+  if (payload.preferSubscription) {
+    delete childEnv.ANTHROPIC_API_KEY;
+    delete childEnv.ANTHROPIC_AUTH_TOKEN;
+  }
   return await new Promise((resolve) => {
     let cp;
     try {
       // cwd = home, NOT the app bundle: session scoping and project
       // .mcp.json discovery are cwd-relative, and home is the stable,
       // user-expected context for a chat assistant.
-      cp = spawn(bin, args, { cwd: os.homedir(), env: { ...process.env } });
+      cp = spawn(bin, args, { cwd: os.homedir(), env: childEnv });
     } catch (err) {
       resolve({ ok: false, error: `failed to start Claude Code: ${err?.message || err}` });
       return;
@@ -1007,6 +1028,11 @@ ipcMain.handle('claude-code-run', async (_event, payload = {}) => {
         text: String(text),
         sessionId: json?.session_id || null,
         costUsd: typeof json?.total_cost_usd === 'number' ? json.total_cost_usd : null,
+        // Diagnostics for the Settings "Test" button: which binary ran,
+        // and whether API-key env vars were present (billing signal).
+        binPath: bin,
+        apiKeyEnv,
+        apiKeyEnvStripped: !!payload.preferSubscription && apiKeyEnv,
       });
     });
     // Prompt via stdin: no argv length limits, no quoting hazards.

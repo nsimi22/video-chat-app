@@ -237,6 +237,9 @@ const els = {
   setOpenrouterModel: $('#set-openrouter-model'),
   setClaudeCodeTools: $('#set-claude-code-tools'),
   setClaudeCodeBin: $('#set-claude-code-bin'),
+  setClaudeCodePreferSub: $('#set-claude-code-prefer-sub'),
+  setClaudeCodeTest: $('#set-claude-code-test'),
+  setClaudeCodeTestResult: $('#set-claude-code-test-result'),
   setAiTicketContext: $('#set-ai-ticket-context'),
   setAiTicketRepo: $('#set-ai-ticket-repo'),
   setGithubToken: $('#set-github-token'),
@@ -7636,6 +7639,7 @@ function wireControls() {
   els.settingsCancel.onclick = closeSettingsAndDiscardPending;
   els.settingsSave.onclick = saveSettings;
   els.setPasswordUpdate.onclick = updatePasswordFromSettings;
+  els.setClaudeCodeTest.onclick = testClaudeCodeFromSettings;
 
   // Settings v2 tab sidebar — delegate clicks once on the sidebar
   // rather than per-button so the handler survives any re-render.
@@ -8152,6 +8156,9 @@ async function refreshSettings() {
   rebuildJiraClient();
   rebuildAiClient();
   rebuildGitHubClient();
+  // Fire-and-forget: may flip the provider to claude-code (and rebuild)
+  // once the binary probe resolves; nothing below depends on it.
+  maybeDefaultAiToClaudeCode();
   initJiraBoard();
   // Apply persisted appearance preferences (density + accent hue) on
   // every load. Stored under state.settings.appearance and written
@@ -8329,6 +8336,50 @@ function rebuildAiClient() {
   });
 }
 
+// Settings "Test Claude Code": fire a one-word prompt through the same
+// path /ai uses (reading the CURRENT form values, not yet-saved settings)
+// and report which binary ran and how it's billed. total_cost_usd > 0
+// means API-key billing; 0/absent means the subscription login is paying.
+async function testClaudeCodeFromSettings() {
+  const out = els.setClaudeCodeTestResult;
+  els.setClaudeCodeTest.disabled = true;
+  out.textContent = 'Testing… (first run can take ~10s)';
+  try {
+    const res = await window.huddle.claudeCode.run({
+      prompt: 'Reply with exactly the word: ok',
+      binPath: els.setClaudeCodeBin.value.trim(),
+      preferSubscription: els.setClaudeCodePreferSub.checked,
+    });
+    if (!res?.ok) {
+      out.textContent = `✗ ${res?.error || 'failed'}`;
+      return;
+    }
+    const billing = res.costUsd > 0
+      ? `API key (~$${res.costUsd.toFixed(4)}/req${res.apiKeyEnvStripped ? '' : res.apiKeyEnv ? ' — ANTHROPIC_API_KEY is set; check "use my subscription" to prefer your login' : ''})`
+      : 'Claude subscription';
+    out.textContent = `✓ Working — ${res.binPath} · billed via ${billing}`;
+  } catch (err) {
+    out.textContent = `✗ ${err?.message || err}`;
+  } finally {
+    els.setClaudeCodeTest.disabled = false;
+  }
+}
+
+// Subscription users get a working /ai out of the box: when no provider
+// was ever chosen and no API key exists, but a local claude binary does,
+// default the provider to claude-code for this session (in-memory only —
+// Settings still shows and saves the real choice explicitly).
+async function maybeDefaultAiToClaudeCode() {
+  const a = state.settings?.ai || {};
+  if (a.provider || a.anthropicKey || a.openrouterKey) return;
+  try {
+    const det = await window.huddle.claudeCode?.detect?.({ binPath: a.claudeCode?.binPath || '' });
+    if (!det?.found) return;
+    state.settings.ai = { ...a, provider: 'claude-code' };
+    rebuildAiClient();
+  } catch { /* probe is best-effort */ }
+}
+
 function rebuildGitHubClient() {
   const g = state.settings?.github || {};
   state.github = new window.GitHubClient({ token: g.token || '' });
@@ -8347,6 +8398,8 @@ async function openSettings() {
   els.setOpenrouterModel.value = s.ai?.openrouterModel || '';
   els.setClaudeCodeTools.value = s.ai?.claudeCode?.allowedTools || '';
   els.setClaudeCodeBin.value = s.ai?.claudeCode?.binPath || '';
+  els.setClaudeCodePreferSub.checked = !!s.ai?.claudeCode?.preferSubscription;
+  els.setClaudeCodeTestResult.textContent = '';
   els.setAiTicketContext.value = s.aiTicket?.context || '';
   els.setAiTicketRepo.value = s.aiTicket?.githubRepo || '';
   els.setGithubToken.value = s.github?.token || '';
@@ -8500,6 +8553,7 @@ async function saveSettings() {
       claudeCode: {
         allowedTools: els.setClaudeCodeTools.value.trim(),
         binPath: els.setClaudeCodeBin.value.trim(),
+        preferSubscription: els.setClaudeCodePreferSub.checked,
       },
     },
     aiTicket: {

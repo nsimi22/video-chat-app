@@ -797,6 +797,11 @@
                 <input id="set-claude-code-tools" type="text" autocomplete="off" placeholder="mcp__linear__*,WebSearch" />
                 <label>Claude Code binary path <span class="hint-inline">(optional — auto-detected from your shell PATH)</span></label>
                 <input id="set-claude-code-bin" type="text" autocomplete="off" placeholder="/usr/local/bin/claude" />
+                <label class="settings-check"><input id="set-claude-code-prefer-sub" type="checkbox" /> Use my Claude subscription even if <code>ANTHROPIC_API_KEY</code> is set <span class="hint-inline">(strips API-key env vars so your <code>claude /login</code> account — and its claude.ai connectors — are used)</span></label>
+                <div style="display:flex;align-items:center;gap:10px;margin-top:6px;">
+                  <button id="set-claude-code-test" type="button" class="subtle">Test Claude Code</button>
+                  <span id="set-claude-code-test-result" class="hint-inline" aria-live="polite"></span>
+                </div>
               </div>
             </details>
 
