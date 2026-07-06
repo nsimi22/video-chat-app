@@ -120,7 +120,7 @@
           <span>${r.enabled ? 'Enabled' : 'Disabled'}</span>
         </label>
         <button class="huddle-int-iconbtn huddle-int-rotate" title="Rotate secret (old one stops working immediately)" aria-label="Rotate secret">${svg('refresh')}</button>
-        <button class="huddle-int-iconbtn huddle-int-delete" title="Delete integration" aria-label="Delete integration">${svg('trash')}</button>
+        <button class="huddle-int-delete" title="Delete this integration" aria-label="Delete integration">${svg('trash')}<span>Delete</span></button>
       </div>
       <div class="huddle-int-card-url">
         <code class="mono">${escapeHtml(url)}</code>
