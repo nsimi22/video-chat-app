@@ -885,6 +885,135 @@ ipcMain.handle('terminal-kill', (_event, { id } = {}) => {
   return { ok: !!rec };
 });
 
+// Claude Code as an AI provider ("use my already-auth'd MCPs").
+//
+// Runs the user's locally installed `claude` CLI in headless print mode
+// (`-p --output-format json`) so /ai answers come from Claude Code —
+// which loads the user's OWN MCP servers (user-scope ~/.claude.json;
+// OAuth tokens from the local credential store carry over, and claude.ai
+// connectors surface too when the CLI is signed in with the same Pro/Max
+// account). Huddle never sees or stores any of those credentials; the
+// tool calls execute entirely inside the Claude Code process.
+//
+// Trust model: this executes a binary already on the user's machine, as
+// the user, with the prompt they typed into /ai — the same power the
+// in-app terminal (above) already grants, minus the interactive shell.
+// The prompt travels via stdin (never a shell string), the binary is
+// resolved once via the user's login shell (same GUI-PATH fix as
+// terminal-spawn) or an explicit Settings override, and allowedTools is
+// charset-validated before being passed as a discrete argv entry.
+const CLAUDE_CODE_TIMEOUT_MS = 180 * 1000;
+const CLAUDE_CODE_MAX_OUTPUT = 2 * 1024 * 1024;
+// Tool patterns per docs: Bash(git *), mcp__server__*, Read, WebSearch…
+const CLAUDE_ALLOWED_TOOLS_RE = /^[\w\s,*()\-:_./]+$/;
+let cachedClaudeBin = null;
+
+function resolveClaudeBinary() {
+  if (cachedClaudeBin) return Promise.resolve(cachedClaudeBin);
+  return new Promise((resolve) => {
+    const { execFile } = require('child_process');
+    const isWin = process.platform === 'win32';
+    if (isWin) {
+      execFile('where', ['claude'], { timeout: 10_000 }, (err, stdout) => {
+        const p = !err && stdout.split(/\r?\n/).find((l) => l.trim());
+        cachedClaudeBin = p ? p.trim() : null;
+        resolve(cachedClaudeBin);
+      });
+      return;
+    }
+    // Login shell so ~/.zprofile / nvm / Homebrew shellenv resolve the
+    // real PATH — a launchd/GUI-started Electron inherits a truncated
+    // one (same gotcha terminal-spawn documents).
+    const shell = process.env.SHELL || '/bin/bash';
+    execFile(shell, ['-l', '-c', 'command -v claude'], { timeout: 10_000 }, (err, stdout) => {
+      const p = !err && String(stdout || '').trim();
+      cachedClaudeBin = p || null;
+      resolve(cachedClaudeBin);
+    });
+  });
+}
+
+ipcMain.handle('claude-code-run', async (_event, payload = {}) => {
+  const prompt = typeof payload.prompt === 'string' ? payload.prompt : '';
+  if (!prompt.trim()) return { ok: false, error: 'empty prompt' };
+
+  const fs = require('fs');
+  let bin = typeof payload.binPath === 'string' && payload.binPath.trim()
+    ? payload.binPath.trim()
+    : await resolveClaudeBinary();
+  if (bin && !fs.existsSync(bin)) bin = null;
+  if (!bin) {
+    return {
+      ok: false,
+      error: 'Claude Code not found. Install it (npm install -g @anthropic-ai/claude-code), sign in once with `claude`, or set an explicit binary path in Settings.',
+    };
+  }
+
+  const args = ['-p', '--output-format', 'json'];
+  const allowedTools = typeof payload.allowedTools === 'string' ? payload.allowedTools.trim() : '';
+  if (allowedTools) {
+    if (!CLAUDE_ALLOWED_TOOLS_RE.test(allowedTools)) {
+      return { ok: false, error: 'allowed-tools contains unsupported characters' };
+    }
+    args.push('--allowedTools', allowedTools);
+  }
+
+  const { spawn } = require('child_process');
+  const os = require('os');
+  return await new Promise((resolve) => {
+    let cp;
+    try {
+      // cwd = home, NOT the app bundle: session scoping and project
+      // .mcp.json discovery are cwd-relative, and home is the stable,
+      // user-expected context for a chat assistant.
+      cp = spawn(bin, args, { cwd: os.homedir(), env: { ...process.env } });
+    } catch (err) {
+      resolve({ ok: false, error: `failed to start Claude Code: ${err?.message || err}` });
+      return;
+    }
+    let out = '';
+    let errOut = '';
+    let done = false;
+    const finish = (result) => { if (!done) { done = true; resolve(result); } };
+    const timer = setTimeout(() => {
+      try { cp.kill('SIGKILL'); } catch {}
+      finish({ ok: false, error: `Claude Code timed out after ${CLAUDE_CODE_TIMEOUT_MS / 1000}s` });
+    }, CLAUDE_CODE_TIMEOUT_MS);
+    cp.stdout.on('data', (d) => {
+      out += d;
+      if (out.length > CLAUDE_CODE_MAX_OUTPUT) {
+        clearTimeout(timer);
+        try { cp.kill('SIGKILL'); } catch {}
+        finish({ ok: false, error: 'Claude Code output exceeded size cap' });
+      }
+    });
+    cp.stderr.on('data', (d) => { errOut = (errOut + d).slice(-4000); });
+    cp.on('error', (err) => {
+      clearTimeout(timer);
+      finish({ ok: false, error: `Claude Code spawn error: ${err?.message || err}` });
+    });
+    cp.on('close', (code) => {
+      clearTimeout(timer);
+      if (done) return;
+      let json = null;
+      try { json = JSON.parse(out); } catch { /* fall through */ }
+      const text = json?.result ?? '';
+      if ((code !== 0 && !text) || json?.is_error) {
+        finish({ ok: false, error: (text || errOut || `exit code ${code}`).slice(0, 2000) });
+        return;
+      }
+      finish({
+        ok: true,
+        text: String(text),
+        sessionId: json?.session_id || null,
+        costUsd: typeof json?.total_cost_usd === 'number' ? json.total_cost_usd : null,
+      });
+    });
+    // Prompt via stdin: no argv length limits, no quoting hazards.
+    try { cp.stdin.write(prompt); cp.stdin.end(); } catch {}
+  });
+});
+
 // Generic fetch proxy. Some third-party APIs (notably Atlassian Cloud)
 // don't permit browser-origin requests via CORS; routing through main lets
 // the renderer hit them with stored credentials. We only proxy https URLs

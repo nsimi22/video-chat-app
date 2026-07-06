@@ -118,6 +118,13 @@ contextBridge.exposeInMainWorld('huddle', {
     },
   },
   fetchProxy: (req) => ipcRenderer.invoke('fetch-proxy', req),
+  // Claude Code AI provider: run the user's local `claude` CLI headlessly
+  // so /ai uses their already-configured (and already-authenticated) MCP
+  // servers. Request/response only — { prompt, allowedTools?, binPath? }
+  // in, { ok, text, sessionId, costUsd } | { ok:false, error } out.
+  claudeCode: {
+    run: (opts) => ipcRenderer.invoke('claude-code-run', opts || {}),
+  },
   // Render HTML to a PDF via a hidden window + native save dialog
   // (roadmap export). Returns { ok, path } or { ok:false, canceled|error }.
   exportPdf: (payload) => ipcRenderer.invoke('export-pdf', payload),

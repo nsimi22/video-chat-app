@@ -235,6 +235,8 @@ const els = {
   setAnthropicModel: $('#set-anthropic-model'),
   setOpenrouterKey: $('#set-openrouter-key'),
   setOpenrouterModel: $('#set-openrouter-model'),
+  setClaudeCodeTools: $('#set-claude-code-tools'),
+  setClaudeCodeBin: $('#set-claude-code-bin'),
   setAiTicketContext: $('#set-ai-ticket-context'),
   setAiTicketRepo: $('#set-ai-ticket-repo'),
   setGithubToken: $('#set-github-token'),
@@ -8316,11 +8318,13 @@ function initJiraBoard() {
 function rebuildAiClient() {
   const a = state.settings?.ai || {};
   const provider = a.provider || 'anthropic';
-  const defaultModel = provider === 'anthropic' ? (a.anthropicModel || '') : (a.openrouterModel || '');
+  const defaultModel = provider === 'anthropic' ? (a.anthropicModel || '')
+    : provider === 'openrouter' ? (a.openrouterModel || '') : '';
   state.ai = new window.AiClient({
     provider,
     anthropicKey: a.anthropicKey || '',
     openrouterKey: a.openrouterKey || '',
+    claudeCode: a.claudeCode || {},
     defaultModel,
   });
 }
@@ -8341,6 +8345,8 @@ async function openSettings() {
   els.setAnthropicModel.value = s.ai?.anthropicModel || '';
   els.setOpenrouterKey.value = s.ai?.openrouterKey || '';
   els.setOpenrouterModel.value = s.ai?.openrouterModel || '';
+  els.setClaudeCodeTools.value = s.ai?.claudeCode?.allowedTools || '';
+  els.setClaudeCodeBin.value = s.ai?.claudeCode?.binPath || '';
   els.setAiTicketContext.value = s.aiTicket?.context || '';
   els.setAiTicketRepo.value = s.aiTicket?.githubRepo || '';
   els.setGithubToken.value = s.github?.token || '';
@@ -8491,6 +8497,10 @@ async function saveSettings() {
       anthropicModel: els.setAnthropicModel.value.trim(),
       openrouterKey: els.setOpenrouterKey.value,
       openrouterModel: els.setOpenrouterModel.value.trim(),
+      claudeCode: {
+        allowedTools: els.setClaudeCodeTools.value.trim(),
+        binPath: els.setClaudeCodeBin.value.trim(),
+      },
     },
     aiTicket: {
       // Free-form project/team context the user wants every /ai-ticket

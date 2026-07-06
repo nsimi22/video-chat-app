@@ -782,6 +782,7 @@
                 <select id="set-ai-provider">
                   <option value="anthropic">Anthropic (Claude direct)</option>
                   <option value="openrouter">OpenRouter (Claude + many models)</option>
+                  <option value="claude-code">Claude Code (local — uses your MCP servers)</option>
                 </select>
                 <label>Anthropic API key <span class="hint-inline">(<code>console.anthropic.com</code>)</span></label>
                 <input id="set-anthropic-key" type="password" autocomplete="off" />
@@ -791,6 +792,11 @@
                 <input id="set-openrouter-key" type="password" autocomplete="off" />
                 <label>OpenRouter default model <span class="hint-inline">(default <code>anthropic/claude-opus-4-7</code>)</span></label>
                 <input id="set-openrouter-model" type="text" placeholder="anthropic/claude-opus-4-7" />
+                <p class="hint">Claude Code runs your locally installed <code>claude</code> CLI headlessly, with your existing login and your already-connected MCP servers (and claude.ai connectors on the same account) — no key needed here. Pre-approve the tools it may use below; anything unlisted is denied.</p>
+                <label>Claude Code allowed tools <span class="hint-inline">(e.g. <code>mcp__linear__*,mcp__notion__*,WebSearch</code>)</span></label>
+                <input id="set-claude-code-tools" type="text" autocomplete="off" placeholder="mcp__linear__*,WebSearch" />
+                <label>Claude Code binary path <span class="hint-inline">(optional — auto-detected from your shell PATH)</span></label>
+                <input id="set-claude-code-bin" type="text" autocomplete="off" placeholder="/usr/local/bin/claude" />
               </div>
             </details>
 
