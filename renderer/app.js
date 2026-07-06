@@ -8469,6 +8469,19 @@ function claudeConfigDirFor(name) {
   return `~/.claude-huddle/${slug}`;
 }
 
+// Small ✕ icon button shared by the remove-account and cancel-add
+// controls (title defaults to the aria-label when not given separately).
+function claudeXButton(label, onClick, title = label) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'claude-account-remove';
+  b.setAttribute('aria-label', label);
+  b.title = title;
+  b.innerHTML = window.HuddleIcons?.x || '✕';
+  b.onclick = onClick;
+  return b;
+}
+
 // Render the managed account list. Each row: name, its config dir, a
 // "Sign in" button (re-opens the terminal login), and a remove button.
 function renderClaudeAccounts() {
@@ -8500,18 +8513,12 @@ function renderClaudeAccounts() {
     signin.textContent = 'Sign in';
     signin.title = 'Open the Terminal and run claude in this account to /login';
     signin.onclick = () => launchClaudeLogin(p);
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'claude-account-remove';
-    del.setAttribute('aria-label', `Remove ${p.name}`);
-    del.title = 'Remove from this list (does not delete the login on disk)';
-    del.innerHTML = window.HuddleIcons?.x || '✕';
-    del.onclick = () => {
+    const del = claudeXButton(`Remove ${p.name}`, () => {
       claudeProfiles.splice(idx, 1);
       if (els.setClaudeCodeActive.value === p.name) els.setClaudeCodeActive.value = '';
       renderClaudeAccounts();
       rebuildClaudeProfileSelect();
-    };
+    }, 'Remove from this list (does not delete the login on disk)');
     row.append(meta, signin, del);
     wrap.appendChild(row);
   });
@@ -8545,11 +8552,7 @@ function addClaudeAccount() {
   create.type = 'button';
   create.className = 'subtle';
   create.textContent = 'Create & sign in';
-  const cancel = document.createElement('button');
-  cancel.type = 'button';
-  cancel.className = 'claude-account-remove';
-  cancel.setAttribute('aria-label', 'Cancel');
-  cancel.innerHTML = window.HuddleIcons?.x || '✕';
+  const cancel = claudeXButton('Cancel', () => renderClaudeAccounts());
   const submit = () => {
     const name = input.value.trim();
     if (!name) { input.focus(); return; }
@@ -8566,7 +8569,6 @@ function addClaudeAccount() {
     launchClaudeLogin(profile);
   };
   create.onclick = submit;
-  cancel.onclick = () => renderClaudeAccounts();
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); submit(); }
     else if (e.key === 'Escape') { e.preventDefault(); renderClaudeAccounts(); }

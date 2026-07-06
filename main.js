@@ -1057,6 +1057,9 @@ async function listJsonlFiles(dir, cutoffMs, out) {
 // under oauthAccount.organizationRateLimitTier. That file also stores
 // per-project history and can be multi-MB, so we regex for the one field
 // rather than JSON.parse the whole thing, and skip anything absurdly large.
+// Cached by file mtime — scans re-fire on day-window change / manual
+// refresh, and the tier changes ~never, so an unchanged file is not re-read.
+const planTierCache = new Map(); // abs path -> { mtimeMs, tier }
 function readClaudePlanTier(base) {
   const fs = require('fs');
   const os = require('os');
@@ -1065,9 +1068,16 @@ function readClaudePlanTier(base) {
     try {
       const st = fs.statSync(file);
       if (!st.isFile() || st.size > 25 * 1024 * 1024) continue;
+      const cached = planTierCache.get(file);
+      if (cached && cached.mtimeMs === st.mtimeMs) {
+        if (cached.tier) return cached.tier;
+        continue; // known tier-less at this mtime — don't re-read; try next
+      }
       const txt = fs.readFileSync(file, 'utf8');
       const m = txt.match(/"organizationRateLimitTier"\s*:\s*"([^"]+)"/);
-      if (m) return m[1];
+      const tier = m ? m[1] : null;
+      planTierCache.set(file, { mtimeMs: st.mtimeMs, tier });
+      if (tier) return tier;
     } catch { /* missing / unreadable → next candidate */ }
   }
   return null;
