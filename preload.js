@@ -121,7 +121,9 @@ contextBridge.exposeInMainWorld('huddle', {
   // Claude Code AI provider: run the user's local `claude` CLI headlessly
   // so /ai uses their already-configured (and already-authenticated) MCP
   // servers. Request/response only — { prompt, allowedTools?, binPath? }
-  // in, { ok, text, sessionId, costUsd } | { ok:false, error } out.
+  // in, { ok, text, costUsd } | { ok:false, error } out. Deliberately
+  // stateless: no session ids cross this boundary (ai.js flattens the
+  // short /ai history into the prompt rather than juggling --resume).
   claudeCode: {
     run: (opts) => ipcRenderer.invoke('claude-code-run', opts || {}),
     // Binary presence probe (no CLI spawn) — powers the Settings

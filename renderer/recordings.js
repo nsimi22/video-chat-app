@@ -141,8 +141,12 @@
     listEl.innerHTML = rows.map((r) => {
       const starter = r.started_by_name ? ` · ${escapeHtml(r.started_by_name)}` : '';
       const dur = fmtDuration(r);
-      const recapSnippet = r.recap
-        ? `<div class="huddle-rec-card-recap">${escapeHtml(r.recap.slice(0, 180))}${r.recap.length > 180 ? '…' : ''}</div>`
+      // recap_snippet is the server-truncated (200-char) generated column
+      // the list query selects instead of the full recap; slice to the
+      // display length and use the overflow char as the "there's more" cue.
+      const snip = r.recap_snippet || '';
+      const recapSnippet = snip
+        ? `<div class="huddle-rec-card-recap">${escapeHtml(snip.slice(0, 180))}${snip.length > 180 ? '…' : ''}</div>`
         : '';
       return `
         <div class="huddle-rec-card" role="listitem" data-id="${escapeHtml(r.id)}" tabindex="0">

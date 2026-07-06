@@ -131,18 +131,22 @@
           <input type="checkbox" ${r.enabled ? 'checked' : ''}/>
           <span>${r.enabled ? 'Enabled' : 'Disabled'}</span>
         </label>
+        <button class="huddle-int-iconbtn huddle-int-rotate" title="Rotate secret (old one stops working immediately)" aria-label="Rotate secret">${svg('refresh')}</button>
         <button class="huddle-int-iconbtn huddle-int-delete" title="Delete integration" aria-label="Delete integration">${svg('trash')}</button>
       </div>
       <div class="huddle-int-card-url">
         <code class="mono">${escapeHtml(url)}</code>
-        <button class="huddle-int-iconbtn huddle-int-copy" title="Copy URL" aria-label="Copy URL">${svg('copy') || svg('link') || 'copy'}</button>
+        <button class="huddle-int-iconbtn huddle-int-copy" title="Copy URL" aria-label="Copy URL">${svg('copy')}</button>
       </div>
     `;
     card.querySelector('.huddle-int-copy').addEventListener('click', (e) => copy(url, e.currentTarget));
     card.querySelector('.huddle-int-toggle input').addEventListener('change', async (e) => {
       try {
         await window.huddleApp.integrations.update(r.id, { enabled: e.target.checked });
-        refresh();
+        // Patch in place — a full refresh() refetches the whole list and
+        // rebuilds every card for a one-boolean change.
+        r.enabled = e.target.checked;
+        card.replaceWith(renderCard(r));
       } catch (err) {
         console.warn('[integrations] toggle failed', err);
         e.target.checked = !e.target.checked;
@@ -153,6 +157,16 @@
           `Couldn't update "${r.name}" — ${/security|policy/i.test(err?.message || '') ? 'only members of its target channel can change it' : (err?.message || 'unknown error')}`,
           { kind: 'error' },
         );
+      }
+    });
+    card.querySelector('.huddle-int-rotate').addEventListener('click', async () => {
+      if (!confirm(`Rotate the secret for "${r.name}"? The current secret stops working immediately — you'll need to update the sender with the new one. The URL stays the same.`)) return;
+      try {
+        const secret = await window.huddleApp.integrations.rotate(r.id);
+        showRotated(r, secret);
+      } catch (err) {
+        console.warn('[integrations] rotate failed', err);
+        window.huddleApp.toast?.(`Rotate failed: ${err?.message || 'unknown error'}`, { kind: 'error' });
       }
     });
     card.querySelector('.huddle-int-delete').addEventListener('click', async () => {
@@ -253,6 +267,29 @@
     `;
     editor.querySelector('.int-copy-url').addEventListener('click', (e) => copy(url, e.currentTarget));
     editor.querySelector('.int-copy-secret').addEventListener('click', (e) => copy(res.secret, e.currentTarget));
+    editor.querySelector('.int-done').addEventListener('click', () => { closeEditor(); refresh(); });
+  }
+
+  // Rotation's one-time secret reveal — same contract as showCreated: the
+  // new secret is visible exactly this once (service-role-only table).
+  function showRotated(r, secret) {
+    const editor = root.querySelector('.huddle-int-editor');
+    const listEl = root.querySelector('.huddle-int-list');
+    listEl.classList.add('hidden');
+    editor.classList.remove('hidden');
+    editor.innerHTML = `
+      <div class="huddle-int-form">
+        <h3 class="huddle-int-h">Secret rotated — copy it now</h3>
+        <p class="huddle-int-sub">The old secret for "${escapeHtml(r.name)}" stopped working. This is the only time the new one is shown — update the sender before its next delivery.</p>
+        <label>New secret
+          <div class="huddle-int-reveal"><code class="mono">${escapeHtml(secret)}</code><button class="huddle-int-iconbtn int-copy-secret" title="Copy secret">${svg('copy')}</button></div>
+        </label>
+        <div class="huddle-int-form-actions">
+          <button class="huddle-int-primary int-done">Done</button>
+        </div>
+      </div>
+    `;
+    editor.querySelector('.int-copy-secret').addEventListener('click', (e) => copy(secret, e.currentTarget));
     editor.querySelector('.int-done').addEventListener('click', () => { closeEditor(); refresh(); });
   }
 

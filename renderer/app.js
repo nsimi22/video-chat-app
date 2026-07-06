@@ -9183,6 +9183,7 @@ window.huddleApp = {
     list:       () => state.huddle ? state.huddle.listTeamIntegrations() : Promise.resolve([]),
     create:     (opts) => state.huddle ? state.huddle.createTeamIntegration(opts) : Promise.reject(new Error('not signed in')),
     update:     (id, patch) => state.huddle ? state.huddle.updateTeamIntegration(id, patch) : Promise.reject(new Error('not signed in')),
+    rotate:     (id) => state.huddle ? state.huddle.rotateTeamIntegrationSecret(id) : Promise.reject(new Error('not signed in')),
     remove:     (id) => state.huddle ? state.huddle.deleteTeamIntegration(id) : Promise.reject(new Error('not signed in')),
     webhookUrl: (id) => state.huddle ? state.huddle.integrationWebhookUrl(id) : '',
     channels:   () => Array.from(state.channelMeta?.values?.() || []).filter((c) => c.type !== 'dm'),
