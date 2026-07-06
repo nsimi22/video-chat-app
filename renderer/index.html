@@ -211,6 +211,7 @@
           <button class="huddle-rail-item" data-view="board" aria-label="Board" title="Board"></button>
           <button class="huddle-rail-item" data-view="ai" aria-label="Huddle AI" title="Huddle AI"></button>
           <button class="huddle-rail-item" data-view="terminal" aria-label="Terminal" title="Terminal"></button>
+          <button class="huddle-rail-item" data-view="recordings" aria-label="Recordings" title="Recordings"></button>
         </div>
         <div class="huddle-rail-footer">
           <button class="huddle-rail-item" data-action="settings" aria-label="Settings" title="Settings"></button>
@@ -1208,6 +1209,10 @@
          that pulls events from HuddleCalendar.listEvents() and lays
          them out per huddle/calendar.jsx in the design bundle. -->
     <script src="calendar-grid.js"></script>
+    <!-- v2 Recordings library — nav-rail destination listing the team's
+         call recordings (call_recordings) with recap/transcript search
+         and inline playback off short-lived signed URLs. -->
+    <script src="recordings.js"></script>
     <!-- v2 Terminal panel — nav-rail destination that mounts an xterm.js
          terminal backed by a real pty in main (window.huddle.terminal.*),
          so `claude` and any shell command run inside Huddle. xterm vendor

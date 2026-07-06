@@ -736,6 +736,68 @@
       return data?.signedUrl || null;
     }
 
+    // Team-wide recording list for the Recordings library view. RLS
+    // (call_recordings_read) already scopes rows to channels the caller can
+    // see, so this is a plain team read. `transcript` is deliberately NOT
+    // selected — hour-long meetings produce large transcripts and the list
+    // only needs metadata + recap; getRecording() fetches the full row for
+    // the detail view. Starter names are resolved in one profiles batch,
+    // tolerating null started_by (starter's account was deleted).
+    async listRecordings({ limit = 100 } = {}) {
+      const { data, error } = await this.supabase
+        .from('call_recordings')
+        .select('id, channel_id, started_by, status, started_at, ended_at, storage_path, recap, error')
+        .eq('team_id', this.team.id)
+        .order('started_at', { ascending: false })
+        .limit(limit);
+      if (error) throw new Error(`listRecordings failed: ${error.message || error}`);
+      return this._withStarterNames(data || []);
+    }
+
+    // Resolve started_by uuids to display names in one profiles batch.
+    async _withStarterNames(rows) {
+      const ids = [...new Set(rows.map((r) => r.started_by).filter(Boolean))];
+      let names = new Map();
+      if (ids.length) {
+        const { data: profs } = await this.supabase
+          .from('profiles').select('user_id, name').in('user_id', ids);
+        names = new Map((profs || []).map((p) => [p.user_id, p.name]));
+      }
+      return rows.map((r) => ({ ...r, started_by_name: names.get(r.started_by) || null }));
+    }
+
+    // Single recording INCLUDING the (potentially large) transcript, for the
+    // library's detail view. Returns null when not found / not visible.
+    async getRecording(id) {
+      const { data, error } = await this.supabase
+        .from('call_recordings')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+      if (error) { console.warn('[recording] getRecording failed', error); return null; }
+      return data;
+    }
+
+    // Server-side substring search over recap + transcript so the library's
+    // search box can match spoken content without shipping every transcript
+    // to the client. PostgREST's .or() filter string treats `,()` as syntax,
+    // so those are stripped from the term rather than escaped (supabase-js
+    // exposes no escaping helper); a search term losing a comma still
+    // matches what the user meant more often than a 400 helps them.
+    async searchRecordings(query, { limit = 50 } = {}) {
+      const q = String(query || '').replace(/[,()]/g, ' ').trim();
+      if (!q) return this.listRecordings({ limit });
+      const { data, error } = await this.supabase
+        .from('call_recordings')
+        .select('id, channel_id, started_by, status, started_at, ended_at, storage_path, recap, error')
+        .eq('team_id', this.team.id)
+        .or(`recap.ilike.%${q}%,transcript.ilike.%${q}%`)
+        .order('started_at', { ascending: false })
+        .limit(limit);
+      if (error) throw new Error(`searchRecordings failed: ${error.message || error}`);
+      return this._withStarterNames(data || []);
+    }
+
     // Submit the local caption-transcript snapshot for a recording so the
     // server (livekit-egress-webhook) can build the AI recap even if this
     // client leaves before the egress completes. The transcript lives only in

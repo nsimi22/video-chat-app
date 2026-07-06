@@ -19,6 +19,7 @@
     board: 'kanban',
     ai: 'sparkles',
     terminal: 'terminal',
+    recordings: 'film',
     settings: 'settings',
   };
 
@@ -38,6 +39,11 @@
       sel: '.huddle-terminal-view',
       open: () => window.HuddleTerminalPanel?.open?.(),
       close: () => window.HuddleTerminalPanel?.close?.(),
+    },
+    recordings: {
+      sel: '.huddle-recordings-view',
+      open: () => window.HuddleRecordings?.open?.(),
+      close: () => window.HuddleRecordings?.close?.(),
     },
     calendar: {
       sel: '.huddle-cal-view',

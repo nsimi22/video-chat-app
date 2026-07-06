@@ -8942,6 +8942,15 @@ window.huddleApp = {
   // misses mic-only peers and screen-share states — the "1 person with
   // four people talking" bug. Returns 0 when not in a call.
   getCallPeerCount: () => (state.mesh?.room ? state.mesh.room.remoteParticipants.size + 1 : 0),
+  // Recordings library (recordings.js): list / search / detail / playback
+  // URL. Narrow facade over the HuddleClient, same pattern as terminalShare —
+  // the view gets exactly the reads it needs, not the whole client.
+  recordings: {
+    list:      (opts) => state.huddle ? state.huddle.listRecordings(opts) : Promise.resolve([]),
+    search:    (q, opts) => state.huddle ? state.huddle.searchRecordings(q, opts) : Promise.resolve([]),
+    detail:    (id) => state.huddle ? state.huddle.getRecording(id) : Promise.resolve(null),
+    signedUrl: (path) => state.huddle ? state.huddle.recordingSignedUrl(path) : Promise.resolve(null),
+  },
   // Channel-name lookup, used by calendar-grid.js to derive event
   // categories from channel naming. Returns null for unknown ids
   // (e.g. an event in a channel the user isn't a member of yet).
