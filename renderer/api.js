@@ -1916,10 +1916,16 @@
     }
 
     async deleteMessage(messageId) {
-      const { error } = await this.supabase.from('messages').delete().eq('id', messageId);
+      const { data, error } = await this.supabase
+        .from('messages').delete().eq('id', messageId).select('id');
       // Throw so chat.js can roll back its optimistic removal — the row
-      // still exists for everyone else when the delete fails.
+      // still exists for everyone else when the delete fails. The .select
+      // matters: a delete that RLS filters out returns 0 rows with NO
+      // error (e.g. an app message when messages_delete_app doesn't
+      // match), which would otherwise read as success and leave the
+      // message vanished locally but alive for everyone else.
       if (error) throw error;
+      if (!data?.length) throw new Error('not allowed to delete this message');
     }
 
     // Pin / unpin a message. Routed through a security-definer RPC so any

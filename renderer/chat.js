@@ -2804,9 +2804,14 @@ class ChatView {
     // additionally wire any configured integrations as tools so it *can*
     // read/act on Jira tickets when asked; the prompt (see AI_SYSTEM_PROMPT*
     // near the top of this file) keeps Jira an optional capability.
+    // claude-code runs its own tool loop and never receives our local
+    // tool defs — sending it the tools-promising prompt makes the model
+    // fabricate Jira/roadmap results it can't fetch, so supportsTools
+    // gates both the tool wiring AND the prompt that advertises it.
+    const toolsSupported = ai.supportsTools ? ai.supportsTools() : true;
     const jira = this.hooks.getJira?.();
-    const jiraTools = window.HuddleAiTools ? window.HuddleAiTools.buildJiraTools(jira) : [];
-    const roadmapTools = window.HuddleAiTools?.buildRoadmapTools
+    const jiraTools = toolsSupported && window.HuddleAiTools ? window.HuddleAiTools.buildJiraTools(jira) : [];
+    const roadmapTools = toolsSupported && window.HuddleAiTools?.buildRoadmapTools
       ? window.HuddleAiTools.buildRoadmapTools(this.hooks.getRoadmap?.()) : [];
     const tools = [...jiraTools, ...roadmapTools];
     let system = jiraTools.length ? AI_SYSTEM_PROMPT_WITH_JIRA : AI_SYSTEM_PROMPT;
@@ -2912,7 +2917,11 @@ class ChatView {
     // it just can't ground in the codebase.
     const repoSlug = (this.hooks.getAiTicketRepo?.() || '').trim();
     const github = this.hooks.getGitHub?.();
-    const useTools = !!(repoSlug && github?.isConfigured());
+    // Also requires a tools-capable provider: claude-code never receives
+    // local tool defs, so advertising repo tools in the prompt would just
+    // invite fabricated "I read the code" grounding.
+    const useTools = !!(repoSlug && github?.isConfigured())
+      && (ai.supportsTools ? ai.supportsTools() : true);
     const tools = useTools && window.HuddleAiTools
       ? window.HuddleAiTools.buildGithubTicketTools(github, repoSlug)
       : null;

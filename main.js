@@ -907,17 +907,32 @@ const CLAUDE_CODE_MAX_OUTPUT = 2 * 1024 * 1024;
 // Tool patterns per docs: Bash(git *), mcp__server__*, Read, WebSearch…
 const CLAUDE_ALLOWED_TOOLS_RE = /^[\w\s,*()\-:_./]+$/;
 let cachedClaudeBin = null;
+let claudeBinPromise = null; // in-flight/settled resolution (dedupes concurrent callers)
+let claudeBinRetryAt = 0;    // when a not-found result may be re-probed
 
 function resolveClaudeBinary() {
-  if (cachedClaudeBin) return Promise.resolve(cachedClaudeBin);
-  return new Promise((resolve) => {
+  // Memoize negatives too (with a retry window so a mid-session install is
+  // picked up): the probe spawns a login shell, and detect fires on every
+  // settings load — without this, no-claude machines pay a shell spawn
+  // (sourcing ~/.zprofile / nvm, often seconds) each time, forever.
+  if (claudeBinPromise && (cachedClaudeBin || Date.now() < claudeBinRetryAt)) {
+    return claudeBinPromise;
+  }
+  claudeBinRetryAt = Date.now() + 60_000; // covers the in-flight window as well
+  claudeBinPromise = new Promise((resolve) => {
     const { execFile } = require('child_process');
     const isWin = process.platform === 'win32';
+    const settle = (p) => {
+      cachedClaudeBin = p || null;
+      if (!cachedClaudeBin) claudeBinRetryAt = Date.now() + 60_000;
+      resolve(cachedClaudeBin);
+    };
     if (isWin) {
       execFile('where', ['claude'], { timeout: 10_000 }, (err, stdout) => {
-        const p = !err && stdout.split(/\r?\n/).find((l) => l.trim());
-        cachedClaudeBin = p ? p.trim() : null;
-        resolve(cachedClaudeBin);
+        const lines = err ? [] : String(stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        // `where` lists the extensionless sh-shim first for npm installs —
+        // prefer a spawnable .exe/.cmd/.bat entry.
+        settle(lines.find((l) => /\.(exe|cmd|bat)$/i.test(l)) || lines[0] || null);
       });
       return;
     }
@@ -926,11 +941,10 @@ function resolveClaudeBinary() {
     // one (same gotcha terminal-spawn documents).
     const shell = process.env.SHELL || '/bin/bash';
     execFile(shell, ['-l', '-c', 'command -v claude'], { timeout: 10_000 }, (err, stdout) => {
-      const p = !err && String(stdout || '').trim();
-      cachedClaudeBin = p || null;
-      resolve(cachedClaudeBin);
+      settle(!err && String(stdout || '').trim());
     });
   });
+  return claudeBinPromise;
 }
 
 // The one binary-selection policy both handlers share: an explicit
@@ -984,7 +998,9 @@ const CLAUDE_PRICING = [
   { re: /opus/i, inp: 15, out: 75 },        // opus 4.1 and older
   { re: /sonnet/i, inp: 3, out: 15 },
   { re: /haiku-4/i, inp: 1, out: 5 },
-  { re: /haiku-3-5/i, inp: 0.8, out: 4 },
+  // Real 3.5 Haiku ids put the digits FIRST ('claude-3-5-haiku-20241022');
+  // match both orders so they don't fall through to the Haiku-3 tier.
+  { re: /haiku-3-5|3-5-haiku/i, inp: 0.8, out: 4 },
   { re: /haiku/i, inp: 0.25, out: 1.25 },
 ];
 const DEFAULT_PRICING = { inp: 5, out: 25 };
@@ -1081,13 +1097,25 @@ ipcMain.handle('claude-usage-scan', async (_event, payload = {}) => {
     }
   }
 
-  const profiles = [];
+  // Dedup by resolved config dir — the built-in Default IS ~/.claude, so a
+  // Settings profile pointing there would scan (and sum) the same
+  // transcripts twice, doubling every number on the dashboard.
+  const seenBases = new Set();
+  const deduped = [];
   for (const prof of wanted) {
     const base = prof.configDir || path.join(os.homedir(), '.claude');
+    if (seenBases.has(base)) continue;
+    seenBases.add(base);
+    deduped.push({ ...prof, base });
+  }
+
+  // Profiles are independent trees — scan them concurrently (each keeps
+  // its own bounded pool) so wall-clock is the slowest profile, not the sum.
+  const profiles = await Promise.all(deduped.map(async (prof) => {
+    const base = prof.base;
     const projectsDir = path.join(base, 'projects');
     if (!fs.existsSync(projectsDir)) {
-      profiles.push({ name: prof.name, found: false, totals: null, byDay: {}, byModel: {}, files: 0, truncated: false });
-      continue;
+      return { name: prof.name, found: false, totals: null, byDay: {}, byModel: {}, files: 0, truncated: false };
     }
     const files = [];
     await listJsonlFiles(projectsDir, cutoffMs, files);
@@ -1122,7 +1150,7 @@ ipcMain.handle('claude-usage-scan', async (_event, payload = {}) => {
         b.costUsd += cost; b.messages += 1;
       }
     }
-    profiles.push({
+    return {
       name: prof.name,
       found: true,
       totals,
@@ -1130,8 +1158,8 @@ ipcMain.handle('claude-usage-scan', async (_event, payload = {}) => {
       byModel,
       files: files.length,
       truncated: files.length >= USAGE_MAX_FILES_PER_PROFILE,
-    });
-  }
+    };
+  }));
   return { days, profiles };
 });
 
@@ -1178,11 +1206,26 @@ ipcMain.handle('claude-code-run', async (_event, payload = {}) => {
       // cwd = home, NOT the app bundle: session scoping and project
       // .mcp.json discovery are cwd-relative, and home is the stable,
       // user-expected context for a chat assistant.
-      cp = spawn(bin, args, { cwd: os.homedir(), env: childEnv });
+      //
+      // Windows npm installs resolve to a .cmd shim, which Node refuses to
+      // spawn directly (EINVAL since the CVE-2024-27980 hardening) — route
+      // those through the shell, quoting the path and any arg with spaces
+      // or cmd metachars (the allowedTools charset excludes '"', so
+      // embedding in quotes is safe).
+      const winCmd = process.platform === 'win32' && /\.(cmd|bat)$/i.test(bin);
+      cp = winCmd
+        ? spawn(`"${bin}"`, args.map((a) => (/[\s()]/.test(a) ? `"${a}"` : a)),
+            { cwd: os.homedir(), env: childEnv, shell: true, windowsHide: true })
+        : spawn(bin, args, { cwd: os.homedir(), env: childEnv });
     } catch (err) {
       resolve({ ok: false, error: `failed to start Claude Code: ${err?.message || err}` });
       return;
     }
+    // Decode as UTF-8 streams, not per-chunk Buffer coercion — `out += d`
+    // on Buffers corrupts a multibyte character split across chunk
+    // boundaries into U+FFFD (and can break JSON.parse of the envelope).
+    cp.stdout.setEncoding('utf8');
+    cp.stderr.setEncoding('utf8');
     let out = '';
     let errOut = '';
     let done = false;

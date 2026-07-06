@@ -8422,7 +8422,11 @@ function initJiraBoard() {
 
 function rebuildAiClient() {
   const a = state.settings?.ai || {};
-  const provider = a.provider || 'anthropic';
+  // state.aiAutoProvider is the session-only auto-default (a detected local
+  // claude binary when nothing was configured) — kept OUT of state.settings
+  // so opening Settings and saving can never persist a provider the user
+  // didn't choose. An explicit choice always wins.
+  const provider = a.provider || state.aiAutoProvider || 'anthropic';
   const defaultModel = provider === 'anthropic' ? (a.anthropicModel || '')
     : provider === 'openrouter' ? (a.openrouterModel || '') : '';
   state.ai = new window.AiClient({
@@ -8476,6 +8480,9 @@ async function testClaudeCodeFromSettings() {
     const res = await window.huddle.claudeCode.run({
       prompt: 'Reply with exactly the word: ok',
       binPath: els.setClaudeCodeBin.value.trim(),
+      // Include allowedTools: run() charset-validates it, so omitting it
+      // here would let Test report ✓ for a value every real /ai call rejects.
+      allowedTools: els.setClaudeCodeTools.value.trim(),
       preferSubscription: els.setClaudeCodePreferSub.checked,
       configDir: profile?.configDir || '',
     });
@@ -8504,7 +8511,14 @@ async function maybeDefaultAiToClaudeCode() {
   try {
     const det = await window.huddle.claudeCode?.detect?.({ binPath: a.claudeCode?.binPath || '' });
     if (!det?.found) return;
-    state.settings.ai = { ...a, provider: 'claude-code' };
+    // Re-read after the await: the detect probe can take seconds (login-
+    // shell PATH resolution) and the user may have configured a provider
+    // or key in Settings meanwhile — their explicit choice wins.
+    const cur = state.settings?.ai || {};
+    if (cur.provider || cur.anthropicKey || cur.openrouterKey) return;
+    // Session-only override — never written into state.settings, so an
+    // unrelated Settings save can't persist a provider the user never chose.
+    state.aiAutoProvider = 'claude-code';
     rebuildAiClient();
   } catch { /* probe is best-effort */ }
 }
@@ -9091,6 +9105,10 @@ window.huddleApp = {
   getAi: () => state.ai,
   getMe: () => state.me,
   getCalendar: () => state.calendar,
+  // Non-blocking notice for the standalone panels (integrations etc.) —
+  // same showToast the rest of the app uses, instead of a renderer-freezing
+  // alert(). opts: { kind: 'error' } for the red variant.
+  toast: (msg, opts) => showToast(msg, opts),
   // Integration clients + AI-ticket repo for the AI panel's tool loop —
   // the same surface the chat `/ai` and `/ai-ticket` paths use to wire
   // Jira tools and the repo-scoped GitHub read tools. Without these the

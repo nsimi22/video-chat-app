@@ -50,6 +50,16 @@
       return this.provider === 'anthropic' ? !!this.anthropicKey : !!this.openrouterKey;
     }
 
+    // Whether chat() honors the local `tools`/`onToolUse` machinery.
+    // claude-code runs its own agentic loop with the user's OWN MCP
+    // servers and never receives our in-renderer tool defs — callers must
+    // check this before sending a system prompt that promises Jira/GitHub
+    // tools, or the model is told it has tools it can't call and
+    // fabricates results.
+    supportsTools() {
+      return this.provider !== 'claude-code';
+    }
+
     /**
      * @param {Object} args
      * @param {string} [args.system] — system prompt

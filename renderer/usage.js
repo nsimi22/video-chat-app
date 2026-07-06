@@ -245,6 +245,11 @@
   window.HuddleUsage = { open, close };
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && root && !root.classList.contains('hidden')) close();
+    if (e.key !== 'Escape' || !root || root.classList.contains('hidden')) return;
+    // Escape in the day-window select blurs it, not the whole panel
+    // (same activeElement rule as terminal-panel).
+    const a = document.activeElement;
+    if (a && root.contains(a) && /^(input|textarea|select)$/i.test(a.tagName)) { a.blur(); return; }
+    close();
   });
 })();

@@ -292,7 +292,10 @@
       // from memory / refused. Jira tools need only a configured client;
       // GitHub tools are repo-scoped to the configured AI-ticket repo
       // (buildGithubTicketTools returns [] when the repo/client is unset).
-      const T = window.HuddleAiTools;
+      // claude-code never receives these local tool defs (it runs its own
+      // MCP loop) — gate the wiring AND the tools-promising prompt on
+      // supportsTools so that provider isn't told to CALL tools it lacks.
+      const T = (ai.supportsTools ? ai.supportsTools() : true) ? window.HuddleAiTools : null;
       const jiraTools = T ? T.buildJiraTools(window.huddleApp?.getJira?.()) : [];
       const githubTools = T
         ? T.buildGithubTicketTools(window.huddleApp?.getGitHub?.(), (window.huddleApp?.getAiTicketRepo?.() || '').trim())

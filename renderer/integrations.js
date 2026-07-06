@@ -42,7 +42,20 @@
 
   async function copy(text, btn) {
     try {
-      await navigator.clipboard.writeText(text);
+      // NOT navigator.clipboard: the app's permission handler denies
+      // renderer clipboard writes (context-menu.js documents this), so a
+      // bare writeText always rejects — fatal here, where the one-time
+      // webhook secret would be silently lost. writeClipboard routes
+      // through the main process; execCommand is the popout fallback.
+      if (window.writeClipboard) window.writeClipboard(text);
+      else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+      }
       if (btn) { const old = btn.innerHTML; btn.innerHTML = svg('check'); setTimeout(() => { btn.innerHTML = old; }, 1200); }
     } catch (err) { console.warn('[integrations] copy failed', err); }
   }
@@ -133,6 +146,13 @@
       } catch (err) {
         console.warn('[integrations] toggle failed', err);
         e.target.checked = !e.target.checked;
+        // Surface it — a silent checkbox revert reads as a dead switch.
+        // The common cause is RLS: updating an integration that posts into
+        // a private channel requires being in that channel.
+        window.huddleApp.toast?.(
+          `Couldn't update "${r.name}" — ${/security|policy/i.test(err?.message || '') ? 'only members of its target channel can change it' : (err?.message || 'unknown error')}`,
+          { kind: 'error' },
+        );
       }
     });
     card.querySelector('.huddle-int-delete').addEventListener('click', async () => {
@@ -142,7 +162,7 @@
         refresh();
       } catch (err) {
         console.warn('[integrations] delete failed', err);
-        alert(`Delete failed: ${err?.message || 'unknown error'}`);
+        window.huddleApp.toast?.(`Delete failed: ${err?.message || 'unknown error'}`, { kind: 'error' });
       }
     });
     return card;
@@ -264,6 +284,11 @@
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || !root || root.classList.contains('hidden')) return;
+    // Escape while typing in one of the panel's fields blurs the field —
+    // it must NOT wipe the create form (or dismiss the one-time secret
+    // reveal) mid-input. Same activeElement rule as the terminal panel.
+    const a = document.activeElement;
+    if (a && root.contains(a) && /^(input|textarea|select)$/i.test(a.tagName)) { a.blur(); return; }
     const editorOpen = !root.querySelector('.huddle-int-editor').classList.contains('hidden');
     if (editorOpen) closeEditor();
     else close();

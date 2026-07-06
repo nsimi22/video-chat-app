@@ -61,17 +61,17 @@ alter table public.team_integrations enable row level security;
 create policy team_integrations_read on public.team_integrations
   for select to authenticated using (public.is_team_member(team_id));
 
--- UPDATE: any team member may rename / retarget / toggle / reconfigure.
--- WITH CHECK re-validates the row they produce: still their team, and the
--- target channel (when set) is one THEY can see — so a member can't point
--- an integration at a private channel they aren't in.
+-- UPDATE: any team member may rename / toggle / reconfigure — including an
+-- integration that posts into a private channel they are NOT in (a member
+-- must be able to disable a runaway webhook they can see in the list; read
+-- and delete are already team-wide). WITH CHECK therefore only re-validates
+-- team membership. The "can't RETARGET into a channel you can't see" rule
+-- needs an old-vs-new comparison, which WITH CHECK can't express — it lives
+-- in the touch trigger below.
 create policy team_integrations_update on public.team_integrations
   for update to authenticated
   using (public.is_team_member(team_id))
-  with check (
-    public.is_team_member(team_id)
-    and (channel_id is null or public.can_see_channel(team_id, channel_id))
-  );
+  with check (public.is_team_member(team_id));
 
 create policy team_integrations_delete on public.team_integrations
   for delete to authenticated using (public.is_team_member(team_id));
@@ -90,6 +90,16 @@ begin
     new.kind := old.kind;
     new.created_by := old.created_by;
     new.created_at := old.created_at;
+    -- Retargeting requires visibility of the NEW channel (a member can't
+    -- point an integration into a private channel they aren't in), but
+    -- leaving channel_id unchanged doesn't — so toggling/renaming an
+    -- integration whose private target you can't see still works. RLS
+    -- WITH CHECK can't compare old vs new; this trigger can.
+    if new.channel_id is distinct from old.channel_id
+       and new.channel_id is not null
+       and not public.can_see_channel(new.team_id, new.channel_id) then
+      raise exception 'channel not found or not visible';
+    end if;
   end if;
   return new;
 end$$;
@@ -184,10 +194,18 @@ grant execute on function public.create_team_integration(text, text, text, text,
 -- (already nullable — it's `on delete set null` for deleted accounts),
 -- author_name = the integration's display name, and app_integration_id
 -- marking it as an app message so the renderer shows an app badge instead
--- of a person. ON DELETE SET NULL keeps history readable after the
--- integration is deleted (author_name is a denormalized snapshot).
+-- of a person.
+--
+-- Deliberately NOT a foreign key: the renderer keys the APP badge and its
+-- "app messages are never mine" ownership guard off this column, so an FK
+-- with ON DELETE SET NULL would retroactively strip the machine-posted
+-- marking from history when the integration is deleted — an integration
+-- named like a teammate ('Alice') would have its old posts silently turn
+-- into human-looking messages by 'Alice', the exact spoof the badge
+-- prevents. The id is a durable provenance marker, not a live join target
+-- (author_name is the denormalized display snapshot).
 alter table public.messages
-  add column app_integration_id uuid references public.team_integrations(id) on delete set null;
+  add column app_integration_id uuid;
 
 -- Spoof guard: the messages INSERT policy pins author_id = auth.uid(), but
 -- nothing would stop a member setting app_integration_id on their OWN
@@ -236,11 +254,13 @@ create policy messages_delete_app on public.messages
 -- version's unconditional `new.author_id := old.author_id` silently
 -- reverted the FK's nulling, leaving messages pointing at deleted
 -- auth.users rows (verified: deleting a user left author_id dangling).
--- app_integration_id has the same FK shape. Fix: nullable FK columns may
--- transition to NULL (the referential action; for a client, worst case is
--- orphaning their OWN message — RLS blocks updating anyone else's, and
--- author_name stays pinned so nothing can be relabeled) but never to a
--- different non-null value.
+-- Fix: author_id may transition to NULL (the referential action; for a
+-- client, worst case is orphaning their OWN message — RLS blocks updating
+-- anyone else's, and author_name stays pinned so nothing can be
+-- relabeled) but never to a different non-null value.
+-- app_integration_id is pinned unconditionally: it has no FK action to
+-- honor (plain uuid marker, see above), and no client UPDATE policy even
+-- matches app messages (messages_update_own requires author_id = auth.uid()).
 create or replace function public.messages_lock_immutable_cols()
 returns trigger language plpgsql
 set search_path = public as $$
@@ -252,9 +272,7 @@ begin
   if new.author_id is not null then
     new.author_id := old.author_id;
   end if;
-  if new.app_integration_id is not null then
-    new.app_integration_id := old.app_integration_id;
-  end if;
+  new.app_integration_id := old.app_integration_id;
   new.author_name  := old.author_name;
   new.author_color := old.author_color;
   new.ts           := old.ts;

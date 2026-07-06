@@ -269,6 +269,10 @@
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || !root || root.classList.contains('hidden')) return;
+    // Escape while typing in the search field blurs it rather than
+    // closing the whole panel (same activeElement rule as terminal-panel).
+    const a = document.activeElement;
+    if (a && root.contains(a) && /^(input|textarea|select)$/i.test(a.tagName)) { a.blur(); return; }
     if (openDetailId) closeDetail();
     else close();
   });
