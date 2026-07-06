@@ -136,6 +136,24 @@
     highlightRail(view);
   }
 
+  // Opening a channel/DM from the sidebar must reveal that chat even when a
+  // full-cover tool overlay (AI, terminal, recordings, integrations, usage,
+  // calendar) is on top — otherwise the click appears to do nothing. Close
+  // those overlays and resync the rail highlight. The Jira drawer ('board')
+  // and the stage whiteboard are left to focusChannel's own channel-aware
+  // handling (a drawer doesn't cover chat; the whiteboard is channel-bound).
+  function exitToolOverlays() {
+    const anyOpen = Object.keys(SURFACES)
+      .some((k) => !DOCK_EXCLUDED_SURFACES.has(k) && isSurfaceOpen(k));
+    if (!anyOpen) return;
+    closeDockOverlays();
+    recomputeActiveView();
+  }
+
+  // Narrow public surface for app.js: navigating to a channel needs to
+  // dismiss tool overlays, and other flows may want to route/resync views.
+  window.HuddleShell = { exitToolOverlays, setActiveView, recomputeActiveView };
+
   function paintIcons(rail) {
     rail.querySelectorAll('.huddle-rail-item').forEach((btn) => {
       const key = btn.dataset.view || btn.dataset.action;
