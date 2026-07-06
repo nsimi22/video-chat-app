@@ -118,6 +118,20 @@ contextBridge.exposeInMainWorld('huddle', {
     },
   },
   fetchProxy: (req) => ipcRenderer.invoke('fetch-proxy', req),
+  // Claude Code AI provider: run the user's local `claude` CLI headlessly
+  // so /ai uses their already-configured (and already-authenticated) MCP
+  // servers. Request/response only — { prompt, allowedTools?, binPath? }
+  // in, { ok, text, sessionId, costUsd } | { ok:false, error } out.
+  claudeCode: {
+    run: (opts) => ipcRenderer.invoke('claude-code-run', opts || {}),
+    // Binary presence probe (no CLI spawn) — powers the Settings
+    // auto-default to the claude-code provider when no API key exists.
+    detect: (opts) => ipcRenderer.invoke('claude-code-detect', opts || {}),
+    // Local transcript scan for the Usage dashboard: per-day / per-model
+    // token + estimated-cost aggregates across account profiles. Reads
+    // <config-dir>/projects/**.jsonl in main; only aggregates cross IPC.
+    usageScan: (opts) => ipcRenderer.invoke('claude-usage-scan', opts || {}),
+  },
   // Render HTML to a PDF via a hidden window + native save dialog
   // (roadmap export). Returns { ok, path } or { ok:false, canceled|error }.
   exportPdf: (payload) => ipcRenderer.invoke('export-pdf', payload),

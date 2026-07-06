@@ -1176,10 +1176,22 @@ class ChatView {
   // dispatcher in app.js calls this and feeds it to HuddleContextMenu. `ev`
   // is the contextmenu event, passed through so the reaction picker can
   // anchor at the cursor.
+  // Message ownership — drives Edit/Delete in both the hover actions and
+  // the context menu, so it lives in exactly one place. Match on author_id
+  // (set by the messages_set_author trigger, what RLS gates on) rather
+  // than display name — two teammates can share a name. Fall back to the
+  // name only for legacy rows that predate the trigger. App (webhook)
+  // messages have authorId null too, so the name fallback could
+  // false-positive on an integration named like the user — never "mine".
+  _isMine(m) {
+    if (m.appIntegrationId) return false;
+    return m.authorId ? m.authorId === this.mesh.peerId : m.authorName === this.mesh.name;
+  }
+
   contextMenuItems(messageId, ev) {
     const m = this._messages().find((x) => x.id === messageId);
     if (!m) return [];
-    const isMine = m.authorId ? m.authorId === this.mesh.peerId : m.authorName === this.mesh.name;
+    const isMine = this._isMine(m);
     const inThread = this.threadParentId !== null;
     const jiraOk = !!this.hooks.getJira?.()?.isConfigured?.();
     const roadmapOk = !!this.hooks.addRoadmapItem;
@@ -1214,6 +1226,11 @@ class ChatView {
     if (isMine) {
       items.push({ type: 'divider' });
       if (!m.meta?.poll) items.push({ label: 'Edit message', icon: 'pen', onClick: () => this._beginEdit(m.id) });
+      items.push({ label: 'Delete message', icon: 'trash', danger: true, onClick: () => this._delete(m.id) });
+    } else if (m.appIntegrationId) {
+      // Any team member may clean up an app (webhook) message — matches the
+      // messages_delete_app RLS policy; no edit (app bodies are immutable).
+      items.push({ type: 'divider' });
       items.push({ label: 'Delete message', icon: 'trash', danger: true, onClick: () => this._delete(m.id) });
     }
     return items;
@@ -1748,13 +1765,7 @@ class ChatView {
     wrap.className = 'msg';
     wrap.dataset.messageId = m.id;
     const myName = this.mesh.name;
-    // Ownership drives Edit/Delete. Match on author_id (set by the
-    // messages_set_author trigger, and what RLS gates on) rather than
-    // display name — two teammates can share a name, in which case a
-    // name match would show Edit/Delete on each other's messages and
-    // the Delete would no-op against RLS with no error surfaced. Fall
-    // back to name only for legacy rows that predate the trigger.
-    const isMine = m.authorId ? m.authorId === this.mesh.peerId : m.authorName === myName;
+    const isMine = this._isMine(m);
     const mentionsMe = Array.isArray(m.mentions) && m.mentions.includes(myName);
     if (mentionsMe) wrap.classList.add('msg-mentions-me');
     if (m.pinnedAt) wrap.classList.add('msg-pinned');
@@ -1780,12 +1791,18 @@ class ChatView {
     }
 
     const initials = (m.authorName || '?').slice(0, 1).toUpperCase();
+    // App-authored message (inbound webhook): no human author to attach a
+    // profile/presence to; author_name carries the integration's name.
+    const isApp = !!m.appIntegrationId && !m.aiGenerated;
     const avatar = document.createElement('div');
-    avatar.className = 'avatar' + (m.aiGenerated ? ' avatar-ai' : '');
+    avatar.className = 'avatar' + (m.aiGenerated ? ' avatar-ai' : isApp ? ' avatar-app' : '');
     if (m.aiGenerated) {
       // Robot icon avatar; same size as the human ones so the grid stays aligned.
       avatar.style.background = '#3a3f47';
       avatar.innerHTML = window.HuddleIcons.robot;
+    } else if (isApp) {
+      avatar.style.background = '#3a3f47';
+      avatar.innerHTML = window.HuddleIcons.zap;
     } else {
       avatar.style.background = m.authorColor || '#666';
       avatar.textContent = initials;
@@ -1812,7 +1829,7 @@ class ChatView {
     const author = document.createElement('span');
     author.className = 'msg-author';
     author.textContent = m.aiGenerated ? 'Huddle AI' : m.authorName;
-    if (!m.aiGenerated) this.hooks.attachProfileTrigger?.(author, m.authorId);
+    if (!m.aiGenerated && !isApp) this.hooks.attachProfileTrigger?.(author, m.authorId);
     const time = document.createElement('span');
     time.className = 'msg-time';
     time.textContent = this._formatMessageTime(m.ts);
@@ -1824,6 +1841,13 @@ class ChatView {
       const badge = document.createElement('span');
       badge.className = 'msg-ai-badge mono';
       badge.textContent = 'ASSISTANT';
+      head.append(badge);
+    } else if (isApp) {
+      // Same badge chrome as ASSISTANT — visually marks the message as
+      // machine-posted so an integration named "Alice" can't pass as her.
+      const badge = document.createElement('span');
+      badge.className = 'msg-ai-badge mono';
+      badge.textContent = 'APP';
       head.append(badge);
     }
     head.append(time);
@@ -2780,9 +2804,14 @@ class ChatView {
     // additionally wire any configured integrations as tools so it *can*
     // read/act on Jira tickets when asked; the prompt (see AI_SYSTEM_PROMPT*
     // near the top of this file) keeps Jira an optional capability.
+    // claude-code runs its own tool loop and never receives our local
+    // tool defs — sending it the tools-promising prompt makes the model
+    // fabricate Jira/roadmap results it can't fetch, so supportsTools
+    // gates both the tool wiring AND the prompt that advertises it.
+    const toolsSupported = ai.supportsTools ? ai.supportsTools() : true;
     const jira = this.hooks.getJira?.();
-    const jiraTools = window.HuddleAiTools ? window.HuddleAiTools.buildJiraTools(jira) : [];
-    const roadmapTools = window.HuddleAiTools?.buildRoadmapTools
+    const jiraTools = toolsSupported && window.HuddleAiTools ? window.HuddleAiTools.buildJiraTools(jira) : [];
+    const roadmapTools = toolsSupported && window.HuddleAiTools?.buildRoadmapTools
       ? window.HuddleAiTools.buildRoadmapTools(this.hooks.getRoadmap?.()) : [];
     const tools = [...jiraTools, ...roadmapTools];
     let system = jiraTools.length ? AI_SYSTEM_PROMPT_WITH_JIRA : AI_SYSTEM_PROMPT;
@@ -2888,7 +2917,11 @@ class ChatView {
     // it just can't ground in the codebase.
     const repoSlug = (this.hooks.getAiTicketRepo?.() || '').trim();
     const github = this.hooks.getGitHub?.();
-    const useTools = !!(repoSlug && github?.isConfigured());
+    // Also requires a tools-capable provider: claude-code never receives
+    // local tool defs, so advertising repo tools in the prompt would just
+    // invite fabricated "I read the code" grounding.
+    const useTools = !!(repoSlug && github?.isConfigured())
+      && (ai.supportsTools ? ai.supportsTools() : true);
     const tools = useTools && window.HuddleAiTools
       ? window.HuddleAiTools.buildGithubTicketTools(github, repoSlug)
       : null;

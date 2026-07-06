@@ -1,9 +1,18 @@
-// Unified AI client — Claude direct (Anthropic API) and OpenRouter.
+// Unified AI client — Claude direct (Anthropic API), OpenRouter, and
+// Claude Code (the user's locally installed CLI, run headlessly).
 //
-// Both providers go through window.huddle.fetchProxy so requests originate
-// from the Electron main process: the renderer's CORS rules don't apply to
-// Anthropic's API (which discourages browser-direct calls), and keys never
-// leak to a third-party origin via fetch.
+// The API providers go through window.huddle.fetchProxy so requests
+// originate from the Electron main process: the renderer's CORS rules
+// don't apply to Anthropic's API (which discourages browser-direct
+// calls), and keys never leak to a third-party origin via fetch.
+//
+// The claude-code provider instead shells out to `claude -p` via the
+// claude-code-run IPC. Its draw: Claude Code loads the user's OWN MCP
+// servers with their existing auth (user-scope config, OAuth'd remotes,
+// and claude.ai connectors when signed in with the same account), so /ai
+// can reach Linear/Notion/whatever the user already connected — no keys
+// in Huddle at all. Local tool defs (Jira etc.) are NOT passed to this
+// provider; Claude Code brings its own toolset and runs it in-process.
 //
 // Defaults follow Claude API skill guidance:
 //   - Anthropic provider: model = `claude-opus-4-7`, adaptive thinking
@@ -22,16 +31,33 @@
   const OPENROUTER_DEFAULT_MODEL = 'anthropic/claude-opus-4-7';
 
   class AiClient {
-    constructor({ provider, anthropicKey, openrouterKey, defaultModel } = {}) {
-      this.provider = provider === 'openrouter' ? 'openrouter' : 'anthropic';
+    constructor({ provider, anthropicKey, openrouterKey, defaultModel, claudeCode } = {}) {
+      this.provider = provider === 'openrouter' ? 'openrouter'
+        : provider === 'claude-code' ? 'claude-code' : 'anthropic';
       this.anthropicKey = anthropicKey || '';
       this.openrouterKey = openrouterKey || '';
+      // { allowedTools, binPath } — user_integrations.settings.ai.claudeCode.
+      this.claudeCode = claudeCode || {};
       this.defaultModel = defaultModel
         || (this.provider === 'anthropic' ? ANTHROPIC_DEFAULT_MODEL : OPENROUTER_DEFAULT_MODEL);
     }
 
     isConfigured() {
+      // claude-code needs no key here — auth lives with the local CLI
+      // (subscription login or env). Binary presence is checked at call
+      // time in main, which returns an actionable install message.
+      if (this.provider === 'claude-code') return !!window.huddle?.claudeCode;
       return this.provider === 'anthropic' ? !!this.anthropicKey : !!this.openrouterKey;
+    }
+
+    // Whether chat() honors the local `tools`/`onToolUse` machinery.
+    // claude-code runs its own agentic loop with the user's OWN MCP
+    // servers and never receives our in-renderer tool defs — callers must
+    // check this before sending a system prompt that promises Jira/GitHub
+    // tools, or the model is told it has tools it can't call and
+    // fabricates results.
+    supportsTools() {
+      return this.provider !== 'claude-code';
     }
 
     /**
@@ -61,7 +87,42 @@
       // the tool-use loop entirely.
       const realTools = Array.isArray(tools) && tools.length > 0 ? tools : null;
       const args = { system, messages: messages.slice(), model: effectiveModel, tools: realTools, onToolUse, maxIterations };
+      if (this.provider === 'claude-code') return this._claudeCodeChat(args);
       return this.provider === 'anthropic' ? this._anthropicChat(args) : this._openrouterChat(args);
+    }
+
+    // Claude Code headless. One prompt in, one answer out — the CLI runs
+    // its own agentic tool loop internally (with the user's MCP servers),
+    // so the local tools/onToolUse machinery doesn't apply. Conversation
+    // context is flattened into the prompt: /ai histories are short, and
+    // statelessness beats juggling per-cwd --resume session ids.
+    async _claudeCodeChat({ system, messages }) {
+      const parts = [];
+      if (system) parts.push(`<instructions>\n${system}\n</instructions>`);
+      for (const m of messages) {
+        const text = typeof m.content === 'string'
+          ? m.content
+          : (Array.isArray(m.content)
+            ? m.content.filter((b) => b?.type === 'text').map((b) => b.text).join('\n')
+            : '');
+        if (!text) continue;
+        parts.push(messages.length > 1 ? `${m.role === 'assistant' ? 'Assistant' : 'User'}: ${text}` : text);
+      }
+      // Account profiles: the active profile's config dir selects which
+      // signed-in Claude account (and its MCP servers) answers.
+      const profiles = Array.isArray(this.claudeCode.profiles) ? this.claudeCode.profiles : [];
+      const active = profiles.find((p) => p.name === this.claudeCode.activeProfile);
+      const res = await window.huddle.claudeCode.run({
+        prompt: parts.join('\n\n'),
+        allowedTools: this.claudeCode.allowedTools || '',
+        binPath: this.claudeCode.binPath || '',
+        preferSubscription: !!this.claudeCode.preferSubscription,
+        configDir: active?.configDir || '',
+      });
+      if (!res?.ok) {
+        throw new Error(`Claude Code: ${res?.error || 'request failed'}`);
+      }
+      return { text: res.text || '', model: 'claude-code', usage: {}, toolUses: [] };
     }
 
     async _anthropicChat({ system, messages, model, tools, onToolUse, maxIterations }) {

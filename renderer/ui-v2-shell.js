@@ -19,6 +19,9 @@
     board: 'kanban',
     ai: 'sparkles',
     terminal: 'terminal',
+    recordings: 'film',
+    integrations: 'zap',
+    usage: 'activity',
     settings: 'settings',
   };
 
@@ -38,6 +41,21 @@
       sel: '.huddle-terminal-view',
       open: () => window.HuddleTerminalPanel?.open?.(),
       close: () => window.HuddleTerminalPanel?.close?.(),
+    },
+    recordings: {
+      sel: '.huddle-recordings-view',
+      open: () => window.HuddleRecordings?.open?.(),
+      close: () => window.HuddleRecordings?.close?.(),
+    },
+    integrations: {
+      sel: '.huddle-integrations-view',
+      open: () => window.HuddleIntegrations?.open?.(),
+      close: () => window.HuddleIntegrations?.close?.(),
+    },
+    usage: {
+      sel: '.huddle-usage-view',
+      open: () => window.HuddleUsage?.open?.(),
+      close: () => window.HuddleUsage?.close?.(),
     },
     calendar: {
       sel: '.huddle-cal-view',
@@ -70,6 +88,16 @@
     if (!s) return false;
     const el = document.querySelector(s.sel);
     return !!el && !el.classList.contains('hidden');
+  }
+
+  // Surfaces the in-call return dock ignores: 'board' is a drawer (not
+  // full-cover) and 'whiteboard' is the call-integrated stage. Everything
+  // else in SURFACES counts as an overlay hiding the call.
+  const DOCK_EXCLUDED_SURFACES = new Set(['board', 'whiteboard']);
+  function closeDockOverlays() {
+    for (const k of Object.keys(SURFACES)) {
+      if (!DOCK_EXCLUDED_SURFACES.has(k) && isSurfaceOpen(k)) SURFACES[k].close();
+    }
   }
 
   // Paint the rail highlight to match exactly one active view.
@@ -581,14 +609,14 @@
       // On the call channel + no overlay → user is looking AT the
       // call. Hide the return dock.
       const onCallChannel = document.body.classList.contains('huddle-on-call-channel');
-      const ai = document.querySelector('.huddle-ai-view');
-      const cal = document.querySelector('.huddle-cal-view');
-      const term = document.querySelector('.huddle-terminal-view');
-      const aiOpen = ai && !ai.classList.contains('hidden');
-      const calOpen = cal && !cal.classList.contains('hidden');
-      const termOpen = term && !term.classList.contains('hidden');
       // Any full-cover surface hiding the call → show the return dock.
-      const overlayOpen = aiOpen || calOpen || termOpen;
+      // Derived from SURFACES (the single source of truth) so a new view
+      // joins automatically — the previous hardcoded ai/cal/term list
+      // silently missed every later surface. 'board' (a drawer, not
+      // full-cover) and 'whiteboard' (call-integrated stage) keep their
+      // pre-existing exclusion.
+      const overlayOpen = Object.keys(SURFACES)
+        .some((k) => !DOCK_EXCLUDED_SURFACES.has(k) && isSurfaceOpen(k));
       const show = !onCallChannel || overlayOpen;
       dock.classList.toggle('hidden', !show);
       if (show) {
@@ -622,14 +650,12 @@
       document.getElementById('btn-cam')?.click();
     });
     dock.querySelector('.huddle-call-return-back').addEventListener('click', () => {
-      window.HuddleAIPanel?.close?.();
-      window.HuddleCalendarGrid?.close?.();
+      closeDockOverlays();
       update();
     });
     dock.querySelector('.huddle-call-return-leave').addEventListener('click', () => {
       document.getElementById('btn-leave')?.click();
-      window.HuddleAIPanel?.close?.();
-      window.HuddleCalendarGrid?.close?.();
+      closeDockOverlays();
     });
 
     update();

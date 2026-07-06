@@ -76,7 +76,7 @@ shared with teammates.
     call controls opens a Create-ticket modal you can fire mid-meeting.
     Picks project, issue type, summary, description; optionally posts
     the new ticket back to the channel.
-- **AI assistant** (Claude or OpenRouter)
+- **AI assistant** (Claude, OpenRouter, or your local Claude Code)
   - **`/ai <prompt>`** is the general-purpose assistant — ask it
     anything. It posts an answer from your chosen provider (default
     model: `claude-opus-4-7` for Anthropic direct,
@@ -95,6 +95,24 @@ shared with teammates.
     a call.
   - Anthropic calls use **adaptive thinking** (the model decides how
     much to think per request).
+  - **Claude Code provider** — pick *Claude Code (local)* in Settings
+    and `/ai` runs your installed `claude` CLI headlessly instead of
+    calling an API: it uses your existing Claude login and, crucially,
+    your **already-connected MCP servers** (user-scope config, OAuth'd
+    remotes, and claude.ai connectors on the same account) — so the
+    assistant can reach Linear, Notion, Gmail, or whatever you've
+    connected, with no keys stored in Huddle. On a Pro/Max login,
+    usage bills your **subscription** — no API spend. Pre-approve
+    tools in Settings (`mcp__linear__*,WebSearch`); anything unlisted
+    is denied.
+  - **Multiple Claude accounts** — add profiles in Settings (`Name =
+    /path/to/config-dir`, e.g. a personal Max account and a work Team
+    account, each an isolated `CLAUDE_CONFIG_DIR` with its own login
+    and MCP servers) and pick which one answers `/ai`.
+  - **Claude usage dashboard** — the 📈 rail item aggregates your local
+    Claude Code transcripts (all profiles) into per-day/per-model token
+    charts with an API-list-price cost equivalent. Local files only; no
+    API calls.
   - All AI traffic is routed through the Electron main process so the
     renderer never touches third-party origins directly.
 - **GitHub** (Personal Access Token)

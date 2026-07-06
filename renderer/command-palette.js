@@ -51,6 +51,12 @@
           if (window.HuddleCalendarGrid?.open) window.HuddleCalendarGrid.open();
           else document.getElementById('open-calendar')?.click();
         } },
+      { group: 'Go to', icon: 'film',      label: 'Open Recordings',
+        do: () => window.HuddleRecordings?.open?.() },
+      { group: 'Go to', icon: 'zap',       label: 'Open Integrations',
+        do: () => window.HuddleIntegrations?.open?.() },
+      { group: 'Go to', icon: 'activity',  label: 'Open Claude usage',
+        do: () => window.HuddleUsage?.open?.() },
       { group: 'Go to', icon: 'bookmark',  label: 'Open Saved',
         do: () => document.getElementById('open-saved')?.click() },
       { group: 'Go to', icon: 'settings',  label: 'Open Settings',

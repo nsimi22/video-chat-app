@@ -885,6 +885,395 @@ ipcMain.handle('terminal-kill', (_event, { id } = {}) => {
   return { ok: !!rec };
 });
 
+// Claude Code as an AI provider ("use my already-auth'd MCPs").
+//
+// Runs the user's locally installed `claude` CLI in headless print mode
+// (`-p --output-format json`) so /ai answers come from Claude Code —
+// which loads the user's OWN MCP servers (user-scope ~/.claude.json;
+// OAuth tokens from the local credential store carry over, and claude.ai
+// connectors surface too when the CLI is signed in with the same Pro/Max
+// account). Huddle never sees or stores any of those credentials; the
+// tool calls execute entirely inside the Claude Code process.
+//
+// Trust model: this executes a binary already on the user's machine, as
+// the user, with the prompt they typed into /ai — the same power the
+// in-app terminal (above) already grants, minus the interactive shell.
+// The prompt travels via stdin (never a shell string), the binary is
+// resolved once via the user's login shell (same GUI-PATH fix as
+// terminal-spawn) or an explicit Settings override, and allowedTools is
+// charset-validated before being passed as a discrete argv entry.
+const CLAUDE_CODE_TIMEOUT_MS = 180 * 1000;
+const CLAUDE_CODE_MAX_OUTPUT = 2 * 1024 * 1024;
+// Tool patterns per docs: Bash(git *), mcp__server__*, Read, WebSearch…
+const CLAUDE_ALLOWED_TOOLS_RE = /^[\w\s,*()\-:_./]+$/;
+let cachedClaudeBin = null;
+let claudeBinPromise = null; // in-flight/settled resolution (dedupes concurrent callers)
+let claudeBinRetryAt = 0;    // when a not-found result may be re-probed
+
+function resolveClaudeBinary() {
+  // Memoize negatives too (with a retry window so a mid-session install is
+  // picked up): the probe spawns a login shell, and detect fires on every
+  // settings load — without this, no-claude machines pay a shell spawn
+  // (sourcing ~/.zprofile / nvm, often seconds) each time, forever.
+  if (claudeBinPromise && (cachedClaudeBin || Date.now() < claudeBinRetryAt)) {
+    return claudeBinPromise;
+  }
+  claudeBinRetryAt = Date.now() + 60_000; // covers the in-flight window as well
+  claudeBinPromise = new Promise((resolve) => {
+    const { execFile } = require('child_process');
+    const isWin = process.platform === 'win32';
+    const settle = (p) => {
+      cachedClaudeBin = p || null;
+      if (!cachedClaudeBin) claudeBinRetryAt = Date.now() + 60_000;
+      resolve(cachedClaudeBin);
+    };
+    if (isWin) {
+      execFile('where', ['claude'], { timeout: 10_000 }, (err, stdout) => {
+        const lines = err ? [] : String(stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        // `where` lists the extensionless sh-shim first for npm installs —
+        // prefer a spawnable .exe/.cmd/.bat entry.
+        settle(lines.find((l) => /\.(exe|cmd|bat)$/i.test(l)) || lines[0] || null);
+      });
+      return;
+    }
+    // Login shell so ~/.zprofile / nvm / Homebrew shellenv resolve the
+    // real PATH — a launchd/GUI-started Electron inherits a truncated
+    // one (same gotcha terminal-spawn documents).
+    const shell = process.env.SHELL || '/bin/bash';
+    execFile(shell, ['-l', '-c', 'command -v claude'], { timeout: 10_000 }, (err, stdout) => {
+      settle(!err && String(stdout || '').trim());
+    });
+  });
+  return claudeBinPromise;
+}
+
+// The one binary-selection policy both handlers share: an explicit
+// Settings override wins, else login-shell PATH resolution; either way
+// the file must exist on disk. Returns null when nothing usable does.
+async function resolveExistingClaudeBin(overridePath) {
+  const fs = require('fs');
+  const bin = (typeof overridePath === 'string' && overridePath.trim())
+    ? overridePath.trim()
+    : await resolveClaudeBinary();
+  return bin && fs.existsSync(bin) ? bin : null;
+}
+
+// Account profiles: each profile is an isolated CLAUDE_CONFIG_DIR — its own
+// login (personal Max vs work Team), its own MCP servers, its own transcript
+// history. Normalize a user-supplied dir: expand leading ~, require an
+// absolute path, else fall back to the default (empty → CLI default ~/.claude).
+function normalizeClaudeConfigDir(dir) {
+  if (typeof dir !== 'string' || !dir.trim()) return '';
+  const os = require('os');
+  let d = dir.trim();
+  if (d === '~') d = os.homedir();
+  else if (d.startsWith('~/') || d.startsWith('~\\')) d = path.join(os.homedir(), d.slice(2));
+  return path.isAbsolute(d) ? d : '';
+}
+
+// Cheap presence probe for the Settings auto-default: is a claude binary
+// reachable (PATH via login shell, or the explicit override)? No spawn of
+// the CLI itself — just resolution + existence.
+ipcMain.handle('claude-code-detect', async (_event, payload = {}) => {
+  const bin = await resolveExistingClaudeBin(payload.binPath);
+  return { found: !!bin, path: bin };
+});
+
+// Local Claude usage scan for the Usage dashboard. Claude Code writes a
+// JSONL transcript per session under <config-dir>/projects/**; every
+// assistant turn carries message.usage (tokens) + message.model + a
+// timestamp. Aggregating those locally gives a usage dashboard with no
+// API calls and no credentials — the same data source ccusage uses.
+// Only AGGREGATES cross the IPC boundary (per-day / per-model token sums
+// and cost estimates), never transcript content.
+//
+// Cost is an API-LIST-PRICE EQUIVALENT (what the tokens would have cost
+// via API-key billing): $/MTok in/out per model family, cache reads at
+// 0.1x input, cache writes at 1.25x (5m TTL) / 2x (1h TTL). Subscription
+// usage has no per-request charge — the estimate sizes the value of the
+// plan, and is labeled as an estimate in the UI.
+const CLAUDE_PRICING = [
+  { re: /fable|mythos/i, inp: 10, out: 50 },
+  { re: /opus-4-[5-9]/i, inp: 5, out: 25 },
+  { re: /opus/i, inp: 15, out: 75 },        // opus 4.1 and older
+  { re: /sonnet/i, inp: 3, out: 15 },
+  { re: /haiku-4/i, inp: 1, out: 5 },
+  // Real 3.5 Haiku ids put the digits FIRST ('claude-3-5-haiku-20241022');
+  // match both orders so they don't fall through to the Haiku-3 tier.
+  { re: /haiku-3-5|3-5-haiku/i, inp: 0.8, out: 4 },
+  { re: /haiku/i, inp: 0.25, out: 1.25 },
+];
+const DEFAULT_PRICING = { inp: 5, out: 25 };
+const USAGE_MAX_FILES_PER_PROFILE = 2000;
+
+function pricingFor(model) {
+  return CLAUDE_PRICING.find((p) => p.re.test(model || ''))
+    || DEFAULT_PRICING;
+}
+
+function estimateCostUsd(model, t) {
+  const p = pricingFor(model);
+  return (t.input * p.inp
+    + t.output * p.out
+    + t.cacheRead * p.inp * 0.1
+    + t.cacheWrite5m * p.inp * 1.25
+    + t.cacheWrite1h * p.inp * 2) / 1e6;
+}
+
+// Async walk: months of Claude Code history can be thousands of files
+// across hundreds of dirs, and this runs on the MAIN process — a sync
+// walk would block every window's IPC for the duration. The mtime probe
+// skips files untouched since the cutoff so they're never streamed.
+async function listJsonlFiles(dir, cutoffMs, out) {
+  const fsp = require('fs').promises;
+  let entries;
+  try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    if (out.length >= USAGE_MAX_FILES_PER_PROFILE) return;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) await listJsonlFiles(p, cutoffMs, out);
+    else if (e.isFile() && e.name.endsWith('.jsonl')) {
+      try {
+        if ((await fsp.stat(p)).mtimeMs >= cutoffMs) out.push(p);
+      } catch { /* raced deletion */ }
+    }
+  }
+}
+
+// Stream one transcript, folding usage-bearing assistant lines into `entries`
+// keyed by message.id:requestId. Streaming lines repeat the same message with
+// growing usage — LAST occurrence wins (most complete), exactly one count per
+// API request.
+function scanTranscript(file, cutoffMs, entries) {
+  const fs = require('fs');
+  const readline = require('readline');
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: fs.createReadStream(file),
+      crlfDelay: Infinity,
+    });
+    rl.on('line', (line) => {
+      if (!line.includes('"usage"')) return; // cheap pre-filter
+      let d;
+      try { d = JSON.parse(line); } catch { return; }
+      if (d?.type !== 'assistant') return;
+      const m = d.message;
+      const u = m?.usage;
+      if (!u || !m.model) return;
+      const ts = Date.parse(d.timestamp || 0);
+      if (!Number.isFinite(ts) || ts < cutoffMs) return;
+      const key = `${m.id || d.uuid || 'x'}:${d.requestId || 'x'}`;
+      const cc = u.cache_creation || {};
+      const cacheWriteTotal = u.cache_creation_input_tokens || 0;
+      const w1h = cc.ephemeral_1h_input_tokens || 0;
+      entries.set(key, {
+        ts,
+        model: m.model,
+        input: u.input_tokens || 0,
+        output: u.output_tokens || 0,
+        cacheRead: u.cache_read_input_tokens || 0,
+        // When the TTL breakdown is absent, treat the whole write as 5m
+        // (the cheaper multiplier — under- rather than over-estimates).
+        cacheWrite5m: Math.max(0, cacheWriteTotal - w1h),
+        cacheWrite1h: w1h,
+      });
+    });
+    rl.on('close', resolve);
+    rl.on('error', resolve);
+  });
+}
+
+ipcMain.handle('claude-usage-scan', async (_event, payload = {}) => {
+  const os = require('os');
+  const fs = require('fs');
+  const days = Math.min(90, Math.max(1, Math.floor(payload.days) || 30));
+  const cutoffMs = Date.now() - days * 24 * 3600 * 1000;
+  // Always scan the default dir; extra profiles come from Settings.
+  const wanted = [{ name: 'Default', configDir: '' }];
+  for (const p of Array.isArray(payload.profiles) ? payload.profiles : []) {
+    const dir = normalizeClaudeConfigDir(p?.configDir);
+    if (dir && typeof p.name === 'string' && p.name.trim()) {
+      wanted.push({ name: p.name.trim(), configDir: dir });
+    }
+  }
+
+  // Dedup by resolved config dir — the built-in Default IS ~/.claude, so a
+  // Settings profile pointing there would scan (and sum) the same
+  // transcripts twice, doubling every number on the dashboard.
+  const seenBases = new Set();
+  const deduped = [];
+  for (const prof of wanted) {
+    const base = prof.configDir || path.join(os.homedir(), '.claude');
+    if (seenBases.has(base)) continue;
+    seenBases.add(base);
+    deduped.push({ ...prof, base });
+  }
+
+  // Profiles are independent trees — scan them concurrently (each keeps
+  // its own bounded pool) so wall-clock is the slowest profile, not the sum.
+  const profiles = await Promise.all(deduped.map(async (prof) => {
+    const base = prof.base;
+    const projectsDir = path.join(base, 'projects');
+    if (!fs.existsSync(projectsDir)) {
+      return { name: prof.name, found: false, totals: null, byDay: {}, byModel: {}, files: 0, truncated: false };
+    }
+    const files = [];
+    await listJsonlFiles(projectsDir, cutoffMs, files);
+    // Bounded worker pool: one-at-a-time leaves the disk idle between
+    // files; unbounded Promise.all risks EMFILE on thousands of files.
+    // Per-key last-write-wins into the shared Map is order-independent
+    // for the token sums (every occurrence of a key is the same request).
+    const entries = new Map();
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(8, files.length) }, async () => {
+      while (next < files.length) {
+        const f = files[next++];
+        await scanTranscript(f, cutoffMs, entries);
+      }
+    }));
+
+    const zero = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, messages: 0 });
+    const totals = zero();
+    const byDay = {};
+    const byModel = {};
+    for (const e of entries.values()) {
+      const day = new Date(e.ts).toISOString().slice(0, 10);
+      const cost = estimateCostUsd(e.model, e);
+      const cacheWrite = e.cacheWrite5m + e.cacheWrite1h;
+      for (const b of [
+        byDay[day] || (byDay[day] = zero()),
+        byModel[e.model] || (byModel[e.model] = zero()),
+        totals,
+      ]) {
+        b.input += e.input; b.output += e.output;
+        b.cacheRead += e.cacheRead; b.cacheWrite += cacheWrite;
+        b.costUsd += cost; b.messages += 1;
+      }
+    }
+    return {
+      name: prof.name,
+      found: true,
+      totals,
+      byDay,
+      byModel,
+      files: files.length,
+      truncated: files.length >= USAGE_MAX_FILES_PER_PROFILE,
+    };
+  }));
+  return { days, profiles };
+});
+
+ipcMain.handle('claude-code-run', async (_event, payload = {}) => {
+  const prompt = typeof payload.prompt === 'string' ? payload.prompt : '';
+  if (!prompt.trim()) return { ok: false, error: 'empty prompt' };
+
+  const bin = await resolveExistingClaudeBin(payload.binPath);
+  if (!bin) {
+    return {
+      ok: false,
+      error: 'Claude Code not found. Install it (npm install -g @anthropic-ai/claude-code), sign in once with `claude`, or set an explicit binary path in Settings.',
+    };
+  }
+
+  const args = ['-p', '--output-format', 'json'];
+  const allowedTools = typeof payload.allowedTools === 'string' ? payload.allowedTools.trim() : '';
+  if (allowedTools) {
+    if (!CLAUDE_ALLOWED_TOOLS_RE.test(allowedTools)) {
+      return { ok: false, error: 'allowed-tools contains unsupported characters' };
+    }
+    args.push('--allowedTools', allowedTools);
+  }
+
+  const { spawn } = require('child_process');
+  const os = require('os');
+  // The CLI silently prefers ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN over
+  // the subscription login when either is in the environment — which also
+  // drops claude.ai connectors. preferSubscription (Settings checkbox)
+  // strips them from the child env so the /login credentials win.
+  const childEnv = { ...process.env };
+  const apiKeyEnv = !!(childEnv.ANTHROPIC_API_KEY || childEnv.ANTHROPIC_AUTH_TOKEN);
+  if (payload.preferSubscription) {
+    delete childEnv.ANTHROPIC_API_KEY;
+    delete childEnv.ANTHROPIC_AUTH_TOKEN;
+  }
+  // Account profile: an isolated config dir carries its own /login
+  // credentials and MCP servers (personal Max vs work Team).
+  const configDir = normalizeClaudeConfigDir(payload.configDir);
+  if (configDir) childEnv.CLAUDE_CONFIG_DIR = configDir;
+  return await new Promise((resolve) => {
+    let cp;
+    try {
+      // cwd = home, NOT the app bundle: session scoping and project
+      // .mcp.json discovery are cwd-relative, and home is the stable,
+      // user-expected context for a chat assistant.
+      //
+      // Windows npm installs resolve to a .cmd shim, which Node refuses to
+      // spawn directly (EINVAL since the CVE-2024-27980 hardening) — route
+      // those through the shell, quoting the path and any arg with spaces
+      // or cmd metachars (the allowedTools charset excludes '"', so
+      // embedding in quotes is safe).
+      const winCmd = process.platform === 'win32' && /\.(cmd|bat)$/i.test(bin);
+      cp = winCmd
+        ? spawn(`"${bin}"`, args.map((a) => (/[\s()]/.test(a) ? `"${a}"` : a)),
+            { cwd: os.homedir(), env: childEnv, shell: true, windowsHide: true })
+        : spawn(bin, args, { cwd: os.homedir(), env: childEnv });
+    } catch (err) {
+      resolve({ ok: false, error: `failed to start Claude Code: ${err?.message || err}` });
+      return;
+    }
+    // Decode as UTF-8 streams, not per-chunk Buffer coercion — `out += d`
+    // on Buffers corrupts a multibyte character split across chunk
+    // boundaries into U+FFFD (and can break JSON.parse of the envelope).
+    cp.stdout.setEncoding('utf8');
+    cp.stderr.setEncoding('utf8');
+    let out = '';
+    let errOut = '';
+    let done = false;
+    const finish = (result) => { if (!done) { done = true; resolve(result); } };
+    const timer = setTimeout(() => {
+      try { cp.kill('SIGKILL'); } catch {}
+      finish({ ok: false, error: `Claude Code timed out after ${CLAUDE_CODE_TIMEOUT_MS / 1000}s` });
+    }, CLAUDE_CODE_TIMEOUT_MS);
+    cp.stdout.on('data', (d) => {
+      out += d;
+      if (out.length > CLAUDE_CODE_MAX_OUTPUT) {
+        clearTimeout(timer);
+        try { cp.kill('SIGKILL'); } catch {}
+        finish({ ok: false, error: 'Claude Code output exceeded size cap' });
+      }
+    });
+    cp.stderr.on('data', (d) => { errOut = (errOut + d).slice(-4000); });
+    cp.on('error', (err) => {
+      clearTimeout(timer);
+      finish({ ok: false, error: `Claude Code spawn error: ${err?.message || err}` });
+    });
+    cp.on('close', (code) => {
+      clearTimeout(timer);
+      if (done) return;
+      let json = null;
+      try { json = JSON.parse(out); } catch { /* fall through */ }
+      const text = json?.result ?? '';
+      if ((code !== 0 && !text) || json?.is_error) {
+        finish({ ok: false, error: (text || errOut || `exit code ${code}`).slice(0, 2000) });
+        return;
+      }
+      finish({
+        ok: true,
+        text: String(text),
+        sessionId: json?.session_id || null,
+        costUsd: typeof json?.total_cost_usd === 'number' ? json.total_cost_usd : null,
+        // Diagnostics for the Settings "Test" button: which binary ran,
+        // and whether API-key env vars were present (billing signal).
+        binPath: bin,
+        apiKeyEnv,
+        apiKeyEnvStripped: !!payload.preferSubscription && apiKeyEnv,
+      });
+    });
+    // Prompt via stdin: no argv length limits, no quoting hazards.
+    try { cp.stdin.write(prompt); cp.stdin.end(); } catch {}
+  });
+});
+
 // Generic fetch proxy. Some third-party APIs (notably Atlassian Cloud)
 // don't permit browser-origin requests via CORS; routing through main lets
 // the renderer hit them with stored credentials. We only proxy https URLs

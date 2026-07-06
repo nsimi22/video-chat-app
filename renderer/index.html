@@ -211,6 +211,9 @@
           <button class="huddle-rail-item" data-view="board" aria-label="Board" title="Board"></button>
           <button class="huddle-rail-item" data-view="ai" aria-label="Huddle AI" title="Huddle AI"></button>
           <button class="huddle-rail-item" data-view="terminal" aria-label="Terminal" title="Terminal"></button>
+          <button class="huddle-rail-item" data-view="recordings" aria-label="Recordings" title="Recordings"></button>
+          <button class="huddle-rail-item" data-view="integrations" aria-label="Integrations" title="Integrations"></button>
+          <button class="huddle-rail-item" data-view="usage" aria-label="Claude usage" title="Claude usage"></button>
         </div>
         <div class="huddle-rail-footer">
           <button class="huddle-rail-item" data-action="settings" aria-label="Settings" title="Settings"></button>
@@ -780,6 +783,7 @@
                 <select id="set-ai-provider">
                   <option value="anthropic">Anthropic (Claude direct)</option>
                   <option value="openrouter">OpenRouter (Claude + many models)</option>
+                  <option value="claude-code">Claude Code (local — uses your MCP servers)</option>
                 </select>
                 <label>Anthropic API key <span class="hint-inline">(<code>console.anthropic.com</code>)</span></label>
                 <input id="set-anthropic-key" type="password" autocomplete="off" />
@@ -789,6 +793,21 @@
                 <input id="set-openrouter-key" type="password" autocomplete="off" />
                 <label>OpenRouter default model <span class="hint-inline">(default <code>anthropic/claude-opus-4-7</code>)</span></label>
                 <input id="set-openrouter-model" type="text" placeholder="anthropic/claude-opus-4-7" />
+                <p class="hint">Claude Code runs your locally installed <code>claude</code> CLI headlessly, with your existing login and your already-connected MCP servers (and claude.ai connectors on the same account) — no key needed here. Pre-approve the tools it may use below; anything unlisted is denied.</p>
+                <label>Claude Code allowed tools <span class="hint-inline">(e.g. <code>mcp__linear__*,mcp__notion__*,WebSearch</code>)</span></label>
+                <input id="set-claude-code-tools" type="text" autocomplete="off" placeholder="mcp__linear__*,WebSearch" />
+                <label>Claude Code binary path <span class="hint-inline">(optional — auto-detected from your shell PATH)</span></label>
+                <input id="set-claude-code-bin" type="text" autocomplete="off" placeholder="/usr/local/bin/claude" />
+                <label class="settings-check"><input id="set-claude-code-prefer-sub" type="checkbox" /> Use my Claude subscription even if <code>ANTHROPIC_API_KEY</code> is set <span class="hint-inline">(strips API-key env vars so your <code>claude /login</code> account — and its claude.ai connectors — are used)</span></label>
+                <label>Claude accounts <span class="hint-inline">(optional — one per line, <code>Name = /path/to/config-dir</code>; each dir is a separate signed-in account, e.g. personal Max vs work Team)</span></label>
+                <textarea id="set-claude-code-profiles" rows="2" autocomplete="off" placeholder="Personal = ~/.claude&#10;Work = ~/.claude-work"></textarea>
+                <p class="hint">Sign each account in once from the in-app Terminal: run <code>CLAUDE_CONFIG_DIR=~/.claude-work claude</code>, then <code>/login</code>. Each account keeps its own login and MCP servers.</p>
+                <label>Account for <code>/ai</code></label>
+                <select id="set-claude-code-active"><option value="">Default (~/.claude)</option></select>
+                <div style="display:flex;align-items:center;gap:10px;margin-top:6px;">
+                  <button id="set-claude-code-test" type="button" class="subtle">Test Claude Code</button>
+                  <span id="set-claude-code-test-result" class="hint-inline" aria-live="polite"></span>
+                </div>
               </div>
             </details>
 
@@ -1208,6 +1227,18 @@
          that pulls events from HuddleCalendar.listEvents() and lays
          them out per huddle/calendar.jsx in the design bundle. -->
     <script src="calendar-grid.js"></script>
+    <!-- v2 Recordings library — nav-rail destination listing the team's
+         call recordings (call_recordings) with recap/transcript search
+         and inline playback off short-lived signed URLs. -->
+    <script src="recordings.js"></script>
+    <!-- v2 Integrations view — nav-rail destination for managing the
+         team's inbound webhooks (team_integrations): create with a
+         one-time secret reveal, toggle, delete. -->
+    <script src="integrations.js"></script>
+    <!-- v2 Claude usage dashboard — nav-rail destination aggregating the
+         local Claude Code transcripts (tokens, est. API-equivalent cost)
+         across configured account profiles. -->
+    <script src="usage.js"></script>
     <!-- v2 Terminal panel — nav-rail destination that mounts an xterm.js
          terminal backed by a real pty in main (window.huddle.terminal.*),
          so `claude` and any shell command run inside Huddle. xterm vendor

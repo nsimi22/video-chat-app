@@ -736,6 +736,122 @@
       return data?.signedUrl || null;
     }
 
+    // Team-wide recording list for the Recordings library view. RLS
+    // (call_recordings_read) already scopes rows to channels the caller can
+    // see, so this is a plain team read. `transcript` is deliberately NOT
+    // selected — hour-long meetings produce large transcripts and the list
+    // only needs metadata + recap; getRecording() fetches the full row for
+    // the detail view. Starter names are resolved in one profiles batch,
+    // tolerating null started_by (starter's account was deleted).
+    async listRecordings({ limit = 100 } = {}) {
+      return this._queryRecordings({ limit });
+    }
+
+    // Shared query core for list + search: same column set (transcript
+    // deliberately excluded — see listRecordings), team scope, ordering,
+    // and starter-name resolution; search just adds an .or() filter.
+    async _queryRecordings({ limit, or }) {
+      let q = this.supabase
+        .from('call_recordings')
+        .select('id, channel_id, started_by, status, started_at, ended_at, storage_path, recap, error')
+        .eq('team_id', this.team.id);
+      if (or) q = q.or(or);
+      const { data, error } = await q
+        .order('started_at', { ascending: false })
+        .limit(limit);
+      if (error) throw new Error(`recordings query failed: ${error.message || error}`);
+      const rows = data || [];
+      const ids = [...new Set(rows.map((r) => r.started_by).filter(Boolean))];
+      // _resolveNames prefers live presence names and only hits profiles
+      // for peers we haven't seen — same helper group DMs use.
+      const names = ids.length ? await this._resolveNames(ids) : new Map();
+      return rows.map((r) => ({ ...r, started_by_name: names.get(r.started_by) || null }));
+    }
+
+    // Single recording INCLUDING the (potentially large) transcript, for the
+    // library's detail view. Returns null when not found / not visible;
+    // throws on query failure so the caller can tell the two apart.
+    async getRecording(id) {
+      const { data, error } = await this.supabase
+        .from('call_recordings')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+      if (error) throw new Error(`getRecording failed: ${error.message || error}`);
+      return data;
+    }
+
+    // Server-side substring search over recap + transcript so the library's
+    // search box can match spoken content without shipping every transcript
+    // to the client. PostgREST's .or() filter string treats `,()"` as
+    // syntax; double-quoting the value (with \ and " backslash-escaped)
+    // makes the term literal, so searches like "10:30" or "Mr. Smith, PhD"
+    // don't 400.
+    async searchRecordings(query, { limit = 50 } = {}) {
+      const q = String(query || '').trim();
+      if (!q) return this._queryRecordings({ limit });
+      const quoted = `"%${q.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}%"`;
+      return this._queryRecordings({ limit, or: `recap.ilike.${quoted},transcript.ilike.${quoted}` });
+    }
+
+    // --- Team integrations (inbound webhooks) ----------------------------
+    //
+    // Team-scoped config rows (migration 20260706130000). Reads/updates/
+    // deletes are plain RLS-gated table ops; CREATION goes through the
+    // create_team_integration RPC so the webhook secret is generated
+    // server-side and returned exactly once — it's stored in a
+    // service-role-only table the client can never read back.
+
+    async listTeamIntegrations() {
+      const { data, error } = await this.supabase
+        .from('team_integrations')
+        .select('*')
+        .eq('team_id', this.team.id)
+        .order('created_at', { ascending: false });
+      if (error) throw new Error(`listTeamIntegrations failed: ${error.message || error}`);
+      return data || [];
+    }
+
+    // Returns { integration, secret } — the ONLY time the secret is visible.
+    async createTeamIntegration({ kind = 'inbound_webhook', name, channelId, config = {} }) {
+      const { data, error } = await this.supabase.rpc('create_team_integration', {
+        p_team_id: this.team.id,
+        p_kind: kind,
+        p_name: name,
+        p_channel_id: channelId,
+        p_config: config,
+      });
+      if (error) throw new Error(`createTeamIntegration failed: ${error.message || error}`);
+      return data;
+    }
+
+    async updateTeamIntegration(id, patch) {
+      const allowed = {};
+      if ('name' in patch) allowed.name = patch.name;
+      if ('channelId' in patch) allowed.channel_id = patch.channelId;
+      if ('config' in patch) allowed.config = patch.config;
+      if ('enabled' in patch) allowed.enabled = patch.enabled;
+      const { error } = await this.supabase
+        .from('team_integrations')
+        .update(allowed)
+        .eq('id', id);
+      if (error) throw new Error(`updateTeamIntegration failed: ${error.message || error}`);
+    }
+
+    async deleteTeamIntegration(id) {
+      const { error } = await this.supabase
+        .from('team_integrations')
+        .delete()
+        .eq('id', id);
+      if (error) throw new Error(`deleteTeamIntegration failed: ${error.message || error}`);
+    }
+
+    // The URL external services POST to. Path-routed by integration id;
+    // authenticated by the secret (header / ?secret= / GitHub HMAC).
+    integrationWebhookUrl(id) {
+      return `${this.url}/functions/v1/integration-inbound/${id}`;
+    }
+
     // Submit the local caption-transcript snapshot for a recording so the
     // server (livekit-egress-webhook) can build the AI recap even if this
     // client leaves before the egress completes. The transcript lives only in
@@ -1800,10 +1916,16 @@
     }
 
     async deleteMessage(messageId) {
-      const { error } = await this.supabase.from('messages').delete().eq('id', messageId);
+      const { data, error } = await this.supabase
+        .from('messages').delete().eq('id', messageId).select('id');
       // Throw so chat.js can roll back its optimistic removal — the row
-      // still exists for everyone else when the delete fails.
+      // still exists for everyone else when the delete fails. The .select
+      // matters: a delete that RLS filters out returns 0 rows with NO
+      // error (e.g. an app message when messages_delete_app doesn't
+      // match), which would otherwise read as success and leave the
+      // message vanished locally but alive for everyone else.
       if (error) throw error;
+      if (!data?.length) throw new Error('not allowed to delete this message');
     }
 
     // Pin / unpin a message. Routed through a security-definer RPC so any
@@ -3012,6 +3134,9 @@
         pinnedBy: row.pinned_by || null,
         aiGenerated: !!row.ai_generated,
         aiModel: row.ai_model || null,
+        // Non-null marks an app-authored message (inbound webhook posted by
+        // the integration-inbound function; author_id is null there).
+        appIntegrationId: row.app_integration_id || null,
         // Generic JSONB metadata. First consumer: meeting threads
         // (meta.meeting_root = true for call-start anchors). Default
         // to empty object so consumers don't have to null-guard.

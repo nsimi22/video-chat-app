@@ -235,6 +235,13 @@ const els = {
   setAnthropicModel: $('#set-anthropic-model'),
   setOpenrouterKey: $('#set-openrouter-key'),
   setOpenrouterModel: $('#set-openrouter-model'),
+  setClaudeCodeTools: $('#set-claude-code-tools'),
+  setClaudeCodeBin: $('#set-claude-code-bin'),
+  setClaudeCodePreferSub: $('#set-claude-code-prefer-sub'),
+  setClaudeCodeProfiles: $('#set-claude-code-profiles'),
+  setClaudeCodeActive: $('#set-claude-code-active'),
+  setClaudeCodeTest: $('#set-claude-code-test'),
+  setClaudeCodeTestResult: $('#set-claude-code-test-result'),
   setAiTicketContext: $('#set-ai-ticket-context'),
   setAiTicketRepo: $('#set-ai-ticket-repo'),
   setGithubToken: $('#set-github-token'),
@@ -7728,6 +7735,9 @@ function wireControls() {
   els.settingsCancel.onclick = closeSettingsAndDiscardPending;
   els.settingsSave.onclick = saveSettings;
   els.setPasswordUpdate.onclick = updatePasswordFromSettings;
+  els.setClaudeCodeTest.onclick = testClaudeCodeFromSettings;
+  // Keep the account picker in sync while the profiles textarea is edited.
+  els.setClaudeCodeProfiles.oninput = () => rebuildClaudeProfileSelect(null);
 
   // Settings v2 tab sidebar — delegate clicks once on the sidebar
   // rather than per-button so the handler survives any re-render.
@@ -8244,6 +8254,9 @@ async function refreshSettings() {
   rebuildJiraClient();
   rebuildAiClient();
   rebuildGitHubClient();
+  // Fire-and-forget: may flip the provider to claude-code (and rebuild)
+  // once the binary probe resolves; nothing below depends on it.
+  maybeDefaultAiToClaudeCode();
   initJiraBoard();
   // Apply persisted appearance preferences (density + accent hue) on
   // every load. Stored under state.settings.appearance and written
@@ -8409,14 +8422,105 @@ function initJiraBoard() {
 
 function rebuildAiClient() {
   const a = state.settings?.ai || {};
-  const provider = a.provider || 'anthropic';
-  const defaultModel = provider === 'anthropic' ? (a.anthropicModel || '') : (a.openrouterModel || '');
+  // state.aiAutoProvider is the session-only auto-default (a detected local
+  // claude binary when nothing was configured) — kept OUT of state.settings
+  // so opening Settings and saving can never persist a provider the user
+  // didn't choose. An explicit choice always wins.
+  const provider = a.provider || state.aiAutoProvider || 'anthropic';
+  const defaultModel = provider === 'anthropic' ? (a.anthropicModel || '')
+    : provider === 'openrouter' ? (a.openrouterModel || '') : '';
   state.ai = new window.AiClient({
     provider,
     anthropicKey: a.anthropicKey || '',
     openrouterKey: a.openrouterKey || '',
+    claudeCode: a.claudeCode || {},
     defaultModel,
   });
+}
+
+// Claude account profiles: "Name = /path/to/config-dir" per line. Each dir
+// is an isolated CLAUDE_CONFIG_DIR (own /login, own MCP servers).
+function parseClaudeProfiles(text) {
+  return String(text || '').split('\n').map((line) => {
+    const i = line.indexOf('=');
+    if (i < 1) return null;
+    const name = line.slice(0, i).trim();
+    const configDir = line.slice(i + 1).trim();
+    return name && configDir ? { name, configDir } : null;
+  }).filter(Boolean);
+}
+
+// Rebuild the "Account for /ai" select from the profiles textarea, keeping
+// the selection when the named profile still exists.
+function rebuildClaudeProfileSelect(selected) {
+  const sel = els.setClaudeCodeActive;
+  const keep = selected ?? sel.value;
+  sel.innerHTML = '<option value="">Default (~/.claude)</option>';
+  for (const p of parseClaudeProfiles(els.setClaudeCodeProfiles.value)) {
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    opt.textContent = `${p.name} (${p.configDir})`;
+    sel.appendChild(opt);
+  }
+  sel.value = [...sel.options].some((o) => o.value === keep) ? keep : '';
+}
+
+// Settings "Test Claude Code": fire a one-word prompt through the same
+// path /ai uses (reading the CURRENT form values, not yet-saved settings)
+// and report which binary ran and how it's billed. total_cost_usd > 0
+// means API-key billing; 0/absent means the subscription login is paying.
+async function testClaudeCodeFromSettings() {
+  const out = els.setClaudeCodeTestResult;
+  els.setClaudeCodeTest.disabled = true;
+  out.textContent = 'Testing… (first run can take ~10s)';
+  try {
+    const activeName = els.setClaudeCodeActive.value;
+    const profile = parseClaudeProfiles(els.setClaudeCodeProfiles.value)
+      .find((p) => p.name === activeName);
+    const res = await window.huddle.claudeCode.run({
+      prompt: 'Reply with exactly the word: ok',
+      binPath: els.setClaudeCodeBin.value.trim(),
+      // Include allowedTools: run() charset-validates it, so omitting it
+      // here would let Test report ✓ for a value every real /ai call rejects.
+      allowedTools: els.setClaudeCodeTools.value.trim(),
+      preferSubscription: els.setClaudeCodePreferSub.checked,
+      configDir: profile?.configDir || '',
+    });
+    if (!res?.ok) {
+      out.textContent = `✗ ${res?.error || 'failed'}`;
+      return;
+    }
+    const billing = res.costUsd > 0
+      ? `API key (~$${res.costUsd.toFixed(4)}/req${res.apiKeyEnvStripped ? '' : res.apiKeyEnv ? ' — ANTHROPIC_API_KEY is set; check "use my subscription" to prefer your login' : ''})`
+      : 'Claude subscription';
+    out.textContent = `✓ Working — ${res.binPath} · billed via ${billing}`;
+  } catch (err) {
+    out.textContent = `✗ ${err?.message || err}`;
+  } finally {
+    els.setClaudeCodeTest.disabled = false;
+  }
+}
+
+// Subscription users get a working /ai out of the box: when no provider
+// was ever chosen and no API key exists, but a local claude binary does,
+// default the provider to claude-code for this session (in-memory only —
+// Settings still shows and saves the real choice explicitly).
+async function maybeDefaultAiToClaudeCode() {
+  const a = state.settings?.ai || {};
+  if (a.provider || a.anthropicKey || a.openrouterKey) return;
+  try {
+    const det = await window.huddle.claudeCode?.detect?.({ binPath: a.claudeCode?.binPath || '' });
+    if (!det?.found) return;
+    // Re-read after the await: the detect probe can take seconds (login-
+    // shell PATH resolution) and the user may have configured a provider
+    // or key in Settings meanwhile — their explicit choice wins.
+    const cur = state.settings?.ai || {};
+    if (cur.provider || cur.anthropicKey || cur.openrouterKey) return;
+    // Session-only override — never written into state.settings, so an
+    // unrelated Settings save can't persist a provider the user never chose.
+    state.aiAutoProvider = 'claude-code';
+    rebuildAiClient();
+  } catch { /* probe is best-effort */ }
 }
 
 function rebuildGitHubClient() {
@@ -8435,6 +8539,13 @@ async function openSettings() {
   els.setAnthropicModel.value = s.ai?.anthropicModel || '';
   els.setOpenrouterKey.value = s.ai?.openrouterKey || '';
   els.setOpenrouterModel.value = s.ai?.openrouterModel || '';
+  els.setClaudeCodeTools.value = s.ai?.claudeCode?.allowedTools || '';
+  els.setClaudeCodeBin.value = s.ai?.claudeCode?.binPath || '';
+  els.setClaudeCodePreferSub.checked = !!s.ai?.claudeCode?.preferSubscription;
+  els.setClaudeCodeProfiles.value = (s.ai?.claudeCode?.profiles || [])
+    .map((p) => `${p.name} = ${p.configDir}`).join('\n');
+  rebuildClaudeProfileSelect(s.ai?.claudeCode?.activeProfile || '');
+  els.setClaudeCodeTestResult.textContent = '';
   els.setAiTicketContext.value = s.aiTicket?.context || '';
   els.setAiTicketRepo.value = s.aiTicket?.githubRepo || '';
   els.setGithubToken.value = s.github?.token || '';
@@ -8585,6 +8696,13 @@ async function saveSettings() {
       anthropicModel: els.setAnthropicModel.value.trim(),
       openrouterKey: els.setOpenrouterKey.value,
       openrouterModel: els.setOpenrouterModel.value.trim(),
+      claudeCode: {
+        allowedTools: els.setClaudeCodeTools.value.trim(),
+        binPath: els.setClaudeCodeBin.value.trim(),
+        preferSubscription: els.setClaudeCodePreferSub.checked,
+        profiles: parseClaudeProfiles(els.setClaudeCodeProfiles.value),
+        activeProfile: els.setClaudeCodeActive.value,
+      },
     },
     aiTicket: {
       // Free-form project/team context the user wants every /ai-ticket
@@ -8987,6 +9105,10 @@ window.huddleApp = {
   getAi: () => state.ai,
   getMe: () => state.me,
   getCalendar: () => state.calendar,
+  // Non-blocking notice for the standalone panels (integrations etc.) —
+  // same showToast the rest of the app uses, instead of a renderer-freezing
+  // alert(). opts: { kind: 'error' } for the red variant.
+  toast: (msg, opts) => showToast(msg, opts),
   // Integration clients + AI-ticket repo for the AI panel's tool loop —
   // the same surface the chat `/ai` and `/ai-ticket` paths use to wire
   // Jira tools and the repo-scoped GitHub read tools. Without these the
@@ -9036,6 +9158,35 @@ window.huddleApp = {
   // misses mic-only peers and screen-share states — the "1 person with
   // four people talking" bug. Returns 0 when not in a call.
   getCallPeerCount: () => (state.mesh?.room ? state.mesh.room.remoteParticipants.size + 1 : 0),
+  // Recordings library (recordings.js): list / search / detail / playback
+  // URL. Narrow facade over the HuddleClient, same pattern as terminalShare —
+  // the view gets exactly the reads it needs, not the whole client.
+  recordings: {
+    list:      (opts) => state.huddle ? state.huddle.listRecordings(opts) : Promise.resolve([]),
+    search:    (q, opts) => state.huddle ? state.huddle.searchRecordings(q, opts) : Promise.resolve([]),
+    detail:    (id) => state.huddle ? state.huddle.getRecording(id) : Promise.resolve(null),
+    signedUrl: (path) => state.huddle ? state.huddle.recordingSignedUrl(path) : Promise.resolve(null),
+  },
+  // Usage dashboard (usage.js): local Claude Code transcript aggregates.
+  // Profiles ride along from Settings so every signed-in account is scanned.
+  claudeUsage: {
+    scan: (opts) => window.huddle.claudeCode?.usageScan?.({
+      ...opts,
+      profiles: state.settings?.ai?.claudeCode?.profiles || [],
+    }) ?? Promise.resolve({ days: 0, profiles: [] }),
+  },
+  // Integrations view (integrations.js): team-scoped inbound webhooks.
+  // Same narrow-facade pattern. channels() feeds the create form's target
+  // picker — DMs excluded (a webhook posting into a DM makes no sense and
+  // the RPC's can_see_channel check would allow it, so filter here).
+  integrations: {
+    list:       () => state.huddle ? state.huddle.listTeamIntegrations() : Promise.resolve([]),
+    create:     (opts) => state.huddle ? state.huddle.createTeamIntegration(opts) : Promise.reject(new Error('not signed in')),
+    update:     (id, patch) => state.huddle ? state.huddle.updateTeamIntegration(id, patch) : Promise.reject(new Error('not signed in')),
+    remove:     (id) => state.huddle ? state.huddle.deleteTeamIntegration(id) : Promise.reject(new Error('not signed in')),
+    webhookUrl: (id) => state.huddle ? state.huddle.integrationWebhookUrl(id) : '',
+    channels:   () => Array.from(state.channelMeta?.values?.() || []).filter((c) => c.type !== 'dm'),
+  },
   // Channel-name lookup, used by calendar-grid.js to derive event
   // categories from channel naming. Returns null for unknown ids
   // (e.g. an event in a channel the user isn't a member of yet).

@@ -126,6 +126,13 @@
     external: `<svg ${A}><path d="M14 3h7v7"/><path d="M10 14L21 3"/><path d="M21 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h6"/></svg>`,
     // ── Terminal feature (in-app pty / Claude Code) ─────────────
     terminal: `<svg ${A}><rect x="3" y="4" width="18" height="16" rx="2"/><polyline points="7 9 10 12 7 15"/><line x1="12" y1="15" x2="16" y2="15"/></svg>`,
+    // ── Recordings library ──────────────────────────────────────
+    film: `<svg ${A}><rect x="2" y="2" width="20" height="20" rx="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></svg>`,
+    // ── Integrations (inbound webhooks) ─────────────────────────
+    zap: `<svg ${A}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
+    copy: `<svg ${A}><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
+    // ── Claude usage dashboard ──────────────────────────────────
+    activity: `<svg ${A}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
   };
 
   // Merge: V2 design icons land alongside legacy icons. Legacy keys
