@@ -29,23 +29,50 @@
     return usd >= 100 ? `$${Math.round(usd)}` : `$${usd.toFixed(2)}`;
   }
 
+  const zeroBucket = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, messages: 0 });
+
   // Merge per-profile aggregates according to the active filter.
   function selected() {
-    const out = { totals: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, messages: 0 }, byDay: {}, byModel: {}, truncated: false };
+    const out = { totals: zeroBucket(), byDay: {}, byModel: {}, truncated: false,
+      window5h: zeroBucket(), window7d: zeroBucket(), planTier: null };
     if (!data) return out;
     const profs = data.profiles.filter((p) => p.found && (profileFilter === '*' || p.name === profileFilter));
+    const tiers = new Set();
     for (const p of profs) {
       out.truncated = out.truncated || !!p.truncated;
       for (const k of Object.keys(out.totals)) out.totals[k] += p.totals[k];
+      for (const winKey of ['window5h', 'window7d']) {
+        if (p[winKey]) for (const k of Object.keys(out[winKey])) out[winKey][k] += p[winKey][k];
+      }
+      if (p.planTier) tiers.add(p.planTier);
       for (const [bucketName, src] of [['byDay', p.byDay], ['byModel', p.byModel]]) {
         for (const [key, v] of Object.entries(src)) {
-          const b = out[bucketName][key] || (out[bucketName][key] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, messages: 0 });
+          const b = out[bucketName][key] || (out[bucketName][key] = zeroBucket());
           for (const k of Object.keys(v)) b[k] += v[k];
         }
       }
     }
+    // Show a tier only when the selection agrees on one (mixed accounts → none).
+    if (tiers.size === 1) out.planTier = [...tiers][0];
     return out;
   }
+
+  // Map Claude's internal rate-limit-tier bucket to a friendly plan name.
+  // Unknown values fall through to a lightly-cleaned raw string.
+  function planLabel(tier) {
+    if (!tier) return '';
+    const t = String(tier).toLowerCase();
+    if (t.includes('max_20')) return 'Claude Max 20×';
+    if (t.includes('max_5')) return 'Claude Max 5×';
+    if (t.includes('max')) return 'Claude Max';
+    if (t.includes('pro')) return 'Claude Pro';
+    if (t.includes('team')) return 'Claude Team';
+    if (t.includes('enterprise')) return 'Claude Enterprise';
+    if (t.includes('free')) return 'Claude Free';
+    return String(tier).replace(/^default_/, '').replace(/_/g, ' ');
+  }
+
+  const winTokens = (w) => w ? w.input + w.output + w.cacheRead + w.cacheWrite : 0;
 
   // ----- DOM ------------------------------------------------------
 
@@ -131,6 +158,7 @@
     }
     const activeDays = Object.keys(s.byDay).length;
     scroll.innerHTML = `
+      ${renderCurrentWindow(s)}
       <div class="huddle-usage-tiles">
         ${tile('Total tokens', fmtTokens(s.totals.input + s.totals.output + s.totals.cacheRead + s.totals.cacheWrite), 'in + out + cache')}
         ${tile('Output tokens', fmtTokens(s.totals.output), `input ${fmtTokens(s.totals.input)}`)}
@@ -148,6 +176,14 @@
     `;
     renderChart(scroll.querySelector('.huddle-usage-chart'), s.byDay);
     renderModelTable(scroll.querySelector('.huddle-usage-table tbody'), s.byModel);
+    // "Check official limit" → open the in-app Terminal running claude, so
+    // the user can type /usage for the authoritative number. Reuses the
+    // terminal panel rather than scraping the TUI ourselves (unreliable).
+    scroll.querySelector('.huddle-usage-official')?.addEventListener('click', () => {
+      close();
+      try { window.HuddleTerminalPanel?.open('claude'); } catch {}
+      window.huddleApp?.toast?.('Type /usage in the terminal for your official limit.');
+    });
   }
 
   function tile(label, value, sub) {
@@ -156,6 +192,32 @@
       <div class="huddle-usage-tile-value">${escapeHtml(value)}</div>
       <div class="huddle-usage-tile-sub">${escapeHtml(sub)}</div>
     </div>`;
+  }
+
+  // "Current usage" — how much this account has spent in the trailing 5h
+  // (session window) and 7d (weekly window), computed locally. Deliberately
+  // NOT framed as "X% left / resets in Y": Claude Code doesn't store the
+  // account's real allowance or reset time anywhere on disk, and no CLI
+  // exposes them (they live only in live API headers + the interactive
+  // `/usage` screen). So this is an honest "used recently" figure with a
+  // clearly-labeled disclaimer and a shortcut to the authoritative source.
+  function renderCurrentWindow(s) {
+    const t5 = winTokens(s.window5h);
+    const t7 = winTokens(s.window7d);
+    const plan = planLabel(s.planTier);
+    const badge = plan ? `<span class="huddle-usage-plan">${escapeHtml(plan)}</span>` : '';
+    return `
+      <div class="huddle-usage-window">
+        <div class="huddle-usage-window-head">
+          <h3 class="huddle-usage-h">Current usage${badge}</h3>
+          <button class="huddle-usage-official" type="button" title="Open the Terminal and run /usage for your real remaining limit">Check official limit</button>
+        </div>
+        <div class="huddle-usage-window-cards">
+          ${tile('Last 5 hours', fmtTokens(t5), `${s.window5h?.messages || 0} req · session window`)}
+          ${tile('Last 7 days', fmtTokens(t7), `${s.window7d?.messages || 0} req · weekly window`)}
+        </div>
+        <p class="huddle-usage-window-note">Locally computed from your own transcripts — a rough sense of recent spend, <strong>not</strong> your official remaining allowance or a reset countdown (those live in your Claude account only). For the real number, run <code>/usage</code> in Claude Code.</p>
+      </div>`;
   }
 
   // Single-series bar chart (total tokens/day), house accent, thin bars
