@@ -202,12 +202,33 @@
     s.unsubData = s.unsubExit = null;
   }
 
+  // FitAddon derives cols from xterm's CSS cell width, but the DOM renderer
+  // rounds per-glyph advances up at fractional zoom / display-scale factors,
+  // so the painted row can come out a column or two wider than that math —
+  // the tail of every line then paints over the mount's right padding and
+  // clips at the panel edge (claude's welcome banner visibly bleeding off
+  // to the right). Measure the actually-rendered screen against the mount's
+  // content box and shave columns until it truly fits.
+  function clampToMount(s) {
+    const screen = s.mountEl && s.mountEl.querySelector('.xterm-screen');
+    if (!screen || !s.term.cols) return;
+    const cs = getComputedStyle(s.mountEl);
+    const avail = s.mountEl.clientWidth
+      - parseFloat(cs.paddingLeft || '0') - parseFloat(cs.paddingRight || '0');
+    if (!(avail > 0)) return;
+    const w = screen.getBoundingClientRect().width;
+    if (w <= avail + 0.5) return;
+    const cols = Math.max(2, Math.floor(avail / (w / s.term.cols)));
+    if (cols < s.term.cols) { try { s.term.resize(cols, s.term.rows); } catch {} }
+  }
+
   function fitSession(s) {
     if (!s || !s.term || !s.fit) return;
     // Only the active tab is visible + sized; a hidden/0×0 mount fits to
     // degenerate dims and just wastes a reflow.
     if (s !== active || !root || root.classList.contains('hidden')) return;
     try { s.fit.fit(); } catch {}
+    clampToMount(s);
     if (s.ptyId) window.huddle?.terminal?.resize(s.ptyId, s.term.cols, s.term.rows);
   }
 
