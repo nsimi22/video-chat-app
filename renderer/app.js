@@ -3537,6 +3537,7 @@ function onMemberOffline(peerId) {
   renderRoster();
   refreshDmPresence();
   refreshMessagePresence();
+  refreshHeaderStatus();
 }
 
 function onCallPresence({ channelId, count }) {
@@ -3973,6 +3974,7 @@ function focusChannel(channelId) {
   }
   renderCallHeader();
   renderHeaderMembers(channel);
+  refreshHeaderStatus(channel);
   renderKnockButton(channel);
   refreshNotifyButton();
   // Read receipts: only DMs / group DMs (type 'dm') get "Seen by".
@@ -4384,6 +4386,30 @@ function renderHeaderMembers(channel) {
     more.title = `${overflow} more`;
     wrap.appendChild(more);
   }
+}
+
+// Custom-status chip beside the chat-header title — 1:1 DMs only: the
+// peer's "🍕 Lunch" (+ 🔕 while they're in DND) so you know they're heads-
+// down before you ping. Lazily creates a #channel-status span after
+// #channel-name; removed for every other channel type / no-status case.
+function refreshHeaderStatus(channel) {
+  const nameEl = els.chatChannelName;
+  if (!nameEl || !nameEl.after) return; // stubbed in the popout window
+  if (!channel) channel = state.channelMeta.get(state.chat?.currentChannel);
+  let chip = document.getElementById('channel-status');
+  const peer = dmPeer(channel);
+  const extras = peer ? statusExtrasFor(peer.id) : null;
+  const line = extras ? `${extras.emoji || ''} ${extras.text || ''}`.trim() : '';
+  const full = [line, extras?.dnd ? '🔕' : ''].filter(Boolean).join('  ');
+  if (!full) { chip?.remove(); return; }
+  if (!chip) {
+    chip = document.createElement('span');
+    chip.id = 'channel-status';
+    chip.className = 'channel-status';
+    nameEl.after(chip);
+  }
+  chip.textContent = full;
+  chip.title = [line, extras?.dnd ? 'Do Not Disturb' : ''].filter(Boolean).join(' · ');
 }
 
 // Re-paint the chat-header avatar stack for whatever channel is
@@ -4915,6 +4941,19 @@ function renderMeStatus() {
   els.me.dataset.status = s;
   els.me.dataset.dnd = dnd ? '1' : '';
   els.me.title = title;
+  // The me-row shows the custom status inline (not just in the hover
+  // title): name, then "🍕 Lunch" (or 🔕 while in DND with no custom
+  // status set). Rebuilt wholesale each repaint — the row's text is
+  // otherwise only written at start()/profile-save, which both funnel
+  // through here right after.
+  els.me.textContent = state.huddle?.name || els.me.textContent || '';
+  const inline = cs || (dnd ? '🔕' : '');
+  if (inline) {
+    const chip = document.createElement('span');
+    chip.className = 'me-status-chip';
+    chip.textContent = inline;
+    els.me.appendChild(chip);
+  }
   // v2 nav-rail avatar (bottom-left) carries the same state — its dot is
   // a CSS ::after keyed off data-status, immune to the shell's initial
   // repaints (which rewrite textContent).
@@ -4952,6 +4991,35 @@ function initMeStatus(huddle) {
     railMe.setAttribute('aria-label', 'Set your status');
     railMe.addEventListener('click', () => toggleStatusMenu(railMe, true));
   }
+}
+
+// Clamp free-form emoji input to one *grapheme cluster*, not one code
+// unit: flags, skin tones and ZWJ sequences (👨‍💻, 🇺🇸, 👍🏽) span 2–11
+// UTF-16 units, so a code-unit cap chops them mid-sequence into tofu.
+function firstGrapheme(str) {
+  const s = String(str || '').trim();
+  if (!s) return '';
+  try {
+    for (const seg of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s)) {
+      return seg.segment;
+    }
+  } catch { /* segmenter unavailable → best-effort slice below */ }
+  return s.slice(0, 8);
+}
+
+// Status extras ({ emoji, text, dnd }) for any user: self reads the local
+// client, peers read the broadcast presence meta (statusEmoji/statusText),
+// offline → null. One resolver so every surface (sidebar, DM header,
+// me-row, profile card) agrees on who shows what.
+function statusExtrasFor(userId) {
+  if (!state.huddle || !userId) return null;
+  if (userId === state.huddle.peerId) {
+    const e = state.huddle._selfExtras?.() || {};
+    return { emoji: e.emoji || '', text: e.text || '', dnd: !!e.dnd };
+  }
+  const live = state.huddle.peerInfo.get(userId);
+  if (!live) return null;
+  return { emoji: live.statusEmoji || '', text: live.statusText || '', dnd: !!live.dnd };
 }
 
 // Quick custom-status presets (emoji, text, minutes-to-expire | null).
@@ -5005,7 +5073,10 @@ function toggleStatusMenu(trigger, side) {
   form.className = 'status-custom-form';
   const emojiIn = document.createElement('input');
   emojiIn.className = 'status-custom-emoji';
-  emojiIn.maxLength = 2;
+  // Generous code-unit cap — composite emoji (ZWJ families, flags, skin
+  // tones) run up to ~11 UTF-16 units; the old maxLength=2 chopped them
+  // mid-sequence into tofu. saveCustom clamps to one grapheme regardless.
+  emojiIn.maxLength = 16;
   emojiIn.value = extras.emoji || '';
   emojiIn.setAttribute('aria-label', 'Status emoji');
   emojiIn.placeholder = '😀';
@@ -5017,7 +5088,7 @@ function toggleStatusMenu(trigger, side) {
   textIn.setAttribute('aria-label', 'Status text');
   const saveCustom = () => {
     menu.remove();
-    huddle?.setCustomStatus(emojiIn.value.trim(), textIn.value.trim(), null);
+    huddle?.setCustomStatus(firstGrapheme(emojiIn.value), textIn.value.trim(), null);
   };
   textIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveCustom(); });
   const setBtn = document.createElement('button');
@@ -5121,8 +5192,11 @@ function refreshDmPresence() {
       if (!peerId) continue;
       const live = state.huddle.peerInfo.get(peerId);
       let dot = li.querySelector('.ch-presence');
+      let chip = li.querySelector('.ch-status');
       if (!live) {
         dot?.remove();
+        chip?.remove();
+        li.removeAttribute('title');
         continue;
       }
       if (!dot) {
@@ -5131,6 +5205,25 @@ function refreshDmPresence() {
       }
       const status = live.status && live.status !== 'active' ? ` status-${live.status}` : '';
       dot.className = `dot online ch-presence${status}`;
+      // Custom status: emoji (or 🔕 for DND) inline after the name, full
+      // "🍕 Lunch" text in the row's hover title. Same data the profile
+      // card shows — this is just the glanceable version.
+      const inline = live.statusEmoji || (live.dnd ? '🔕' : '');
+      if (inline) {
+        if (!chip) {
+          chip = document.createElement('span');
+          chip.className = 'ch-status';
+          const label = li.querySelector('.ch-name');
+          label ? label.after(chip) : li.appendChild(chip);
+        }
+        chip.textContent = inline;
+      } else {
+        chip?.remove();
+      }
+      const csLine = `${live.statusEmoji || ''} ${live.statusText || ''}`.trim();
+      const bits = [csLine, live.dnd ? 'Do Not Disturb' : ''].filter(Boolean).join(' · ');
+      if (bits) li.title = bits;
+      else li.removeAttribute('title');
     }
   }
 }
@@ -5180,6 +5273,7 @@ function onMemberOnline(peer) {
   refreshTileLabelForPeer(peer.id);
   refreshDmPresence();
   refreshMessagePresence();
+  refreshHeaderStatus();
 }
 
 // (onMemberOffline + onCallPeerLeft above replace the old onPeerLeft —
@@ -8545,7 +8639,7 @@ async function saveSettings() {
     };
     await state.huddle.updateProfile(profilePatch);
     state.myName = state.huddle.name;
-    els.me.textContent = state.huddle.name;
+    renderMeStatus(); // owns the me-row content (name + status chip)
 
     await window.huddleApi.saveSettings(next);
     state.settings = next;
