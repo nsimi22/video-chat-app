@@ -39,11 +39,11 @@
 
   // Merge per-profile aggregates according to the active filter.
   function selected() {
-    const empty = { totals: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, messages: 0 }, byDay: {}, byModel: {} };
-    if (!data) return empty;
+    const out = { totals: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, messages: 0 }, byDay: {}, byModel: {}, truncated: false };
+    if (!data) return out;
     const profs = data.profiles.filter((p) => p.found && (profileFilter === '*' || p.name === profileFilter));
-    const out = empty;
     for (const p of profs) {
+      out.truncated = out.truncated || !!p.truncated;
       for (const k of Object.keys(out.totals)) out.totals[k] += p.totals[k];
       for (const [bucketName, src] of [['byDay', p.byDay], ['byModel', p.byModel]]) {
         for (const [key, v] of Object.entries(src)) {
@@ -152,7 +152,7 @@
         <thead><tr><th>Model</th><th>Requests</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Est. value</th></tr></thead>
         <tbody></tbody>
       </table>
-      <p class="huddle-usage-note">Estimated at Claude API list prices — on a subscription these tokens have no per-request charge. Data comes from local Claude Code transcripts on this machine only.</p>
+      <p class="huddle-usage-note">Estimated at Claude API list prices — on a subscription these tokens have no per-request charge. Data comes from local Claude Code transcripts on this machine only.${s.truncated ? ' Some history was skipped (per-account file cap reached), so totals are a lower bound.' : ''}</p>
     `;
     renderChart(scroll.querySelector('.huddle-usage-chart'), s.byDay);
     renderModelTable(scroll.querySelector('.huddle-usage-table tbody'), s.byModel);

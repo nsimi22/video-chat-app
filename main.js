@@ -1004,17 +1004,21 @@ function estimateCostUsd(model, t) {
     + t.cacheWrite1h * p.inp * 2) / 1e6;
 }
 
-function listJsonlFiles(dir, cutoffMs, out) {
-  const fs = require('fs');
+// Async walk: months of Claude Code history can be thousands of files
+// across hundreds of dirs, and this runs on the MAIN process — a sync
+// walk would block every window's IPC for the duration. The mtime probe
+// skips files untouched since the cutoff so they're never streamed.
+async function listJsonlFiles(dir, cutoffMs, out) {
+  const fsp = require('fs').promises;
   let entries;
-  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
   for (const e of entries) {
     if (out.length >= USAGE_MAX_FILES_PER_PROFILE) return;
     const p = path.join(dir, e.name);
-    if (e.isDirectory()) listJsonlFiles(p, cutoffMs, out);
+    if (e.isDirectory()) await listJsonlFiles(p, cutoffMs, out);
     else if (e.isFile() && e.name.endsWith('.jsonl')) {
       try {
-        if (fs.statSync(p).mtimeMs >= cutoffMs) out.push(p);
+        if ((await fsp.stat(p)).mtimeMs >= cutoffMs) out.push(p);
       } catch { /* raced deletion */ }
     }
   }
@@ -1082,34 +1086,44 @@ ipcMain.handle('claude-usage-scan', async (_event, payload = {}) => {
     const base = prof.configDir || path.join(os.homedir(), '.claude');
     const projectsDir = path.join(base, 'projects');
     if (!fs.existsSync(projectsDir)) {
-      profiles.push({ name: prof.name, configDir: prof.configDir, found: false, totals: null, byDay: {}, byModel: {}, files: 0 });
+      profiles.push({ name: prof.name, found: false, totals: null, byDay: {}, byModel: {}, files: 0, truncated: false });
       continue;
     }
     const files = [];
-    listJsonlFiles(projectsDir, cutoffMs, files);
+    await listJsonlFiles(projectsDir, cutoffMs, files);
+    // Bounded worker pool: one-at-a-time leaves the disk idle between
+    // files; unbounded Promise.all risks EMFILE on thousands of files.
+    // Per-key last-write-wins into the shared Map is order-independent
+    // for the token sums (every occurrence of a key is the same request).
     const entries = new Map();
-    for (const f of files) await scanTranscript(f, cutoffMs, entries);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(8, files.length) }, async () => {
+      while (next < files.length) {
+        const f = files[next++];
+        await scanTranscript(f, cutoffMs, entries);
+      }
+    }));
 
-    const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, messages: 0 };
+    const zero = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, messages: 0 });
+    const totals = zero();
     const byDay = {};
     const byModel = {};
     for (const e of entries.values()) {
       const day = new Date(e.ts).toISOString().slice(0, 10);
       const cost = estimateCostUsd(e.model, e);
       const cacheWrite = e.cacheWrite5m + e.cacheWrite1h;
-      for (const [bucketKey, bucket] of [[day, byDay], [e.model, byModel]]) {
-        const b = bucket[bucketKey] || (bucket[bucketKey] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, messages: 0 });
+      for (const b of [
+        byDay[day] || (byDay[day] = zero()),
+        byModel[e.model] || (byModel[e.model] = zero()),
+        totals,
+      ]) {
         b.input += e.input; b.output += e.output;
         b.cacheRead += e.cacheRead; b.cacheWrite += cacheWrite;
         b.costUsd += cost; b.messages += 1;
       }
-      totals.input += e.input; totals.output += e.output;
-      totals.cacheRead += e.cacheRead; totals.cacheWrite += cacheWrite;
-      totals.costUsd += cost; totals.messages += 1;
     }
     profiles.push({
       name: prof.name,
-      configDir: prof.configDir,
       found: true,
       totals,
       byDay,
