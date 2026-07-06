@@ -26,19 +26,7 @@
     '': 'Send POSTs with JSON to the URL above, authenticated by an `x-webhook-secret: <secret>` header (or `?secret=` in the URL). A {{ field.path }} template controls the message; without one, a title/message field or a JSON snippet is posted.',
   };
 
-  function svg(name) {
-    return (window.HuddleIcons && window.HuddleIcons[name]) || '';
-  }
-
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[c]));
-  }
-
-  function channelLabel(id) {
-    return window.huddleApp?.getChannelName?.(id) || id || '—';
-  }
+  const { escapeHtml, svg, channelLabel } = window.HuddleSurface;
 
   async function copy(text, btn) {
     try {
@@ -319,15 +307,13 @@
 
   window.HuddleIntegrations = { open, close };
 
-  document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || !root || root.classList.contains('hidden')) return;
-    // Escape while typing in one of the panel's fields blurs the field —
-    // it must NOT wipe the create form (or dismiss the one-time secret
-    // reveal) mid-input. Same activeElement rule as the terminal panel.
-    const a = document.activeElement;
-    if (a && root.contains(a) && /^(input|textarea|select)$/i.test(a.tagName)) { a.blur(); return; }
-    const editorOpen = !root.querySelector('.huddle-int-editor').classList.contains('hidden');
-    if (editorOpen) closeEditor();
-    else close();
+  // Escape closes an open editor (create form / secret reveal) first, then
+  // the panel; the shared helper guards against tearing down mid-typing.
+  window.HuddleSurface.wireEscClose(() => root, {
+    onEscape: () => {
+      if (!root.querySelector('.huddle-int-editor').classList.contains('hidden')) { closeEditor(); return true; }
+      return false;
+    },
+    close,
   });
 })();

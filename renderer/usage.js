@@ -16,15 +16,7 @@
   let days = 30;
   let scanning = false;
 
-  function svg(name) {
-    return (window.HuddleIcons && window.HuddleIcons[name]) || '';
-  }
-
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[c]));
-  }
+  const { escapeHtml, svg } = window.HuddleSurface;
 
   function fmtTokens(n) {
     if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
@@ -244,12 +236,5 @@
 
   window.HuddleUsage = { open, close };
 
-  document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || !root || root.classList.contains('hidden')) return;
-    // Escape in the day-window select blurs it, not the whole panel
-    // (same activeElement rule as terminal-panel).
-    const a = document.activeElement;
-    if (a && root.contains(a) && /^(input|textarea|select)$/i.test(a.tagName)) { a.blur(); return; }
-    close();
-  });
+  window.HuddleSurface.wireEscClose(() => root, { close });
 })();
