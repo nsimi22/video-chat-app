@@ -10110,6 +10110,30 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   flex: none;
 }
 .huddle-int-iconbtn:hover { background: var(--bg-2); color: var(--tx-hi); }
+/* Delete is a LABELLED red button, not another dim icon — reported that
+   users couldn't find how to delete an integration because the trash icon
+   was as low-contrast as the neutral rotate/copy icons beside it. The word
+   + danger colour make the destructive action unmistakable. */
+.huddle-int-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--danger, #ff5b5b);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex: none;
+}
+.huddle-int-delete svg { width: 15px; height: 15px; }
+.huddle-int-delete:hover {
+  background: color-mix(in oklch, var(--danger, #ff5b5b) 18%, transparent);
+}
 
 .huddle-int-body { flex: 1; min-height: 0; display: flex; }
 .huddle-int-list,
