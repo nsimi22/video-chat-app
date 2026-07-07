@@ -3182,13 +3182,27 @@
       // `from` defaults to one hour ago so a call that JUST started
       // still shows in the upcoming list (people often want to
       // rejoin a recently-started scheduled call).
-      const { data, error } = await this.supabase
+      let { data, error } = await this.supabase
         .from('scheduled_calls')
         .select('*, scheduled_call_attendees(user_id, status)')
         .eq('team_id', this.team.id)
         .gte('starts_at', new Date(from).toISOString())
         .order('starts_at', { ascending: true })
         .limit(limit);
+      if (error) {
+        // The embed can fail on its own (missing relationship / attendee
+        // RLS misconfig / a staged rollout where the attendees table
+        // isn't there yet). Degrade to calls-only rather than blanking the
+        // whole calendar — RSVPs just won't show until it's resolved.
+        console.warn('loadScheduledCalls embed failed, retrying without attendees', error);
+        ({ data, error } = await this.supabase
+          .from('scheduled_calls')
+          .select('*')
+          .eq('team_id', this.team.id)
+          .gte('starts_at', new Date(from).toISOString())
+          .order('starts_at', { ascending: true })
+          .limit(limit));
+      }
       if (error) { console.warn('loadScheduledCalls failed', error); return []; }
       return (data || []).map((r) => this._marshalScheduledCall(r));
     }

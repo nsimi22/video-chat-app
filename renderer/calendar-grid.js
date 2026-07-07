@@ -210,8 +210,10 @@
       renderEmpty();
       return;
     }
-    const all = cal.listEvents();
     const weekEnd = addDays(weekStart, 7);
+    // Pass the viewed week's end so recurring series are expanded far
+    // enough to appear when navigating beyond the default 2-week horizon.
+    const all = cal.listEvents({ until: weekEnd });
     const visible = all.filter((e) => e.start >= weekStart && e.start < weekEnd);
 
     for (const e of visible) {
@@ -368,6 +370,11 @@
     di = Math.max(0, Math.min(6, di));
     let hours = HOUR_START + (clientY - rect.top) / HOUR_HEIGHT;
     hours = Math.round(hours * 4) / 4;                       // snap to 15 min
+    // Reject drops outside the visible band rather than silently snapping
+    // to 7am/10pm — a small tolerance covers grabbing an event flush
+    // against the top/bottom edge.
+    const TOL = 0.5;
+    if (hours < HOUR_START - TOL || hours > HOUR_END + TOL) return null;
     hours = Math.max(HOUR_START, Math.min(HOUR_END, hours));
     const h = Math.floor(hours);
     const min = Math.round((hours - h) * 60);
