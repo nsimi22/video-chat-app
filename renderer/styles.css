@@ -2117,6 +2117,15 @@ body.huddle-call-minimized #tiles .speaker-queue { display: none !important; }
 .schedule-row {
   display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
 }
+/* Availability hint under the date/time row. Empty (no text) collapses. */
+.schedule-conflict {
+  font-size: 12px;
+  min-height: 0;
+  margin: -4px 0 0;
+}
+.schedule-conflict:empty { display: none; }
+.schedule-conflict.ok { color: var(--good); }
+.schedule-conflict.warn { color: var(--warn); }
 
 /* Calendar settings section: subscription rows + add row. */
 .set-cal-list { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
