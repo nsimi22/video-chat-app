@@ -234,9 +234,12 @@
       block.style.setProperty('--cal-event-color', color);
       block.dataset.eventId = e.id;
       const timeLabel = e.start.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-      const meta = e.kind === 'huddle'
+      let meta = e.kind === 'huddle'
         ? (e.ref?.channelId ? `#${escapeHtml(channelLabel(e.ref.channelId))}` : 'Scheduled call')
         : escapeHtml(e.source || 'External');
+      // Surface the "going" headcount on internal-call blocks when anyone
+      // has RSVP'd, so the week view conveys turnout at a glance.
+      if (e.kind === 'huddle' && e.rsvpCounts?.going) meta += ` · ${e.rsvpCounts.going} going`;
       block.innerHTML = `
         <div class="huddle-cal-event-head">
           ${live ? '<span class="huddle-cal-event-live-dot" aria-hidden="true"></span>' : ''}

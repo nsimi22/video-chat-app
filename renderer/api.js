@@ -3184,7 +3184,7 @@
       // rejoin a recently-started scheduled call).
       const { data, error } = await this.supabase
         .from('scheduled_calls')
-        .select('*')
+        .select('*, scheduled_call_attendees(user_id, status)')
         .eq('team_id', this.team.id)
         .gte('starts_at', new Date(from).toISOString())
         .order('starts_at', { ascending: true })
@@ -3214,6 +3214,53 @@
       if (error) throw error;
     }
 
+    // RSVP to a scheduled call. Upserts the current user's row so calling
+    // it again just flips the status (going -> maybe). The DB trigger
+    // stamps responded_at server-side.
+    async setRsvp(callId, status) {
+      if (!['going', 'maybe', 'declined'].includes(status)) throw new Error('invalid rsvp status');
+      const { error } = await this.supabase
+        .from('scheduled_call_attendees')
+        .upsert({ call_id: callId, user_id: this.peerId, status }, { onConflict: 'call_id,user_id' });
+      if (error) throw error;
+    }
+
+    // Retract an RSVP entirely (removes the row, so the user drops out of
+    // all counts rather than lingering as "declined").
+    async clearRsvp(callId) {
+      const { error } = await this.supabase
+        .from('scheduled_call_attendees')
+        .delete()
+        .eq('call_id', callId)
+        .eq('user_id', this.peerId);
+      if (error) throw error;
+    }
+
+    // Realtime fan-in for RSVP changes across the team's calls. The
+    // attendees table carries no team_id, so there's no server-side
+    // filter — RLS restricts delivered rows to calls the viewer can see
+    // (the read policy joins back to scheduled_calls). Returns an async
+    // unsubscribe fn, same contract as subscribeScheduledCalls.
+    subscribeCallAttendees(handler) {
+      if (!this.team) return async () => {};
+      const ch = this.supabase
+        .channel(`scheduled_call_attendees:${this.team.id}`)
+        .on('postgres_changes', {
+          event: '*', schema: 'public', table: 'scheduled_call_attendees',
+        }, (payload) => {
+          const row = payload.new && payload.new.call_id ? payload.new : null;
+          const oldRow = payload.old || null;
+          handler({
+            eventType: payload.eventType,
+            callId: row?.call_id || oldRow?.call_id || null,
+            userId: row?.user_id || oldRow?.user_id || null,
+            status: row?.status || null,
+          });
+        })
+        .subscribe();
+      return async () => { try { await ch.unsubscribe(); } catch {} };
+    }
+
     // Realtime fan-in for the team's schedule. Returns an async
     // unsubscribe fn — callers should await it on team-switch or
     // app-shutdown so the WebSocket handshake completes before the
@@ -3240,7 +3287,7 @@
     }
 
     _marshalScheduledCall(row) {
-      return {
+      const out = {
         id: row.id,
         teamId: row.team_id,
         channelId: row.channel_id,
@@ -3252,6 +3299,16 @@
         createdAt: new Date(row.created_at),
         updatedAt: new Date(row.updated_at),
       };
+      // Attendees are embedded on the initial load select() but absent
+      // from realtime scheduled_calls payloads — only attach when we
+      // actually have them, so a realtime UPDATE (title/time edit) doesn't
+      // clobber RSVPs the calendar already knows about.
+      if (Array.isArray(row.scheduled_call_attendees)) {
+        out.attendees = row.scheduled_call_attendees.map((a) => ({
+          userId: a.user_id, status: a.status,
+        }));
+      }
+      return out;
     }
   }
 

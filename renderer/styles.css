@@ -2047,6 +2047,44 @@ body.huddle-call-minimized #tiles .speaker-queue { display: none !important; }
   font-size: 18px; line-height: 1; padding: 0 6px; cursor: pointer;
 }
 .cal-row-del:hover { color: #ff5c52; }
+/* RSVP block on internal-call rows: avatar stack + counts + toggles. */
+.cal-rsvp {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.cal-rsvp-avatars { display: inline-flex; }
+.cal-rsvp-avatar {
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  margin-left: -5px;
+  border: 1.5px solid var(--bg-1, #1a1a1a);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+.cal-rsvp-avatar:first-child { margin-left: 0; }
+.cal-rsvp-summary { font-size: 11px; color: var(--text-soft); }
+.cal-rsvp-btns { display: inline-flex; gap: 4px; margin-left: auto; }
+.cal-rsvp-btn {
+  background: transparent;
+  color: var(--text-soft);
+  border: 1px solid var(--border, rgba(255,255,255,0.15));
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  font-size: 11px;
+  cursor: pointer;
+}
+.cal-rsvp-btn:hover { border-color: var(--accent); color: var(--text); }
+.cal-rsvp-btn.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
 /* External (ICS) rows get a subtle left-border tint to distinguish
    from internal Huddle rows; reinforces "this is from an external feed
    you subscribed to, you can't edit it here". */

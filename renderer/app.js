@@ -6175,6 +6175,8 @@ async function startCalendar() {
     hooks: {
       getChannels: () => Array.from(state.channelMeta?.values?.() || []),
       currentChannelId: () => state.chat?.currentChannel || null,
+      // Resolve a user id to { name, color } for the RSVP avatar stack.
+      getMember: (userId) => state.huddle?.roster?.get(userId) || null,
       openCallChannel: (channelId) => {
         // Calendar drawer's Join button on an imminent scheduled call.
         // Just focus the channel — the user can hit "Join call" from
