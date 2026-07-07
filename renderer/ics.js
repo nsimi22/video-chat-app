@@ -481,6 +481,44 @@
     }
   }
 
+  // Video-meeting providers we recognise in subscribed feeds. Each URL
+  // pattern is domain-anchored so a given link classifies as at most one
+  // provider. Non-global (no `/g`) so `.exec` has no lastIndex state to
+  // reset between calls.
+  const MEETING_PROVIDERS = [
+    { name: 'Teams', re: /https?:\/\/[^\s"'<>]*teams\.(?:microsoft\.com|live\.com)\/[^\s"'<>]*/i },
+    { name: 'Zoom',  re: /https?:\/\/[^\s"'<>]*zoom\.us\/[^\s"'<>]*/i },
+    { name: 'Meet',  re: /https?:\/\/meet\.google\.com\/[^\s"'<>]*/i },
+    { name: 'Webex', re: /https?:\/\/[^\s"'<>]*\.webex\.com\/[^\s"'<>]*/i },
+  ];
+
+  // Pull a join link + provider label out of a parsed VEVENT. Teams
+  // exports a dedicated X- property holding the canonical URL, so we trust
+  // that over scraping the body. Otherwise we scan the fields most likely
+  // to carry a link in order of signal — an explicit URL/LOCATION beats a
+  // link buried in the DESCRIPTION body, so a field wins over a
+  // lower-priority field even if it matches a later provider.
+  function deriveMeeting(ev) {
+    const raw = ev.raw || {};
+    const teamsProp = raw['X-MICROSOFT-SKYPETEAMSMEETINGURL']
+                   || raw['X-MICROSOFT-ONLINEMEETINGEXTERNALLINK'];
+    if (teamsProp && /^https?:\/\//i.test(teamsProp.trim())) {
+      return { meetingUrl: teamsProp.trim(), provider: 'Teams' };
+    }
+    for (const field of [ev.url, ev.location, ev.description]) {
+      if (!field) continue;
+      for (const { name, re } of MEETING_PROVIDERS) {
+        const m = re.exec(field);
+        if (m) {
+          // Trailing sentence punctuation can glue onto a body-buried URL;
+          // strip it (real query strings don't end in these chars).
+          return { meetingUrl: m[0].replace(/[.,;)\]]+$/, ''), provider: name };
+        }
+      }
+    }
+    return { meetingUrl: '', provider: '' };
+  }
+
   function parse(text, opts) {
     const out = { events: [] };
     if (typeof text !== 'string' || !text.length) return out;
@@ -509,12 +547,18 @@
         cur = {
           uid: '', title: '', description: '', location: '', url: '',
           start: null, end: null, allDay: false, rrule: '',
+          meetingUrl: '', provider: '',
           exdate: [], raw: {},
         };
         continue;
       }
       if (trimmed === 'END:VEVENT') {
         if (cur && cur.start) {
+          // Derive once on the master; expandSeries spreads `...event` and
+          // overrides use Object.assign, so occurrences inherit the link.
+          const meeting = deriveMeeting(cur);
+          cur.meetingUrl = meeting.meetingUrl;
+          cur.provider = meeting.provider;
           if (curRecur !== null) overrides.push({ ev: cur, primaryMs: curRecur.primaryMs, candidates: curRecur.candidates });
           else masters.push(cur);
         }
