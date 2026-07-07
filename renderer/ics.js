@@ -494,10 +494,17 @@
 
   // Pull a join link + provider label out of a parsed VEVENT. Teams
   // exports a dedicated X- property holding the canonical URL, so we trust
-  // that over scraping the body. Otherwise we scan the fields most likely
-  // to carry a link in order of signal — an explicit URL/LOCATION beats a
-  // link buried in the DESCRIPTION body, so a field wins over a
-  // lower-priority field even if it matches a later provider.
+  // that over scraping the body. Otherwise we scan the most authoritative
+  // fields first (URL / LOCATION / DESCRIPTION), then EVERY remaining
+  // property value.
+  //
+  // The all-properties fallback matters for meetings you were invited to
+  // (vs organised): the invitee copy frequently carries the join link in
+  // the standard CONFERENCE property (RFC 7986), X-GOOGLE-CONFERENCE
+  // (Meet), or another vendor X- prop rather than in LOCATION/DESCRIPTION —
+  // so a scan limited to those three fields found nothing and no Join
+  // button appeared. Provider regexes are domain-anchored, so scanning
+  // unrelated properties can't produce a false positive.
   function deriveMeeting(ev) {
     const raw = ev.raw || {};
     const teamsProp = raw['X-MICROSOFT-SKYPETEAMSMEETINGURL']
@@ -505,7 +512,13 @@
     if (teamsProp && /^https?:\/\//i.test(teamsProp.trim())) {
       return { meetingUrl: teamsProp.trim(), provider: 'Teams' };
     }
-    for (const field of [ev.url, ev.location, ev.description]) {
+    // Preferred fields (unescaped) first for signal, then any other raw
+    // property value (CONFERENCE, X-GOOGLE-CONFERENCE, vendor X- props…).
+    const preferredKeys = ['URL', 'LOCATION', 'DESCRIPTION'];
+    const rest = Object.keys(raw)
+      .filter((k) => !preferredKeys.includes(k))
+      .map((k) => raw[k]);
+    for (const field of [ev.url, ev.location, ev.description, ...rest]) {
       if (!field) continue;
       for (const { name, re } of MEETING_PROVIDERS) {
         const m = re.exec(field);
