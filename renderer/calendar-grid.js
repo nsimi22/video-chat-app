@@ -273,11 +273,12 @@
         }
       }
 
-      // Owned internal calls are draggable to reschedule, and a plain
-      // click (no drag) opens the edit modal. External/other-owned blocks
-      // are read-only here.
+      // Owned internal calls: a plain click opens the edit modal, and
+      // non-recurring ones are also draggable to reschedule. Dragging a
+      // single occurrence of a recurring series isn't supported (it would
+      // move the whole series), so those get click-to-edit only.
       if (e.kind === 'huddle' && e.ownedByMe) {
-        block.classList.add('is-draggable');
+        if (!e.recurring) block.classList.add('is-draggable');
         block.addEventListener('mousedown', (ev) => startDrag(ev, e, block));
       }
       col.appendChild(block);
@@ -336,6 +337,13 @@
     d.block.classList.remove('is-dragging');
     d.block.style.transform = '';
     const cal = window.huddleApp?.getCalendar?.();
+    // Recurring occurrences aren't draggable; a mousedown on one is always
+    // a click → open the series edit modal (snap back if they dragged).
+    if (d.e.recurring) {
+      if (d.moved) render();
+      else cal?.openScheduleModal?.({ editCall: d.e.ref });
+      return;
+    }
     if (!d.moved) {
       // A click, not a drag → open the edit modal.
       cal?.openScheduleModal?.({ editCall: d.e.ref });

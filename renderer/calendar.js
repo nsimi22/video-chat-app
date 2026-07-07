@@ -44,14 +44,17 @@
 
     bindElements({ drawer, list, scheduleBtn, closeBtn, modal, modalForm,
                    modalTitle, modalChannel, modalDate, modalTime,
-                   modalDuration, modalDescription, modalCancel, modalSave }) {
+                   modalDuration, modalRepeat, modalDescription, modalCancel,
+                   modalSave, modalDelete }) {
       this._els = { drawer, list, scheduleBtn, closeBtn };
       this._modalEls = { modal, modalForm, modalTitle, modalChannel, modalDate,
-                         modalTime, modalDuration, modalDescription, modalCancel, modalSave };
+                         modalTime, modalDuration, modalRepeat, modalDescription,
+                         modalCancel, modalSave, modalDelete };
       if (closeBtn) closeBtn.onclick = () => this.closeDrawer();
       if (scheduleBtn) scheduleBtn.onclick = () => this.openScheduleModal();
       if (modalCancel) modalCancel.onclick = () => this.closeScheduleModal();
       if (modalForm) modalForm.onsubmit = (e) => { e.preventDefault(); this._submitSchedule(); };
+      if (modalDelete) modalDelete.onclick = () => this._deleteFromModal();
     }
 
     async start({ subscriptions = [] } = {}) {
@@ -154,12 +157,41 @@
       }
       m.modalDate.value = formatDateInputValue(when);
       m.modalTime.value = formatTimeInputValue(when);
+      // Recurrence: reflect the existing rule when editing, else default
+      // to non-recurring.
+      if (m.modalRepeat) m.modalRepeat.value = editCall ? rruleToRepeat(editCall.rrule) : 'none';
+      // Delete button only in edit mode; label reflects series vs single.
+      if (m.modalDelete) {
+        m.modalDelete.hidden = !editCall;
+        m.modalDelete.textContent = (editCall && editCall.rrule) ? 'Delete series' : 'Delete';
+      }
       // Repopulate channels (fresh in case the user joined/left some).
       this._populateChannelsSelect(
         editCall ? editCall.channelId : (defaultChannelId || this.hooks.currentChannelId?.()),
       );
       // Focus title field for fast keyboard entry.
       setTimeout(() => m.modalTitle.focus(), 0);
+    }
+
+    // Delete the call being edited (whole series if recurring). Fired by
+    // the modal's Delete button.
+    async _deleteFromModal() {
+      const id = this._editingId;
+      if (!id) return;
+      const sc = this._scheduled.get(id);
+      const isSeries = !!(sc && sc.rrule);
+      if (!confirm(isSeries ? 'Delete the entire recurring series?' : 'Delete this scheduled call?')) return;
+      try {
+        await this.huddle.deleteScheduledCall(id);
+        this._scheduled.delete(id);
+        this._attendees.delete(id);
+        this._notifyChange();
+        this.closeScheduleModal();
+        this._render();
+      } catch (err) {
+        console.warn('deleteScheduledCall failed', err);
+        alert('Could not delete: ' + (err?.message || err));
+      }
     }
 
     closeScheduleModal() {
@@ -187,6 +219,29 @@
         sc.startsAt = prevStart;
         this._render();
         alert('Could not reschedule: ' + (err?.message || err));
+      }
+    }
+
+    // Cancel a single occurrence of a recurring call by adding its start
+    // instant to the series EXDATE list (the whole series stays). occStartMs
+    // is epoch-ms; expandSeries matches EXDATE on exactly that instant.
+    async cancelOccurrence(id, occStartMs) {
+      const sc = this._scheduled.get(id);
+      if (!sc) return;
+      const prev = Array.isArray(sc.exdate) ? sc.exdate.slice() : [];
+      if (prev.includes(occStartMs)) return;   // already excluded
+      const next = prev.concat(occStartMs);
+      sc.exdate = next;                          // optimistic
+      this._render();
+      try {
+        const updated = await this.huddle.updateScheduledCall(id, { exdate: next });
+        this._scheduled.set(updated.id, updated);
+        this._render();
+      } catch (err) {
+        console.warn('cancelOccurrence failed', err);
+        sc.exdate = prev;
+        this._render();
+        alert('Could not cancel occurrence: ' + (err?.message || err));
       }
     }
 
@@ -223,6 +278,10 @@
       // matches what the user sees.
       const startsAt = new Date(`${dateStr}T${timeStr}:00`);
       if (isNaN(startsAt.getTime())) { m.modalDate.focus(); return; }
+      // Recurrence rule built from the Repeat select + the chosen start
+      // (weekly/monthly anchor to the start's weekday / day-of-month).
+      const repeat = m.modalRepeat ? m.modalRepeat.value : 'none';
+      const rrule = buildRrule(repeat, startsAt);
       m.modalSave.disabled = true;
       const editingId = this._editingId;
       try {
@@ -231,7 +290,7 @@
           // participants already have the invite; a revision is a
           // future ICS-sequence concern (see the migration note).
           const updated = await this.huddle.updateScheduledCall(editingId, {
-            channelId, title, description, startsAt, durationMin,
+            channelId, title, description, startsAt, durationMin, rrule,
           });
           this._scheduled.set(updated.id, updated);
           this._editingId = null;
@@ -240,7 +299,7 @@
           this._render();
         } else {
           const created = await this.huddle.createScheduledCall({
-            channelId, title, description, startsAt, durationMin,
+            channelId, title, description, startsAt, durationMin, rrule,
           });
           // Local insert is also fed by the realtime listener, but
           // doing it here too means the modal closes onto a drawer
@@ -418,20 +477,40 @@
     listEvents() {
       const entries = [];
       const myId = this.huddle?.peerId;
+      const expand = window.HuddleICS?._internal?.expandSeries;
+      const horizon = new Date(Date.now() + UPCOMING_HORIZON_DAYS * 24 * 60 * 60 * 1000);
+      const oldestMs = Date.now() - 60 * 60 * 1000;  // keep just-started events
       for (const sc of this._scheduled.values()) {
         const am = this._attendees.get(sc.id);
         const attendees = am ? [...am.entries()].map(([userId, status]) => ({ userId, status })) : [];
-        entries.push({
-          kind: 'huddle', id: 'h:' + sc.id,
-          start: sc.startsAt, durationMin: sc.durationMin,
+        const myRsvp = (am && myId) ? (am.get(myId) || null) : null;
+        const rsvpCounts = countRsvp(attendees);
+        // One entry per occurrence. RSVPs are per-series (one call row), so
+        // every occurrence shares the same attendee counts. `occStart` is
+        // carried so a single occurrence can be cancelled via EXDATE.
+        const mkEntry = (occStart, recurring) => ({
+          kind: 'huddle', id: 'h:' + sc.id + (recurring ? ':' + occStart.toISOString() : ''),
+          start: occStart, durationMin: sc.durationMin,
           title: sc.title, sub: '', source: '',
           channelId: sc.channelId,
-          ownedByMe: sc.createdBy === this.huddle?.peerId,
+          ownedByMe: sc.createdBy === myId,
           ref: sc,
-          attendees,
-          myRsvp: (am && myId) ? (am.get(myId) || null) : null,
-          rsvpCounts: countRsvp(attendees),
+          recurring, occStart,
+          attendees, myRsvp, rsvpCounts,
         });
+        if (sc.rrule && expand) {
+          // Reuse the ICS RRULE engine: build a master event and expand
+          // it to the same 14-day horizon as external feeds, honouring the
+          // per-occurrence EXDATE cancellations.
+          const end = new Date(sc.startsAt.getTime() + (sc.durationMin || 0) * 60000);
+          const master = { start: sc.startsAt, end, rrule: sc.rrule, exdate: sc.exdate || [], uid: sc.id };
+          for (const occ of expand(master, horizon)) {
+            if (!occ.start || occ.start.getTime() < oldestMs) continue;
+            entries.push(mkEntry(occ.start, true));
+          }
+        } else {
+          entries.push(mkEntry(sc.startsAt, false));
+        }
       }
       for (const evs of this._icsEvents.values()) {
         for (const e of evs) {
@@ -514,6 +593,7 @@
       meta.className = 'cal-row-meta';
       const metaParts = [];
       if (e.kind === 'huddle' && e.durationMin) metaParts.push(`${e.durationMin} min`);
+      if (e.kind === 'huddle' && e.recurring) metaParts.push('↻ repeats');
       if (e.kind === 'ics' && e.source) metaParts.push(e.source);
       if (e.kind === 'ics' && e.sub) metaParts.push(e.sub);
       meta.textContent = metaParts.join(' · ');
@@ -552,7 +632,15 @@
           del.title = 'Cancel scheduled call';
           del.setAttribute('aria-label', 'Cancel scheduled call');
           del.textContent = '×';
+          del.title = e.recurring ? 'Cancel this occurrence' : 'Cancel scheduled call';
           del.onclick = async () => {
+            if (e.recurring) {
+              // Recurring: cancel only this occurrence (EXDATE). Deleting
+              // the whole series is offered from the edit (✎) dialog.
+              if (!confirm(`Cancel this occurrence (${formatDayHeader(e.start)})? The rest of the series stays.`)) return;
+              await this.cancelOccurrence(e.ref.id, e.occStart.getTime());
+              return;
+            }
             if (!confirm(`Cancel “${e.title}”?`)) return;
             try {
               await this.huddle.deleteScheduledCall(e.ref.id);
@@ -677,6 +765,29 @@
     const c = { going: 0, maybe: 0, declined: 0 };
     for (const a of attendees) if (c[a.status] !== undefined) c[a.status]++;
     return c;
+  }
+
+  // Repeat-select value <-> RRULE body. Weekly anchors BYDAY to the start's
+  // weekday and monthly anchors BYMONTHDAY to its day-of-month, so the rule
+  // is self-describing and matches what the HuddleICS engine expands
+  // (plain FREQ=MONTHLY without BYMONTHDAY would only emit once).
+  const RRULE_WEEKDAY = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+  function buildRrule(repeat, startsAt) {
+    switch (repeat) {
+      case 'daily':    return 'FREQ=DAILY';
+      case 'weekdays': return 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR';
+      case 'weekly':   return `FREQ=WEEKLY;BYDAY=${RRULE_WEEKDAY[startsAt.getDay()]}`;
+      case 'monthly':  return `FREQ=MONTHLY;BYMONTHDAY=${startsAt.getDate()}`;
+      default:         return '';
+    }
+  }
+  function rruleToRepeat(rrule) {
+    if (!rrule) return 'none';
+    const s = rrule.toUpperCase();
+    if (/FREQ=DAILY/.test(s)) return 'daily';
+    if (/FREQ=WEEKLY/.test(s)) return /BYDAY=MO,TU,WE,TH,FR/.test(s) ? 'weekdays' : 'weekly';
+    if (/FREQ=MONTHLY/.test(s)) return 'monthly';
+    return 'none';
   }
 
   // <input type=date> wants `YYYY-MM-DD`; <input type=time> wants
