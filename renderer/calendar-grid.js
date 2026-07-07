@@ -23,6 +23,7 @@
   let weekStart = startOfWeek(new Date());
   let nowTimer = null;
   let dragState = null;   // { e, block, startX, startY, moved } while dragging
+  let detailsPopover = null;   // open event-details popover element, if any
 
   function svg(name) {
     return (window.HuddleIcons && window.HuddleIcons[name]) || '';
@@ -152,6 +153,7 @@
 
   function render() {
     if (!root) return;
+    closeDetails();   // a repaint (nav / realtime) invalidates any open popover
     const now = new Date();
     const monthYearEl = root.querySelector('.huddle-cal-month');
     monthYearEl.textContent = fmtMonthYear(addDays(weekStart, 3));
@@ -282,6 +284,13 @@
       if (e.kind === 'huddle' && e.ownedByMe) {
         if (!e.recurring) block.classList.add('is-draggable');
         block.addEventListener('mousedown', (ev) => startDrag(ev, e, block));
+      } else {
+        // Everything else — external/subscribed meetings and internal
+        // calls scheduled by others — opens a details popover on click
+        // (with a Join button for external meetings that carry a link).
+        // Without this, clicking these blocks did nothing at all.
+        block.style.cursor = 'pointer';
+        block.addEventListener('click', () => showEventDetails(e, block));
       }
       col.appendChild(block);
     }
@@ -383,6 +392,87 @@
     return d;
   }
 
+  // ----- Event details popover ------------------------------------
+
+  function closeDetails() {
+    if (detailsPopover) { detailsPopover.remove(); detailsPopover = null; }
+    document.removeEventListener('mousedown', onDocDownForDetails, true);
+    document.removeEventListener('keydown', onKeyForDetails, true);
+  }
+  function onDocDownForDetails(ev) {
+    if (detailsPopover && !detailsPopover.contains(ev.target)) closeDetails();
+  }
+  function onKeyForDetails(ev) { if (ev.key === 'Escape') closeDetails(); }
+
+  // Anchored read-only card for an event you can't edit inline: external
+  // meetings and internal calls scheduled by others. Shows the essentials
+  // and, for external meetings with a parsed link, a Join button that
+  // works at any time (not just when the meeting is imminent).
+  function showEventDetails(e, block) {
+    closeDetails();
+    const pop = document.createElement('div');
+    pop.className = 'huddle-cal-details';
+
+    const when = e.start.toLocaleString(undefined, {
+      weekday: 'short', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit',
+    });
+    const dur = e.durationMin ? ` · ${e.durationMin} min` : '';
+    const lines = [
+      `<div class="huddle-cal-details-title">${escapeHtml(e.title || '(untitled)')}</div>`,
+      `<div class="huddle-cal-details-when">${escapeHtml(when)}${escapeHtml(dur)}</div>`,
+    ];
+    if (e.kind === 'huddle') {
+      const chan = e.ref?.channelId ? `#${escapeHtml(channelLabel(e.ref.channelId))}` : 'Scheduled call';
+      lines.push(`<div class="huddle-cal-details-meta">${chan}</div>`);
+      const c = e.rsvpCounts;
+      if (c && (c.going || c.maybe || c.declined)) {
+        const parts = [];
+        if (c.going) parts.push(`${c.going} going`);
+        if (c.maybe) parts.push(`${c.maybe} maybe`);
+        if (c.declined) parts.push(`${c.declined} out`);
+        lines.push(`<div class="huddle-cal-details-meta">${parts.join(' · ')}</div>`);
+      }
+    } else {
+      const src = escapeHtml(e.source || 'External');
+      const prov = e.provider ? ` · ${escapeHtml(e.provider)}` : '';
+      lines.push(`<div class="huddle-cal-details-meta">${src}${prov}</div>`);
+      if (e.sub) lines.push(`<div class="huddle-cal-details-meta">${escapeHtml(e.sub)}</div>`);
+    }
+    pop.innerHTML = lines.join('');
+
+    if (e.kind === 'ics' && e.joinUrl && /^https?:\/\//i.test(e.joinUrl)) {
+      const join = document.createElement('button');
+      join.type = 'button';
+      join.className = 'huddle-cal-details-join';
+      join.textContent = e.provider ? `Join in ${e.provider}` : 'Join meeting';
+      join.addEventListener('click', () => {
+        try { window.open(e.joinUrl, '_blank', 'noopener'); }
+        catch (err) { console.warn('open meeting link failed', err); }
+        closeDetails();
+      });
+      pop.appendChild(join);
+    }
+
+    document.body.appendChild(pop);
+    // Position beside the block, flipping/ clamping to stay on-screen.
+    const r = block.getBoundingClientRect();
+    const pw = pop.offsetWidth, ph = pop.offsetHeight;
+    let left = r.right + 8;
+    if (left + pw > window.innerWidth - 8) left = r.left - pw - 8;
+    left = Math.max(8, Math.min(left, window.innerWidth - pw - 8));
+    let top = Math.max(8, Math.min(r.top, window.innerHeight - ph - 8));
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+    detailsPopover = pop;
+    // Defer wiring the dismiss listeners so the opening click doesn't
+    // immediately close it.
+    setTimeout(() => {
+      document.addEventListener('mousedown', onDocDownForDetails, true);
+      document.addEventListener('keydown', onKeyForDetails, true);
+    }, 0);
+  }
+
   // ----- Open / close ---------------------------------------------
 
   function open() {
@@ -404,6 +494,7 @@
 
   function close() {
     if (!root) return;
+    closeDetails();
     root.classList.add('hidden');
     root.setAttribute('aria-hidden', 'true');
     if (unsubscribe) { unsubscribe(); unsubscribe = null; }
