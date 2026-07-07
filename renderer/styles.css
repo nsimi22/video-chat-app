@@ -7126,6 +7126,50 @@ body.popout-call .popout-stage > .draw-toolbar {
 }
 .huddle-cal-event-join:hover { filter: brightness(1.1); }
 
+/* Click-a-grid-event details popover (external / others' calls). */
+.huddle-cal-details {
+  position: fixed;
+  z-index: 1000;
+  min-width: 200px;
+  max-width: 300px;
+  padding: 12px 14px;
+  background: var(--bg-1, #1c1c1e);
+  border: 1px solid var(--line, rgba(255,255,255,0.14));
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  font-family: var(--font);
+}
+.huddle-cal-details-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--tx-hi, #fff);
+  margin-bottom: 4px;
+}
+.huddle-cal-details-when {
+  font-size: 12px;
+  color: var(--tx-hi, #eee);
+  margin-bottom: 2px;
+}
+.huddle-cal-details-meta {
+  font-size: 12px;
+  color: var(--tx-lo, #9a9a9a);
+  margin-top: 2px;
+}
+.huddle-cal-details-join {
+  margin-top: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.huddle-cal-details-join:hover { filter: brightness(1.1); }
+
 /* ============================================================
    v2 Phase 6.1 — in-call header pills + captions footer +
    screen-share speaker pill.
