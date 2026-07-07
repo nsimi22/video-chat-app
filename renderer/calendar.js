@@ -30,9 +30,11 @@
       this.huddle = huddle;
       this.hooks = hooks;            // { onScheduled, getChannels, postIcsToChannel, currentChannelId }
       this._scheduled = new Map();    // id -> ScheduledCall (internal)
+      this._attendees = new Map();    // callId -> Map(userId -> 'going'|'maybe'|'declined')
       this._icsEvents = new Map();    // sourceUrl -> [parsedEvent]
       this._subscriptions = [];       // [{ name, url }] from user_integrations.settings.calendar.subscriptions
       this._unsubscribeRealtime = null;
+      this._unsubscribeAttendees = null;
       this._icsTimer = null;
       this._els = {};
       this._modalEls = {};
@@ -61,6 +63,7 @@
       this._render();
       externalLoad.then(() => this._render()).catch(() => {});
       this._startRealtime();
+      this._startAttendeeRealtime();
       this._startIcsPolling();
     }
 
@@ -74,8 +77,14 @@
         this._unsubscribeRealtime = null;
         try { await u(); } catch {}
       }
+      if (this._unsubscribeAttendees) {
+        const u = this._unsubscribeAttendees;
+        this._unsubscribeAttendees = null;
+        try { await u(); } catch {}
+      }
       if (this._icsTimer) { clearInterval(this._icsTimer); this._icsTimer = null; }
       this._scheduled.clear();
+      this._attendees.clear();
       this._icsEvents.clear();
     }
 
@@ -204,21 +213,90 @@
     async _loadScheduled() {
       const rows = await this.huddle.loadScheduledCalls();
       this._scheduled.clear();
-      for (const r of rows) this._scheduled.set(r.id, r);
+      this._attendees.clear();
+      for (const r of rows) {
+        this._scheduled.set(r.id, r);
+        // Seed the attendee map from the embedded RSVP rows. Kept in a
+        // separate map (not on the call object) so realtime call UPDATEs,
+        // which don't carry attendees, never clobber it.
+        if (Array.isArray(r.attendees)) {
+          const m = new Map();
+          for (const a of r.attendees) m.set(a.userId, a.status);
+          this._attendees.set(r.id, m);
+        }
+      }
     }
 
     _startRealtime() {
       if (!this.huddle.subscribeScheduledCalls) return;
       this._unsubscribeRealtime = this.huddle.subscribeScheduledCalls((evt) => {
         if (evt.eventType === 'DELETE') {
-          if (evt.oldId) this._scheduled.delete(evt.oldId);
+          if (evt.oldId) {
+            this._scheduled.delete(evt.oldId);
+            this._attendees.delete(evt.oldId);   // drop orphaned RSVPs
+          }
         } else if (evt.row) {
-          // INSERT or UPDATE — set() handles both.
+          // INSERT or UPDATE — set() handles both. Attendees live in
+          // their own map (evt.row carries none), so this never touches
+          // RSVP state.
           this._scheduled.set(evt.row.id, evt.row);
         }
         this._notifyChange();
         this._render();
       });
+    }
+
+    // Realtime RSVP updates from teammates. Maintains the attendee map in
+    // lockstep with the DB; a repaint follows every change so an open
+    // drawer/grid reflects who's coming without a manual refresh.
+    _startAttendeeRealtime() {
+      if (!this.huddle.subscribeCallAttendees) return;
+      this._unsubscribeAttendees = this.huddle.subscribeCallAttendees((evt) => {
+        if (!evt.callId || !evt.userId) return;
+        let m = this._attendees.get(evt.callId);
+        if (evt.eventType === 'DELETE') {
+          if (m) { m.delete(evt.userId); if (!m.size) this._attendees.delete(evt.callId); }
+        } else {
+          if (!m) { m = new Map(); this._attendees.set(evt.callId, m); }
+          m.set(evt.userId, evt.status);
+        }
+        this._render();
+      });
+    }
+
+    // Set (or toggle off) the current user's RSVP on a call. Optimistic:
+    // the local map + UI update immediately, then persist; a failure rolls
+    // back. Clicking the already-active status clears the RSVP entirely.
+    async setRsvp(callId, status) {
+      const myId = this.huddle?.peerId;
+      if (!myId) return;
+      let m = this._attendees.get(callId);
+      const prev = m ? m.get(myId) : undefined;
+      const clearing = status === null || prev === status;
+      // Apply optimistically.
+      if (clearing) {
+        if (m) { m.delete(myId); if (!m.size) this._attendees.delete(callId); }
+      } else {
+        if (!m) { m = new Map(); this._attendees.set(callId, m); }
+        m.set(myId, status);
+      }
+      this._render();
+      try {
+        if (clearing) await this.huddle.clearRsvp(callId);
+        else await this.huddle.setRsvp(callId, status);
+      } catch (err) {
+        console.warn('setRsvp failed', err);
+        // Roll back to the prior state.
+        let mm = this._attendees.get(callId);
+        if (prev === undefined) {
+          if (mm) { mm.delete(myId); if (!mm.size) this._attendees.delete(callId); }
+        } else {
+          if (!mm) { mm = new Map(); this._attendees.set(callId, mm); }
+          mm.set(myId, prev);
+        }
+        this._render();
+        alert('Could not update RSVP: ' + (err?.message || err));
+      }
     }
 
     // Single point of "scheduled-call map mutated" notification, fired
@@ -281,7 +359,10 @@
     // below) and the v2 week-grid view in renderer/calendar-grid.js.
     listEvents() {
       const entries = [];
+      const myId = this.huddle?.peerId;
       for (const sc of this._scheduled.values()) {
+        const am = this._attendees.get(sc.id);
+        const attendees = am ? [...am.entries()].map(([userId, status]) => ({ userId, status })) : [];
         entries.push({
           kind: 'huddle', id: 'h:' + sc.id,
           start: sc.startsAt, durationMin: sc.durationMin,
@@ -289,6 +370,9 @@
           channelId: sc.channelId,
           ownedByMe: sc.createdBy === this.huddle?.peerId,
           ref: sc,
+          attendees,
+          myRsvp: (am && myId) ? (am.get(myId) || null) : null,
+          rsvpCounts: countRsvp(attendees),
         });
       }
       for (const evs of this._icsEvents.values()) {
@@ -376,6 +460,9 @@
       if (e.kind === 'ics' && e.sub) metaParts.push(e.sub);
       meta.textContent = metaParts.join(' · ');
       if (metaParts.length) body.appendChild(meta);
+      // RSVP block for internal calls: avatar stack of who's going, a
+      // counts summary, and Going / Maybe / Out toggles.
+      if (e.kind === 'huddle') body.appendChild(this._renderRsvp(e));
       row.appendChild(time);
       row.appendChild(body);
       // Internal Huddles get an inline "Join" button when they're
@@ -436,6 +523,65 @@
       }
       return row;
     }
+
+    // RSVP UI for one internal call row: optional avatar stack of the
+    // "going" crowd, a counts summary, and the three toggle buttons. The
+    // avatar stack only renders if the host wired a getMember hook (name +
+    // color per user id); otherwise counts alone carry the information.
+    _renderRsvp(e) {
+      const wrap = document.createElement('div');
+      wrap.className = 'cal-rsvp';
+
+      const getMember = this.hooks.getMember;
+      if (getMember && e.attendees.length) {
+        const going = e.attendees.filter((a) => a.status === 'going').slice(0, 6);
+        if (going.length) {
+          const stack = document.createElement('div');
+          stack.className = 'cal-rsvp-avatars';
+          for (const a of going) {
+            const m = getMember(a.userId) || {};
+            const av = document.createElement('span');
+            av.className = 'cal-rsvp-avatar';
+            av.style.background = m.color || 'var(--accent)';
+            const name = (m.name || '').trim();
+            av.textContent = (name || '?').charAt(0).toUpperCase();
+            av.title = name || a.userId;
+            stack.appendChild(av);
+          }
+          wrap.appendChild(stack);
+        }
+      }
+
+      const c = e.rsvpCounts;
+      if (c.going || c.maybe || c.declined) {
+        const summary = document.createElement('span');
+        summary.className = 'cal-rsvp-summary';
+        const parts = [];
+        if (c.going) parts.push(`${c.going} going`);
+        if (c.maybe) parts.push(`${c.maybe} maybe`);
+        if (c.declined) parts.push(`${c.declined} out`);
+        summary.textContent = parts.join(' · ');
+        wrap.appendChild(summary);
+      }
+
+      const btns = document.createElement('div');
+      btns.className = 'cal-rsvp-btns';
+      const mkBtn = (status, label) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'cal-rsvp-btn' + (e.myRsvp === status ? ' is-active' : '');
+        b.dataset.status = status;
+        b.textContent = label;
+        // Click the active status to clear; setRsvp toggles.
+        b.onclick = () => this.setRsvp(e.ref.id, status);
+        return b;
+      };
+      btns.appendChild(mkBtn('going', 'Going'));
+      btns.appendChild(mkBtn('maybe', 'Maybe'));
+      btns.appendChild(mkBtn('declined', 'Out'));
+      wrap.appendChild(btns);
+      return wrap;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -459,6 +605,12 @@
         && a.getDate() === b.getDate();
   }
   function formatTimeShort(d) { return TIME_FMT.format(d); }
+
+  function countRsvp(attendees) {
+    const c = { going: 0, maybe: 0, declined: 0 };
+    for (const a of attendees) if (c[a.status] !== undefined) c[a.status]++;
+    return c;
+  }
 
   // <input type=date> wants `YYYY-MM-DD`; <input type=time> wants
   // `HH:mm`. Both in local time per HTML spec. Pad zeros explicitly
