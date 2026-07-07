@@ -140,6 +140,7 @@ const els = {
   scheduleTime: $('#schedule-time'),
   scheduleDuration: $('#schedule-duration'),
   scheduleRepeat: $('#schedule-repeat'),
+  scheduleConflict: $('#schedule-conflict'),
   scheduleDescription: $('#schedule-description'),
   scheduleCancel: $('#schedule-cancel'),
   scheduleSave: $('#schedule-save'),
@@ -4161,12 +4162,18 @@ function checkCalendarReminders() {
   try { events = cal.listEvents(); } catch { return; }
   for (const e of events) {
     if (!e.start || e.allDay) continue;  // all-day events start at midnight — don't alert
+    // Don't nag about a call you've explicitly declined.
+    if (e.kind === 'huddle' && e.myRsvp === 'declined') continue;
     const lead = e.start.getTime() - now;
     // Only in the (0, leadMs] window: not yet started, within lead time.
     // A just-started meeting is covered by the drawer/grid Join button.
     if (lead <= 0 || lead > leadMs) continue;
-    if (firedCalReminders.has(e.id)) continue;
-    firedCalReminders.set(e.id, e.start.getTime());
+    // De-dupe on (id, start): re-alert if the call was rescheduled to a
+    // new time (the id is stable, so comparing the start is what catches
+    // a moved meeting entering the window again).
+    const startMs = e.start.getTime();
+    if (firedCalReminders.get(e.id) === startMs) continue;
+    firedCalReminders.set(e.id, startMs);
     fireCalendarReminder(e, lead);
   }
   // Bound the map: forget events more than an hour past their start.
@@ -6210,6 +6217,7 @@ async function startCalendar() {
     modalTime: els.scheduleTime,
     modalDuration: els.scheduleDuration,
     modalRepeat: els.scheduleRepeat,
+    modalConflict: els.scheduleConflict,
     modalDescription: els.scheduleDescription,
     modalCancel: els.scheduleCancel,
     modalSave: els.scheduleSave,

@@ -44,17 +44,21 @@
 
     bindElements({ drawer, list, scheduleBtn, closeBtn, modal, modalForm,
                    modalTitle, modalChannel, modalDate, modalTime,
-                   modalDuration, modalRepeat, modalDescription, modalCancel,
-                   modalSave, modalDelete }) {
+                   modalDuration, modalRepeat, modalConflict, modalDescription,
+                   modalCancel, modalSave, modalDelete }) {
       this._els = { drawer, list, scheduleBtn, closeBtn };
       this._modalEls = { modal, modalForm, modalTitle, modalChannel, modalDate,
-                         modalTime, modalDuration, modalRepeat, modalDescription,
-                         modalCancel, modalSave, modalDelete };
+                         modalTime, modalDuration, modalRepeat, modalConflict,
+                         modalDescription, modalCancel, modalSave, modalDelete };
       if (closeBtn) closeBtn.onclick = () => this.closeDrawer();
       if (scheduleBtn) scheduleBtn.onclick = () => this.openScheduleModal();
       if (modalCancel) modalCancel.onclick = () => this.closeScheduleModal();
       if (modalForm) modalForm.onsubmit = (e) => { e.preventDefault(); this._submitSchedule(); };
       if (modalDelete) modalDelete.onclick = () => this._deleteFromModal();
+      // Recompute the availability hint as the slot changes.
+      for (const inp of [modalDate, modalTime, modalDuration]) {
+        if (inp) inp.addEventListener('input', () => this._checkAvailability());
+      }
     }
 
     async start({ subscriptions = [] } = {}) {
@@ -169,8 +173,50 @@
       this._populateChannelsSelect(
         editCall ? editCall.channelId : (defaultChannelId || this.hooks.currentChannelId?.()),
       );
+      // Prime the availability hint for the initial slot.
+      this._checkAvailability();
       // Focus title field for fast keyboard entry.
       setTimeout(() => m.modalTitle.focus(), 0);
+    }
+
+    // Availability check for the schedule modal: does the chosen slot
+    // overlap anything already on the viewer's own calendar (internal
+    // scheduled calls + subscribed ICS feeds)? We can only see the
+    // viewer's calendars, so this is a self-conflict warning, not a
+    // team-wide free/busy — honest about what the data supports. Recurring
+    // series are covered because listEvents() already expands them.
+    _checkAvailability() {
+      const m = this._modalEls;
+      const el = m.modalConflict;
+      if (!el) return;
+      const setHint = (text, cls) => { el.textContent = text; el.className = 'schedule-conflict' + (cls ? ' ' + cls : ''); };
+      const durationMin = parseInt(m.modalDuration.value, 10);
+      if (!m.modalDate.value || !m.modalTime.value || !Number.isFinite(durationMin) || durationMin <= 0) {
+        setHint('', '');
+        return;
+      }
+      const start = new Date(`${m.modalDate.value}T${m.modalTime.value}:00`);
+      if (isNaN(start.getTime())) { setHint('', ''); return; }
+      const startMs = start.getTime();
+      const endMs = startMs + durationMin * 60000;
+      const editingId = this._editingId;
+      const conflicts = [];
+      // Expand recurring series out to the proposed slot so a conflict with
+      // a weekly meeting >14 days out isn't missed (false "no conflicts").
+      for (const e of this.listEvents({ until: new Date(endMs) })) {
+        if (e.allDay) continue;
+        // Ignore the call currently being edited (any of its occurrences).
+        if (editingId && e.kind === 'huddle' && e.ref && e.ref.id === editingId) continue;
+        const es = e.start.getTime();
+        const ee = es + (e.durationMin || 0) * 60000;
+        // Half-open overlap test: touching edges (back-to-back) don't clash.
+        if (es < endMs && ee > startMs) conflicts.push(e);
+      }
+      if (!conflicts.length) { setHint('✓ No conflicts on your calendar', 'ok'); return; }
+      conflicts.sort((a, b) => a.start - b.start);
+      const first = conflicts[0];
+      const more = conflicts.length > 1 ? ` +${conflicts.length - 1} more` : '';
+      setHint(`⚠ Overlaps “${first.title}” at ${formatTimeShort(first.start)}${more}`, 'warn');
     }
 
     // Delete the call being edited (whole series if recurring). Fired by
@@ -216,7 +262,11 @@
         this._render();
       } catch (err) {
         console.warn('moveScheduledCall failed', err);
-        sc.startsAt = prevStart;
+        // Roll back on the LIVE map entry: a realtime UPDATE during the
+        // await may have replaced the object `sc` pointed at, so mutating
+        // the captured reference would leave the stale time on screen.
+        const cur = this._scheduled.get(id);
+        if (cur) cur.startsAt = prevStart;
         this._render();
         alert('Could not reschedule: ' + (err?.message || err));
       }
@@ -239,7 +289,9 @@
         this._render();
       } catch (err) {
         console.warn('cancelOccurrence failed', err);
-        sc.exdate = prev;
+        // Roll back on the live map entry (see moveScheduledCall).
+        const cur = this._scheduled.get(id);
+        if (cur) cur.exdate = prev;
         this._render();
         alert('Could not cancel occurrence: ' + (err?.message || err));
       }
@@ -289,9 +341,18 @@
           // Edit mode: patch the existing row. No .ics repost — the
           // participants already have the invite; a revision is a
           // future ICS-sequence concern (see the migration note).
-          const updated = await this.huddle.updateScheduledCall(editingId, {
-            channelId, title, description, startsAt, durationMin, rrule,
-          });
+          //
+          // EXDATE entries are absolute occurrence instants; if the start
+          // time or the rule changes, none of them line up with the new
+          // occurrences anymore (they'd silently resurrect a cancelled
+          // occurrence and linger as dead entries). Reset exdate in that
+          // case so the edited series starts from a clean exclusion list.
+          const prevSc = this._scheduled.get(editingId);
+          const startShifted = !prevSc || !prevSc.startsAt || prevSc.startsAt.getTime() !== startsAt.getTime();
+          const ruleChanged = !prevSc || (prevSc.rrule || '') !== rrule;
+          const patch = { channelId, title, description, startsAt, durationMin, rrule };
+          if (startShifted || ruleChanged) patch.exdate = [];
+          const updated = await this.huddle.updateScheduledCall(editingId, patch);
           this._scheduled.set(updated.id, updated);
           this._editingId = null;
           this._notifyChange();
@@ -300,6 +361,7 @@
         } else {
           const created = await this.huddle.createScheduledCall({
             channelId, title, description, startsAt, durationMin, rrule,
+            organizerTz: viewerTimeZone(),
           });
           // Local insert is also fed by the realtime listener, but
           // doing it here too means the modal closes onto a drawer
@@ -474,11 +536,20 @@
     // Public: combined internal-scheduled + external-ICS entries,
     // sorted by start. Used by both the legacy list drawer (_render
     // below) and the v2 week-grid view in renderer/calendar-grid.js.
-    listEvents() {
+    // `until` bounds how far recurring series are expanded. The drawer
+    // wants the ~2-week upcoming window (default); the week grid passes the
+    // end of the week it's showing, and the availability check passes the
+    // end of the proposed slot — otherwise recurring occurrences beyond 14
+    // days would silently vanish from the grid and slip past conflict
+    // detection while one-off calls still appear.
+    listEvents({ until } = {}) {
       const entries = [];
       const myId = this.huddle?.peerId;
       const expand = window.HuddleICS?._internal?.expandSeries;
-      const horizon = new Date(Date.now() + UPCOMING_HORIZON_DAYS * 24 * 60 * 60 * 1000);
+      const defaultHorizon = Date.now() + UPCOMING_HORIZON_DAYS * 24 * 60 * 60 * 1000;
+      const horizon = (until instanceof Date && until.getTime() > defaultHorizon)
+        ? until
+        : new Date(defaultHorizon);
       const oldestMs = Date.now() - 60 * 60 * 1000;  // keep just-started events
       for (const sc of this._scheduled.values()) {
         const am = this._attendees.get(sc.id);
@@ -496,6 +567,7 @@
           ownedByMe: sc.createdBy === myId,
           ref: sc,
           recurring, occStart,
+          organizerTz: sc.organizerTz || '',
           attendees, myRsvp, rsvpCounts,
         });
         if (sc.rrule && expand) {
@@ -582,7 +654,9 @@
       row.className = 'cal-row cal-row-' + e.kind;
       const time = document.createElement('div');
       time.className = 'cal-row-time';
-      time.textContent = e.allDay ? 'All day' : formatTimeShort(e.start);
+      // Local time with a zone abbreviation so a shared screenshot is
+      // never ambiguous (e.g. "9:00 AM PDT").
+      time.textContent = e.allDay ? 'All day' : formatTimeWithZone(e.start);
       const body = document.createElement('div');
       body.className = 'cal-row-body';
       const title = document.createElement('div');
@@ -594,6 +668,13 @@
       const metaParts = [];
       if (e.kind === 'huddle' && e.durationMin) metaParts.push(`${e.durationMin} min`);
       if (e.kind === 'huddle' && e.recurring) metaParts.push('↻ repeats');
+      // Cross-timezone context: when the call was scheduled in a different
+      // zone than the viewer's, show the organizer's local time too so you
+      // know whether the slot is civilised for them.
+      if (e.kind === 'huddle' && !e.allDay && e.organizerTz && e.organizerTz !== viewerTimeZone()) {
+        const organizerTime = formatTimeInZone(e.start, e.organizerTz);
+        if (organizerTime) metaParts.push(`organizer ${organizerTime}`);
+      }
       if (e.kind === 'ics' && e.source) metaParts.push(e.source);
       if (e.kind === 'ics' && e.sub) metaParts.push(e.sub);
       meta.textContent = metaParts.join(' · ');
@@ -645,6 +726,7 @@
             try {
               await this.huddle.deleteScheduledCall(e.ref.id);
               this._scheduled.delete(e.ref.id);
+              this._attendees.delete(e.ref.id);   // keep attendee map in lockstep
               this._notifyChange();
               this._render();
             } catch (err) {
@@ -760,6 +842,34 @@
         && a.getDate() === b.getDate();
   }
   function formatTimeShort(d) { return TIME_FMT.format(d); }
+
+  // Local time carrying its zone abbreviation, e.g. "9:00 AM PDT".
+  const TIME_TZ_FMT = new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+  });
+  function formatTimeWithZone(d) { return TIME_TZ_FMT.format(d); }
+
+  // The same instant rendered in an explicit IANA zone (the organizer's),
+  // with that zone's abbreviation. Returns '' if the zone is unusable.
+  function formatTimeInZone(d, tz) {
+    try {
+      return new Intl.DateTimeFormat(undefined, {
+        hour: 'numeric', minute: '2-digit', timeZone: tz, timeZoneName: 'short',
+      }).format(d);
+    } catch { return ''; }
+  }
+
+  // The viewer's IANA zone (e.g. "America/Los_Angeles"), or '' if the
+  // runtime won't report one. Memoized — the zone is constant for the
+  // session, and this is called per event row on every repaint.
+  let _viewerTz;
+  function viewerTimeZone() {
+    if (_viewerTz === undefined) {
+      try { _viewerTz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; }
+      catch { _viewerTz = ''; }
+    }
+    return _viewerTz;
+  }
 
   function countRsvp(attendees) {
     const c = { going: 0, maybe: 0, declined: 0 };

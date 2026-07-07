@@ -3182,18 +3182,32 @@
       // `from` defaults to one hour ago so a call that JUST started
       // still shows in the upcoming list (people often want to
       // rejoin a recently-started scheduled call).
-      const { data, error } = await this.supabase
+      let { data, error } = await this.supabase
         .from('scheduled_calls')
         .select('*, scheduled_call_attendees(user_id, status)')
         .eq('team_id', this.team.id)
         .gte('starts_at', new Date(from).toISOString())
         .order('starts_at', { ascending: true })
         .limit(limit);
+      if (error) {
+        // The embed can fail on its own (missing relationship / attendee
+        // RLS misconfig / a staged rollout where the attendees table
+        // isn't there yet). Degrade to calls-only rather than blanking the
+        // whole calendar — RSVPs just won't show until it's resolved.
+        console.warn('loadScheduledCalls embed failed, retrying without attendees', error);
+        ({ data, error } = await this.supabase
+          .from('scheduled_calls')
+          .select('*')
+          .eq('team_id', this.team.id)
+          .gte('starts_at', new Date(from).toISOString())
+          .order('starts_at', { ascending: true })
+          .limit(limit));
+      }
       if (error) { console.warn('loadScheduledCalls failed', error); return []; }
       return (data || []).map((r) => this._marshalScheduledCall(r));
     }
 
-    async createScheduledCall({ channelId, title, description = '', startsAt, durationMin = 30, rrule = '' }) {
+    async createScheduledCall({ channelId, title, description = '', startsAt, durationMin = 30, rrule = '', organizerTz = '' }) {
       if (!this.team) throw new Error('not in a team');
       if (!(startsAt instanceof Date)) startsAt = new Date(startsAt);
       if (isNaN(startsAt.getTime())) throw new Error('invalid startsAt');
@@ -3205,6 +3219,7 @@
         starts_at: startsAt.toISOString(),
         duration_min: durationMin,
         rrule: rrule || '',
+        organizer_tz: organizerTz || '',
       }).select('*, scheduled_call_attendees(user_id, status)').single();
       if (error) throw error;
       return this._marshalScheduledCall(data);
@@ -3331,6 +3346,7 @@
         startsAt: new Date(row.starts_at),
         durationMin: row.duration_min,
         rrule: row.rrule || '',
+        organizerTz: row.organizer_tz || '',
         // exdate as epoch-ms so it drops straight into the HuddleICS
         // expandSeries exclusion Set (which matches on getTime()).
         exdate: Array.isArray(row.exdate) ? row.exdate.map((s) => new Date(s).getTime()) : [],
