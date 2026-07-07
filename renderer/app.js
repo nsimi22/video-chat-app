@@ -4070,9 +4070,17 @@ async function seedUnreadFromReadState() {
   for (const ts of readState.values()) if (!since || ts < since) since = ts;
   if (since < horizon) since = horizon;
   const messages = await state.huddle.loadTeamMessagesSince(since);
+  // Pre-parse each channel's bookmark (an ISO string in
+  // channel_read_state.last_read_at) to epoch ms once, so the per-message
+  // comparison below is number-vs-number. Comparing m.ts (epoch ms) against
+  // the raw ISO string coerces it to NaN, making `m.ts <= bookmark` always
+  // false — which let every recent message re-bump unread on reload even
+  // after it was read (badges never cleared across a restart).
+  const bookmarkTs = new Map();
+  for (const [channelId, iso] of readState) bookmarkTs.set(channelId, Date.parse(iso));
   for (const m of messages) {
-    const bookmark = readState.get(m.channelId);
-    if (!bookmark || m.ts <= bookmark) continue;
+    const bookmark = bookmarkTs.get(m.channelId);
+    if (bookmark == null || m.ts <= bookmark) continue;
     if (m.authorId === state.huddle.peerId) continue;
     // The channel we're looking at right now is being read, not missed.
     if (state.chat?.currentChannel === m.channelId && windowFocused) continue;
