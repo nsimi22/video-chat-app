@@ -39,6 +39,7 @@
       this._els = {};
       this._modalEls = {};
       this._open = false;
+      this._editingId = null;    // non-null while the modal is in edit mode
     }
 
     bindElements({ drawer, list, scheduleBtn, closeBtn, modal, modalForm,
@@ -121,22 +122,42 @@
 
     // ----- Schedule modal -------------------------------------------------
 
-    openScheduleModal({ defaultChannelId } = {}) {
+    // Opens the schedule modal in one of two modes:
+    //   create — no editCall: blank form defaulting to the next 5-min slot.
+    //   edit   — editCall (a marshalled scheduled call): prefills the form
+    //            and the submit patches instead of inserting.
+    openScheduleModal({ defaultChannelId, editCall } = {}) {
       const m = this._modalEls;
       if (!m.modal) return;
+      this._editingId = editCall ? editCall.id : null;
       m.modal.classList.remove('hidden');
-      m.modalTitle.value = '';
-      m.modalDescription.value = '';
-      m.modalDuration.value = String(SCHEDULE_DEFAULT_DURATION_MIN);
-      // Default time = next 5-minute boundary, at least 5 min in the
-      // future. Avoids "schedule for 13:42:17" when the user pops the
-      // modal without thinking about exact times.
-      const now = new Date(Date.now() + 5 * 60 * 1000);
-      const rounded = new Date(Math.ceil(now.getTime() / (5 * 60 * 1000)) * 5 * 60 * 1000);
-      m.modalDate.value = formatDateInputValue(rounded);
-      m.modalTime.value = formatTimeInputValue(rounded);
+      // Swap heading + submit label to match the mode.
+      const heading = m.modal.querySelector('h2');
+      if (heading) heading.textContent = editCall ? 'Edit call' : 'Schedule a call';
+      if (m.modalSave) m.modalSave.textContent = editCall ? 'Save changes' : 'Schedule';
+
+      let when;
+      if (editCall) {
+        m.modalTitle.value = editCall.title || '';
+        m.modalDescription.value = editCall.description || '';
+        m.modalDuration.value = String(editCall.durationMin || SCHEDULE_DEFAULT_DURATION_MIN);
+        when = editCall.startsAt instanceof Date ? editCall.startsAt : new Date(editCall.startsAt);
+      } else {
+        m.modalTitle.value = '';
+        m.modalDescription.value = '';
+        m.modalDuration.value = String(SCHEDULE_DEFAULT_DURATION_MIN);
+        // Default time = next 5-minute boundary, at least 5 min in the
+        // future. Avoids "schedule for 13:42:17" when the user pops the
+        // modal without thinking about exact times.
+        const now = new Date(Date.now() + 5 * 60 * 1000);
+        when = new Date(Math.ceil(now.getTime() / (5 * 60 * 1000)) * 5 * 60 * 1000);
+      }
+      m.modalDate.value = formatDateInputValue(when);
+      m.modalTime.value = formatTimeInputValue(when);
       // Repopulate channels (fresh in case the user joined/left some).
-      this._populateChannelsSelect(defaultChannelId || this.hooks.currentChannelId?.());
+      this._populateChannelsSelect(
+        editCall ? editCall.channelId : (defaultChannelId || this.hooks.currentChannelId?.()),
+      );
       // Focus title field for fast keyboard entry.
       setTimeout(() => m.modalTitle.focus(), 0);
     }
@@ -145,6 +166,28 @@
       const m = this._modalEls;
       if (!m.modal) return;
       m.modal.classList.add('hidden');
+      this._editingId = null;   // clear edit mode on cancel/close
+    }
+
+    // Reschedule a call to a new start time (used by grid drag-to-move).
+    // Optimistic: the local copy + UI move immediately, then persist; a
+    // failure rolls the start time back. Duration/channel/title unchanged.
+    async moveScheduledCall(id, newStart) {
+      const sc = this._scheduled.get(id);
+      if (!sc || !(newStart instanceof Date) || isNaN(newStart.getTime())) return;
+      const prevStart = sc.startsAt;
+      sc.startsAt = newStart;
+      this._render();
+      try {
+        const updated = await this.huddle.updateScheduledCall(id, { startsAt: newStart });
+        this._scheduled.set(updated.id, updated);
+        this._render();
+      } catch (err) {
+        console.warn('moveScheduledCall failed', err);
+        sc.startsAt = prevStart;
+        this._render();
+        alert('Could not reschedule: ' + (err?.message || err));
+      }
     }
 
     _populateChannelsSelect(defaultChannelId) {
@@ -181,28 +224,43 @@
       const startsAt = new Date(`${dateStr}T${timeStr}:00`);
       if (isNaN(startsAt.getTime())) { m.modalDate.focus(); return; }
       m.modalSave.disabled = true;
+      const editingId = this._editingId;
       try {
-        const created = await this.huddle.createScheduledCall({
-          channelId, title, description, startsAt, durationMin,
-        });
-        // Local insert is also fed by the realtime listener, but
-        // doing it here too means the modal closes onto a drawer
-        // that already shows the new row (no flicker waiting for
-        // the round-trip).
-        this._scheduled.set(created.id, created);
-        this._notifyChange();
-        this.closeScheduleModal();
-        this._render();
-        // Best-effort: post an .ics attachment to the channel so
-        // participants can drag it into their external calendar. A
-        // failure here doesn't undo the schedule (it's still in
-        // Supabase + the in-app Calendar drawer).
-        try { await this.hooks.postIcsToChannel?.(created); }
-        catch (err) { console.warn('postIcsToChannel failed', err); }
-        this.hooks.onScheduled?.(created);
+        if (editingId) {
+          // Edit mode: patch the existing row. No .ics repost — the
+          // participants already have the invite; a revision is a
+          // future ICS-sequence concern (see the migration note).
+          const updated = await this.huddle.updateScheduledCall(editingId, {
+            channelId, title, description, startsAt, durationMin,
+          });
+          this._scheduled.set(updated.id, updated);
+          this._editingId = null;
+          this._notifyChange();
+          this.closeScheduleModal();
+          this._render();
+        } else {
+          const created = await this.huddle.createScheduledCall({
+            channelId, title, description, startsAt, durationMin,
+          });
+          // Local insert is also fed by the realtime listener, but
+          // doing it here too means the modal closes onto a drawer
+          // that already shows the new row (no flicker waiting for
+          // the round-trip).
+          this._scheduled.set(created.id, created);
+          this._notifyChange();
+          this.closeScheduleModal();
+          this._render();
+          // Best-effort: post an .ics attachment to the channel so
+          // participants can drag it into their external calendar. A
+          // failure here doesn't undo the schedule (it's still in
+          // Supabase + the in-app Calendar drawer).
+          try { await this.hooks.postIcsToChannel?.(created); }
+          catch (err) { console.warn('postIcsToChannel failed', err); }
+          this.hooks.onScheduled?.(created);
+        }
       } catch (err) {
-        console.warn('createScheduledCall failed', err);
-        alert('Could not schedule call: ' + (err?.message || err));
+        console.warn(editingId ? 'updateScheduledCall failed' : 'createScheduledCall failed', err);
+        alert((editingId ? 'Could not save changes: ' : 'Could not schedule call: ') + (err?.message || err));
       } finally {
         m.modalSave.disabled = false;
       }
@@ -478,6 +536,15 @@
           join.textContent = 'Join';
           join.onclick = () => this.hooks.openCallChannel(e.channelId);
           row.appendChild(join);
+        }
+        if (e.ownedByMe) {
+          const edit = document.createElement('button');
+          edit.className = 'cal-row-edit';
+          edit.title = 'Edit scheduled call';
+          edit.setAttribute('aria-label', 'Edit scheduled call');
+          edit.textContent = '✎';
+          edit.onclick = () => this.openScheduleModal({ editCall: e.ref });
+          row.appendChild(edit);
         }
         if (e.ownedByMe && this.hooks.confirmDelete !== false) {
           const del = document.createElement('button');

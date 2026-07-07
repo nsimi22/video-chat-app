@@ -22,6 +22,7 @@
   let unsubscribe = null;
   let weekStart = startOfWeek(new Date());
   let nowTimer = null;
+  let dragState = null;   // { e, block, startX, startY, moved } while dragging
 
   function svg(name) {
     return (window.HuddleIcons && window.HuddleIcons[name]) || '';
@@ -271,6 +272,14 @@
           block.appendChild(join);
         }
       }
+
+      // Owned internal calls are draggable to reschedule, and a plain
+      // click (no drag) opens the edit modal. External/other-owned blocks
+      // are read-only here.
+      if (e.kind === 'huddle' && e.ownedByMe) {
+        block.classList.add('is-draggable');
+        block.addEventListener('mousedown', (ev) => startDrag(ev, e, block));
+      }
       col.appendChild(block);
     }
 
@@ -289,6 +298,74 @@
     const li = document.querySelector(`#channels li[data-id="${id}"]`)
       || document.querySelector(`#channels li[data-channel-id="${id}"]`);
     return (li?.querySelector('.ch-name')?.textContent || id || '').trim();
+  }
+
+  // ----- Drag-to-reschedule / click-to-edit -----------------------
+
+  function startDrag(ev, e, block) {
+    if (ev.button !== 0) return;          // left button only
+    ev.preventDefault();
+    // Offset of the grab point from the block's top, so on drop the block
+    // TOP (== event start) lands under the cursor minus this offset —
+    // grabbing the middle of a 1h block doesn't shift the start by 30 min.
+    const grabOffsetY = ev.clientY - block.getBoundingClientRect().top;
+    dragState = { e, block, startX: ev.clientX, startY: ev.clientY, grabOffsetY, moved: false };
+    document.addEventListener('mousemove', onDragMove);
+    document.addEventListener('mouseup', onDragEnd);
+  }
+
+  function onDragMove(ev) {
+    if (!dragState) return;
+    const dx = ev.clientX - dragState.startX;
+    const dy = ev.clientY - dragState.startY;
+    if (!dragState.moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
+      dragState.moved = true;
+      dragState.block.classList.add('is-dragging');
+    }
+    if (dragState.moved) {
+      dragState.block.style.transform = `translate(${dx}px, ${dy}px)`;
+    }
+  }
+
+  function onDragEnd(ev) {
+    document.removeEventListener('mousemove', onDragMove);
+    document.removeEventListener('mouseup', onDragEnd);
+    const d = dragState;
+    dragState = null;
+    if (!d) return;
+    d.block.classList.remove('is-dragging');
+    d.block.style.transform = '';
+    const cal = window.huddleApp?.getCalendar?.();
+    if (!d.moved) {
+      // A click, not a drag → open the edit modal.
+      cal?.openScheduleModal?.({ editCall: d.e.ref });
+      return;
+    }
+    const newStart = pointToDate(ev.clientX, ev.clientY - d.grabOffsetY);
+    if (!newStart || !d.e.ref) { render(); return; }
+    cal?.moveScheduledCall?.(d.e.ref.id, newStart);
+  }
+
+  // Map a viewport point to a snapped Date within the visible week grid:
+  // column → day, vertical offset → time (15-min snap, clamped to the
+  // visible hour band). getBoundingClientRect on the (scrolled) grid
+  // already yields content-relative coordinates, so no scrollTop math.
+  function pointToDate(clientX, clientY) {
+    const gridEl = root && root.querySelector('.huddle-cal-grid');
+    if (!gridEl) return null;
+    const rect = gridEl.getBoundingClientRect();
+    const colW = (rect.width - GUTTER) / 7;
+    if (colW <= 0) return null;
+    let di = Math.floor((clientX - rect.left - GUTTER) / colW);
+    di = Math.max(0, Math.min(6, di));
+    let hours = HOUR_START + (clientY - rect.top) / HOUR_HEIGHT;
+    hours = Math.round(hours * 4) / 4;                       // snap to 15 min
+    hours = Math.max(HOUR_START, Math.min(HOUR_END, hours));
+    const h = Math.floor(hours);
+    const min = Math.round((hours - h) * 60);
+    const d = addDays(weekStart, di);
+    d.setHours(h, min, 0, 0);
+    return d;
   }
 
   // ----- Open / close ---------------------------------------------
