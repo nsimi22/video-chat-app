@@ -1153,10 +1153,20 @@
               </select>
             </label>
           </div>
+          <label>Repeat
+            <select id="schedule-repeat">
+              <option value="none" selected>Does not repeat</option>
+              <option value="daily">Daily</option>
+              <option value="weekdays">Every weekday (Mon–Fri)</option>
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+            </select>
+          </label>
           <label>Description (optional)
             <textarea id="schedule-description" rows="3" maxlength="2000"></textarea>
           </label>
           <div class="btn-row">
+            <button id="schedule-delete" type="button" class="danger" hidden>Delete</button>
             <button id="schedule-cancel" type="button" class="subtle">Cancel</button>
             <button id="schedule-save" type="submit" class="primary">Schedule</button>
           </div>

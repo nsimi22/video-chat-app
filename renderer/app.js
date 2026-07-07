@@ -139,9 +139,11 @@ const els = {
   scheduleDate: $('#schedule-date'),
   scheduleTime: $('#schedule-time'),
   scheduleDuration: $('#schedule-duration'),
+  scheduleRepeat: $('#schedule-repeat'),
   scheduleDescription: $('#schedule-description'),
   scheduleCancel: $('#schedule-cancel'),
   scheduleSave: $('#schedule-save'),
+  scheduleDelete: $('#schedule-delete'),
   setCalendarList: $('#set-calendar-list'),
   setCalendarName: $('#set-calendar-name'),
   setCalendarUrl: $('#set-calendar-url'),
@@ -6207,9 +6209,11 @@ async function startCalendar() {
     modalDate: els.scheduleDate,
     modalTime: els.scheduleTime,
     modalDuration: els.scheduleDuration,
+    modalRepeat: els.scheduleRepeat,
     modalDescription: els.scheduleDescription,
     modalCancel: els.scheduleCancel,
     modalSave: els.scheduleSave,
+    modalDelete: els.scheduleDelete,
   });
   const subscriptions = state.settings?.calendar?.subscriptions || [];
   await state.calendar.start({ subscriptions });

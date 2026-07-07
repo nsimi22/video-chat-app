@@ -3193,7 +3193,7 @@
       return (data || []).map((r) => this._marshalScheduledCall(r));
     }
 
-    async createScheduledCall({ channelId, title, description = '', startsAt, durationMin = 30 }) {
+    async createScheduledCall({ channelId, title, description = '', startsAt, durationMin = 30, rrule = '' }) {
       if (!this.team) throw new Error('not in a team');
       if (!(startsAt instanceof Date)) startsAt = new Date(startsAt);
       if (isNaN(startsAt.getTime())) throw new Error('invalid startsAt');
@@ -3204,7 +3204,8 @@
         title, description,
         starts_at: startsAt.toISOString(),
         duration_min: durationMin,
-      }).select().single();
+        rrule: rrule || '',
+      }).select('*, scheduled_call_attendees(user_id, status)').single();
       if (error) throw error;
       return this._marshalScheduledCall(data);
     }
@@ -3218,12 +3219,20 @@
     // fields present in the patch are sent; starts_at is normalised to an
     // ISO string. Returns the re-marshalled row (attendees embedded) so
     // callers can refresh their local copy.
-    async updateScheduledCall(id, { channelId, title, description, startsAt, durationMin } = {}) {
+    async updateScheduledCall(id, { channelId, title, description, startsAt, durationMin, rrule, exdate } = {}) {
       const patch = {};
       if (channelId !== undefined) patch.channel_id = channelId;
       if (title !== undefined) patch.title = title;
       if (description !== undefined) patch.description = description;
       if (durationMin !== undefined) patch.duration_min = durationMin;
+      if (rrule !== undefined) patch.rrule = rrule || '';
+      if (exdate !== undefined) {
+        patch.exdate = (exdate || []).map((x) => {
+          const d = x instanceof Date ? x : new Date(x);
+          if (isNaN(d.getTime())) throw new Error('invalid exdate');
+          return d.toISOString();
+        });
+      }
       if (startsAt !== undefined) {
         const d = startsAt instanceof Date ? startsAt : new Date(startsAt);
         if (isNaN(d.getTime())) throw new Error('invalid startsAt');
@@ -3321,6 +3330,10 @@
         description: row.description || '',
         startsAt: new Date(row.starts_at),
         durationMin: row.duration_min,
+        rrule: row.rrule || '',
+        // exdate as epoch-ms so it drops straight into the HuddleICS
+        // expandSeries exclusion Set (which matches on getTime()).
+        exdate: Array.isArray(row.exdate) ? row.exdate.map((s) => new Date(s).getTime()) : [],
         createdAt: new Date(row.created_at),
         updatedAt: new Date(row.updated_at),
       };
