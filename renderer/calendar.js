@@ -738,25 +738,23 @@
         }
       }
       // External calendar events (Teams/Zoom/Meet/Webex) get a "Join in …"
-      // button when the feed carried a meeting link and the event is
-      // imminent — same window as internal calls. window.open routes the
-      // http(s) URL through the main-process window-open handler →
-      // shell.openExternal (default browser / native meeting app); the
-      // popup itself is denied, so nothing opens inside Huddle.
+      // button whenever the feed carried a meeting link — not gated on
+      // imminence, since an external join URL is a static link you may
+      // want to open a few minutes early (or paste elsewhere). Internal
+      // "Join" stays imminent-gated because it joins a live Huddle call.
+      // window.open routes the http(s) URL through the main-process
+      // window-open handler → shell.openExternal (default browser / native
+      // meeting app); the popup itself is denied, so nothing opens inside
+      // Huddle.
       if (e.kind === 'ics' && e.joinUrl && /^https?:\/\//i.test(e.joinUrl)) {
-        const startTs = e.start.getTime();
-        const now = Date.now();
-        const imminent = (startTs - now <= 15 * 60 * 1000) && (now - startTs <= 60 * 60 * 1000);
-        if (imminent) {
-          const join = document.createElement('button');
-          join.className = 'cal-row-join';
-          join.textContent = e.provider ? `Join in ${e.provider}` : 'Join';
-          join.onclick = () => {
-            try { window.open(e.joinUrl, '_blank', 'noopener'); }
-            catch (err) { console.warn('open meeting link failed', err); }
-          };
-          row.appendChild(join);
-        }
+        const join = document.createElement('button');
+        join.className = 'cal-row-join';
+        join.textContent = e.provider ? `Join in ${e.provider}` : 'Join';
+        join.onclick = () => {
+          try { window.open(e.joinUrl, '_blank', 'noopener'); }
+          catch (err) { console.warn('open meeting link failed', err); }
+        };
+        row.appendChild(join);
       }
       return row;
     }
