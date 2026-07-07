@@ -22,8 +22,17 @@
   // edits to a subscribed external calendar take too long to show.
   const ICS_POLL_MS = 15 * 60 * 1000;
   const SCHEDULE_DEFAULT_DURATION_MIN = 30;
+  // The drawer's "upcoming" list defaults to a 2-week look-ahead.
   const UPCOMING_HORIZON_DAYS = 14;
-  const ICS_MAX_HORIZON_MS = UPCOMING_HORIZON_DAYS * 24 * 60 * 60 * 1000;
+  // How far back / forward we keep events in memory so the week grid can
+  // navigate into the past and further future (≈3 months each way). The
+  // drawer stays "upcoming" via listEvents({ since }); this only governs
+  // what data is available to page to. Wider = more recurring-feed
+  // expansion, hence the bound.
+  const CALENDAR_WINDOW_DAYS = 92;
+  const CALENDAR_WINDOW_MS = CALENDAR_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  // Forward cap for ICS RRULE expansion + the feed keep-window upper edge.
+  const ICS_MAX_HORIZON_MS = CALENDAR_WINDOW_MS;
 
   class HuddleCalendar {
     constructor({ huddle, hooks = {} }) {
@@ -390,7 +399,12 @@
     // ----- Internal scheduled-calls (Supabase) ---------------------------
 
     async _loadScheduled() {
-      const rows = await this.huddle.loadScheduledCalls();
+      // Load the same ~3-month history the ICS feed keeps, so past
+      // internal calls are available when paging the grid back. The
+      // drawer still filters to upcoming via listEvents({ since }).
+      const rows = await this.huddle.loadScheduledCalls({
+        from: new Date(Date.now() - CALENDAR_WINDOW_MS),
+      });
       this._scheduled.clear();
       this._attendees.clear();
       for (const r of rows) {
@@ -509,15 +523,18 @@
           console.warn('[calendar] ics-fetch failed', sub.url, res?.error || res?.status);
           return;
         }
-        // Cap at a 14-day forward horizon — subscription feeds often
-        // cover years; we don't want to drag thousands of historical
-        // events into the upcoming list. The cutoff is also passed
-        // into parse() so RRULE expansion stops at the same boundary
-        // (a weekly meeting expanded for years would balloon memory).
+        // Keep a ~3-month window each way so the grid can page into the
+        // past (calendar history) and the further future. Subscription
+        // feeds often span years, so we still bound it — the forward
+        // cutoff is passed into parse() to stop RRULE expansion at the
+        // same boundary (a weekly meeting expanded for years would
+        // balloon memory). The drawer still shows only upcoming events;
+        // this just makes the history available to navigate to.
         const cutoff = Date.now() + ICS_MAX_HORIZON_MS;
+        const floor = Date.now() - CALENDAR_WINDOW_MS;
         const parsed = window.HuddleICS.parse(res.body, { expandUntil: new Date(cutoff) });
         const horizon = (parsed.events || []).filter((e) =>
-          e.start && e.start.getTime() >= Date.now() - 60 * 60 * 1000
+          e.start && e.start.getTime() >= floor
                   && e.start.getTime() <= cutoff,
         );
         // Stamp source name so the UI can label rows by feed.
@@ -536,21 +553,25 @@
     // Public: combined internal-scheduled + external-ICS entries,
     // sorted by start. Used by both the legacy list drawer (_render
     // below) and the v2 week-grid view in renderer/calendar-grid.js.
-    // `until` bounds how far recurring series are expanded. The drawer
-    // wants the ~2-week upcoming window (default); the week grid passes the
-    // end of the week it's showing, and the availability check passes the
-    // end of the proposed slot — otherwise recurring occurrences beyond 14
-    // days would silently vanish from the grid and slip past conflict
-    // detection while one-off calls still appear.
-    listEvents({ until } = {}) {
+    // Returns entries whose start falls in [since, until). Defaults model
+    // the drawer's "upcoming" view (just-started → 2 weeks out); the week
+    // grid passes the week it's showing (which can be in the past — that's
+    // how calendar history is navigated), and the availability check
+    // passes the proposed slot. Recurring series are expanded across the
+    // requested range, so occurrences beyond the default 14-day window
+    // (forward OR back) appear when a caller asks for them.
+    listEvents({ since, until } = {}) {
       const entries = [];
       const myId = this.huddle?.peerId;
       const expand = window.HuddleICS?._internal?.expandSeries;
-      const defaultHorizon = Date.now() + UPCOMING_HORIZON_DAYS * 24 * 60 * 60 * 1000;
-      const horizon = (until instanceof Date && until.getTime() > defaultHorizon)
-        ? until
-        : new Date(defaultHorizon);
-      const oldestMs = Date.now() - 60 * 60 * 1000;  // keep just-started events
+      const nowUpcoming = Date.now() + UPCOMING_HORIZON_DAYS * 24 * 60 * 60 * 1000;
+      // Display bounds.
+      const sinceMs = (since instanceof Date) ? since.getTime() : (Date.now() - 60 * 60 * 1000);
+      const untilMs = (until instanceof Date) ? until.getTime() : nowUpcoming;
+      // Expansion horizon for recurring series must reach the display
+      // upper bound, but never fall short of the default upcoming window
+      // (so a past-week request still generates today's occurrences).
+      const expandHorizon = new Date(Math.max(untilMs, nowUpcoming));
       for (const sc of this._scheduled.values()) {
         const am = this._attendees.get(sc.id);
         const attendees = am ? [...am.entries()].map(([userId, status]) => ({ userId, status })) : [];
@@ -571,14 +592,14 @@
           attendees, myRsvp, rsvpCounts,
         });
         if (sc.rrule && expand) {
-          // Reuse the ICS RRULE engine: build a master event and expand
-          // it to the same 14-day horizon as external feeds, honouring the
-          // per-occurrence EXDATE cancellations.
+          // Reuse the ICS RRULE engine: build a master event and expand it
+          // across the requested range, honouring EXDATE cancellations.
+          // The final [since, until) filter below trims occurrences to the
+          // displayed window.
           const end = new Date(sc.startsAt.getTime() + (sc.durationMin || 0) * 60000);
           const master = { start: sc.startsAt, end, rrule: sc.rrule, exdate: sc.exdate || [], uid: sc.id };
-          for (const occ of expand(master, horizon)) {
-            if (!occ.start || occ.start.getTime() < oldestMs) continue;
-            entries.push(mkEntry(occ.start, true));
+          for (const occ of expand(master, expandHorizon)) {
+            if (occ.start) entries.push(mkEntry(occ.start, true));
           }
         } else {
           entries.push(mkEntry(sc.startsAt, false));
@@ -599,8 +620,14 @@
           });
         }
       }
-      entries.sort((a, b) => a.start - b.start);
-      return entries;
+      // Trim everything (internal singles, expanded occurrences, ICS) to
+      // the requested display window, then sort chronologically.
+      const inRange = entries.filter((e) => {
+        const t = e.start.getTime();
+        return t >= sinceMs && t < untilMs;
+      });
+      inRange.sort((a, b) => a.start - b.start);
+      return inRange;
     }
 
     // Lightweight observer for grid view rerenders. The legacy drawer

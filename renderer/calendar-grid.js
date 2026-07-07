@@ -213,9 +213,9 @@
       return;
     }
     const weekEnd = addDays(weekStart, 7);
-    // Pass the viewed week's end so recurring series are expanded far
-    // enough to appear when navigating beyond the default 2-week horizon.
-    const all = cal.listEvents({ until: weekEnd });
+    // Pass the viewed week's full range so events appear when navigating
+    // into the past (calendar history) or beyond the 2-week look-ahead.
+    const all = cal.listEvents({ since: weekStart, until: weekEnd });
     const visible = all.filter((e) => e.start >= weekStart && e.start < weekEnd);
 
     for (const e of visible) {
