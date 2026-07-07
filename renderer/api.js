@@ -3214,6 +3214,31 @@
       if (error) throw error;
     }
 
+    // Patch a scheduled call (owner-only, enforced by RLS). Only the
+    // fields present in the patch are sent; starts_at is normalised to an
+    // ISO string. Returns the re-marshalled row (attendees embedded) so
+    // callers can refresh their local copy.
+    async updateScheduledCall(id, { channelId, title, description, startsAt, durationMin } = {}) {
+      const patch = {};
+      if (channelId !== undefined) patch.channel_id = channelId;
+      if (title !== undefined) patch.title = title;
+      if (description !== undefined) patch.description = description;
+      if (durationMin !== undefined) patch.duration_min = durationMin;
+      if (startsAt !== undefined) {
+        const d = startsAt instanceof Date ? startsAt : new Date(startsAt);
+        if (isNaN(d.getTime())) throw new Error('invalid startsAt');
+        patch.starts_at = d.toISOString();
+      }
+      const { data, error } = await this.supabase
+        .from('scheduled_calls')
+        .update(patch)
+        .eq('id', id)
+        .select('*, scheduled_call_attendees(user_id, status)')
+        .single();
+      if (error) throw error;
+      return this._marshalScheduledCall(data);
+    }
+
     // RSVP to a scheduled call. Upserts the current user's row so calling
     // it again just flips the status (going -> maybe). The DB trigger
     // stamps responded_at server-side.

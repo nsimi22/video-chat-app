@@ -2047,6 +2047,11 @@ body.huddle-call-minimized #tiles .speaker-queue { display: none !important; }
   font-size: 18px; line-height: 1; padding: 0 6px; cursor: pointer;
 }
 .cal-row-del:hover { color: #ff5c52; }
+.cal-row-edit {
+  background: transparent; color: var(--text-soft); border: 0;
+  font-size: 13px; line-height: 1; padding: 0 4px; cursor: pointer;
+}
+.cal-row-edit:hover { color: var(--accent); }
 /* RSVP block on internal-call rows: avatar stack + counts + toggles. */
 .cal-rsvp {
   display: flex;
@@ -7052,6 +7057,13 @@ body.popout-call .popout-stage > .draw-toolbar {
 .huddle-cal-event.is-live {
   background: var(--live-dim);
   border-color: var(--live);
+}
+.huddle-cal-event.is-draggable { cursor: grab; }
+.huddle-cal-event.is-dragging {
+  cursor: grabbing;
+  z-index: 10;
+  opacity: 0.85;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
 }
 .huddle-cal-event-head {
   display: flex;
