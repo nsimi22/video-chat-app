@@ -4099,6 +4099,10 @@ function startScheduledFlush() {
       const fired = await state.huddle.claimDueReminders();
       for (const r of fired) fireReminder(r);
     } catch (e) { console.warn('reminder flush', e); }
+    // "Starting soon" alerts for calendar events (internal huddles +
+    // external ICS meetings). Purely client-side — no server row to
+    // claim — so it rides this same tick instead of a second timer.
+    try { checkCalendarReminders(); } catch (e) { console.warn('calendar reminder check', e); }
   };
   tick();
   if (scheduledFlushTimer) clearInterval(scheduledFlushTimer);
@@ -4130,6 +4134,78 @@ function fireReminder(r) {
     } catch (err) { console.warn('reminder notification failed', err); }
   }
   showToast(`⏰ ${body}`, { duration: 6000 });
+}
+
+// "Starting soon" calendar reminders. Fires once per event as it enters
+// the lead-time window before its start, for both internal scheduled
+// huddles and external ICS meetings. State-only (no server row): while
+// the app is open this tick catches events that come due; there is no
+// closed-app backstop, matching the pre-existing message-reminder model
+// which likewise only fires OS notifications for a running desktop.
+//
+// firedCalReminders maps event-id -> startTs so a fired event doesn't
+// re-alert every 45s tick; entries are pruned once well past their start.
+const firedCalReminders = new Map();
+function checkCalendarReminders() {
+  const cal = state.calendar;
+  if (!cal) return;
+  const now = Date.now();
+  // Lead time is settings-configurable (calendar.reminderMinutes),
+  // defaulting to 5 min. Read per-tick so a settings change takes effect
+  // without a restart.
+  const leadMin = Number(state.settings?.calendar?.reminderMinutes);
+  const leadMs = (Number.isFinite(leadMin) && leadMin > 0 ? leadMin : 5) * 60 * 1000;
+  let events;
+  try { events = cal.listEvents(); } catch { return; }
+  for (const e of events) {
+    if (!e.start || e.allDay) continue;  // all-day events start at midnight — don't alert
+    const lead = e.start.getTime() - now;
+    // Only in the (0, leadMs] window: not yet started, within lead time.
+    // A just-started meeting is covered by the drawer/grid Join button.
+    if (lead <= 0 || lead > leadMs) continue;
+    if (firedCalReminders.has(e.id)) continue;
+    firedCalReminders.set(e.id, e.start.getTime());
+    fireCalendarReminder(e, lead);
+  }
+  // Bound the map: forget events more than an hour past their start.
+  for (const [id, ts] of firedCalReminders) {
+    if (ts < now - 60 * 60 * 1000) firedCalReminders.delete(id);
+  }
+}
+
+// Surface one "starting soon" alert. Internal huddles route to their
+// channel on click; external meetings deep-link to the provider via the
+// same window.open → shell.openExternal path the drawer Join button uses.
+// Respects DND for the OS notification (unlike self-requested message
+// reminders, these are automatic), but always shows the in-app toast.
+function fireCalendarReminder(e, leadMs) {
+  const mins = Math.max(1, Math.round(leadMs / 60000));
+  const whenTxt = `in ${mins} min`;
+  const isExternal = e.kind === 'ics';
+  const ch = !isExternal && e.channelId ? state.channelMeta.get(e.channelId) : null;
+  const where = isExternal ? (e.provider || e.source || 'External') : (ch ? displayLabelFor(ch) : '');
+  const body = where ? `${whenTxt} · ${where}` : whenTxt;
+  const canNotify = ('Notification' in window) && Notification.permission === 'granted'
+                    && !state.huddle?.isDndActive?.();
+  if (canNotify) {
+    try {
+      const n = new Notification(`⏰ ${e.title || 'Meeting'} starting soon`, {
+        body, tag: `cal:${e.id}`,
+      });
+      n.onclick = () => {
+        try { window.focus(); } catch {}
+        if (isExternal) {
+          if (e.joinUrl && /^https?:\/\//i.test(e.joinUrl)) {
+            try { window.open(e.joinUrl, '_blank', 'noopener'); } catch {}
+          }
+        } else if (e.channelId) {
+          focusChannel(e.channelId);
+        }
+        n.close();
+      };
+    } catch (err) { console.warn('calendar reminder notification failed', err); }
+  }
+  showToast(`⏰ ${e.title || 'Meeting'} starting ${whenTxt}`, { duration: 6000 });
 }
 
 // Bump unread for a channel when an incoming message lands there but isn't
