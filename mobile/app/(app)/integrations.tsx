@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { ChevronLeft, GitBranch, Smile, Sparkles, Ticket } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
 import { useAuth } from '@/context/AuthContext';
 import { loadAllIntegrationSettings, updateIntegrationSettings } from '@/lib/integrations';
-import type { AiProvider } from '@/lib/ai';
+import type { AiProvider, StoredAiProvider } from '@/lib/ai';
 import { Button, Field } from '@/components/ui';
 import { colors, radius, space } from '@/theme';
 
@@ -42,6 +42,10 @@ type FormState = {
   jiraProject: string;
   githubToken: string;
   aiProvider: AiProvider;
+  // The provider as stored on the account. Usually mirrors aiProvider, but may
+  // be 'claude-code' (desktop subscription) — a value mobile can't run but must
+  // NOT overwrite on save unless the user explicitly picks a provider here.
+  storedProvider: StoredAiProvider | '';
   anthropicKey: string;
   anthropicModel: string;
   openrouterKey: string;
@@ -56,12 +60,20 @@ const EMPTY_FORM: FormState = {
   jiraProject: '',
   githubToken: '',
   aiProvider: 'anthropic',
+  storedProvider: '',
   anthropicKey: '',
   anthropicModel: '',
   openrouterKey: '',
   openrouterModel: '',
   giphyKey: '',
 };
+
+// True when the account is on a provider mobile can't run (desktop's
+// 'claude-code' subscription) and the user hasn't overridden it here — so the
+// AI keys below act as a mobile fallback and the stored provider is preserved.
+function isDesktopOnlyProvider(p: FormState['storedProvider']): p is StoredAiProvider {
+  return p !== '' && p !== 'anthropic' && p !== 'openrouter';
+}
 
 export default function IntegrationsScreen() {
   const { userId } = useAuth();
@@ -70,12 +82,24 @@ export default function IntegrationsScreen() {
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  // Whether the user has actively chosen a provider on THIS screen. Until they
+  // do, a stored desktop-only provider ('claude-code') is preserved on save.
+  const [providerTouched, setProviderTouched] = useState(false);
+  // Monotonic token so a superseded load() (e.g. after an account switch)
+  // can't land its result on top of a newer one and write the wrong account's
+  // stored provider on the next Save.
+  const reqIdRef = useRef(0);
 
   const setField = useCallback(
     <K extends keyof FormState>(key: K, value: FormState[K]) =>
       setForm((prev) => ({ ...prev, [key]: value })),
     [],
   );
+
+  const chooseProvider = useCallback((p: AiProvider) => {
+    setProviderTouched(true);
+    setForm((prev) => ({ ...prev, aiProvider: p }));
+  }, []);
 
   // Explicit back handler + headerLeft. The default native-stack back chevron
   // rendered but was unresponsive here (tap did nothing); driving the pop
@@ -89,13 +113,16 @@ export default function IntegrationsScreen() {
 
   const load = useCallback(async () => {
     if (!userId) return;
+    const myReq = ++reqIdRef.current;
     setLoading(true);
     setLoadError(false);
+    setProviderTouched(false);
     try {
       // loadAllIntegrationSettings surfaces read errors (the cached getters
       // swallow them → null), so a network failure lands in catch below and
       // blocks Save instead of silently blanking the form and clobbering keys.
       const { jira, github, ai, giphy } = await loadAllIntegrationSettings(userId);
+      if (myReq !== reqIdRef.current) return; // superseded by a newer load
       setForm({
         jiraHost: jira?.host ?? '',
         jiraEmail: jira?.email ?? '',
@@ -103,6 +130,7 @@ export default function IntegrationsScreen() {
         jiraProject: jira?.defaultProject ?? '',
         githubToken: github?.token ?? '',
         aiProvider: ai?.provider === 'openrouter' ? 'openrouter' : 'anthropic',
+        storedProvider: ai?.provider ?? '',
         anthropicKey: ai?.anthropicKey ?? '',
         anthropicModel: ai?.anthropicModel ?? '',
         openrouterKey: ai?.openrouterKey ?? '',
@@ -110,9 +138,10 @@ export default function IntegrationsScreen() {
         giphyKey: giphy?.key ?? '',
       });
     } catch {
+      if (myReq !== reqIdRef.current) return; // superseded by a newer load
       setLoadError(true);
     } finally {
-      setLoading(false);
+      if (myReq === reqIdRef.current) setLoading(false);
     }
   }, [userId]);
 
@@ -124,6 +153,14 @@ export default function IntegrationsScreen() {
     if (!userId) return;
     setSaving(true);
     try {
+      // Preserve a desktop-only provider ('claude-code') the user hasn't
+      // overridden here, so saving a fallback key on mobile doesn't switch
+      // desktop off the Claude subscription. Once they tap a provider button,
+      // honor that choice for the whole account.
+      const provider: StoredAiProvider =
+        !providerTouched && isDesktopOnlyProvider(form.storedProvider)
+          ? form.storedProvider
+          : form.aiProvider;
       await updateIntegrationSettings(userId, {
         jira: {
           host: form.jiraHost.trim(),
@@ -133,7 +170,7 @@ export default function IntegrationsScreen() {
         },
         github: { token: form.githubToken.trim() },
         ai: {
-          provider: form.aiProvider,
+          provider,
           anthropicKey: form.anthropicKey.trim(),
           anthropicModel: form.anthropicModel.trim(),
           openrouterKey: form.openrouterKey.trim(),
@@ -147,7 +184,7 @@ export default function IntegrationsScreen() {
     } finally {
       setSaving(false);
     }
-  }, [userId, form]);
+  }, [userId, form, providerTouched]);
 
   return (
     <>
@@ -215,6 +252,15 @@ export default function IntegrationsScreen() {
 
           {/* AI */}
           <GroupLabel icon={Sparkles}>AI</GroupLabel>
+          {!providerTouched && isDesktopOnlyProvider(form.storedProvider) && (
+            <View style={{ backgroundColor: colors.accentDim, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.accent, padding: space(3), marginBottom: space(3) }}>
+              <Text style={{ color: colors.accentTx, fontSize: 12.5, lineHeight: 18 }}>
+                Desktop is set to use your Claude subscription, which this app can’t run.
+                Add an API key below and mobile will use it as a fallback — your desktop
+                subscription stays selected unless you pick a provider here.
+              </Text>
+            </View>
+          )}
           <FieldLabel>Provider</FieldLabel>
           <View style={{ flexDirection: 'row', gap: space(2), marginBottom: space(3) }}>
             {(['anthropic', 'openrouter'] as const).map((p) => {
@@ -222,7 +268,7 @@ export default function IntegrationsScreen() {
               return (
                 <TouchableOpacity
                   key={p}
-                  onPress={() => setField('aiProvider', p)}
+                  onPress={() => chooseProvider(p)}
                   activeOpacity={0.8}
                   style={{
                     flex: 1,

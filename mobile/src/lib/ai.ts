@@ -10,8 +10,15 @@
 
 export type AiProvider = 'anthropic' | 'openrouter';
 
+// The provider actually stored in user_integrations.settings.ai can also be
+// 'claude-code' — the desktop-only option that drives the user's local Claude
+// CLI / subscription. Mobile can't run it, but it must preserve the value on
+// save (so writing a key here doesn't knock desktop off the subscription) and
+// fall back to whichever API key is present at call time.
+export type StoredAiProvider = AiProvider | 'claude-code';
+
 export type AiSettings = {
-  provider?: AiProvider;
+  provider?: StoredAiProvider;
   anthropicKey?: string;
   anthropicModel?: string;
   openrouterKey?: string;
@@ -52,9 +59,22 @@ export class AiClient {
   defaultModel: string;
 
   constructor(s: AiSettings) {
-    this.provider = s.provider === 'openrouter' ? 'openrouter' : 'anthropic';
     this.anthropicKey = s.anthropicKey || '';
     this.openrouterKey = s.openrouterKey || '';
+    // Resolve the provider mobile will actually run on. Desktop offers a
+    // third option — 'claude-code', the local Claude CLI / subscription —
+    // that mobile has no way to use; a user can also pick a key-based
+    // provider on desktop yet only have the OTHER provider's key on hand. In
+    // both cases fall back to whichever API key IS present so mobile AI keeps
+    // working. Honor an explicit anthropic/openrouter choice when its key
+    // exists; otherwise ride the available key (Anthropic preferred).
+    const wanted = s.provider === 'anthropic' || s.provider === 'openrouter' ? s.provider : null;
+    this.provider =
+      wanted === 'anthropic' && this.anthropicKey ? 'anthropic'
+      : wanted === 'openrouter' && this.openrouterKey ? 'openrouter'
+      : this.anthropicKey ? 'anthropic'
+      : this.openrouterKey ? 'openrouter'
+      : wanted ?? 'anthropic';
     this.defaultModel =
       (this.provider === 'anthropic' ? s.anthropicModel : s.openrouterModel) ||
       (this.provider === 'anthropic' ? ANTHROPIC_DEFAULT_MODEL : OPENROUTER_DEFAULT_MODEL);
