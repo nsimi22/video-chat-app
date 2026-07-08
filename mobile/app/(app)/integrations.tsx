@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, ScrollView, Text, TouchableOpacity, View } from 'react-native';
-import { Stack } from 'expo-router';
-import { GitBranch, Smile, Sparkles, Ticket } from 'lucide-react-native';
+import { Stack, router } from 'expo-router';
+import { ChevronLeft, GitBranch, Smile, Sparkles, Ticket } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
 import { useAuth } from '@/context/AuthContext';
 import { loadAllIntegrationSettings, updateIntegrationSettings } from '@/lib/integrations';
@@ -77,6 +77,16 @@ export default function IntegrationsScreen() {
     [],
   );
 
+  // Explicit back handler + headerLeft. The default native-stack back chevron
+  // rendered but was unresponsive here (tap did nothing); driving the pop
+  // ourselves — with a canGoBack() fallback so it can never be a dead no-op —
+  // guarantees a working way out. Falls back to the You tab if the history is
+  // somehow empty (e.g. deep-linked straight to this screen).
+  const goBack = useCallback(() => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/(app)/(tabs)/you');
+  }, []);
+
   const load = useCallback(async () => {
     if (!userId) return;
     setLoading(true);
@@ -139,21 +149,29 @@ export default function IntegrationsScreen() {
     }
   }, [userId, form]);
 
-  if (loading) {
-    return (
-      <>
-        <Stack.Screen options={{ title: 'Integrations' }} />
+  return (
+    <>
+      {/* Render Stack.Screen ONCE, unconditionally — keep it mounted for the
+          whole screen lifecycle so the native header (and its back button)
+          isn't torn down + rebuilt when `loading` flips true→false. The old
+          per-branch Stack.Screen left the back chevron visible but its tap
+          bound to a stale header instance, so back did nothing. Loading /
+          error / form render underneath as siblings (matches thread + channel). */}
+      <Stack.Screen
+        options={{
+          title: 'Integrations',
+          headerLeft: () => (
+            <TouchableOpacity onPress={goBack} hitSlop={16} style={{ paddingRight: space(3) }}>
+              <ChevronLeft size={26} color={colors.text} />
+            </TouchableOpacity>
+          ),
+        }}
+      />
+      {loading ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}>
           <ActivityIndicator color={colors.accent} />
         </View>
-      </>
-    );
-  }
-
-  if (loadError) {
-    return (
-      <>
-        <Stack.Screen options={{ title: 'Integrations' }} />
+      ) : loadError ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg, padding: space(4) }}>
           <Text style={{ color: colors.text, fontSize: 16, fontWeight: '600', marginBottom: space(2), textAlign: 'center' }}>
             Couldn’t load integrations
@@ -165,13 +183,7 @@ export default function IntegrationsScreen() {
             <Button title="Retry" onPress={load} />
           </View>
         </View>
-      </>
-    );
-  }
-
-  return (
-    <>
-      <Stack.Screen options={{ title: 'Integrations' }} />
+      ) : (
       <KeyboardAvoidingView
         style={{ flex: 1, backgroundColor: colors.bg }}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -255,6 +267,7 @@ export default function IntegrationsScreen() {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+      )}
     </>
   );
 }
