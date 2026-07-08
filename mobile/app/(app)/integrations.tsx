@@ -33,28 +33,49 @@ function FieldLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+// One flat form object instead of a useState per field — every field is an
+// editable string except the AI provider toggle.
+type FormState = {
+  jiraHost: string;
+  jiraEmail: string;
+  jiraToken: string;
+  jiraProject: string;
+  githubToken: string;
+  aiProvider: AiProvider;
+  anthropicKey: string;
+  anthropicModel: string;
+  openrouterKey: string;
+  openrouterModel: string;
+  giphyKey: string;
+};
+
+const EMPTY_FORM: FormState = {
+  jiraHost: '',
+  jiraEmail: '',
+  jiraToken: '',
+  jiraProject: '',
+  githubToken: '',
+  aiProvider: 'anthropic',
+  anthropicKey: '',
+  anthropicModel: '',
+  openrouterKey: '',
+  openrouterModel: '',
+  giphyKey: '',
+};
+
 export default function IntegrationsScreen() {
   const { userId } = useAuth();
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState<FormState>(EMPTY_FORM);
 
-  // Jira
-  const [jiraHost, setJiraHost] = useState('');
-  const [jiraEmail, setJiraEmail] = useState('');
-  const [jiraToken, setJiraToken] = useState('');
-  const [jiraProject, setJiraProject] = useState('');
-  // GitHub
-  const [githubToken, setGithubToken] = useState('');
-  // AI
-  const [aiProvider, setAiProvider] = useState<AiProvider>('anthropic');
-  const [anthropicKey, setAnthropicKey] = useState('');
-  const [anthropicModel, setAnthropicModel] = useState('');
-  const [openrouterKey, setOpenrouterKey] = useState('');
-  const [openrouterModel, setOpenrouterModel] = useState('');
-  // Giphy
-  const [giphyKey, setGiphyKey] = useState('');
+  const setField = useCallback(
+    <K extends keyof FormState>(key: K, value: FormState[K]) =>
+      setForm((prev) => ({ ...prev, [key]: value })),
+    [],
+  );
 
   const load = useCallback(async () => {
     if (!userId) return;
@@ -65,17 +86,19 @@ export default function IntegrationsScreen() {
       // swallow them → null), so a network failure lands in catch below and
       // blocks Save instead of silently blanking the form and clobbering keys.
       const { jira, github, ai, giphy } = await loadAllIntegrationSettings(userId);
-      setJiraHost(jira?.host ?? '');
-      setJiraEmail(jira?.email ?? '');
-      setJiraToken(jira?.token ?? '');
-      setJiraProject(jira?.defaultProject ?? '');
-      setGithubToken(github?.token ?? '');
-      setAiProvider(ai?.provider === 'openrouter' ? 'openrouter' : 'anthropic');
-      setAnthropicKey(ai?.anthropicKey ?? '');
-      setAnthropicModel(ai?.anthropicModel ?? '');
-      setOpenrouterKey(ai?.openrouterKey ?? '');
-      setOpenrouterModel(ai?.openrouterModel ?? '');
-      setGiphyKey(giphy?.key ?? '');
+      setForm({
+        jiraHost: jira?.host ?? '',
+        jiraEmail: jira?.email ?? '',
+        jiraToken: jira?.token ?? '',
+        jiraProject: jira?.defaultProject ?? '',
+        githubToken: github?.token ?? '',
+        aiProvider: ai?.provider === 'openrouter' ? 'openrouter' : 'anthropic',
+        anthropicKey: ai?.anthropicKey ?? '',
+        anthropicModel: ai?.anthropicModel ?? '',
+        openrouterKey: ai?.openrouterKey ?? '',
+        openrouterModel: ai?.openrouterModel ?? '',
+        giphyKey: giphy?.key ?? '',
+      });
     } catch {
       setLoadError(true);
     } finally {
@@ -93,20 +116,20 @@ export default function IntegrationsScreen() {
     try {
       await updateIntegrationSettings(userId, {
         jira: {
-          host: jiraHost.trim(),
-          email: jiraEmail.trim(),
-          token: jiraToken.trim(),
-          defaultProject: jiraProject.trim(),
+          host: form.jiraHost.trim(),
+          email: form.jiraEmail.trim(),
+          token: form.jiraToken.trim(),
+          defaultProject: form.jiraProject.trim(),
         },
-        github: { token: githubToken.trim() },
+        github: { token: form.githubToken.trim() },
         ai: {
-          provider: aiProvider,
-          anthropicKey: anthropicKey.trim(),
-          anthropicModel: anthropicModel.trim(),
-          openrouterKey: openrouterKey.trim(),
-          openrouterModel: openrouterModel.trim(),
+          provider: form.aiProvider,
+          anthropicKey: form.anthropicKey.trim(),
+          anthropicModel: form.anthropicModel.trim(),
+          openrouterKey: form.openrouterKey.trim(),
+          openrouterModel: form.openrouterModel.trim(),
         },
-        giphy: { key: giphyKey.trim() },
+        giphy: { key: form.giphyKey.trim() },
       });
       Alert.alert('Saved', 'Your integration keys are updated on this account.');
     } catch (err) {
@@ -114,10 +137,7 @@ export default function IntegrationsScreen() {
     } finally {
       setSaving(false);
     }
-  }, [
-    userId, jiraHost, jiraEmail, jiraToken, jiraProject, githubToken,
-    aiProvider, anthropicKey, anthropicModel, openrouterKey, openrouterModel, giphyKey,
-  ]);
+  }, [userId, form]);
 
   if (loading) {
     return (
@@ -168,29 +188,29 @@ export default function IntegrationsScreen() {
           {/* Jira */}
           <GroupLabel icon={Ticket}>Jira</GroupLabel>
           <FieldLabel>Site URL</FieldLabel>
-          <Field value={jiraHost} onChangeText={setJiraHost} placeholder="https://your-team.atlassian.net" autoCapitalize="none" keyboardType="url" />
+          <Field value={form.jiraHost} onChangeText={(v) => setField('jiraHost', v)} placeholder="https://your-team.atlassian.net" autoCapitalize="none" keyboardType="url" />
           <FieldLabel>Email</FieldLabel>
-          <Field value={jiraEmail} onChangeText={setJiraEmail} placeholder="you@company.com" autoCapitalize="none" keyboardType="email-address" />
+          <Field value={form.jiraEmail} onChangeText={(v) => setField('jiraEmail', v)} placeholder="you@company.com" autoCapitalize="none" keyboardType="email-address" />
           <FieldLabel>API token</FieldLabel>
-          <Field value={jiraToken} onChangeText={setJiraToken} placeholder="Atlassian API token" autoCapitalize="none" secureTextEntry />
+          <Field value={form.jiraToken} onChangeText={(v) => setField('jiraToken', v)} placeholder="Atlassian API token" autoCapitalize="none" secureTextEntry />
           <FieldLabel>Default project key (optional)</FieldLabel>
-          <Field value={jiraProject} onChangeText={setJiraProject} placeholder="e.g. HUD" autoCapitalize="characters" />
+          <Field value={form.jiraProject} onChangeText={(v) => setField('jiraProject', v)} placeholder="e.g. HUD" autoCapitalize="characters" />
 
           {/* GitHub */}
           <GroupLabel icon={GitBranch}>GitHub</GroupLabel>
           <FieldLabel>Personal access token</FieldLabel>
-          <Field value={githubToken} onChangeText={setGithubToken} placeholder="ghp_…" autoCapitalize="none" secureTextEntry />
+          <Field value={form.githubToken} onChangeText={(v) => setField('githubToken', v)} placeholder="ghp_…" autoCapitalize="none" secureTextEntry />
 
           {/* AI */}
           <GroupLabel icon={Sparkles}>AI</GroupLabel>
           <FieldLabel>Provider</FieldLabel>
           <View style={{ flexDirection: 'row', gap: space(2), marginBottom: space(3) }}>
             {(['anthropic', 'openrouter'] as const).map((p) => {
-              const on = aiProvider === p;
+              const on = form.aiProvider === p;
               return (
                 <TouchableOpacity
                   key={p}
-                  onPress={() => setAiProvider(p)}
+                  onPress={() => setField('aiProvider', p)}
                   activeOpacity={0.8}
                   style={{
                     flex: 1,
@@ -209,26 +229,26 @@ export default function IntegrationsScreen() {
               );
             })}
           </View>
-          {aiProvider === 'anthropic' ? (
+          {form.aiProvider === 'anthropic' ? (
             <>
               <FieldLabel>Anthropic API key</FieldLabel>
-              <Field value={anthropicKey} onChangeText={setAnthropicKey} placeholder="sk-ant-…" autoCapitalize="none" secureTextEntry />
+              <Field value={form.anthropicKey} onChangeText={(v) => setField('anthropicKey', v)} placeholder="sk-ant-…" autoCapitalize="none" secureTextEntry />
               <FieldLabel>Model (optional)</FieldLabel>
-              <Field value={anthropicModel} onChangeText={setAnthropicModel} placeholder="claude-sonnet-5" autoCapitalize="none" />
+              <Field value={form.anthropicModel} onChangeText={(v) => setField('anthropicModel', v)} placeholder="claude-sonnet-5" autoCapitalize="none" />
             </>
           ) : (
             <>
               <FieldLabel>OpenRouter API key</FieldLabel>
-              <Field value={openrouterKey} onChangeText={setOpenrouterKey} placeholder="sk-or-…" autoCapitalize="none" secureTextEntry />
+              <Field value={form.openrouterKey} onChangeText={(v) => setField('openrouterKey', v)} placeholder="sk-or-…" autoCapitalize="none" secureTextEntry />
               <FieldLabel>Model (optional)</FieldLabel>
-              <Field value={openrouterModel} onChangeText={setOpenrouterModel} placeholder="anthropic/claude-sonnet-5" autoCapitalize="none" />
+              <Field value={form.openrouterModel} onChangeText={(v) => setField('openrouterModel', v)} placeholder="anthropic/claude-sonnet-5" autoCapitalize="none" />
             </>
           )}
 
           {/* Giphy */}
           <GroupLabel icon={Smile}>Giphy</GroupLabel>
           <FieldLabel>API key</FieldLabel>
-          <Field value={giphyKey} onChangeText={setGiphyKey} placeholder="Giphy API key" autoCapitalize="none" secureTextEntry />
+          <Field value={form.giphyKey} onChangeText={(v) => setField('giphyKey', v)} placeholder="Giphy API key" autoCapitalize="none" secureTextEntry />
 
           <View style={{ marginTop: space(6) }}>
             <Button title="Save" onPress={save} loading={saving} disabled={loading} />

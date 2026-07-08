@@ -67,6 +67,7 @@ const MEETING_PROVIDERS: { name: string; re: RegExp }[] = [
 // LOCATION/DESCRIPTION. Provider regexes are domain-anchored, so scanning
 // unrelated properties can't produce a false positive.
 // Lockstep with renderer/ics.js deriveMeeting.
+const DERIVE_MEETING_PREFERRED_KEYS = ['URL', 'LOCATION', 'DESCRIPTION'];
 function deriveMeeting(ev: IcsEvent): { meetingUrl: string; provider: string } {
   const raw = ev.raw || {};
   const teamsProp = raw['X-MICROSOFT-SKYPETEAMSMEETINGURL']
@@ -74,9 +75,8 @@ function deriveMeeting(ev: IcsEvent): { meetingUrl: string; provider: string } {
   if (teamsProp && /^https?:\/\//i.test(teamsProp.trim())) {
     return { meetingUrl: teamsProp.trim(), provider: 'Teams' };
   }
-  const preferredKeys = ['URL', 'LOCATION', 'DESCRIPTION'];
   const rest = Object.keys(raw)
-    .filter((k) => !preferredKeys.includes(k))
+    .filter((k) => !DERIVE_MEETING_PREFERRED_KEYS.includes(k))
     .map((k) => raw[k]);
   for (const field of [ev.url, ev.location, ev.description, ...rest]) {
     if (!field) continue;

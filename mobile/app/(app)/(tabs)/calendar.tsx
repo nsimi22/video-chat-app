@@ -206,9 +206,9 @@ export default function CalendarScreen() {
 
   const headerTitle = headerTitleFor(mode, selectedDay);
 
-  function onTapEvent(id: string) {
+  const onTapEvent = useCallback((id: string) => {
     router.push(`/(app)/event/${id}`);
-  }
+  }, []);
   const onTapIcs = useCallback((e: IcsEvent) => setIcsDetail(e), []);
 
   // Page backward/forward through the calendar. Week pages by a week, 3-Day by

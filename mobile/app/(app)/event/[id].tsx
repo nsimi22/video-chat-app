@@ -40,7 +40,6 @@ export default function EventDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { activeTeam, userId } = useAuth();
   const [event, setEvent] = useState<ScheduledCall | null>(null);
-  const [channel, setChannel] = useState<Channel | null>(null);
   const [loading, setLoading] = useState(true);
   const [attendees, setAttendees] = useState<Attendee[]>([]);
   const [profiles, setProfiles] = useState<Map<string, Profile>>(new Map());
@@ -63,7 +62,6 @@ export default function EventDetailScreen() {
           loadAttendees(found.id),
         ]);
         setChannels(chs);
-        setChannel(chs.find((c) => c.id === found.channelId) ?? null);
         setProfiles(new Map(roster.map((p) => [p.user_id, p])));
         setAttendees(atts);
       }
@@ -96,6 +94,12 @@ export default function EventDetailScreen() {
   }, [activeTeam, id]);
 
   const myStatus: AttendeeStatus | null = attendees.find((a) => a.userId === userId)?.status ?? null;
+
+  // Derived from the loaded roster + event — no need for its own state.
+  const channel = useMemo(
+    () => (event ? channels.find((c) => c.id === event.channelId) ?? null : null),
+    [event, channels],
+  );
 
   // Group attendees by status once per change instead of re-scanning the list
   // for every RSVP_OPTIONS row on every (realtime-driven) render.
