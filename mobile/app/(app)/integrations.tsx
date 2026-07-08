@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { ChevronLeft, GitBranch, Smile, Sparkles, Ticket } from 'lucide-react-native';
@@ -85,6 +85,10 @@ export default function IntegrationsScreen() {
   // Whether the user has actively chosen a provider on THIS screen. Until they
   // do, a stored desktop-only provider ('claude-code') is preserved on save.
   const [providerTouched, setProviderTouched] = useState(false);
+  // Monotonic token so a superseded load() (e.g. after an account switch)
+  // can't land its result on top of a newer one and write the wrong account's
+  // stored provider on the next Save.
+  const reqIdRef = useRef(0);
 
   const setField = useCallback(
     <K extends keyof FormState>(key: K, value: FormState[K]) =>
@@ -109,6 +113,7 @@ export default function IntegrationsScreen() {
 
   const load = useCallback(async () => {
     if (!userId) return;
+    const myReq = ++reqIdRef.current;
     setLoading(true);
     setLoadError(false);
     setProviderTouched(false);
@@ -117,6 +122,7 @@ export default function IntegrationsScreen() {
       // swallow them → null), so a network failure lands in catch below and
       // blocks Save instead of silently blanking the form and clobbering keys.
       const { jira, github, ai, giphy } = await loadAllIntegrationSettings(userId);
+      if (myReq !== reqIdRef.current) return; // superseded by a newer load
       setForm({
         jiraHost: jira?.host ?? '',
         jiraEmail: jira?.email ?? '',
@@ -132,9 +138,10 @@ export default function IntegrationsScreen() {
         giphyKey: giphy?.key ?? '',
       });
     } catch {
+      if (myReq !== reqIdRef.current) return; // superseded by a newer load
       setLoadError(true);
     } finally {
-      setLoading(false);
+      if (myReq === reqIdRef.current) setLoading(false);
     }
   }, [userId]);
 

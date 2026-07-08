@@ -147,11 +147,18 @@ export default function YouScreen() {
           {
             icon: Sparkles,
             name: 'AI assistant',
-            meta: ai?.provider === 'openrouter'
-              ? (ai.openrouterModel || 'OpenRouter')
-              : ai?.anthropicKey
-                ? (ai.anthropicModel || 'Anthropic')
-                : 'Not connected',
+            // Mirror the AiClient fallback: mobile runs on whichever API key is
+            // present (a desktop 'claude-code' subscription can't run here), so
+            // the label follows the key that will actually drive it — otherwise
+            // an OpenRouter-only fallback account showed "Not connected" beside
+            // an ON badge.
+            meta: !(ai?.anthropicKey || ai?.openrouterKey)
+              ? 'Not connected'
+              : ai?.provider === 'openrouter' && ai?.openrouterKey
+                ? (ai.openrouterModel || 'OpenRouter')
+                : ai?.anthropicKey
+                  ? (ai.anthropicModel || 'Anthropic')
+                  : (ai.openrouterModel || 'OpenRouter'),
             on: !!(ai?.anthropicKey || ai?.openrouterKey),
           },
           {
