@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, router } from 'expo-router';
-import { Plus, Search } from 'lucide-react-native';
+import { ChevronLeft, ChevronRight, Plus, Search } from 'lucide-react-native';
 import { useAuth } from '@/context/AuthContext';
 import { listChannels, type Channel } from '@/lib/api';
 import {
@@ -183,6 +183,22 @@ export default function CalendarScreen() {
   }
   const onTapIcs = useCallback((e: IcsEvent) => setIcsDetail(e), []);
 
+  // Page backward/forward through the calendar. Week pages by a week, 3-Day by
+  // three days, Month by a whole month — so each tap advances one screenful.
+  // The ±60-day scheduled_calls + ICS window is already loaded, so paging just
+  // moves the cursor; no refetch needed.
+  const shiftPeriod = useCallback((dir: 1 | -1) => {
+    setSelectedDay((cur) => {
+      if (mode === 'month') {
+        const next = new Date(cur);
+        next.setDate(1); // avoid month-length overflow (e.g. Jan 31 → Mar)
+        next.setMonth(next.getMonth() + dir);
+        return startOfDay(next);
+      }
+      return addDays(cur, dir * (mode === '3day' ? 3 : 7));
+    });
+  }, [mode]);
+
   if (loading) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center' }}>
@@ -215,6 +231,12 @@ export default function CalendarScreen() {
           </Text>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+          <TouchableOpacity hitSlop={8} onPress={() => shiftPeriod(-1)} activeOpacity={0.7}>
+            <ChevronLeft size={22} color={C.text2} />
+          </TouchableOpacity>
+          <TouchableOpacity hitSlop={8} onPress={() => shiftPeriod(1)} activeOpacity={0.7}>
+            <ChevronRight size={22} color={C.text2} />
+          </TouchableOpacity>
           <TouchableOpacity hitSlop={8} onPress={() => {}}>
             <Search size={20} color={C.text2} />
           </TouchableOpacity>
