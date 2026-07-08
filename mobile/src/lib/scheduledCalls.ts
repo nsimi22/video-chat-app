@@ -119,6 +119,84 @@ export async function deleteScheduledCall(id: string): Promise<void> {
   if (error) throw error;
 }
 
+// --- RSVP / attendees --------------------------------------------------
+// Mirror of renderer/api.js setRsvp / clearRsvp / subscribeCallAttendees.
+// Same scheduled_call_attendees table + RLS as desktop, so an RSVP from
+// mobile shows up on desktop and vice versa.
+
+export type AttendeeStatus = 'going' | 'maybe' | 'declined';
+export type Attendee = { userId: string; status: AttendeeStatus };
+
+type AttendeeRow = { call_id?: string; user_id: string; status: AttendeeStatus };
+
+export async function loadAttendees(callId: string): Promise<Attendee[]> {
+  const { data, error } = await supabase
+    .from('scheduled_call_attendees')
+    .select('user_id, status')
+    .eq('call_id', callId);
+  if (error) {
+    console.warn('loadAttendees failed', error.message, error.code ?? '');
+    return [];
+  }
+  return ((data ?? []) as AttendeeRow[]).map((a) => ({ userId: a.user_id, status: a.status }));
+}
+
+// RSVP to a call. Upserts the caller's row so calling again just flips the
+// status (going -> maybe). The DB trigger stamps responded_at server-side.
+export async function setRsvp(callId: string, userId: string, status: AttendeeStatus): Promise<void> {
+  const { error } = await supabase
+    .from('scheduled_call_attendees')
+    .upsert({ call_id: callId, user_id: userId, status }, { onConflict: 'call_id,user_id' });
+  if (error) throw error;
+}
+
+// Retract an RSVP entirely (removes the row, so the user drops out of the
+// counts rather than lingering as "declined").
+export async function clearRsvp(callId: string, userId: string): Promise<void> {
+  const { error } = await supabase
+    .from('scheduled_call_attendees')
+    .delete()
+    .eq('call_id', callId)
+    .eq('user_id', userId);
+  if (error) throw error;
+}
+
+export type AttendeeEvent = {
+  eventType: 'INSERT' | 'UPDATE' | 'DELETE';
+  callId: string | null;
+  userId: string | null;
+  status: AttendeeStatus | null;
+};
+
+// Realtime fan-in for RSVP changes. The attendees table has no team_id, so
+// there's no server-side filter — RLS restricts delivered rows to calls the
+// viewer can see (the read policy joins back to scheduled_calls).
+export function subscribeCallAttendees(
+  teamId: string,
+  handler: (evt: AttendeeEvent) => void,
+): () => void {
+  const ch = supabase
+    .channel(`scheduled_call_attendees:${teamId}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'scheduled_call_attendees' },
+      (payload) => {
+        const row = (payload.new && (payload.new as AttendeeRow).call_id ? payload.new : null) as AttendeeRow | null;
+        const oldRow = (payload.old ?? null) as AttendeeRow | null;
+        handler({
+          eventType: payload.eventType as AttendeeEvent['eventType'],
+          callId: row?.call_id ?? oldRow?.call_id ?? null,
+          userId: row?.user_id ?? oldRow?.user_id ?? null,
+          status: row?.status ?? null,
+        });
+      },
+    )
+    .subscribe();
+  return () => {
+    supabase.removeChannel(ch);
+  };
+}
+
 export type ScheduledCallEvent =
   | { kind: 'upsert'; row: ScheduledCall }
   | { kind: 'delete'; id: string };
