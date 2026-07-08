@@ -32,6 +32,7 @@ type Props = {
   icsEvents: IcsEvent[];
   channels: Channel[];
   onTapEvent: (id: string) => void;
+  onTapIcs: (e: IcsEvent) => void;
   onSelectDay: (d: Date) => void;
 };
 
@@ -43,12 +44,13 @@ type ColBlock = {
   color: string;
   isHuddle: boolean;
   scheduledCallId: string | null;
+  icsEvent: IcsEvent | null;
 };
 
 // ColBlock + the side-by-side lane assignment from layoutOverlaps().
 type LaidColBlock = ColBlock & { col: number; cols: number };
 
-export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEvent, onSelectDay }: Props) {
+export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEvent, onTapIcs, onSelectDay }: Props) {
   const insets = useSafeAreaInsets();
   const channelById = useMemo(() => {
     const m = new Map<string, Channel>();
@@ -78,6 +80,7 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
         color: channelColorForChannel(e.channelId, ch?.type),
         isHuddle: true,
         scheduledCallId: e.id,
+        icsEvent: null,
       });
     }
     for (const e of icsEvents) {
@@ -96,6 +99,7 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
         color: C.text2,
         isHuddle: false,
         scheduledCallId: null,
+        icsEvent: e,
       });
     }
     // Overlapping events within a day split the column side-by-side.
@@ -184,8 +188,10 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
                 }}
               >
                 {items.map((e) => (
-                  <View
+                  <TouchableOpacity
                     key={'ad:' + (e.uid || `${e.title}:${e.start?.toISOString()}`)}
+                    onPress={() => onTapIcs(e)}
+                    activeOpacity={0.7}
                     style={{
                       backgroundColor: C.surface2,
                       borderLeftWidth: 2.5,
@@ -198,7 +204,7 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
                     <Text numberOfLines={1} style={{ fontSize: 10, fontWeight: '600', color: '#fff' }}>
                       {e.title || '(untitled)'}
                     </Text>
-                  </View>
+                  </TouchableOpacity>
                 ))}
               </View>
             );
@@ -207,7 +213,7 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
       )}
 
       <ScrollView ref={scrollRef} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: tabBarClearance(insets.bottom) }}>
-        <Grid days={days} blocksByDay={blocksByDay} nowHour={nowHour} onTapBlock={onTapEvent} />
+        <Grid days={days} blocksByDay={blocksByDay} nowHour={nowHour} onTapBlock={onTapEvent} onTapIcs={onTapIcs} />
       </ScrollView>
     </View>
   );
@@ -218,11 +224,13 @@ function Grid({
   blocksByDay,
   nowHour,
   onTapBlock,
+  onTapIcs,
 }: {
   days: Date[];
   blocksByDay: Map<string, LaidColBlock[]>;
   nowHour: number;
   onTapBlock: (id: string) => void;
+  onTapIcs: (e: IcsEvent) => void;
 }) {
   const hours = Array.from({ length: DAY_END - DAY_START }, (_, i) => DAY_START + i);
   const gutter = 44;
@@ -270,7 +278,7 @@ function Grid({
                 <View pointerEvents="none" style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(74,139,245,0.04)' }} />
               )}
               {cols.map((b) => (
-                <ColumnEventBlock key={b.key} block={b} onPress={onTapBlock} />
+                <ColumnEventBlock key={b.key} block={b} onPress={onTapBlock} onPressIcs={onTapIcs} />
               ))}
               {today && <ColumnNowBar nowHour={nowHour} />}
             </View>
@@ -281,12 +289,15 @@ function Grid({
   );
 }
 
-function ColumnEventBlock({ block, onPress }: { block: LaidColBlock; onPress: (id: string) => void }) {
+function ColumnEventBlock({ block, onPress, onPressIcs }: { block: LaidColBlock; onPress: (id: string) => void; onPressIcs: (e: IcsEvent) => void }) {
   const top = (block.startHour - DAY_START) * HOUR_PX;
   const height = Math.max(20, (block.endHour - block.startHour) * HOUR_PX - 2);
   const startDate = new Date();
   startDate.setHours(Math.floor(block.startHour), Math.round((block.startHour % 1) * 60), 0, 0);
-  const disabled = !block.scheduledCallId;
+  const onPressBlock = () => {
+    if (block.scheduledCallId) onPress(block.scheduledCallId);
+    else if (block.icsEvent) onPressIcs(block.icsEvent);
+  };
   // % lane math inside the day column — overlapping events sit side by side.
   const laneLeft = (block.col / block.cols) * 100;
   const laneWidth = 100 / block.cols;
@@ -304,9 +315,8 @@ function ColumnEventBlock({ block, onPress }: { block: LaidColBlock; onPress: (i
       }}
     >
       <TouchableOpacity
-        onPress={() => block.scheduledCallId && onPress(block.scheduledCallId)}
-        activeOpacity={disabled ? 1 : 0.7}
-        disabled={disabled}
+        onPress={onPressBlock}
+        activeOpacity={0.7}
         style={{
           flex: 1,
           backgroundColor: block.color + '26',

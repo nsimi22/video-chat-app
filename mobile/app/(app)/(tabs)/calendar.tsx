@@ -25,6 +25,7 @@ import { WeekView } from '@/components/calendar/WeekView';
 import { ThreeDayView } from '@/components/calendar/ThreeDayView';
 import { MonthView } from '@/components/calendar/MonthView';
 import { ScheduleCallSheet } from '@/components/ScheduleCallSheet';
+import { EventDetailsSheet } from '@/components/EventDetailsSheet';
 import { C, addDays, sameDay, startOfDay } from '@/components/calendar/tokens';
 
 type Mode = 'week' | '3day' | 'month';
@@ -71,6 +72,9 @@ export default function CalendarScreen() {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
   const [sheetOpen, setSheetOpen] = useState(false);
+  // Tapped external (.ics) event → read-only details sheet with Join. Internal
+  // calls route to /(app)/event/[id] instead (they're in our table).
+  const [icsDetail, setIcsDetail] = useState<IcsEvent | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refreshSubscriptions = useCallback(async (subs: CalendarSubscription[]) => {
@@ -177,6 +181,7 @@ export default function CalendarScreen() {
   function onTapEvent(id: string) {
     router.push(`/(app)/event/${id}`);
   }
+  const onTapIcs = useCallback((e: IcsEvent) => setIcsDetail(e), []);
 
   if (loading) {
     return (
@@ -263,6 +268,7 @@ export default function CalendarScreen() {
           channels={channels}
           onSelectDay={setSelectedDay}
           onTapEvent={onTapEvent}
+          onTapIcs={onTapIcs}
         />
       )}
       {mode === '3day' && (
@@ -272,6 +278,7 @@ export default function CalendarScreen() {
           icsEvents={icsEvents}
           channels={channels}
           onTapEvent={onTapEvent}
+          onTapIcs={onTapIcs}
           onSelectDay={setSelectedDay}
         />
       )}
@@ -284,6 +291,7 @@ export default function CalendarScreen() {
           channels={channels}
           onSelectDay={setSelectedDay}
           onTapEvent={onTapEvent}
+          onTapIcs={onTapIcs}
         />
       )}
 
@@ -296,6 +304,8 @@ export default function CalendarScreen() {
         defaultChannelId={null}
         onScheduled={() => initialLoad()}
       />
+
+      <EventDetailsSheet event={icsDetail} onClose={() => setIcsDetail(null)} />
     </SafeAreaView>
   );
 }

@@ -28,6 +28,11 @@ export type IcsEvent = {
   allDay: boolean;
   rrule: string;
   exdate: number[];
+  // Video-meeting join link + provider label derived from the VEVENT (Teams
+  // X- prop, CONFERENCE, or a provider URL scraped from any property). Empty
+  // strings when the event carries no recognisable meeting link.
+  meetingUrl: string;
+  provider: string;
   raw: Record<string, string>;
   // True for every occurrence past the first in a recurring series; the
   // first occurrence keeps the bare UID for back-compat with consumers
@@ -40,6 +45,52 @@ export type ParseIcsOptions = {
   // this to its display horizon — defaults to ~1 year forward if absent.
   expandUntil?: Date;
 };
+
+// Video-meeting providers we recognise in subscribed feeds. Each URL pattern
+// is domain-anchored so a given link classifies as at most one provider.
+// Non-global (no `/g`) so `.exec` has no lastIndex state between calls.
+// Lockstep with renderer/ics.js MEETING_PROVIDERS.
+const MEETING_PROVIDERS: { name: string; re: RegExp }[] = [
+  { name: 'Teams', re: /https?:\/\/[^\s"'<>]*teams\.(?:microsoft\.com|live\.com)\/[^\s"'<>]*/i },
+  { name: 'Zoom', re: /https?:\/\/[^\s"'<>]*zoom\.us\/[^\s"'<>]*/i },
+  { name: 'Meet', re: /https?:\/\/meet\.google\.com\/[^\s"'<>]*/i },
+  { name: 'Webex', re: /https?:\/\/[^\s"'<>]*\.webex\.com\/[^\s"'<>]*/i },
+];
+
+// Pull a join link + provider label out of a parsed VEVENT. Teams exports a
+// dedicated X- property holding the canonical URL, so we trust that over
+// scraping the body. Otherwise we scan the most authoritative fields first
+// (URL / LOCATION / DESCRIPTION), then EVERY remaining property value — the
+// all-properties fallback matters for meetings you were INVITED to (vs
+// organised): the invitee copy frequently carries the join link in CONFERENCE
+// (RFC 7986), X-GOOGLE-CONFERENCE (Meet), or a vendor X- prop rather than in
+// LOCATION/DESCRIPTION. Provider regexes are domain-anchored, so scanning
+// unrelated properties can't produce a false positive.
+// Lockstep with renderer/ics.js deriveMeeting.
+function deriveMeeting(ev: IcsEvent): { meetingUrl: string; provider: string } {
+  const raw = ev.raw || {};
+  const teamsProp = raw['X-MICROSOFT-SKYPETEAMSMEETINGURL']
+    || raw['X-MICROSOFT-ONLINEMEETINGEXTERNALLINK'];
+  if (teamsProp && /^https?:\/\//i.test(teamsProp.trim())) {
+    return { meetingUrl: teamsProp.trim(), provider: 'Teams' };
+  }
+  const preferredKeys = ['URL', 'LOCATION', 'DESCRIPTION'];
+  const rest = Object.keys(raw)
+    .filter((k) => !preferredKeys.includes(k))
+    .map((k) => raw[k]);
+  for (const field of [ev.url, ev.location, ev.description, ...rest]) {
+    if (!field) continue;
+    for (const { name, re } of MEETING_PROVIDERS) {
+      const m = re.exec(field);
+      if (m) {
+        // Trailing sentence punctuation can glue onto a body-buried URL; strip
+        // it (real query strings don't end in these chars).
+        return { meetingUrl: m[0].replace(/[.,;)\]]+$/, ''), provider: name };
+      }
+    }
+  }
+  return { meetingUrl: '', provider: '' };
+}
 
 export function parseIcs(text: string, opts?: ParseIcsOptions): { events: IcsEvent[] } {
   const out: { events: IcsEvent[] } = { events: [] };
@@ -66,12 +117,18 @@ export function parseIcs(text: string, opts?: ParseIcsOptions): { events: IcsEve
       curRecur = null;
       cur = {
         uid: '', title: '', description: '', location: '', url: '',
-        start: null, end: null, allDay: false, rrule: '', exdate: [], raw: {},
+        start: null, end: null, allDay: false, rrule: '',
+        meetingUrl: '', provider: '', exdate: [], raw: {},
       };
       continue;
     }
     if (trimmed === 'END:VEVENT') {
       if (cur && cur.start) {
+        // Derive once here on the master/override; expandSeries spreads
+        // `...event`, so generated occurrences inherit the link.
+        const meeting = deriveMeeting(cur);
+        cur.meetingUrl = meeting.meetingUrl;
+        cur.provider = meeting.provider;
         if (curRecur !== null) overrides.push({ ev: cur, ...curRecur });
         else masters.push(cur);
       }

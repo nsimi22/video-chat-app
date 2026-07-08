@@ -22,10 +22,12 @@ type Props = {
   channels: Channel[];
   onSelectDay: (d: Date) => void;
   onTapEvent: (id: string) => void;
+  onTapIcs: (e: IcsEvent) => void;
 };
 
-// Unified agenda row — internal calls are tappable, ICS rows are
-// display-only (they have no detail screen, same as the other views).
+// Unified agenda row — internal calls route to the detail screen by id;
+// external ICS rows carry their source event so a tap opens the details
+// sheet (with Join). Exactly one of the two is set.
 type AgendaItem = {
   key: string;
   title: string;
@@ -36,6 +38,7 @@ type AgendaItem = {
   start: Date;
   end: Date | null;
   scheduledCallId: string | null;
+  icsEvent: IcsEvent | null;
 };
 
 type CellDay = { date: Date; dim: boolean };
@@ -58,7 +61,7 @@ function monthCells(anchor: Date): CellDay[] {
   return cells;
 }
 
-export function MonthView({ anchorMonth, selectedDay, events, icsEvents, channels, onSelectDay, onTapEvent }: Props) {
+export function MonthView({ anchorMonth, selectedDay, events, icsEvents, channels, onSelectDay, onTapEvent, onTapIcs }: Props) {
   const insets = useSafeAreaInsets();
   const channelById = useMemo(() => {
     const m = new Map<string, Channel>();
@@ -115,6 +118,7 @@ export function MonthView({ anchorMonth, selectedDay, events, icsEvents, channel
         start: e.startsAt,
         end: new Date(e.startsAt.getTime() + e.durationMin * 60 * 1000),
         scheduledCallId: e.id,
+        icsEvent: null,
       });
     }
     for (const e of icsEvents) {
@@ -131,6 +135,7 @@ export function MonthView({ anchorMonth, selectedDay, events, icsEvents, channel
         start: e.start,
         end: e.end,
         scheduledCallId: null,
+        icsEvent: e,
       });
     }
     // All-day first, then chronological.
@@ -210,13 +215,15 @@ export function MonthView({ anchorMonth, selectedDay, events, icsEvents, channel
             <Text style={{ color: C.text3, fontSize: 13, paddingVertical: 16 }}>Nothing scheduled.</Text>
           ) : (
             dayAgenda.map((item) => {
-              const disabled = !item.scheduledCallId;
+              const onPressRow = () => {
+                if (item.scheduledCallId) onTapEvent(item.scheduledCallId);
+                else if (item.icsEvent) onTapIcs(item.icsEvent);
+              };
               return (
                 <TouchableOpacity
                   key={item.key}
-                  onPress={() => item.scheduledCallId && onTapEvent(item.scheduledCallId)}
-                  activeOpacity={disabled ? 1 : 0.7}
-                  disabled={disabled}
+                  onPress={onPressRow}
+                  activeOpacity={0.7}
                   style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, borderTopWidth: 0.5, borderTopColor: C.hair }}
                 >
                   <View style={{ width: 4, alignSelf: 'stretch', backgroundColor: item.color, borderRadius: 2 }} />
