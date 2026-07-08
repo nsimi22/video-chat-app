@@ -103,6 +103,39 @@ export async function getCalendarSubscriptions(userId: string): Promise<Calendar
   );
 }
 
+// Full read that SURFACES errors, unlike the cached getters above (which fall
+// back to null on any failure). The Integrations editor uses this so a failed
+// load can be caught and Save blocked — otherwise a network hiccup would
+// populate the form with blanks and Save would clobber the real keys with
+// empty strings. Refreshes the shared cache on success.
+export async function loadAllIntegrationSettings(userId: string): Promise<Cache> {
+  const { data, error } = await supabase
+    .from('user_integrations')
+    .select('settings')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  const settings = (data?.settings ?? {}) as {
+    jira?: JiraSettings;
+    github?: GithubSettings;
+    ai?: AiSettings;
+    aiTicket?: AiTicketSettings;
+    giphy?: GiphySettings;
+    calendar?: CalendarSettings;
+  };
+  cache = {
+    userId,
+    loadedAt: Date.now(),
+    jira: settings.jira ?? null,
+    github: settings.github ?? null,
+    ai: settings.ai ?? null,
+    aiTicket: settings.aiTicket ?? null,
+    giphy: settings.giphy ?? null,
+    calendar: settings.calendar ?? null,
+  };
+  return cache;
+}
+
 // Persist edited integration credentials back to user_integrations.settings.
 //
 // Read-merge-write: the desktop stores keys mobile doesn't model in the same

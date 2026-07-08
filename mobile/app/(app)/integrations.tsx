@@ -1,16 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { Stack } from 'expo-router';
 import { GitBranch, Smile, Sparkles, Ticket } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
 import { useAuth } from '@/context/AuthContext';
-import {
-  getAiSettings,
-  getGiphyKey,
-  getGithubSettings,
-  getJiraSettings,
-  updateIntegrationSettings,
-} from '@/lib/integrations';
+import { loadAllIntegrationSettings, updateIntegrationSettings } from '@/lib/integrations';
 import type { AiProvider } from '@/lib/ai';
 import { Button, Field } from '@/components/ui';
 import { colors, radius, space } from '@/theme';
@@ -43,6 +37,7 @@ export default function IntegrationsScreen() {
   const { userId } = useAuth();
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
 
   // Jira
@@ -64,13 +59,12 @@ export default function IntegrationsScreen() {
   const load = useCallback(async () => {
     if (!userId) return;
     setLoading(true);
+    setLoadError(false);
     try {
-      const [jira, github, ai, giphy] = await Promise.all([
-        getJiraSettings(userId),
-        getGithubSettings(userId),
-        getAiSettings(userId),
-        getGiphyKey(userId),
-      ]);
+      // loadAllIntegrationSettings surfaces read errors (the cached getters
+      // swallow them → null), so a network failure lands in catch below and
+      // blocks Save instead of silently blanking the form and clobbering keys.
+      const { jira, github, ai, giphy } = await loadAllIntegrationSettings(userId);
       setJiraHost(jira?.host ?? '');
       setJiraEmail(jira?.email ?? '');
       setJiraToken(jira?.token ?? '');
@@ -81,7 +75,9 @@ export default function IntegrationsScreen() {
       setAnthropicModel(ai?.anthropicModel ?? '');
       setOpenrouterKey(ai?.openrouterKey ?? '');
       setOpenrouterModel(ai?.openrouterModel ?? '');
-      setGiphyKey(giphy ?? '');
+      setGiphyKey(giphy?.key ?? '');
+    } catch {
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -122,6 +118,36 @@ export default function IntegrationsScreen() {
     userId, jiraHost, jiraEmail, jiraToken, jiraProject, githubToken,
     aiProvider, anthropicKey, anthropicModel, openrouterKey, openrouterModel, giphyKey,
   ]);
+
+  if (loading) {
+    return (
+      <>
+        <Stack.Screen options={{ title: 'Integrations' }} />
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}>
+          <ActivityIndicator color={colors.accent} />
+        </View>
+      </>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <>
+        <Stack.Screen options={{ title: 'Integrations' }} />
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg, padding: space(4) }}>
+          <Text style={{ color: colors.text, fontSize: 16, fontWeight: '600', marginBottom: space(2), textAlign: 'center' }}>
+            Couldn’t load integrations
+          </Text>
+          <Text style={{ color: colors.textDim, textAlign: 'center', marginBottom: space(4), lineHeight: 19 }}>
+            Check your connection and try again. Nothing is saved until it loads, so your keys stay safe.
+          </Text>
+          <View style={{ alignSelf: 'stretch' }}>
+            <Button title="Retry" onPress={load} />
+          </View>
+        </View>
+      </>
+    );
+  }
 
   return (
     <>
