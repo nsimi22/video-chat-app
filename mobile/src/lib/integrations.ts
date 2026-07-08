@@ -103,6 +103,75 @@ export async function getCalendarSubscriptions(userId: string): Promise<Calendar
   );
 }
 
+// Full read that SURFACES errors, unlike the cached getters above (which fall
+// back to null on any failure). The Integrations editor uses this so a failed
+// load can be caught and Save blocked — otherwise a network hiccup would
+// populate the form with blanks and Save would clobber the real keys with
+// empty strings. Refreshes the shared cache on success.
+export async function loadAllIntegrationSettings(userId: string): Promise<Cache> {
+  const { data, error } = await supabase
+    .from('user_integrations')
+    .select('settings')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  const settings = (data?.settings ?? {}) as {
+    jira?: JiraSettings;
+    github?: GithubSettings;
+    ai?: AiSettings;
+    aiTicket?: AiTicketSettings;
+    giphy?: GiphySettings;
+    calendar?: CalendarSettings;
+  };
+  cache = {
+    userId,
+    loadedAt: Date.now(),
+    jira: settings.jira ?? null,
+    github: settings.github ?? null,
+    ai: settings.ai ?? null,
+    aiTicket: settings.aiTicket ?? null,
+    giphy: settings.giphy ?? null,
+    calendar: settings.calendar ?? null,
+  };
+  return cache;
+}
+
+// Persist edited integration credentials back to user_integrations.settings.
+//
+// Read-merge-write: the desktop stores keys mobile doesn't model in the same
+// JSONB blob (favorites, DND deadline / working hours, ai.claudeCode,
+// jira.defaultProject, calendar.subscriptions, …). Replacing the whole row
+// would silently clobber them, so we fetch the current settings, shallow-merge
+// each edited section over its existing value, and upsert the merged whole —
+// mirroring the desktop renderer's loadSettings()/saveSettings() round-trip.
+export async function updateIntegrationSettings(
+  userId: string,
+  patch: {
+    jira?: JiraSettings;
+    github?: GithubSettings;
+    ai?: AiSettings;
+    giphy?: GiphySettings;
+  },
+): Promise<void> {
+  const { data, error: readErr } = await supabase
+    .from('user_integrations')
+    .select('settings')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (readErr) throw readErr;
+  const current = (data?.settings ?? {}) as Record<string, Record<string, unknown> | undefined>;
+  const next: Record<string, unknown> = { ...current };
+  for (const [section, value] of Object.entries(patch)) {
+    if (!value) continue;
+    next[section] = { ...(current[section] ?? {}), ...value };
+  }
+  const { error } = await supabase
+    .from('user_integrations')
+    .upsert({ user_id: userId, settings: next });
+  if (error) throw error;
+  invalidateIntegrations();
+}
+
 // Force a reload on next get() — call after the user edits their settings.
 export function invalidateIntegrations() {
   cache = null;

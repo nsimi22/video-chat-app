@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, router } from 'expo-router';
-import { Plus, Search } from 'lucide-react-native';
+import { ChevronLeft, ChevronRight, Plus, Search } from 'lucide-react-native';
 import { useAuth } from '@/context/AuthContext';
 import { listChannels, type Channel } from '@/lib/api';
 import {
@@ -19,12 +19,13 @@ import {
   subscribeScheduledCalls,
   type ScheduledCall,
 } from '@/lib/scheduledCalls';
-import { parseIcs, type IcsEvent } from '@/lib/ics';
+import { expandRecurringStarts, parseIcs, type IcsEvent } from '@/lib/ics';
 import { getCalendarSubscriptions, type CalendarSubscription } from '@/lib/integrations';
 import { WeekView } from '@/components/calendar/WeekView';
 import { ThreeDayView } from '@/components/calendar/ThreeDayView';
 import { MonthView } from '@/components/calendar/MonthView';
 import { ScheduleCallSheet } from '@/components/ScheduleCallSheet';
+import { EventDetailsSheet } from '@/components/EventDetailsSheet';
 import { C, addDays, sameDay, startOfDay } from '@/components/calendar/tokens';
 
 type Mode = 'week' | '3day' | 'month';
@@ -71,6 +72,9 @@ export default function CalendarScreen() {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
   const [sheetOpen, setSheetOpen] = useState(false);
+  // Tapped external (.ics) event → read-only details sheet with Join. Internal
+  // calls route to /(app)/event/[id] instead (they're in our table).
+  const [icsDetail, setIcsDetail] = useState<IcsEvent | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refreshSubscriptions = useCallback(async (subs: CalendarSubscription[]) => {
@@ -165,7 +169,35 @@ export default function CalendarScreen() {
     };
   }, [subscriptions, refreshSubscriptions]);
 
-  const events = useMemo(() => [...scheduled.values()], [scheduled]);
+  // Expand recurring internal calls into per-occurrence entries (same engine
+  // as subscribed .ics feeds). A non-recurring call yields itself; a recurring
+  // one yields a shallow clone per occurrence with startsAt shifted — the id is
+  // preserved so tapping any occurrence opens the same underlying call. Bounded
+  // to the loaded ±60-day window so a no-UNTIL rule can't blow up.
+  const events = useMemo(() => {
+    const now = Date.now();
+    const floor = now - ICS_BACKLOG_MS;
+    const cutoff = now + ICS_MAX_HORIZON_MS;
+    const horizon = new Date(cutoff);
+    const out: ScheduledCall[] = [];
+    for (const c of scheduled.values()) {
+      if (!c.rrule) {
+        out.push(c);
+        continue;
+      }
+      const end = new Date(c.startsAt.getTime() + c.durationMin * 60 * 1000);
+      const starts = expandRecurringStarts(
+        { start: c.startsAt, end, rrule: c.rrule, exdate: c.exdate, uid: c.id },
+        horizon,
+      );
+      for (const s of starts) {
+        const ms = s.getTime();
+        if (ms < floor || ms > cutoff) continue;
+        out.push({ ...c, startsAt: s });
+      }
+    }
+    return out;
+  }, [scheduled]);
   const icsEvents = useMemo(() => [...icsByUrl.values()].flat(), [icsByUrl]);
 
   const today = new Date();
@@ -174,9 +206,26 @@ export default function CalendarScreen() {
 
   const headerTitle = headerTitleFor(mode, selectedDay);
 
-  function onTapEvent(id: string) {
+  const onTapEvent = useCallback((id: string) => {
     router.push(`/(app)/event/${id}`);
-  }
+  }, []);
+  const onTapIcs = useCallback((e: IcsEvent) => setIcsDetail(e), []);
+
+  // Page backward/forward through the calendar. Week pages by a week, 3-Day by
+  // three days, Month by a whole month — so each tap advances one screenful.
+  // The ±60-day scheduled_calls + ICS window is already loaded, so paging just
+  // moves the cursor; no refetch needed.
+  const shiftPeriod = useCallback((dir: 1 | -1) => {
+    setSelectedDay((cur) => {
+      if (mode === 'month') {
+        const next = new Date(cur);
+        next.setDate(1); // avoid month-length overflow (e.g. Jan 31 → Mar)
+        next.setMonth(next.getMonth() + dir);
+        return startOfDay(next);
+      }
+      return addDays(cur, dir * (mode === '3day' ? 3 : 7));
+    });
+  }, [mode]);
 
   if (loading) {
     return (
@@ -210,6 +259,12 @@ export default function CalendarScreen() {
           </Text>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+          <TouchableOpacity hitSlop={8} onPress={() => shiftPeriod(-1)} activeOpacity={0.7}>
+            <ChevronLeft size={22} color={C.text2} />
+          </TouchableOpacity>
+          <TouchableOpacity hitSlop={8} onPress={() => shiftPeriod(1)} activeOpacity={0.7}>
+            <ChevronRight size={22} color={C.text2} />
+          </TouchableOpacity>
           <TouchableOpacity hitSlop={8} onPress={() => {}}>
             <Search size={20} color={C.text2} />
           </TouchableOpacity>
@@ -263,6 +318,7 @@ export default function CalendarScreen() {
           channels={channels}
           onSelectDay={setSelectedDay}
           onTapEvent={onTapEvent}
+          onTapIcs={onTapIcs}
         />
       )}
       {mode === '3day' && (
@@ -272,6 +328,7 @@ export default function CalendarScreen() {
           icsEvents={icsEvents}
           channels={channels}
           onTapEvent={onTapEvent}
+          onTapIcs={onTapIcs}
           onSelectDay={setSelectedDay}
         />
       )}
@@ -284,6 +341,7 @@ export default function CalendarScreen() {
           channels={channels}
           onSelectDay={setSelectedDay}
           onTapEvent={onTapEvent}
+          onTapIcs={onTapIcs}
         />
       )}
 
@@ -296,6 +354,8 @@ export default function CalendarScreen() {
         defaultChannelId={null}
         onScheduled={() => initialLoad()}
       />
+
+      <EventDetailsSheet event={icsDetail} onClose={() => setIcsDetail(null)} />
     </SafeAreaView>
   );
 }

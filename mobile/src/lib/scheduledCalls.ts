@@ -14,6 +14,11 @@ export type ScheduledCall = {
   description: string;
   startsAt: Date;
   durationMin: number;
+  // RFC 5545 RRULE body (no "RRULE:" prefix), '' for a single-shot call.
+  rrule: string;
+  // Excluded occurrence start instants (cancel-one-occurrence), epoch-ms so
+  // they drop straight into the ICS expandSeries exclusion set.
+  exdate: number[];
   createdAt: Date;
   updatedAt: Date;
 };
@@ -27,6 +32,8 @@ type Row = {
   description: string | null;
   starts_at: string;
   duration_min: number;
+  rrule: string | null;
+  exdate: string[] | null;
   created_at: string;
   updated_at: string;
 };
@@ -41,6 +48,8 @@ function marshal(row: Row): ScheduledCall {
     description: row.description ?? '',
     startsAt: new Date(row.starts_at),
     durationMin: row.duration_min,
+    rrule: row.rrule ?? '',
+    exdate: Array.isArray(row.exdate) ? row.exdate.map((s) => new Date(s).getTime()) : [],
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
   };
@@ -95,6 +104,7 @@ export async function createScheduledCall(args: {
   description?: string;
   startsAt: Date;
   durationMin?: number;
+  rrule?: string;
 }): Promise<ScheduledCall> {
   if (isNaN(args.startsAt.getTime())) throw new Error('invalid startsAt');
   const { data, error } = await supabase
@@ -107,7 +117,41 @@ export async function createScheduledCall(args: {
       description: args.description ?? '',
       starts_at: args.startsAt.toISOString(),
       duration_min: args.durationMin ?? 30,
+      rrule: args.rrule ?? '',
     })
+    .select()
+    .single();
+  if (error) throw error;
+  return marshal(data as Row);
+}
+
+// Edit an existing call. Only the owner's rows pass the RLS update policy.
+// Pass just the fields you're changing.
+export async function updateScheduledCall(
+  id: string,
+  patch: {
+    title?: string;
+    description?: string;
+    channelId?: string;
+    startsAt?: Date;
+    durationMin?: number;
+    rrule?: string;
+  },
+): Promise<ScheduledCall> {
+  const row: Record<string, unknown> = {};
+  if (patch.title !== undefined) row.title = patch.title;
+  if (patch.description !== undefined) row.description = patch.description;
+  if (patch.channelId !== undefined) row.channel_id = patch.channelId;
+  if (patch.startsAt !== undefined) {
+    if (isNaN(patch.startsAt.getTime())) throw new Error('invalid startsAt');
+    row.starts_at = patch.startsAt.toISOString();
+  }
+  if (patch.durationMin !== undefined) row.duration_min = patch.durationMin;
+  if (patch.rrule !== undefined) row.rrule = patch.rrule;
+  const { data, error } = await supabase
+    .from('scheduled_calls')
+    .update(row)
+    .eq('id', id)
     .select()
     .single();
   if (error) throw error;
@@ -117,6 +161,84 @@ export async function createScheduledCall(args: {
 export async function deleteScheduledCall(id: string): Promise<void> {
   const { error } = await supabase.from('scheduled_calls').delete().eq('id', id);
   if (error) throw error;
+}
+
+// --- RSVP / attendees --------------------------------------------------
+// Mirror of renderer/api.js setRsvp / clearRsvp / subscribeCallAttendees.
+// Same scheduled_call_attendees table + RLS as desktop, so an RSVP from
+// mobile shows up on desktop and vice versa.
+
+export type AttendeeStatus = 'going' | 'maybe' | 'declined';
+export type Attendee = { userId: string; status: AttendeeStatus };
+
+type AttendeeRow = { call_id?: string; user_id: string; status: AttendeeStatus };
+
+export async function loadAttendees(callId: string): Promise<Attendee[]> {
+  const { data, error } = await supabase
+    .from('scheduled_call_attendees')
+    .select('user_id, status')
+    .eq('call_id', callId);
+  if (error) {
+    console.warn('loadAttendees failed', error.message, error.code ?? '');
+    return [];
+  }
+  return ((data ?? []) as AttendeeRow[]).map((a) => ({ userId: a.user_id, status: a.status }));
+}
+
+// RSVP to a call. Upserts the caller's row so calling again just flips the
+// status (going -> maybe). The DB trigger stamps responded_at server-side.
+export async function setRsvp(callId: string, userId: string, status: AttendeeStatus): Promise<void> {
+  const { error } = await supabase
+    .from('scheduled_call_attendees')
+    .upsert({ call_id: callId, user_id: userId, status }, { onConflict: 'call_id,user_id' });
+  if (error) throw error;
+}
+
+// Retract an RSVP entirely (removes the row, so the user drops out of the
+// counts rather than lingering as "declined").
+export async function clearRsvp(callId: string, userId: string): Promise<void> {
+  const { error } = await supabase
+    .from('scheduled_call_attendees')
+    .delete()
+    .eq('call_id', callId)
+    .eq('user_id', userId);
+  if (error) throw error;
+}
+
+export type AttendeeEvent = {
+  eventType: 'INSERT' | 'UPDATE' | 'DELETE';
+  callId: string | null;
+  userId: string | null;
+  status: AttendeeStatus | null;
+};
+
+// Realtime fan-in for RSVP changes. The attendees table has no team_id, so
+// there's no server-side filter — RLS restricts delivered rows to calls the
+// viewer can see (the read policy joins back to scheduled_calls).
+export function subscribeCallAttendees(
+  teamId: string,
+  handler: (evt: AttendeeEvent) => void,
+): () => void {
+  const ch = supabase
+    .channel(`scheduled_call_attendees:${teamId}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'scheduled_call_attendees' },
+      (payload) => {
+        const row = (payload.new && (payload.new as AttendeeRow).call_id ? payload.new : null) as AttendeeRow | null;
+        const oldRow = (payload.old ?? null) as AttendeeRow | null;
+        handler({
+          eventType: payload.eventType as AttendeeEvent['eventType'],
+          callId: row?.call_id ?? oldRow?.call_id ?? null,
+          userId: row?.user_id ?? oldRow?.user_id ?? null,
+          status: row?.status ?? null,
+        });
+      },
+    )
+    .subscribe();
+  return () => {
+    supabase.removeChannel(ch);
+  };
 }
 
 export type ScheduledCallEvent =

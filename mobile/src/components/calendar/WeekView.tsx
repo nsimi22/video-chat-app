@@ -18,13 +18,16 @@ import {
   HOUR_PX,
   addDays,
   channelColorForChannel,
+  dispatchEventPress,
   fmtHourLabel,
   fmtTime,
   hourOf,
+  icsAllDayBlockKey,
   icsAllDayOnDay,
+  icsEventBlockKey,
   layoutOverlaps,
   sameDay,
-  startOfDay,
+  scheduledCallBlockKey,
 } from './tokens';
 import { HuddleMiniMark } from './atoms';
 
@@ -36,6 +39,7 @@ type Props = {
   channels: Channel[];
   onSelectDay: (d: Date) => void;
   onTapEvent: (id: string) => void;
+  onTapIcs: (e: IcsEvent) => void;
 };
 
 // Lightweight overlay shape — both internal scheduled_calls and external
@@ -49,10 +53,11 @@ type Block = {
   color: string;
   channelName: string;
   isHuddle: boolean;
-  // The sender of this block to the surrounding screen — null for ICS rows
-  // (they can't be tapped through to a detail screen since they're not in
-  // our table).
+  // Internal calls route to the detail screen by id; external ICS rows carry
+  // their source event so a tap can open the details sheet (with Join). Exactly
+  // one is set per block.
   scheduledCallId: string | null;
+  icsEvent: IcsEvent | null;
 };
 
 // Block + the side-by-side lane assignment from layoutOverlaps().
@@ -66,6 +71,7 @@ export function WeekView({
   channels,
   onSelectDay,
   onTapEvent,
+  onTapIcs,
 }: Props) {
   const insets = useSafeAreaInsets();
   const channelById = useMemo(() => {
@@ -118,7 +124,7 @@ export function WeekView({
       const start = hourOf(e.startsAt);
       const end = Math.min(DAY_END, start + e.durationMin / 60);
       out.push({
-        key: 'h:' + e.id,
+        key: scheduledCallBlockKey(e),
         kind: 'huddle',
         title: e.title,
         startHour: start,
@@ -127,6 +133,7 @@ export function WeekView({
         channelName: ch?.name ?? e.channelId,
         isHuddle: true,
         scheduledCallId: e.id,
+        icsEvent: null,
       });
     }
     for (const e of icsEvents) {
@@ -137,7 +144,7 @@ export function WeekView({
       // duration + corrupted overlap lanes). Clamp the block to midnight.
       const end = !e.end ? start + 0.5 : sameDay(e.end, e.start) ? hourOf(e.end) : DAY_END;
       out.push({
-        key: 'i:' + (e.uid || `${e.title}:${e.start.toISOString()}`),
+        key: icsEventBlockKey(e),
         kind: 'ics',
         title: e.title || '(untitled)',
         startHour: start,
@@ -146,6 +153,7 @@ export function WeekView({
         channelName: '',
         isHuddle: false,
         scheduledCallId: null,
+        icsEvent: e,
       });
     }
     // Overlapping events split the lane side-by-side instead of stacking.
@@ -220,8 +228,10 @@ export function WeekView({
       {allDayItems.length > 0 && (
         <View style={{ borderBottomWidth: 0.5, borderBottomColor: C.hair, paddingVertical: 6, paddingLeft: 56, paddingRight: 12, gap: 4 }}>
           {allDayItems.map((e) => (
-            <View
-              key={'ad:' + (e.uid || `${e.title}:${e.start?.toISOString()}`)}
+            <TouchableOpacity
+              key={icsAllDayBlockKey(e)}
+              onPress={() => onTapIcs(e)}
+              activeOpacity={0.7}
               style={{
                 flexDirection: 'row',
                 alignItems: 'center',
@@ -238,7 +248,7 @@ export function WeekView({
                 {e.title || '(untitled)'}
               </Text>
               <Text style={{ fontSize: 11, fontWeight: '500', color: C.text2 }}>All day</Text>
-            </View>
+            </TouchableOpacity>
           ))}
         </View>
       )}
@@ -254,6 +264,7 @@ export function WeekView({
           isToday={isToday}
           nowHour={nowHour}
           onTapBlock={onTapEvent}
+          onTapIcs={onTapIcs}
         />
       </ScrollView>
     </View>
@@ -265,11 +276,13 @@ function Timeline({
   isToday,
   nowHour,
   onTapBlock,
+  onTapIcs,
 }: {
   blocks: LaidBlock[];
   isToday: boolean;
   nowHour: number;
   onTapBlock: (id: string) => void;
+  onTapIcs: (e: IcsEvent) => void;
 }) {
   const hours = Array.from({ length: DAY_END - DAY_START }, (_, i) => DAY_START + i);
   return (
@@ -307,7 +320,7 @@ function Timeline({
           overlapping events render side by side. */}
       <View pointerEvents="box-none" style={{ position: 'absolute', top: 0, bottom: 0, left: 56, right: 12 }}>
         {blocks.map((b) => (
-          <EventBlock key={b.key} block={b} onPress={onTapBlock} />
+          <EventBlock key={b.key} block={b} onPress={onTapBlock} onPressIcs={onTapIcs} />
         ))}
       </View>
 
@@ -316,15 +329,17 @@ function Timeline({
   );
 }
 
-function EventBlock({ block, onPress }: { block: LaidBlock; onPress: (id: string) => void }) {
+function EventBlock({ block, onPress, onPressIcs }: { block: LaidBlock; onPress: (id: string) => void; onPressIcs: (e: IcsEvent) => void }) {
   const top = (block.startHour - DAY_START) * HOUR_PX + 8;
   const height = Math.max(28, (block.endHour - block.startHour) * HOUR_PX - 2);
   const startDate = new Date();
   startDate.setHours(Math.floor(block.startHour), Math.round((block.startHour % 1) * 60), 0, 0);
   const endDate = new Date();
   endDate.setHours(Math.floor(block.endHour), Math.round((block.endHour % 1) * 60), 0, 0);
-  const disabled = !block.scheduledCallId;
+  // Both internal and external blocks are now tappable — internal routes to
+  // the detail screen, external opens the details sheet (with Join).
   const narrow = block.cols > 1;
+  const onPressBlock = () => dispatchEventPress(block.scheduledCallId, block.icsEvent, onPress, onPressIcs);
   return (
     <View
       pointerEvents="box-none"
@@ -338,9 +353,8 @@ function EventBlock({ block, onPress }: { block: LaidBlock; onPress: (id: string
       }}
     >
       <TouchableOpacity
-        onPress={() => block.scheduledCallId && onPress(block.scheduledCallId)}
-        activeOpacity={disabled ? 1 : 0.7}
-        disabled={disabled}
+        onPress={onPressBlock}
+        activeOpacity={0.7}
         style={{
           flex: 1,
           backgroundColor: block.color + '22',

@@ -11,7 +11,7 @@ import { tabBarClearance } from '@/theme';
 import type { Channel } from '@/lib/api';
 import type { ScheduledCall } from '@/lib/scheduledCalls';
 import type { IcsEvent } from '@/lib/ics';
-import { C, addDays, channelColorForChannel, fmtTime, icsAllDayOnDay, sameDay, startOfDay } from './tokens';
+import { C, addDays, channelColorForChannel, dispatchEventPress, fmtTime, icsAllDayOnDay, icsEventBlockKey, sameDay, scheduledCallBlockKey, startOfDay } from './tokens';
 import { HuddleMiniMark } from './atoms';
 
 type Props = {
@@ -22,10 +22,12 @@ type Props = {
   channels: Channel[];
   onSelectDay: (d: Date) => void;
   onTapEvent: (id: string) => void;
+  onTapIcs: (e: IcsEvent) => void;
 };
 
-// Unified agenda row — internal calls are tappable, ICS rows are
-// display-only (they have no detail screen, same as the other views).
+// Unified agenda row — internal calls route to the detail screen by id;
+// external ICS rows carry their source event so a tap opens the details
+// sheet (with Join). Exactly one of the two is set.
 type AgendaItem = {
   key: string;
   title: string;
@@ -36,6 +38,7 @@ type AgendaItem = {
   start: Date;
   end: Date | null;
   scheduledCallId: string | null;
+  icsEvent: IcsEvent | null;
 };
 
 type CellDay = { date: Date; dim: boolean };
@@ -58,7 +61,7 @@ function monthCells(anchor: Date): CellDay[] {
   return cells;
 }
 
-export function MonthView({ anchorMonth, selectedDay, events, icsEvents, channels, onSelectDay, onTapEvent }: Props) {
+export function MonthView({ anchorMonth, selectedDay, events, icsEvents, channels, onSelectDay, onTapEvent, onTapIcs }: Props) {
   const insets = useSafeAreaInsets();
   const channelById = useMemo(() => {
     const m = new Map<string, Channel>();
@@ -106,7 +109,7 @@ export function MonthView({ anchorMonth, selectedDay, events, icsEvents, channel
       if (!sameDay(e.startsAt, selectedDay)) continue;
       const ch = channelById.get(e.channelId);
       out.push({
-        key: 'h:' + e.id,
+        key: scheduledCallBlockKey(e),
         title: e.title,
         subtitle: `# ${ch?.name ?? e.channelId}`,
         color: channelColorForChannel(e.channelId, ch?.type),
@@ -115,6 +118,7 @@ export function MonthView({ anchorMonth, selectedDay, events, icsEvents, channel
         start: e.startsAt,
         end: new Date(e.startsAt.getTime() + e.durationMin * 60 * 1000),
         scheduledCallId: e.id,
+        icsEvent: null,
       });
     }
     for (const e of icsEvents) {
@@ -122,7 +126,7 @@ export function MonthView({ anchorMonth, selectedDay, events, icsEvents, channel
       const hit = e.allDay ? icsAllDayOnDay(e, selectedDay) : sameDay(e.start, selectedDay);
       if (!hit) continue;
       out.push({
-        key: 'i:' + (e.uid || `${e.title}:${e.start.toISOString()}`),
+        key: icsEventBlockKey(e),
         title: e.title || '(untitled)',
         subtitle: e.location || 'Subscribed calendar',
         color: C.text2,
@@ -131,6 +135,7 @@ export function MonthView({ anchorMonth, selectedDay, events, icsEvents, channel
         start: e.start,
         end: e.end,
         scheduledCallId: null,
+        icsEvent: e,
       });
     }
     // All-day first, then chronological.
@@ -210,13 +215,11 @@ export function MonthView({ anchorMonth, selectedDay, events, icsEvents, channel
             <Text style={{ color: C.text3, fontSize: 13, paddingVertical: 16 }}>Nothing scheduled.</Text>
           ) : (
             dayAgenda.map((item) => {
-              const disabled = !item.scheduledCallId;
               return (
                 <TouchableOpacity
                   key={item.key}
-                  onPress={() => item.scheduledCallId && onTapEvent(item.scheduledCallId)}
-                  activeOpacity={disabled ? 1 : 0.7}
-                  disabled={disabled}
+                  onPress={() => dispatchEventPress(item.scheduledCallId, item.icsEvent, onTapEvent, onTapIcs)}
+                  activeOpacity={0.7}
                   style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, borderTopWidth: 0.5, borderTopColor: C.hair }}
                 >
                   <View style={{ width: 4, alignSelf: 'stretch', backgroundColor: item.color, borderRadius: 2 }} />

@@ -8,7 +8,7 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Copy, MessageCircle, Pin, Trash2, X } from 'lucide-react-native';
+import { Copy, MessageCircle, Pencil, Pin, Trash2, X } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
 import { colors, radius, space } from '@/theme';
 import type { Message } from '@/lib/api';
@@ -27,6 +27,7 @@ type Props = {
   onReact: (emoji: string) => void;
   onCopy: () => void;
   onTogglePin: () => void;
+  onEdit: () => void;
   onDelete: () => void;
   // Optional — only the channel view passes it (a message inside a thread
   // can't spawn a nested thread).
@@ -40,6 +41,7 @@ export function MessageActionSheet({
   onReact,
   onCopy,
   onTogglePin,
+  onEdit,
   onDelete,
   onOpenThread,
 }: Props) {
@@ -158,6 +160,19 @@ export function MessageActionSheet({
                 onClose();
               }}
             />
+            {/* Edit your own text messages. Hidden for attachment-only
+                messages (nothing to edit) — matches the desktop, which
+                edits the message body. */}
+            {isMine && !!message?.body && (
+              <SheetAction
+                icon={Pencil}
+                label="Edit"
+                onPress={() => {
+                  onClose();
+                  onEdit();
+                }}
+              />
+            )}
             {isMine && (
               <SheetAction
                 icon={Trash2}

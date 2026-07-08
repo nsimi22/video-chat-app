@@ -89,6 +89,7 @@ export default function AppLayout() {
             />
             <Stack.Screen name="event/[id]" options={{ headerShown: false }} />
             <Stack.Screen name="thread/[id]" options={{ title: 'Thread' }} />
+            <Stack.Screen name="integrations" options={{ title: 'Integrations' }} />
           </Stack>
           <FloatingCallOverlay />
         </View>
