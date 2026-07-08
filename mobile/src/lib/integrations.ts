@@ -103,6 +103,42 @@ export async function getCalendarSubscriptions(userId: string): Promise<Calendar
   );
 }
 
+// Persist edited integration credentials back to user_integrations.settings.
+//
+// Read-merge-write: the desktop stores keys mobile doesn't model in the same
+// JSONB blob (favorites, DND deadline / working hours, ai.claudeCode,
+// jira.defaultProject, calendar.subscriptions, …). Replacing the whole row
+// would silently clobber them, so we fetch the current settings, shallow-merge
+// each edited section over its existing value, and upsert the merged whole —
+// mirroring the desktop renderer's loadSettings()/saveSettings() round-trip.
+export async function updateIntegrationSettings(
+  userId: string,
+  patch: {
+    jira?: JiraSettings;
+    github?: GithubSettings;
+    ai?: AiSettings;
+    giphy?: GiphySettings;
+  },
+): Promise<void> {
+  const { data, error: readErr } = await supabase
+    .from('user_integrations')
+    .select('settings')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (readErr) throw readErr;
+  const current = (data?.settings ?? {}) as Record<string, Record<string, unknown> | undefined>;
+  const next: Record<string, unknown> = { ...current };
+  for (const [section, value] of Object.entries(patch)) {
+    if (!value) continue;
+    next[section] = { ...(current[section] ?? {}), ...value };
+  }
+  const { error } = await supabase
+    .from('user_integrations')
+    .upsert({ user_id: userId, settings: next });
+  if (error) throw error;
+  invalidateIntegrations();
+}
+
 // Force a reload on next get() — call after the user edits their settings.
 export function invalidateIntegrations() {
   cache = null;

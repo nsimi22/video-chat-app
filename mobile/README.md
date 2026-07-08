@@ -14,7 +14,9 @@ MVP scope: **chat + receive-only calls**.
 - ✅ Chat: history pagination, realtime, reactions, pins, attachments (images), typing
 - ✅ Push notifications (DMs + @-mentions) via Expo push + `notify-on-message`
 - ✅ Calls: join a channel call, see/hear participants, publish camera/mic, mute/flip/leave (LiveKit)
-- ⛔ Not yet: screen-share send, annotations, whiteboard, threads UI, search UI, GIF picker, integration API keys, CallKit/ConnectionService, cross-platform A/V with desktop (desktop still on mesh)
+- ✅ Threads UI, GIF picker (Giphy), polls, calendar, Jira board, AI assistant
+- ✅ Integration API keys (Jira / GitHub / AI / Giphy) editable in the **You → Integrations** screen — writes the same RLS-gated `user_integrations.settings` row the desktop reads
+- ⛔ Not yet: screen-share send, annotations, whiteboard, message search UI, CallKit/ConnectionService, cross-platform A/V with desktop (desktop still on mesh)
 
 ## Develop
 

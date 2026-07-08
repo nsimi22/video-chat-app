@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
-import { GitBranch, KeyRound, Lock, LogOut, Smile, Sparkles, Ticket, Users } from 'lucide-react-native';
+import { ChevronRight, GitBranch, KeyRound, Lock, LogOut, Smile, Sparkles, Ticket, Users } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
@@ -22,7 +22,8 @@ import { Avatar, Button, Field } from '@/components/ui';
 import { colors, radius, space, tabBarClearance, type PresenceStatus } from '@/theme';
 
 // "You" tab — design prototype screen 8. Profile card, presence selector,
-// integrations (read-only mirror of the desktop Settings panel), account
+// integrations (tap through to edit keys, shared with the desktop Settings
+// panel), account
 // fields (name / bio / password, carried over from the old Settings tab),
 // then switch-team / sign-out.
 
@@ -134,13 +135,13 @@ export default function YouScreen() {
           {
             icon: Ticket,
             name: 'Jira',
-            meta: jiraIsConfigured(jira) ? jira.host.replace(/^https?:\/\//, '') : 'Connect on desktop',
+            meta: jiraIsConfigured(jira) ? jira.host.replace(/^https?:\/\//, '') : 'Not connected',
             on: jiraIsConfigured(jira),
           },
           {
             icon: GitBranch,
             name: 'GitHub',
-            meta: github?.token ? 'Personal access token' : 'Connect on desktop',
+            meta: github?.token ? 'Personal access token' : 'Not connected',
             on: !!github?.token,
           },
           {
@@ -150,13 +151,13 @@ export default function YouScreen() {
               ? (ai.openrouterModel || 'OpenRouter')
               : ai?.anthropicKey
                 ? (ai.anthropicModel || 'Anthropic')
-                : 'Connect on desktop',
+                : 'Not connected',
             on: !!(ai?.anthropicKey || ai?.openrouterKey),
           },
           {
             icon: Smile,
             name: 'Giphy',
-            meta: giphy ? 'API key set' : 'Connect on desktop',
+            meta: giphy ? 'API key set' : 'Not connected',
             on: !!giphy,
           },
         ]);
@@ -303,12 +304,14 @@ export default function YouScreen() {
           })}
         </View>
 
-        {/* Integrations — read-only; keys are managed on desktop. */}
+        {/* Integrations — tap a row to edit its keys (shared with desktop). */}
         <GroupLabel>Integrations</GroupLabel>
         <Group>
           {integrations.map((it, i) => (
-            <View
+            <TouchableOpacity
               key={it.name}
+              onPress={() => router.push('/(app)/integrations')}
+              activeOpacity={0.7}
               style={{
                 flexDirection: 'row',
                 alignItems: 'center',
@@ -329,10 +332,9 @@ export default function YouScreen() {
                 <Text style={{ fontSize: 10, fontWeight: '700', color: colors.online, backgroundColor: colors.liveDim, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 5, overflow: 'hidden' }}>
                   ON
                 </Text>
-              ) : (
-                <Text style={{ fontSize: 12, color: colors.textFaint }}>Desktop</Text>
-              )}
-            </View>
+              ) : null}
+              <ChevronRight size={18} color={colors.textFaint} />
+            </TouchableOpacity>
           ))}
         </Group>
 
@@ -420,7 +422,7 @@ export default function YouScreen() {
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: space(6) }}>
           <KeyRound size={12} color={colors.textFaint} />
           <Text style={{ color: colors.textFaint, fontSize: 12, flex: 1 }}>
-            Integration API keys (Jira, GitHub, AI, Giphy) are managed in the desktop app&apos;s Settings panel.
+            Integration API keys (Jira, GitHub, AI, Giphy) are stored per-account and shared with the desktop app.
           </Text>
         </View>
       </ScrollView>
