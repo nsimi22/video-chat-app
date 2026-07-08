@@ -85,9 +85,14 @@ export default function AiScreen() {
   const configured = !!client?.isConfigured();
   // Jira/GitHub read tools, rebuilt when either integration's settings load.
   const tools: ToolDef[] = useMemo(() => buildIntegrationTools(jira, github), [jira, github]);
-  const modelLabel = settings?.provider === 'openrouter'
-    ? settings.openrouterModel || 'openrouter'
-    : settings?.anthropicModel || (configured ? 'anthropic' : '—');
+  // Base the label on the provider the client actually RESOLVED to, not the
+  // stored provider — a desktop 'claude-code' account falls back to whichever
+  // API key is present here, so the raw provider would mislabel it.
+  const modelLabel = !configured || !client
+    ? '—'
+    : client.provider === 'openrouter'
+      ? settings?.openrouterModel || 'openrouter'
+      : settings?.anthropicModel || 'anthropic';
 
   const send = useCallback(async (raw?: string) => {
     const prompt = (raw ?? text).trim();
