@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -20,17 +20,7 @@ import { C, channelColorForChannel, fmtTime } from '@/components/calendar/tokens
 import { HuddleMiniMark } from '@/components/calendar/atoms';
 import { Avatar } from '@/components/ui';
 import { ScheduleCallSheet } from '@/components/ScheduleCallSheet';
-
-// Human label for a scheduled_calls.rrule body (kept simple — matches the
-// Repeat options the schedule sheet offers).
-function repeatLabel(rrule: string): string {
-  if (!rrule) return '';
-  const s = rrule.toUpperCase();
-  if (/FREQ=DAILY/.test(s)) return 'Every day';
-  if (/FREQ=WEEKLY/.test(s)) return /BYDAY=MO,TU,WE,TH,FR/.test(s) ? 'Every weekday' : 'Every week';
-  if (/FREQ=MONTHLY/.test(s)) return 'Every month';
-  return 'Repeats';
-}
+import { formatRrule } from '@/lib/rrule';
 
 // Event detail screen — port of `EventDetail` from the design prototype.
 // Surfaces channel, date+time, duration, recurrence (Repeat), notes, and the
@@ -106,6 +96,14 @@ export default function EventDetailScreen() {
   }, [activeTeam, id]);
 
   const myStatus: AttendeeStatus | null = attendees.find((a) => a.userId === userId)?.status ?? null;
+
+  // Group attendees by status once per change instead of re-scanning the list
+  // for every RSVP_OPTIONS row on every (realtime-driven) render.
+  const attendeesByStatus = useMemo(() => {
+    const g: Record<AttendeeStatus, Attendee[]> = { going: [], maybe: [], declined: [] };
+    for (const a of attendees) g[a.status].push(a);
+    return g;
+  }, [attendees]);
 
   const onRsvp = useCallback(
     async (status: AttendeeStatus) => {
@@ -224,7 +222,7 @@ export default function EventDetailScreen() {
           </DetailRow>
           {event.rrule ? (
             <DetailRow label="Repeats">
-              <Text style={{ color: C.text, fontSize: 14 }}>{repeatLabel(event.rrule)}</Text>
+              <Text style={{ color: C.text, fontSize: 14 }}>{formatRrule(event.rrule)}</Text>
             </DetailRow>
           ) : null}
           <DetailRow label="Scheduled by" last>
@@ -273,7 +271,7 @@ export default function EventDetailScreen() {
         {attendees.length > 0 && (
           <View style={{ marginHorizontal: 16, marginTop: 20, backgroundColor: C.surface1, borderRadius: 14, overflow: 'hidden' }}>
             {RSVP_OPTIONS.map((opt, gi) => {
-              const group = attendees.filter((a) => a.status === opt.status);
+              const group = attendeesByStatus[opt.status];
               if (!group.length) return null;
               return (
                 <View key={opt.status} style={{ padding: 14, borderTopWidth: gi === 0 ? 0 : 0.5, borderTopColor: C.hair }}>

@@ -165,3 +165,34 @@ export function addDays(d: Date, n: number): Date {
   x.setDate(x.getDate() + n);
   return x;
 }
+
+// Stable React keys for calendar blocks/rows — one source so Week + 3-day +
+// Month don't drift. Recurring internal calls share an id across occurrences,
+// so the start time disambiguates them; ICS events fall back to title+start
+// when they carry no UID.
+export function scheduledCallBlockKey(e: { id: string; startsAt: Date }): string {
+  return `h:${e.id}:${e.startsAt.getTime()}`;
+}
+function icsKeyBody(e: { uid?: string; title: string; start: Date | null }): string {
+  return e.uid || `${e.title}:${e.start?.toISOString()}`;
+}
+export function icsEventBlockKey(e: { uid?: string; title: string; start: Date | null }): string {
+  return `i:${icsKeyBody(e)}`;
+}
+export function icsAllDayBlockKey(e: { uid?: string; title: string; start: Date | null }): string {
+  return `ad:${icsKeyBody(e)}`;
+}
+
+// Unified tap routing for a calendar entry: internal scheduled calls open the
+// detail screen by id, external ICS events open the details sheet. Exactly one
+// of the two is set per entry — centralized so the routing rule lives in one
+// place instead of being re-branched in every view.
+export function dispatchEventPress<E>(
+  scheduledCallId: string | null,
+  icsEvent: E | null,
+  onTapEvent: (id: string) => void,
+  onTapIcs: (e: E) => void,
+): void {
+  if (scheduledCallId) onTapEvent(scheduledCallId);
+  else if (icsEvent) onTapIcs(icsEvent);
+}

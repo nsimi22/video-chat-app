@@ -14,6 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { createScheduledCall, updateScheduledCall, type ScheduledCall } from '@/lib/scheduledCalls';
+import { buildRrule, rruleToRepeat, REPEAT_OPTIONS, type Repeat } from '@/lib/rrule';
 import type { Channel } from '@/lib/api';
 import { C, channelColorForChannel, fmtTime } from './calendar/tokens';
 
@@ -42,39 +43,6 @@ type Props = {
 
 const DURATION_OPTIONS = [15, 30, 45, 60, 90] as const;
 const DEFAULT_DURATION = 30;
-
-type Repeat = 'none' | 'daily' | 'weekdays' | 'weekly' | 'monthly';
-const REPEAT_OPTIONS: { id: Repeat; label: string }[] = [
-  { id: 'none', label: 'Never' },
-  { id: 'daily', label: 'Daily' },
-  { id: 'weekdays', label: 'Weekdays' },
-  { id: 'weekly', label: 'Weekly' },
-  { id: 'monthly', label: 'Monthly' },
-];
-
-const RRULE_WEEKDAY = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
-
-// Repeat-select value <-> RRULE body. Lockstep with renderer/calendar.js
-// buildRrule / rruleToRepeat: weekly anchors BYDAY to the start's weekday and
-// monthly anchors BYMONTHDAY to its day-of-month so the ICS expandSeries engine
-// (shared by desktop + mobile) reproduces the intended cadence.
-function buildRrule(repeat: Repeat, startsAt: Date): string {
-  switch (repeat) {
-    case 'daily': return 'FREQ=DAILY';
-    case 'weekdays': return 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR';
-    case 'weekly': return `FREQ=WEEKLY;BYDAY=${RRULE_WEEKDAY[startsAt.getDay()]}`;
-    case 'monthly': return `FREQ=MONTHLY;BYMONTHDAY=${startsAt.getDate()}`;
-    default: return '';
-  }
-}
-function rruleToRepeat(rrule: string): Repeat {
-  if (!rrule) return 'none';
-  const s = rrule.toUpperCase();
-  if (/FREQ=DAILY/.test(s)) return 'daily';
-  if (/FREQ=WEEKLY/.test(s)) return /BYDAY=MO,TU,WE,TH,FR/.test(s) ? 'weekdays' : 'weekly';
-  if (/FREQ=MONTHLY/.test(s)) return 'monthly';
-  return 'none';
-}
 
 function nextRoundedStart(): Date {
   const ms5 = 5 * 60 * 1000;
@@ -158,29 +126,20 @@ export function ScheduleCallSheet({
       Alert.alert('Pick a future time', 'The event must start later than right now.');
       return;
     }
-    const rrule = buildRrule(repeat, startsAt);
+    const fields = {
+      title: t,
+      description: description.trim(),
+      channelId,
+      startsAt,
+      durationMin,
+      rrule: buildRrule(repeat, startsAt),
+    };
     setSaving(true);
     try {
       if (isEdit && editCall) {
-        await updateScheduledCall(editCall.id, {
-          title: t,
-          description: description.trim(),
-          channelId,
-          startsAt,
-          durationMin,
-          rrule,
-        });
+        await updateScheduledCall(editCall.id, fields);
       } else {
-        await createScheduledCall({
-          teamId,
-          channelId,
-          createdBy: userId,
-          title: t,
-          description: description.trim(),
-          startsAt,
-          durationMin,
-          rrule,
-        });
+        await createScheduledCall({ teamId, createdBy: userId, ...fields });
       }
       onScheduled?.();
       onClose();

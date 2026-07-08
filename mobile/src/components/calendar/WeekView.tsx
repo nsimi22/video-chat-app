@@ -18,12 +18,16 @@ import {
   HOUR_PX,
   addDays,
   channelColorForChannel,
+  dispatchEventPress,
   fmtHourLabel,
   fmtTime,
   hourOf,
+  icsAllDayBlockKey,
   icsAllDayOnDay,
+  icsEventBlockKey,
   layoutOverlaps,
   sameDay,
+  scheduledCallBlockKey,
 } from './tokens';
 import { HuddleMiniMark } from './atoms';
 
@@ -120,7 +124,7 @@ export function WeekView({
       const start = hourOf(e.startsAt);
       const end = Math.min(DAY_END, start + e.durationMin / 60);
       out.push({
-        key: 'h:' + e.id + ':' + e.startsAt.getTime(),
+        key: scheduledCallBlockKey(e),
         kind: 'huddle',
         title: e.title,
         startHour: start,
@@ -140,7 +144,7 @@ export function WeekView({
       // duration + corrupted overlap lanes). Clamp the block to midnight.
       const end = !e.end ? start + 0.5 : sameDay(e.end, e.start) ? hourOf(e.end) : DAY_END;
       out.push({
-        key: 'i:' + (e.uid || `${e.title}:${e.start.toISOString()}`),
+        key: icsEventBlockKey(e),
         kind: 'ics',
         title: e.title || '(untitled)',
         startHour: start,
@@ -225,7 +229,7 @@ export function WeekView({
         <View style={{ borderBottomWidth: 0.5, borderBottomColor: C.hair, paddingVertical: 6, paddingLeft: 56, paddingRight: 12, gap: 4 }}>
           {allDayItems.map((e) => (
             <TouchableOpacity
-              key={'ad:' + (e.uid || `${e.title}:${e.start?.toISOString()}`)}
+              key={icsAllDayBlockKey(e)}
               onPress={() => onTapIcs(e)}
               activeOpacity={0.7}
               style={{
@@ -335,10 +339,7 @@ function EventBlock({ block, onPress, onPressIcs }: { block: LaidBlock; onPress:
   // Both internal and external blocks are now tappable — internal routes to
   // the detail screen, external opens the details sheet (with Join).
   const narrow = block.cols > 1;
-  const onPressBlock = () => {
-    if (block.scheduledCallId) onPress(block.scheduledCallId);
-    else if (block.icsEvent) onPressIcs(block.icsEvent);
-  };
+  const onPressBlock = () => dispatchEventPress(block.scheduledCallId, block.icsEvent, onPress, onPressIcs);
   return (
     <View
       pointerEvents="box-none"

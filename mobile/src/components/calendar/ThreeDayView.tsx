@@ -17,12 +17,16 @@ import {
   HOUR_PX,
   addDays,
   channelColorForChannel,
+  dispatchEventPress,
   fmtHourLabel,
   fmtTime,
   hourOf,
+  icsAllDayBlockKey,
   icsAllDayOnDay,
+  icsEventBlockKey,
   layoutOverlaps,
   sameDay,
+  scheduledCallBlockKey,
 } from './tokens';
 import { HuddleMiniMark } from './atoms';
 
@@ -73,7 +77,7 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
       const ch = channelById.get(e.channelId);
       const start = hourOf(e.startsAt);
       out.get(key)!.push({
-        key: 'h:' + e.id + ':' + e.startsAt.getTime(),
+        key: scheduledCallBlockKey(e),
         title: e.title,
         startHour: start,
         endHour: Math.min(DAY_END, start + e.durationMin / 60),
@@ -92,7 +96,7 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
       // clock time only) — clamp the block to midnight. See WeekView.
       const end = !e.end ? start + 0.5 : sameDay(e.end, e.start) ? hourOf(e.end) : DAY_END;
       out.get(key)!.push({
-        key: 'i:' + (e.uid || `${e.title}:${e.start.toISOString()}`),
+        key: icsEventBlockKey(e),
         title: e.title || '(untitled)',
         startHour: start,
         endHour: Math.min(DAY_END, Math.max(end, start + 0.25)),
@@ -189,7 +193,7 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
               >
                 {items.map((e) => (
                   <TouchableOpacity
-                    key={'ad:' + (e.uid || `${e.title}:${e.start?.toISOString()}`)}
+                    key={icsAllDayBlockKey(e)}
                     onPress={() => onTapIcs(e)}
                     activeOpacity={0.7}
                     style={{
@@ -294,10 +298,7 @@ function ColumnEventBlock({ block, onPress, onPressIcs }: { block: LaidColBlock;
   const height = Math.max(20, (block.endHour - block.startHour) * HOUR_PX - 2);
   const startDate = new Date();
   startDate.setHours(Math.floor(block.startHour), Math.round((block.startHour % 1) * 60), 0, 0);
-  const onPressBlock = () => {
-    if (block.scheduledCallId) onPress(block.scheduledCallId);
-    else if (block.icsEvent) onPressIcs(block.icsEvent);
-  };
+  const onPressBlock = () => dispatchEventPress(block.scheduledCallId, block.icsEvent, onPress, onPressIcs);
   // % lane math inside the day column — overlapping events sit side by side.
   const laneLeft = (block.col / block.cols) * 100;
   const laneWidth = 100 / block.cols;
