@@ -11,7 +11,7 @@ MVP scope: **chat + receive-only calls**.
 
 - ✅ Email-OTP auth, profile setup, team picker (mirrors `renderer/api.js`)
 - ✅ Channel / DM list (live via `postgres_changes`)
-- ✅ Chat: history pagination, realtime, reactions, pins, attachments (images), typing
+- ✅ Chat: history pagination, realtime, reactions, pins, attachments (images), typing, edit/delete your own messages
 - ✅ Push notifications (DMs + @-mentions) via Expo push + `notify-on-message`
 - ✅ Calls: join a channel call, see/hear participants, publish camera/mic, mute/flip/leave (LiveKit)
 - ✅ Threads UI, GIF picker (Giphy), polls, calendar, Jira board, AI assistant

@@ -18,7 +18,7 @@ import { Stack, router, useFocusEffect, useLocalSearchParams } from 'expo-router
 import { useHeaderHeight } from '@react-navigation/elements';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
-import { ChevronRight, MessageCircle, Pin, Paperclip, Phone, Plus, Star } from 'lucide-react-native';
+import { ChevronRight, MessageCircle, Pencil, Pin, Paperclip, Phone, Plus, Star } from 'lucide-react-native';
 import { MessageActionSheet } from '@/components/MessageActionSheet';
 import { PollCard } from '@/components/PollCard';
 import { CreatePollSheet } from '@/components/CreatePollSheet';
@@ -33,6 +33,7 @@ import type { GiphyResult } from '@/lib/giphy';
 import { useChannelMessages } from '@/hooks/useChannelMessages';
 import {
   deleteMessage,
+  editMessage,
   extractMentions,
   listTeamProfiles,
   sendMessage,
@@ -67,6 +68,11 @@ export default function ChannelScreen() {
   const [sending, setSending] = useState(false);
   const [typingNames, setTypingNames] = useState<string[]>([]);
   const [sheetMessage, setSheetMessage] = useState<Message | null>(null);
+  // The message currently being edited, or null for normal compose. When set,
+  // the composer is primed with its body and Send updates in place instead of
+  // posting a new message.
+  const [editing, setEditing] = useState<Message | null>(null);
+  const inputRef = useRef<TextInput>(null);
   // Long-press on a reaction pill opens this sheet so the user can see
   // who reacted with that emoji. Tap still toggles, only long-press
   // routes here. Single piece of state covers any (message, emoji)
@@ -195,7 +201,47 @@ export default function ChannelScreen() {
     }
   };
 
+  // Enter edit mode: prime the composer with the message body and focus it.
+  const startEditing = (m: Message) => {
+    setEditing(m);
+    setText(m.body ?? '');
+    // Defer focus a tick so the value is set before the keyboard opens.
+    setTimeout(() => inputRef.current?.focus(), 50);
+  };
+
+  const cancelEditing = () => {
+    setEditing(null);
+    setText('');
+  };
+
+  // Save an in-place edit. Kept separate from doSend: edits are text-only
+  // (no slash dispatch, no attachments) and update the existing row via
+  // editMessage rather than inserting a new message.
+  const saveEdit = async () => {
+    if (!editing) return;
+    const body = text.trim();
+    if (!body) {
+      Alert.alert('Empty message', 'An edited message can’t be empty. Delete it instead to remove it.');
+      return;
+    }
+    if (body === (editing.body ?? '').trim()) {
+      cancelEditing();
+      return;
+    }
+    setSending(true);
+    try {
+      await editMessage(editing.id, body);
+      setEditing(null);
+      setText('');
+    } catch (e: any) {
+      Alert.alert('Could not save edit', e?.message ?? String(e));
+    } finally {
+      setSending(false);
+    }
+  };
+
   const doSend = async (attachments: Attachment[] = []) => {
+    if (editing) return saveEdit();
     const body = text.trim();
     if (!body && !attachments.length) return;
     setSending(true);
@@ -625,22 +671,36 @@ export default function ChannelScreen() {
           {typingNames.join(', ')} {typingNames.length === 1 ? 'is' : 'are'} typing…
         </Text>
       )}
+      {editing && (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space(2), paddingHorizontal: space(4), paddingTop: space(2), paddingBottom: 2 }}>
+          <Pencil size={13} color={colors.accent} />
+          <Text style={{ color: colors.textDim, fontSize: 12, flex: 1 }}>Editing message</Text>
+          <TouchableOpacity onPress={cancelEditing} hitSlop={8}>
+            <Text style={{ color: colors.accent, fontSize: 12, fontWeight: '600' }}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      )}
       <View style={{ flexDirection: 'row', alignItems: 'flex-end', padding: space(2.5), borderTopWidth: 1, borderTopColor: colors.border, gap: space(2) }}>
-        <TouchableOpacity onPress={() => setMenuOpen(true)} style={{ paddingBottom: space(2.5) }} hitSlop={8}>
-          <Plus size={22} color={colors.textDim} />
-        </TouchableOpacity>
+        {/* The attach menu (photos / GIF / poll) doesn't apply to an in-place
+            edit, which is text-only — hide it while editing. */}
+        {!editing && (
+          <TouchableOpacity onPress={() => setMenuOpen(true)} style={{ paddingBottom: space(2.5) }} hitSlop={8}>
+            <Plus size={22} color={colors.textDim} />
+          </TouchableOpacity>
+        )}
         <TextInput
+          ref={inputRef}
           value={text}
           onChangeText={onChangeText}
           onSelectionChange={(e) => setSelection(e.nativeEvent.selection)}
           selection={selection}
-          placeholder={`Message ${headerTitle}`}
+          placeholder={editing ? 'Edit message' : `Message ${headerTitle}`}
           placeholderTextColor={colors.textDim}
           multiline
-          style={{ flex: 1, color: colors.text, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, paddingHorizontal: space(3), paddingVertical: space(2.5), maxHeight: 120, fontSize: 15 }}
+          style={{ flex: 1, color: colors.text, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: editing ? colors.accent : colors.border, paddingHorizontal: space(3), paddingVertical: space(2.5), maxHeight: 120, fontSize: 15 }}
         />
         <TouchableOpacity onPress={() => doSend()} disabled={sending || (!text.trim())} style={{ paddingBottom: space(2.5), opacity: sending || !text.trim() ? 0.4 : 1 }}>
-          <Text style={{ color: colors.accent, fontWeight: '600', fontSize: 15 }}>Send</Text>
+          <Text style={{ color: colors.accent, fontWeight: '600', fontSize: 15 }}>{editing ? 'Save' : 'Send'}</Text>
         </TouchableOpacity>
       </View>
       <ComposerMenu
@@ -693,6 +753,9 @@ export default function ChannelScreen() {
         }}
         onTogglePin={() => {
           if (sheetMessage) setPin(sheetMessage.id, !sheetMessage.pinned_at).catch(() => {});
+        }}
+        onEdit={() => {
+          if (sheetMessage) startEditing(sheetMessage);
         }}
         onDelete={() => {
           if (sheetMessage) deleteMessage(sheetMessage.id).catch(() => {});
