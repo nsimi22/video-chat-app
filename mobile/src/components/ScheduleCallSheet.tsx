@@ -13,19 +13,20 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { createScheduledCall } from '@/lib/scheduledCalls';
+import { createScheduledCall, updateScheduledCall, type ScheduledCall } from '@/lib/scheduledCalls';
 import type { Channel } from '@/lib/api';
 import { C, channelColorForChannel, fmtTime } from './calendar/tokens';
 
-// Create event — port of `CreateEvent` from the design prototype. Stack:
+// Create / edit event — port of `CreateEvent` from the design prototype. Stack:
 //   - title card (large editable title + secondary line for notes preview)
 //   - time card (Starts / Ends rows that expand to inline iOS pickers)
-//   - calendar card (channel picker; we don't have repeat/alert/sync yet)
+//   - repeat card (none / daily / weekdays / weekly / monthly)
+//   - calendar card (channel picker)
 //
-// I'm explicitly NOT shipping the design's `Repeat`, `Alert`, `Google
-// Calendar`, `Outlook` rows because those features aren't in the
-// `scheduled_calls` schema — wiring them as no-op toggles would mislead
-// the user. Add them back here when the backend supports them.
+// When `editCall` is passed the sheet prefills from it and saves via
+// updateScheduledCall instead of inserting — the one place to reschedule or
+// change a call. `Alert` / external-calendar-sync rows are still omitted (no
+// backend), but Repeat now maps to the scheduled_calls.rrule column.
 
 type Props = {
   visible: boolean;
@@ -35,10 +36,45 @@ type Props = {
   userId: string;
   channels: Channel[];
   defaultChannelId?: string | null;
+  // When set, the sheet edits this call instead of creating a new one.
+  editCall?: ScheduledCall | null;
 };
 
 const DURATION_OPTIONS = [15, 30, 45, 60, 90] as const;
 const DEFAULT_DURATION = 30;
+
+type Repeat = 'none' | 'daily' | 'weekdays' | 'weekly' | 'monthly';
+const REPEAT_OPTIONS: { id: Repeat; label: string }[] = [
+  { id: 'none', label: 'Never' },
+  { id: 'daily', label: 'Daily' },
+  { id: 'weekdays', label: 'Weekdays' },
+  { id: 'weekly', label: 'Weekly' },
+  { id: 'monthly', label: 'Monthly' },
+];
+
+const RRULE_WEEKDAY = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+
+// Repeat-select value <-> RRULE body. Lockstep with renderer/calendar.js
+// buildRrule / rruleToRepeat: weekly anchors BYDAY to the start's weekday and
+// monthly anchors BYMONTHDAY to its day-of-month so the ICS expandSeries engine
+// (shared by desktop + mobile) reproduces the intended cadence.
+function buildRrule(repeat: Repeat, startsAt: Date): string {
+  switch (repeat) {
+    case 'daily': return 'FREQ=DAILY';
+    case 'weekdays': return 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR';
+    case 'weekly': return `FREQ=WEEKLY;BYDAY=${RRULE_WEEKDAY[startsAt.getDay()]}`;
+    case 'monthly': return `FREQ=MONTHLY;BYMONTHDAY=${startsAt.getDate()}`;
+    default: return '';
+  }
+}
+function rruleToRepeat(rrule: string): Repeat {
+  if (!rrule) return 'none';
+  const s = rrule.toUpperCase();
+  if (/FREQ=DAILY/.test(s)) return 'daily';
+  if (/FREQ=WEEKLY/.test(s)) return /BYDAY=MO,TU,WE,TH,FR/.test(s) ? 'weekdays' : 'weekly';
+  if (/FREQ=MONTHLY/.test(s)) return 'monthly';
+  return 'none';
+}
 
 function nextRoundedStart(): Date {
   const ms5 = 5 * 60 * 1000;
@@ -54,12 +90,15 @@ export function ScheduleCallSheet({
   userId,
   channels,
   defaultChannelId,
+  editCall,
 }: Props) {
+  const isEdit = !!editCall;
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [channelId, setChannelId] = useState<string | null>(null);
   const [startsAt, setStartsAt] = useState<Date>(() => nextRoundedStart());
   const [durationMin, setDurationMin] = useState<number>(DEFAULT_DURATION);
+  const [repeat, setRepeat] = useState<Repeat>('none');
   const [openPicker, setOpenPicker] = useState<'startsDate' | 'startsTime' | null>(null);
   const [showChannelPicker, setShowChannelPicker] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -71,18 +110,28 @@ export function ScheduleCallSheet({
 
   useEffect(() => {
     if (!visible) return;
+    setOpenPicker(null);
+    setShowChannelPicker(false);
+    if (editCall) {
+      setTitle(editCall.title);
+      setDescription(editCall.description);
+      setStartsAt(new Date(editCall.startsAt));
+      setDurationMin(editCall.durationMin);
+      setRepeat(rruleToRepeat(editCall.rrule));
+      setChannelId(editCall.channelId);
+      return;
+    }
     setTitle('');
     setDescription('');
     setStartsAt(nextRoundedStart());
     setDurationMin(DEFAULT_DURATION);
-    setOpenPicker(null);
-    setShowChannelPicker(false);
+    setRepeat('none');
     const fallback = eligibleChannels[0]?.id ?? null;
     const preferred = defaultChannelId && eligibleChannels.some((c) => c.id === defaultChannelId)
       ? defaultChannelId
       : fallback;
     setChannelId(preferred);
-  }, [visible, defaultChannelId, eligibleChannels]);
+  }, [visible, defaultChannelId, eligibleChannels, editCall]);
 
   const selectedChannel = eligibleChannels.find((c) => c.id === channelId);
   const channelColor = selectedChannel
@@ -102,26 +151,41 @@ export function ScheduleCallSheet({
     }
     // The date picker enforces minimumDate=today, but the time picker can
     // still land before "right now" — guard so we don't write a row that
-    // the realtime listener would surface in the past column.
-    if (startsAt.getTime() <= Date.now()) {
+    // the realtime listener would surface in the past column. Skipped when
+    // editing (an existing/recurring call's start can legitimately be in the
+    // past) and for recurring calls (the series matters, not the first start).
+    if (!isEdit && repeat === 'none' && startsAt.getTime() <= Date.now()) {
       Alert.alert('Pick a future time', 'The event must start later than right now.');
       return;
     }
+    const rrule = buildRrule(repeat, startsAt);
     setSaving(true);
     try {
-      await createScheduledCall({
-        teamId,
-        channelId,
-        createdBy: userId,
-        title: t,
-        description: description.trim(),
-        startsAt,
-        durationMin,
-      });
+      if (isEdit && editCall) {
+        await updateScheduledCall(editCall.id, {
+          title: t,
+          description: description.trim(),
+          channelId,
+          startsAt,
+          durationMin,
+          rrule,
+        });
+      } else {
+        await createScheduledCall({
+          teamId,
+          channelId,
+          createdBy: userId,
+          title: t,
+          description: description.trim(),
+          startsAt,
+          durationMin,
+          rrule,
+        });
+      }
       onScheduled?.();
       onClose();
     } catch (err) {
-      Alert.alert('Could not schedule', (err as Error)?.message ?? String(err));
+      Alert.alert(isEdit ? 'Could not save' : 'Could not schedule', (err as Error)?.message ?? String(err));
     } finally {
       setSaving(false);
     }
@@ -143,12 +207,12 @@ export function ScheduleCallSheet({
           <TouchableOpacity onPress={onClose} disabled={saving}>
             <Text style={{ fontSize: 16, color: C.accent }}>Cancel</Text>
           </TouchableOpacity>
-          <Text style={{ fontSize: 16, fontWeight: '600', color: '#fff' }}>New Event</Text>
+          <Text style={{ fontSize: 16, fontWeight: '600', color: '#fff' }}>{isEdit ? 'Edit Event' : 'New Event'}</Text>
           <TouchableOpacity onPress={save} disabled={saving}>
             {saving ? (
               <ActivityIndicator color={C.accent} />
             ) : (
-              <Text style={{ fontSize: 16, color: C.accent, fontWeight: '600' }}>Add</Text>
+              <Text style={{ fontSize: 16, color: C.accent, fontWeight: '600' }}>{isEdit ? 'Save' : 'Add'}</Text>
             )}
           </TouchableOpacity>
         </View>
@@ -162,7 +226,7 @@ export function ScheduleCallSheet({
                 onChangeText={setTitle}
                 placeholder="Title"
                 placeholderTextColor={C.text3}
-                autoFocus
+                autoFocus={!isEdit}
                 style={{ fontSize: 22, fontWeight: '600', color: '#fff', letterSpacing: -0.4, padding: 0 }}
                 maxLength={200}
               />
@@ -263,6 +327,40 @@ export function ScheduleCallSheet({
                         >
                           <Text style={{ fontSize: 12, fontWeight: selected ? '600' : '500', color: selected ? C.accent : C.text2 }}>
                             {mins}m
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                }
+              />
+            </View>
+
+            {/* Repeat card */}
+            <View style={{ marginHorizontal: 16, marginTop: 16, backgroundColor: C.surface1, borderRadius: 14, overflow: 'hidden' }}>
+              <FormRow
+                label="Repeat"
+                last
+                value={
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
+                    {REPEAT_OPTIONS.map((opt) => {
+                      const selected = opt.id === repeat;
+                      return (
+                        <TouchableOpacity
+                          key={opt.id}
+                          onPress={() => setRepeat(opt.id)}
+                          activeOpacity={0.7}
+                          style={{
+                            paddingHorizontal: 10,
+                            paddingVertical: 4,
+                            borderRadius: 6,
+                            backgroundColor: selected ? C.accent + '22' : 'transparent',
+                            borderWidth: 1,
+                            borderColor: selected ? C.accent : C.surface3,
+                          }}
+                        >
+                          <Text style={{ fontSize: 12, fontWeight: selected ? '600' : '500', color: selected ? C.accent : C.text2 }}>
+                            {opt.label}
                           </Text>
                         </TouchableOpacity>
                       );

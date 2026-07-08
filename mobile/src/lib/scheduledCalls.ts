@@ -14,6 +14,11 @@ export type ScheduledCall = {
   description: string;
   startsAt: Date;
   durationMin: number;
+  // RFC 5545 RRULE body (no "RRULE:" prefix), '' for a single-shot call.
+  rrule: string;
+  // Excluded occurrence start instants (cancel-one-occurrence), epoch-ms so
+  // they drop straight into the ICS expandSeries exclusion set.
+  exdate: number[];
   createdAt: Date;
   updatedAt: Date;
 };
@@ -27,6 +32,8 @@ type Row = {
   description: string | null;
   starts_at: string;
   duration_min: number;
+  rrule: string | null;
+  exdate: string[] | null;
   created_at: string;
   updated_at: string;
 };
@@ -41,6 +48,8 @@ function marshal(row: Row): ScheduledCall {
     description: row.description ?? '',
     startsAt: new Date(row.starts_at),
     durationMin: row.duration_min,
+    rrule: row.rrule ?? '',
+    exdate: Array.isArray(row.exdate) ? row.exdate.map((s) => new Date(s).getTime()) : [],
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
   };
@@ -95,6 +104,7 @@ export async function createScheduledCall(args: {
   description?: string;
   startsAt: Date;
   durationMin?: number;
+  rrule?: string;
 }): Promise<ScheduledCall> {
   if (isNaN(args.startsAt.getTime())) throw new Error('invalid startsAt');
   const { data, error } = await supabase
@@ -107,7 +117,41 @@ export async function createScheduledCall(args: {
       description: args.description ?? '',
       starts_at: args.startsAt.toISOString(),
       duration_min: args.durationMin ?? 30,
+      rrule: args.rrule ?? '',
     })
+    .select()
+    .single();
+  if (error) throw error;
+  return marshal(data as Row);
+}
+
+// Edit an existing call. Only the owner's rows pass the RLS update policy.
+// Pass just the fields you're changing.
+export async function updateScheduledCall(
+  id: string,
+  patch: {
+    title?: string;
+    description?: string;
+    channelId?: string;
+    startsAt?: Date;
+    durationMin?: number;
+    rrule?: string;
+  },
+): Promise<ScheduledCall> {
+  const row: Record<string, unknown> = {};
+  if (patch.title !== undefined) row.title = patch.title;
+  if (patch.description !== undefined) row.description = patch.description;
+  if (patch.channelId !== undefined) row.channel_id = patch.channelId;
+  if (patch.startsAt !== undefined) {
+    if (isNaN(patch.startsAt.getTime())) throw new Error('invalid startsAt');
+    row.starts_at = patch.startsAt.toISOString();
+  }
+  if (patch.durationMin !== undefined) row.duration_min = patch.durationMin;
+  if (patch.rrule !== undefined) row.rrule = patch.rrule;
+  const { data, error } = await supabase
+    .from('scheduled_calls')
+    .update(row)
+    .eq('id', id)
     .select()
     .single();
   if (error) throw error;

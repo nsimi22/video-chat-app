@@ -19,12 +19,24 @@ import {
 import { C, channelColorForChannel, fmtTime } from '@/components/calendar/tokens';
 import { HuddleMiniMark } from '@/components/calendar/atoms';
 import { Avatar } from '@/components/ui';
+import { ScheduleCallSheet } from '@/components/ScheduleCallSheet';
+
+// Human label for a scheduled_calls.rrule body (kept simple — matches the
+// Repeat options the schedule sheet offers).
+function repeatLabel(rrule: string): string {
+  if (!rrule) return '';
+  const s = rrule.toUpperCase();
+  if (/FREQ=DAILY/.test(s)) return 'Every day';
+  if (/FREQ=WEEKLY/.test(s)) return /BYDAY=MO,TU,WE,TH,FR/.test(s) ? 'Every weekday' : 'Every week';
+  if (/FREQ=MONTHLY/.test(s)) return 'Every month';
+  return 'Repeats';
+}
 
 // Event detail screen — port of `EventDetail` from the design prototype.
-// Read-only on `Repeat`, `Alert`, `Sync` because those features don't
-// exist in our `scheduled_calls` schema yet; rendering them as fake
-// "Weekly · Tue" rows would mislead the user. We surface the fields we
-// actually have: channel, date+time, duration, notes (description).
+// Surfaces channel, date+time, duration, recurrence (Repeat), notes, and the
+// RSVP + attendee list. Owners get Edit (opens the schedule sheet in edit mode)
+// and Delete. `Alert` / external-calendar-sync rows are still omitted (no
+// backend for them).
 
 // RSVP choices — colors echo the presence palette (going=green, maybe=amber,
 // declined=red). Tapping the active one again retracts the RSVP.
@@ -42,44 +54,41 @@ export default function EventDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [attendees, setAttendees] = useState<Attendee[]>([]);
   const [profiles, setProfiles] = useState<Map<string, Profile>>(new Map());
+  const [channels, setChannels] = useState<Channel[]>([]);
   const [rsvpBusy, setRsvpBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
+  const load = useCallback(async () => {
+    if (!activeTeam || !id) {
+      setLoading(false);
+      return;
+    }
+    try {
+      const found = await getScheduledCall(id);
+      setEvent(found);
+      if (found) {
+        const [chs, roster, atts] = await Promise.all([
+          listChannels(activeTeam.id),
+          listTeamProfiles(activeTeam.id),
+          loadAttendees(found.id),
+        ]);
+        setChannels(chs);
+        setChannel(chs.find((c) => c.id === found.channelId) ?? null);
+        setProfiles(new Map(roster.map((p) => [p.user_id, p])));
+        setAttendees(atts);
+      }
+    } catch (e) {
+      console.warn('event load failed', e);
+    } finally {
       // Always clear `loading` — an early return or a failed fetch would
       // otherwise leave the screen stuck on its spinner forever.
-      if (!activeTeam || !id) {
-        setLoading(false);
-        return;
-      }
-      try {
-        const found = await getScheduledCall(id);
-        if (cancelled) return;
-        setEvent(found);
-        // Only pull the channels list to resolve the channel name + color —
-        // skip when the event itself wasn't found.
-        if (found) {
-          const [channels, roster, atts] = await Promise.all([
-            listChannels(activeTeam.id),
-            listTeamProfiles(activeTeam.id),
-            loadAttendees(found.id),
-          ]);
-          if (cancelled) return;
-          setChannel(channels.find((c) => c.id === found.channelId) ?? null);
-          setProfiles(new Map(roster.map((p) => [p.user_id, p])));
-          setAttendees(atts);
-        }
-      } catch (e) {
-        console.warn('event load failed', e);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+      setLoading(false);
+    }
   }, [activeTeam, id]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   // Live-update the attendee list as teammates RSVP while this screen is open.
   useEffect(() => {
@@ -180,6 +189,11 @@ export default function EventDetailScreen() {
             <X size={16} color={C.text2} />
           </View>
         </TouchableOpacity>
+        {ownedByMe && (
+          <TouchableOpacity onPress={() => setEditing(true)} hitSlop={10} activeOpacity={0.7}>
+            <Text style={{ fontSize: 16, color: C.accent, fontWeight: '600' }}>Edit</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       <ScrollView contentContainerStyle={{ paddingBottom: 100 }}>
@@ -208,6 +222,11 @@ export default function EventDetailScreen() {
           <DetailRow label="Duration">
             <Text style={{ color: C.text, fontSize: 14 }}>{event.durationMin} min</Text>
           </DetailRow>
+          {event.rrule ? (
+            <DetailRow label="Repeats">
+              <Text style={{ color: C.text, fontSize: 14 }}>{repeatLabel(event.rrule)}</Text>
+            </DetailRow>
+          ) : null}
           <DetailRow label="Scheduled by" last>
             <Text style={{ color: ownedByMe ? C.accent : C.text2, fontSize: 14 }}>{ownedByMe ? 'You' : 'Teammate'}</Text>
           </DetailRow>
@@ -299,6 +318,18 @@ export default function EventDetailScreen() {
             <Text style={{ color: C.red, fontSize: 16, fontWeight: '500' }}>Delete Event</Text>
           </TouchableOpacity>
         </View>
+      )}
+
+      {activeTeam && userId && (
+        <ScheduleCallSheet
+          visible={editing}
+          onClose={() => setEditing(false)}
+          teamId={activeTeam.id}
+          userId={userId}
+          channels={channels}
+          editCall={event}
+          onScheduled={() => { setEditing(false); load(); }}
+        />
       )}
     </SafeAreaView>
   );

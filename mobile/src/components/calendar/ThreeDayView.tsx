@@ -73,7 +73,7 @@ export function ThreeDayView({ anchorDay, events, icsEvents, channels, onTapEven
       const ch = channelById.get(e.channelId);
       const start = hourOf(e.startsAt);
       out.get(key)!.push({
-        key: 'h:' + e.id,
+        key: 'h:' + e.id + ':' + e.startsAt.getTime(),
         title: e.title,
         startHour: start,
         endHour: Math.min(DAY_END, start + e.durationMin / 60),

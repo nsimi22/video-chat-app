@@ -19,7 +19,7 @@ import {
   subscribeScheduledCalls,
   type ScheduledCall,
 } from '@/lib/scheduledCalls';
-import { parseIcs, type IcsEvent } from '@/lib/ics';
+import { expandRecurringStarts, parseIcs, type IcsEvent } from '@/lib/ics';
 import { getCalendarSubscriptions, type CalendarSubscription } from '@/lib/integrations';
 import { WeekView } from '@/components/calendar/WeekView';
 import { ThreeDayView } from '@/components/calendar/ThreeDayView';
@@ -169,7 +169,35 @@ export default function CalendarScreen() {
     };
   }, [subscriptions, refreshSubscriptions]);
 
-  const events = useMemo(() => [...scheduled.values()], [scheduled]);
+  // Expand recurring internal calls into per-occurrence entries (same engine
+  // as subscribed .ics feeds). A non-recurring call yields itself; a recurring
+  // one yields a shallow clone per occurrence with startsAt shifted — the id is
+  // preserved so tapping any occurrence opens the same underlying call. Bounded
+  // to the loaded ±60-day window so a no-UNTIL rule can't blow up.
+  const events = useMemo(() => {
+    const now = Date.now();
+    const floor = now - ICS_BACKLOG_MS;
+    const cutoff = now + ICS_MAX_HORIZON_MS;
+    const horizon = new Date(cutoff);
+    const out: ScheduledCall[] = [];
+    for (const c of scheduled.values()) {
+      if (!c.rrule) {
+        out.push(c);
+        continue;
+      }
+      const end = new Date(c.startsAt.getTime() + c.durationMin * 60 * 1000);
+      const starts = expandRecurringStarts(
+        { start: c.startsAt, end, rrule: c.rrule, exdate: c.exdate, uid: c.id },
+        horizon,
+      );
+      for (const s of starts) {
+        const ms = s.getTime();
+        if (ms < floor || ms > cutoff) continue;
+        out.push({ ...c, startsAt: s });
+      }
+    }
+    return out;
+  }, [scheduled]);
   const icsEvents = useMemo(() => [...icsByUrl.values()].flat(), [icsByUrl]);
 
   const today = new Date();

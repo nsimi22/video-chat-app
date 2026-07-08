@@ -109,7 +109,7 @@ export function MonthView({ anchorMonth, selectedDay, events, icsEvents, channel
       if (!sameDay(e.startsAt, selectedDay)) continue;
       const ch = channelById.get(e.channelId);
       out.push({
-        key: 'h:' + e.id,
+        key: 'h:' + e.id + ':' + e.startsAt.getTime(),
         title: e.title,
         subtitle: `# ${ch?.name ?? e.channelId}`,
         color: channelColorForChannel(e.channelId, ch?.type),

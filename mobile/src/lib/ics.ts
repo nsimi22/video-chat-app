@@ -372,6 +372,35 @@ function expandSeries(event: IcsEvent, horizonDate: Date | null): IcsEvent[] {
   return out;
 }
 
+// Expand an INTERNAL scheduled call's recurrence into occurrence start
+// instants, reusing the same engine that expands subscribed .ics feeds — so a
+// recurring Huddle and a recurring Google/Outlook event behave identically.
+// Desktop does the same (renderer/calendar.js listEvents). Returns [start] for
+// a non-recurring call (empty rrule → expandSeries early-returns the master).
+export function expandRecurringStarts(
+  master: { start: Date; end: Date | null; rrule: string; exdate: number[]; uid: string },
+  horizon: Date,
+): Date[] {
+  const ev: IcsEvent = {
+    uid: master.uid,
+    title: '',
+    description: '',
+    location: '',
+    url: '',
+    start: master.start,
+    end: master.end,
+    allDay: false,
+    rrule: master.rrule,
+    exdate: master.exdate,
+    meetingUrl: '',
+    provider: '',
+    raw: {},
+  };
+  return expandSeries(ev, horizon)
+    .map((o) => o.start)
+    .filter((d): d is Date => !!d);
+}
+
 function* generateOccurrences(
   start: Date,
   rule: ParsedRrule,

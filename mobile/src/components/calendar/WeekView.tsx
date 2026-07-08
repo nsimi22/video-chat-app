@@ -120,7 +120,7 @@ export function WeekView({
       const start = hourOf(e.startsAt);
       const end = Math.min(DAY_END, start + e.durationMin / 60);
       out.push({
-        key: 'h:' + e.id,
+        key: 'h:' + e.id + ':' + e.startsAt.getTime(),
         kind: 'huddle',
         title: e.title,
         startHour: start,
