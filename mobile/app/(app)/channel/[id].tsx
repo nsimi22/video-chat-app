@@ -33,7 +33,6 @@ import type { GiphyResult } from '@/lib/giphy';
 import { useChannelMessages } from '@/hooks/useChannelMessages';
 import {
   deleteMessage,
-  editMessage,
   extractMentions,
   listTeamProfiles,
   sendMessage,
@@ -45,6 +44,8 @@ import {
   type Message,
   type Profile,
 } from '@/lib/api';
+import { useMessageEdit } from '@/hooks/useMessageEdit';
+import { ReactionPills } from '@/components/ReactionPills';
 import { useAuth } from '@/context/AuthContext';
 import { useUnread } from '@/context/UnreadContext';
 import { useFavorites } from '@/context/FavoritesContext';
@@ -68,10 +69,6 @@ export default function ChannelScreen() {
   const [sending, setSending] = useState(false);
   const [typingNames, setTypingNames] = useState<string[]>([]);
   const [sheetMessage, setSheetMessage] = useState<Message | null>(null);
-  // The message currently being edited, or null for normal compose. When set,
-  // the composer is primed with its body and Send updates in place instead of
-  // posting a new message.
-  const [editing, setEditing] = useState<Message | null>(null);
   const inputRef = useRef<TextInput>(null);
   // Long-press on a reaction pill opens this sheet so the user can see
   // who reacted with that emoji. Tap still toggles, only long-press
@@ -201,44 +198,15 @@ export default function ChannelScreen() {
     }
   };
 
-  // Enter edit mode: prime the composer with the message body and focus it.
-  const startEditing = (m: Message) => {
-    setEditing(m);
-    setText(m.body ?? '');
-    // Defer focus a tick so the value is set before the keyboard opens.
-    setTimeout(() => inputRef.current?.focus(), 50);
-  };
-
-  const cancelEditing = () => {
-    setEditing(null);
-    setText('');
-  };
-
-  // Save an in-place edit. Kept separate from doSend: edits are text-only
-  // (no slash dispatch, no attachments) and update the existing row via
-  // editMessage rather than inserting a new message.
-  const saveEdit = async () => {
-    if (!editing) return;
-    const body = text.trim();
-    if (!body) {
-      Alert.alert('Empty message', 'An edited message can’t be empty. Delete it instead to remove it.');
-      return;
-    }
-    if (body === (editing.body ?? '').trim()) {
-      cancelEditing();
-      return;
-    }
-    setSending(true);
-    try {
-      await editMessage(editing.id, body);
-      setEditing(null);
-      setText('');
-    } catch (e: any) {
-      Alert.alert('Could not save edit', e?.message ?? String(e));
-    } finally {
-      setSending(false);
-    }
-  };
+  // In-place message edit (text-only) — shared with the thread view. doSend
+  // delegates to saveEdit when `editing` is set instead of posting anew.
+  const { editing, startEditing, cancelEditing, saveEdit } = useMessageEdit({
+    messages,
+    text,
+    setText,
+    setSending,
+    inputRef,
+  });
 
   const doSend = async (attachments: Attachment[] = []) => {
     if (editing) return saveEdit();
@@ -616,25 +584,13 @@ export default function ChannelScreen() {
                       <ChevronRight size={14} color={colors.textFaint} />
                     </TouchableOpacity>
                   )}
-                  {item.reactions && Object.keys(item.reactions).length > 0 && (
-                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: space(1.5) }}>
-                      {Object.entries(item.reactions).map(([emoji, users]) => (
-                        <TouchableOpacity
-                          key={emoji}
-                          onPress={() => toggleReaction(item.id, emoji, userId!).catch(() => {})}
-                          // Long-press routes to ReactorSheet — the user
-                          // can see who reacted with this emoji without
-                          // losing the tap-to-toggle gesture they
-                          // expect from every other chat app.
-                          onLongPress={() => setReactorSheet({ emoji, userIds: users as string[] })}
-                          delayLongPress={350}
-                          style={{ flexDirection: 'row', backgroundColor: (users as string[]).includes(userId ?? '') ? colors.accent : colors.surfaceAlt, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3, marginRight: 6 }}
-                        >
-                          <Text style={{ color: colors.text, fontSize: 12 }}>{emoji} {(users as string[]).length}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  )}
+                  {/* Long-press a pill routes to ReactorSheet (who reacted)
+                      without losing tap-to-toggle. */}
+                  <ReactionPills
+                    message={item}
+                    userId={userId}
+                    onLongPress={(emoji, userIds) => setReactorSheet({ emoji, userIds })}
+                  />
                 </View>
               </TouchableOpacity>
             );

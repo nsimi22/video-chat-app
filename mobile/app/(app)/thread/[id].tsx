@@ -20,7 +20,6 @@ import { Paperclip } from 'lucide-react-native';
 import * as Clipboard from 'expo-clipboard';
 import {
   deleteMessage,
-  editMessage,
   fetchThread,
   listTeamProfiles,
   sendMessage,
@@ -31,10 +30,12 @@ import {
 } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
+import { useMessageEdit } from '@/hooks/useMessageEdit';
 import { AiMessageCard, Avatar, Markdown } from '@/components/ui';
 import { MessageUnfurls } from '@/components/Unfurl';
 import { ImageLightbox } from '@/components/ImageLightbox';
 import { MessageActionSheet } from '@/components/MessageActionSheet';
+import { ReactionPills } from '@/components/ReactionPills';
 import { PollCard } from '@/components/PollCard';
 import { colors, radius, space } from '@/theme';
 
@@ -56,8 +57,6 @@ export default function ThreadScreen() {
   // same as the channel view. No "Reply in thread" here — you can't nest a
   // thread inside a thread, so onOpenThread is intentionally not passed.
   const [sheetMessage, setSheetMessage] = useState<Message | null>(null);
-  // The reply currently being edited, or null for normal compose.
-  const [editing, setEditing] = useState<Message | null>(null);
   const inputRef = useRef<TextInput>(null);
   const listRef = useRef<FlatList<Message>>(null);
 
@@ -123,52 +122,19 @@ export default function ThreadScreen() {
     };
   }, [teamId, parentId, load]);
 
-  // Drop out of edit mode if the message being edited is deleted — locally or
-  // by another user over realtime — so Save can't fire editMessage() against a
-  // row that no longer exists.
-  useEffect(() => {
-    if (editing && !items.some((m) => m.id === editing.id)) {
-      setEditing(null);
-      setText('');
-    }
-  }, [editing, items]);
+  const { editing, startEditing, cancelEditing, saveEdit } = useMessageEdit({
+    messages: items,
+    text,
+    setText,
+    setSending,
+    inputRef,
+  });
 
   const profileFor = useCallback((uid: string) => roster.find((p) => p.user_id === uid), [roster]);
   const mentionNames = useMemo(() => roster.map((p) => p.name).filter((n): n is string => !!n), [roster]);
 
   const parent = items.find((m) => m.id === String(parentId)) ?? null;
   const replies = items.filter((m) => m.id !== String(parentId));
-
-  const startEditing = (m: Message) => {
-    setEditing(m);
-    setText(m.body ?? '');
-    setTimeout(() => inputRef.current?.focus(), 50);
-  };
-  const cancelEditing = () => {
-    setEditing(null);
-    setText('');
-  };
-  const saveEdit = async () => {
-    if (!editing) return;
-    const body = text.trim();
-    if (!body) {
-      Alert.alert('Empty message', 'An edited message can’t be empty. Delete it instead to remove it.');
-      return;
-    }
-    if (body === (editing.body ?? '').trim()) {
-      cancelEditing();
-      return;
-    }
-    setSending(true);
-    try {
-      await editMessage(editing.id, body);
-      cancelEditing();
-    } catch (e: any) {
-      Alert.alert('Could not save edit', e?.message ?? String(e));
-    } finally {
-      setSending(false);
-    }
-  };
 
   const send = async () => {
     if (editing) return saveEdit();
@@ -271,19 +237,7 @@ export default function ThreadScreen() {
               </TouchableOpacity>
             );
           })}
-          {m.reactions && Object.keys(m.reactions).length > 0 && (
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: space(1.5) }}>
-              {Object.entries(m.reactions).map(([emoji, users]) => (
-                <TouchableOpacity
-                  key={emoji}
-                  onPress={() => toggleReaction(m.id, emoji, userId!).catch(() => {})}
-                  style={{ flexDirection: 'row', backgroundColor: (users as string[]).includes(userId ?? '') ? colors.accent : colors.surfaceAlt, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3, marginRight: 6 }}
-                >
-                  <Text style={{ color: colors.text, fontSize: 12 }}>{emoji} {(users as string[]).length}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
+          <ReactionPills message={m} userId={userId} />
         </View>
       </TouchableOpacity>
     );
