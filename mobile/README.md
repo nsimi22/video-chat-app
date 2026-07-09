@@ -16,8 +16,8 @@ MVP scope: **chat + receive-only calls**.
 - ✅ Calls: join a channel call, see/hear participants, publish camera/mic, mute/flip/leave (LiveKit)
 - ✅ Threads UI, GIF picker (Giphy), polls, calendar, Jira board, AI assistant
 - ✅ Integration API keys (Jira / GitHub / AI / Giphy) editable in the **You → Integrations** screen — writes the same RLS-gated `user_integrations.settings` row the desktop reads
-- ✅ **CarPlay** (iOS) — browse channels/DMs on the car screen and join an audio call hands-free, with in-call Mute / Leave. Audio-only by design (Apple forbids video while driving). Reuses the same LiveKit `CallContext`. See [`docs/carplay.md`](docs/carplay.md). Needs Apple's CarPlay entitlement approval + a native rebuild.
-- ⛔ Not yet: screen-share send, annotations, whiteboard, message search UI, CallKit/ConnectionService (incoming-call answering, incl. from CarPlay), cross-platform A/V with desktop (desktop still on mesh)
+- ✅ **CarPlay** (iOS) — iMessage-style conversation list on the car screen: last-message previews + unread, read recent messages, send canned quick-replies, and join/control an audio call (Mute / Leave). Audio-only + canned replies by design (Apple forbids video and free-text entry while driving). Reuses the same LiveKit `CallContext`. A **SiriKit scaffold** for hands-free voice send/read is included but not yet wired. See [`docs/carplay.md`](docs/carplay.md). Needs Apple's CarPlay entitlement approval + a native rebuild.
+- ⛔ Not yet: screen-share send, annotations, whiteboard, message search UI, CallKit/ConnectionService (incoming-call answering, incl. from CarPlay), Siri voice messaging (scaffolded), cross-platform A/V with desktop (desktop still on mesh)
 
 ## Develop
 

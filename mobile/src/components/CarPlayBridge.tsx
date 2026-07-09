@@ -1,28 +1,39 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocalParticipant, useParticipants } from '@livekit/react-native';
-import { listChannels, listTeamProfiles, type Channel, type Profile } from '@/lib/api';
+import {
+  fetchLatestMessagesByChannel,
+  fetchMessages,
+  listChannels,
+  listTeamProfiles,
+  sendMessage,
+  type Channel,
+  type Message,
+  type Profile,
+} from '@/lib/api';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { useCall } from '@/context/CallContext';
 import { useCallSignals } from '@/context/CallSignalsContext';
-import { CarPlayController, type CarPlaySection } from '@/lib/carplay';
+import { useUnread } from '@/context/UnreadContext';
+import { CarPlayController, type CarPlayViewState, type ConversationRow } from '@/lib/carplay';
 
-// Headless component that mirrors Huddle's channel list + active-call state onto
-// the CarPlay head-unit. Renders nothing.
+// Headless component that mirrors Huddle's conversations + active call onto the
+// CarPlay head-unit as an iMessage-style surface. Renders nothing.
 //
-// It lives *inside* <LiveKitRoom> (app/(app)/_layout.tsx) for two reasons:
-//   • useLocalParticipant() needs a Room context to read/toggle the mic, so the
-//     car's Mute button drives the same audio track the phone UI does.
-//   • It still sits under CallProvider/CallSignalsProvider, so useCall() and the
-//     desktop-parity mute broadcast are available too.
+// Mounted *inside* <LiveKitRoom> (app/(app)/_layout.tsx) so useLocalParticipant()
+// can read/toggle the mic for the car's in-call Mute button; it still sits under
+// CallProvider/CallSignalsProvider/UnreadProvider for call + unread state.
 //
-// On non-iOS (or an iOS build that didn't bundle react-native-carplay) the
-// controller reports `isSupported === false` and every effect below early-outs,
-// so this is inert everywhere but a CarPlay-capable iOS build.
+// Inert on non-iOS (or an iOS build without react-native-carplay): the controller
+// reports isSupported === false and every effect early-outs.
 
-// DM channel ids look like `dm:<a>::<b>` (sorted uuids). Return the *other*
-// participant's uuid for 1:1s; null for group DMs and non-DM channels. Mirrors
-// the same helper in app/(app)/(tabs)/channels.tsx.
+// Canned replies — CarPlay forbids free-text entry while driving, so hands-free
+// replies are presets. (Reading messages aloud + voice dictation is the SiriKit
+// path; see docs/carplay.md.)
+const QUICK_REPLIES = ['👍 Got it', 'On my way', 'Running late', 'Call you back', 'Thanks!'];
+
+// DM channel ids look like `dm:<a>::<b>` (sorted uuids). Mirrors the helper in
+// app/(app)/(tabs)/channels.tsx.
 function dmPeerId(channelId: string, me: string | null): string | null {
   if (!channelId.startsWith('dm:')) return null;
   return channelId.replace(/^dm:/, '').split('::').find((x) => x && x !== me) ?? null;
@@ -37,6 +48,24 @@ function channelLabel(c: Channel, profiles: Profile[], me: string | null): strin
   return c.name;
 }
 
+function truncate(s: string, n: number): string {
+  const flat = (s || '').replace(/\s+/g, ' ').trim();
+  return flat.length > n ? `${flat.slice(0, n - 1)}…` : flat;
+}
+
+// "Name: body" preview/line for a message, with sensible fallbacks for
+// attachment-only, poll, and empty bodies.
+function formatMessage(m: Message, profiles: Profile[], me: string | null): string {
+  const who = m.author_id === me ? 'You' : profiles.find((p) => p.user_id === m.author_id)?.name ?? 'Someone';
+  let body = (m.body || '').trim();
+  if (m.meta?.poll) body = `📊 ${m.meta.poll.question}`;
+  else if (!body && m.attachments?.length) body = '📎 Attachment';
+  else if (!body) body = '(no text)';
+  return `${who}: ${body}`;
+}
+
+const OPEN_LINE_COUNT = 8;
+
 export function CarPlayBridge() {
   const supported = CarPlayController.isSupported;
 
@@ -45,139 +74,238 @@ export function CarPlayBridge() {
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled } = useLocalParticipant();
   const participants = useParticipants();
   const { broadcastMuteState } = useCallSignals();
+  const { unreadFor } = useUnread();
 
   const [channels, setChannels] = useState<Channel[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [previews, setPreviews] = useState<Map<string, Message>>(new Map());
 
-  // Latest channel/profile snapshot for the tap handler, so onSelectChannel can
-  // resolve a fresh display name without being re-created (and re-registered on
-  // the native template) on every list refresh.
-  const dataRef = useRef({ channels, profiles, userId });
-  dataRef.current = { channels, profiles, userId };
+  // The conversation the car is currently viewing (its detail template).
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [openMessages, setOpenMessages] = useState<Message[]>([]);
+  const [openLoading, setOpenLoading] = useState(false);
 
-  // ── Load + live-subscribe the channel list (only when CarPlay is in play) ──
-  const load = useCallback(async () => {
+  // Refs so the stable handlers below resolve current state without being
+  // re-created (and re-registered on the native templates) each render.
+  const openIdRef = useRef(openId);
+  openIdRef.current = openId;
+  const dataRef = useRef({ channels, profiles, userId, teamId: activeTeam?.id ?? null });
+  dataRef.current = { channels, profiles, userId, teamId: activeTeam?.id ?? null };
+
+  // ── Load channels + profiles + previews, and keep them live ───────────────
+  const loadRoster = useCallback(async () => {
     if (!activeTeam) return;
     try {
-      const [ch, pr] = await Promise.all([
-        listChannels(activeTeam.id),
-        listTeamProfiles(activeTeam.id),
-      ]);
+      const [ch, pr] = await Promise.all([listChannels(activeTeam.id), listTeamProfiles(activeTeam.id)]);
       setChannels(ch);
       setProfiles(pr);
     } catch (err) {
-      console.warn('[carplay] channel load failed', err);
+      console.warn('[carplay] roster load failed', err);
     }
   }, [activeTeam]);
 
+  const loadPreviews = useCallback(async () => {
+    if (!activeTeam) return;
+    try {
+      setPreviews(await fetchLatestMessagesByChannel(activeTeam.id));
+    } catch (err) {
+      console.warn('[carplay] preview load failed', err);
+    }
+  }, [activeTeam]);
+
+  // Throttle preview reloads triggered by the firehose of team message inserts.
+  const lastPreviewLoad = useRef(0);
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     if (!supported || !activeTeam) return;
-    load();
-    // Same realtime channel-list subscription the channels tab uses, so renames,
-    // new channels, and new DMs reach the car without a manual refresh.
-    const sub = supabase
+    loadRoster();
+    loadPreviews();
+
+    const channelSub = supabase
       .channel(`carplay:channels:${activeTeam.id}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'channels', filter: `team_id=eq.${activeTeam.id}` },
-        () => load(),
+        () => loadRoster(),
       )
       .subscribe();
+
+    // Refresh previews when new messages land, throttled to ~once/4s so a busy
+    // team doesn't hammer the DB from the car.
+    const msgSub = supabase
+      .channel(`carplay:previews:${activeTeam.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages', filter: `team_id=eq.${activeTeam.id}` },
+        () => {
+          const now = Date.now();
+          const since = now - lastPreviewLoad.current;
+          if (since >= 4000) {
+            lastPreviewLoad.current = now;
+            loadPreviews();
+          } else if (!previewTimer.current) {
+            previewTimer.current = setTimeout(() => {
+              previewTimer.current = null;
+              lastPreviewLoad.current = Date.now();
+              loadPreviews();
+            }, 4000 - since);
+          }
+        },
+      )
+      .subscribe();
+
     return () => {
+      supabase.removeChannel(channelSub);
+      supabase.removeChannel(msgSub);
+      if (previewTimer.current) {
+        clearTimeout(previewTimer.current);
+        previewTimer.current = null;
+      }
+    };
+  }, [supported, activeTeam, loadRoster, loadPreviews]);
+
+  // ── Load the open conversation's recent messages + live-append new ones ────
+  useEffect(() => {
+    if (!supported || !openId || !activeTeam) {
+      setOpenMessages([]);
+      setOpenLoading(false);
+      return;
+    }
+    let active = true;
+    setOpenLoading(true);
+    fetchMessages(activeTeam.id, openId)
+      .then((ms) => {
+        if (!active) return;
+        setOpenMessages(ms.slice(-OPEN_LINE_COUNT));
+        setOpenLoading(false);
+      })
+      .catch((err) => {
+        if (!active) return;
+        setOpenLoading(false);
+        console.warn('[carplay] open conversation load failed', err);
+      });
+
+    const sub = supabase
+      .channel(`carplay:conv:${activeTeam.id}:${openId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages', filter: `team_id=eq.${activeTeam.id}` },
+        (payload) => {
+          const m = payload.new as Message;
+          if (m.channel_id !== openId || m.parent_id) return;
+          setOpenMessages((prev) => [...prev, m].slice(-OPEN_LINE_COUNT));
+        },
+      )
+      .subscribe();
+
+    return () => {
+      active = false;
       supabase.removeChannel(sub);
     };
-  }, [supported, activeTeam, load]);
+  }, [supported, openId, activeTeam]);
 
   // ── Handlers (kept current on the controller every render) ────────────────
-  const onSelectChannel = useCallback(
-    (id: string) => {
-      const { channels: chs, profiles: prs, userId: me } = dataRef.current;
-      const ch = chs.find((c) => c.id === id);
-      const label = ch ? channelLabel(ch, prs, me) : 'Call';
-      // Reuses the exact CallContext path the phone uses — perms ask + LiveKit
-      // token + room connect. CarPlay is audio-only, but startCall still asks
-      // for camera perms; the car never renders video, so a denied camera is
-      // harmless here.
-      void startCall(id, label);
+  const onOpenConversation = useCallback((id: string) => setOpenId(id), []);
+  const onCloseConversation = useCallback(() => setOpenId(null), []);
+
+  const onQuickReply = useCallback(
+    (text: string) => {
+      const { teamId, userId: me } = dataRef.current;
+      const channelId = openIdRef.current;
+      if (!teamId || !me || !channelId) return;
+      sendMessage({ teamId, channelId, authorId: me, body: text }).catch((err) =>
+        console.warn('[carplay] quick reply failed', err),
+      );
     },
-    [startCall],
+    [],
   );
+
+  const onStartCall = useCallback(() => {
+    const { channels: chs, profiles: prs, userId: me } = dataRef.current;
+    const channelId = openIdRef.current;
+    if (!channelId) return;
+    const ch = chs.find((c) => c.id === channelId);
+    const label = ch ? channelLabel(ch, prs, me) : 'Call';
+    // Reuses the phone's CallContext path (perms + LiveKit token + connect).
+    // Audio-only on the car — a denied camera is harmless, nothing renders video.
+    void startCall(channelId, label);
+  }, [startCall]);
 
   const onToggleMute = useCallback(() => {
     if (!localParticipant) return;
     const next = !isMicrophoneEnabled;
     Promise.resolve(localParticipant.setMicrophoneEnabled(next))
-      // Mirror to the call channel so desktop tiles reflect a mute toggled from
-      // the car even while the phone's call screen isn't mounted (locked/pocket).
       .then(() => broadcastMuteState(next, isCameraEnabled))
       .catch((err) => console.warn('[carplay] mic toggle failed', err));
   }, [localParticipant, isMicrophoneEnabled, isCameraEnabled, broadcastMuteState]);
 
-  const onLeave = useCallback(() => {
-    endCall();
-  }, [endCall]);
+  const onLeave = useCallback(() => endCall(), [endCall]);
+
+  const handlers = useMemo(
+    () => ({ onOpenConversation, onCloseConversation, onQuickReply, onStartCall, onToggleMute, onLeave }),
+    [onOpenConversation, onCloseConversation, onQuickReply, onStartCall, onToggleMute, onLeave],
+  );
 
   useEffect(() => {
     if (!supported) return;
-    CarPlayController.setHandlers({ onSelectChannel, onToggleMute, onLeave });
-  }, [supported, onSelectChannel, onToggleMute, onLeave]);
+    CarPlayController.setHandlers(handlers);
+  }, [supported, handlers]);
 
-  // ── Register scene connect/disconnect listeners once ──────────────────────
+  // Register scene connect/disconnect once; setHandlers (above) keeps the
+  // closures fresh, so we don't re-register on handler identity changes.
   useEffect(() => {
     if (!supported) return;
-    CarPlayController.start({ onSelectChannel, onToggleMute, onLeave });
+    CarPlayController.start(handlers);
     return () => CarPlayController.stop();
-    // Intentionally mount-once: start() is idempotent and setHandlers (above)
-    // keeps the closures fresh, so we don't re-register listeners on every
-    // handler identity change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supported]);
 
-  // ── Browse template: channels + DMs, split into two sections ──────────────
-  const sections = useMemo<CarPlaySection[]>(() => {
-    const channelItems = channels
-      .filter((c) => c.type !== 'dm')
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map((c) => ({ id: c.id, label: c.name, sub: c.type === 'private' ? '🔒 Private' : '# Channel' }));
-    const dmItems = channels
-      .filter((c) => c.type === 'dm')
-      .map((c) => ({ id: c.id, label: channelLabel(c, profiles, userId), sub: 'Direct message' }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-    const out: CarPlaySection[] = [];
-    if (channelItems.length) out.push({ header: 'Channels', items: channelItems });
-    if (dmItems.length) out.push({ header: 'Direct Messages', items: dmItems });
-    return out;
-  }, [channels, profiles, userId]);
+  // ── Build the view state ──────────────────────────────────────────────────
+  const conversations = useMemo<ConversationRow[]>(() => {
+    const rows = channels.map((c) => {
+      const preview = previews.get(c.id);
+      return {
+        id: c.id,
+        label: channelLabel(c, profiles, userId),
+        preview: preview ? truncate(formatMessage(preview, profiles, userId), 40) : '',
+        unread: unreadFor(c.id)?.count ?? 0,
+        ts: preview?.ts ?? '',
+      };
+    });
+    // Most-recently-active first (channels with no messages sink to the bottom,
+    // sorted alphabetically among themselves).
+    rows.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : a.label.localeCompare(b.label)));
+    return rows.map(({ id, label, preview, unread }) => ({ id, label, preview, unread }));
+  }, [channels, profiles, userId, previews, unreadFor]);
 
-  // Signature so we only rebuild the native list template when the visible
-  // content actually changes (the realtime sub can fire on unrelated column
-  // updates that don't alter what the car shows).
-  const browseSig = useMemo(
-    () => sections.map((s) => `${s.header}:${s.items.map((i) => `${i.id}|${i.label}`).join(',')}`).join(';'),
-    [sections],
-  );
+  const openConversation = useMemo(() => {
+    if (!openId) return null;
+    const ch = channels.find((c) => c.id === openId);
+    return {
+      id: openId,
+      title: ch ? channelLabel(ch, profiles, userId) : 'Conversation',
+      lines: openMessages.map((m) => truncate(formatMessage(m, profiles, userId), 60)),
+      quickReplies: QUICK_REPLIES,
+      loading: openLoading,
+    };
+  }, [openId, channels, profiles, userId, openMessages, openLoading]);
 
-  // ── Active-call template: name + live participant count + mute state ───────
-  const callTitle = activeCall?.name ?? '';
-  const participantCount = participants.length;
-  const callDetail =
-    participantCount > 1 ? `${participantCount} on the call` : 'Waiting for others…';
-  const muted = !isMicrophoneEnabled;
+  const call = useMemo(() => {
+    if (!activeCall) return null;
+    const count = participants.length;
+    return {
+      title: activeCall.name,
+      detail: count > 1 ? `${count} on the call` : 'Waiting for others…',
+      muted: !isMicrophoneEnabled,
+    };
+  }, [activeCall, participants.length, isMicrophoneEnabled]);
 
-  // Drive the controller off the current state. Two effects, keyed on their own
-  // signatures, so a browse refresh doesn't rebuild the call template and vice
-  // versa.
   useEffect(() => {
     if (!supported) return;
-    if (activeCall) return; // call template owns the root while a call is live
-    CarPlayController.setBrowse(sections);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supported, activeCall, browseSig]);
-
-  useEffect(() => {
-    if (!supported || !activeCall) return;
-    CarPlayController.setCall(callTitle, callDetail, muted);
-  }, [supported, activeCall, callTitle, callDetail, muted]);
+    const state: CarPlayViewState = { conversations, open: openConversation, call };
+    CarPlayController.render(state);
+  }, [supported, conversations, openConversation, call]);
 
   return null;
 }

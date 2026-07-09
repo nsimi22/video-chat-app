@@ -1,33 +1,42 @@
 # Huddle on CarPlay
 
-CarPlay support turns the phone app's audio-calling into a hands-free surface on
-the car head-unit: browse the team's channels and DMs, tap one to join its audio
-call, and control the call (Mute / Leave) from the car screen.
+CarPlay support turns Huddle into a hands-free surface on the car head-unit: an
+iMessage-style list of conversations, read recent messages, send canned
+quick-replies, and join/control an audio call — all from the car screen.
 
 CarPlay is **not a separate app** — it's a scene inside the existing iOS app
 (`mobile/`), so it ships in the same binary and talks to the same Supabase +
-LiveKit backend. It's **audio-only**: Apple prohibits video on the car display
-while driving, so the CarPlay surface never touches camera tracks. It drives the
-same `CallContext`/LiveKit room the phone UI uses.
+LiveKit backend. Two hard limits shape the UX, both from Apple: **no video** on
+the car display while driving (calls are audio-only; the surface never touches
+camera tracks), and **no free-text entry** (replies are canned presets, or voice
+via the SiriKit path below).
 
-## What's implemented
+## What's implemented (in-app, on-screen)
 
 | Piece | File |
 | --- | --- |
-| Guarded native wrapper (templates, connect lifecycle) | `src/lib/carplay.ts` |
-| React bridge (channel list → templates, call state, mute) | `src/components/CarPlayBridge.tsx` |
+| Guarded native wrapper — stack reconciler for the templates | `src/lib/carplay.ts` |
+| React bridge — conversations, open-conversation, call, mute | `src/components/CarPlayBridge.tsx` |
 | Mount point (inside `<LiveKitRoom>`) | `app/(app)/_layout.tsx` |
+| Last-message-per-channel query | `src/lib/api.ts` → `fetchLatestMessagesByChannel` |
 | Native config (entitlement, scene manifest, scene delegate) | `plugins/withCarPlay.js` |
 | ObjC scene delegate source of truth | `ios-carplay/HuddleCarSceneDelegate.{h,m}` |
 | Dependency | `react-native-carplay` in `package.json` |
 
-Two templates:
+Three templates, driven by a small **stack reconciler** (the bridge computes a
+plain view-state; the controller diffs it against the live template stack and
+issues the minimal set-root / push / pop / update calls):
 
-- **Browse** — a `CPListTemplate` with **Channels** and **Direct Messages**
-  sections, kept live off the same `channels` realtime subscription the
-  Channels tab uses. Selecting a row calls `startCall(channelId, name)`.
-- **Call** — a `CPInformationTemplate` showing the call name, a live
-  participant count, and **Mute** / **Leave** buttons. Mute toggles the same
+- **Conversations** (root) — a `CPListTemplate` of channels + DMs, each with a
+  last-message preview and an unread count. Sorted most-recently-active first.
+  Kept live off `channels` + `messages` realtime subscriptions and the shared
+  `UnreadContext`.
+- **Conversation** (pushed on tap) — a `CPListTemplate` with the most recent
+  messages (read-only), a set of **canned quick-replies** you can send
+  hands-free (`On my way`, `Running late`, …), and a **Join audio call** row.
+  New messages append live while it's open.
+- **Call** (pushed while active) — a `CPInformationTemplate` with the call name,
+  a live participant count, and **Mute** / **Leave**. Mute toggles the same
   LiveKit mic the phone does (`setMicrophoneEnabled`) and broadcasts the state
   so desktop tiles reflect it even while the phone is locked.
 
@@ -88,11 +97,60 @@ On connect, the delegate calls `[RNCarPlay connectWithInterfaceController:window
 handing control to `react-native-carplay`, which the JS in `src/lib/carplay.ts`
 then drives.
 
-## Not yet (follow-ups)
+## Siri voice messaging (iMessage-parity) — SCAFFOLD
+
+The on-screen surface above can't read message text aloud or take dictation while
+driving — Apple routes that through **SiriKit**. A SiriKit *Intents extension*
+lets Siri say "New message from Dana on Huddle: …", offer to reply, and send your
+dictated response, and powers CarPlay's "Announce Messages". This repo ships a
+**scaffold** for it — the structure and the declarative config — but it is **not
+wired into a build yet** and needs finishing on a Mac.
+
+### What's here
+
+| Piece | File |
+| --- | --- |
+| Extension principal class (intent router) | `ios-carplay/HuddleIntents/IntentHandler.swift` |
+| Send a message (`INSendMessageIntent`) | `ios-carplay/HuddleIntents/SendMessageIntentHandler.swift` |
+| Read messages aloud (`INSearchForMessagesIntent`) | `ios-carplay/HuddleIntents/SearchForMessagesIntentHandler.swift` |
+| Swift Supabase client (send/fetch) | `ios-carplay/HuddleShared/SupabaseMessaging.swift` |
+| Extension `Info.plist` (declares `IntentsSupported`) | `ios-carplay/HuddleIntents/Info.plist` |
+| Extension entitlements (App Group) | `ios-carplay/HuddleIntents/HuddleIntents.entitlements` |
+| Main-app config plugin (Siri entitlement, usage string, App Group) | `plugins/withSiriMessaging.js` |
+
+### Why it's a scaffold, not a build
+
+- The extension is a **separate target** in its own process — it can't call the
+  React Native JS, so it talks to Supabase directly in Swift
+  (`SupabaseMessaging.swift`, currently stubbed).
+- `@expo/config-plugins` can't reliably add a new **app-extension target** to the
+  Xcode project, so that step is manual.
+- Enabling the **Siri capability** requires it on the App ID / provisioning
+  profile; adding the entitlement without it fails signing — which is why
+  `withSiriMessaging.js` is **not** in `app.json` by default.
+
+### Remaining steps (on a Mac)
+
+1. `expo prebuild`, then in Xcode add a **Messaging Intents Extension** target.
+   Set its principal class to `IntentHandler`, add the four Swift files + the
+   extension `Info.plist` + `.entitlements`, and add `SupabaseMessaging.swift` to
+   both the app and extension targets (or a shared framework).
+2. Enable **Siri** and an **App Group** (`group.com.nicksimi.huddle`) on both the
+   app and the extension in Signing & Capabilities.
+3. Share the session: on sign-in, have the RN app write the Supabase
+   `access_token`, `active_team_id`, and `user_id` into the App Group's
+   `UserDefaults(suiteName:)` (a tiny native module, since JS AsyncStorage
+   doesn't cross into the extension). `SupabaseMessaging` reads them.
+4. Implement the two `// TODO` REST calls in `SupabaseMessaging.swift` (mirror
+   `src/lib/api.ts` `sendMessage` + a recent-messages fetch).
+5. Request Siri authorization (`INPreferences.requestSiriAuthorization`) and
+   donate/interaction intents so Siri learns the vocabulary.
+6. Add `"./plugins/withSiriMessaging.js"` to `app.json` → `plugins`.
+
+## Not yet (other follow-ups)
 
 - **CallKit / incoming calls** — answering a call *from* CarPlay (native
   incoming-call UI) needs CallKit + PushKit VoIP pushes and backend changes to
   `notify-on-message`/a new VoIP-push path. Tracked alongside the mobile
   CallKit item in the README.
-- **Recents / favorites** section on the browse template for faster access.
 - **Now-playing style** call template with richer transport controls.
