@@ -16,7 +16,8 @@ MVP scope: **chat + receive-only calls**.
 - ✅ Calls: join a channel call, see/hear participants, publish camera/mic, mute/flip/leave (LiveKit)
 - ✅ Threads UI, GIF picker (Giphy), polls, calendar, Jira board, AI assistant
 - ✅ Integration API keys (Jira / GitHub / AI / Giphy) editable in the **You → Integrations** screen — writes the same RLS-gated `user_integrations.settings` row the desktop reads
-- ⛔ Not yet: screen-share send, annotations, whiteboard, message search UI, CallKit/ConnectionService, cross-platform A/V with desktop (desktop still on mesh)
+- ✅ **CarPlay** (iOS) — browse channels/DMs on the car screen and join an audio call hands-free, with in-call Mute / Leave. Audio-only by design (Apple forbids video while driving). Reuses the same LiveKit `CallContext`. See [`docs/carplay.md`](docs/carplay.md). Needs Apple's CarPlay entitlement approval + a native rebuild.
+- ⛔ Not yet: screen-share send, annotations, whiteboard, message search UI, CallKit/ConnectionService (incoming-call answering, incl. from CarPlay), cross-platform A/V with desktop (desktop still on mesh)
 
 ## Develop
 
