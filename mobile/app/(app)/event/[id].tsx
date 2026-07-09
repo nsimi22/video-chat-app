@@ -105,7 +105,9 @@ export default function EventDetailScreen() {
   // for every RSVP_OPTIONS row on every (realtime-driven) render.
   const attendeesByStatus = useMemo(() => {
     const g: Record<AttendeeStatus, Attendee[]> = { going: [], maybe: [], declined: [] };
-    for (const a of attendees) g[a.status].push(a);
+    // Guard against an unexpected status value from the DB — g[status] would
+    // be undefined and .push() would throw, blanking the whole screen.
+    for (const a of attendees) if (g[a.status]) g[a.status].push(a);
     return g;
   }, [attendees]);
 
@@ -115,11 +117,7 @@ export default function EventDetailScreen() {
       setRsvpBusy(true);
       // Optimistic: reflect the tap immediately; the realtime echo reconciles.
       const retract = myStatus === status;
-      // Snapshot for rollback. A failed write must restore exactly what was
-      // shown — not a best-effort reload, since loadAttendees swallows its own
-      // errors and returns [], which would blank the whole list on a double
-      // failure (write fails AND reload fails).
-      const prevAttendees = attendees;
+      const prevStatus = myStatus;
       setAttendees((prev) => {
         const next = prev.filter((a) => a.userId !== userId);
         if (!retract) next.push({ userId, status });
@@ -129,13 +127,20 @@ export default function EventDetailScreen() {
         if (retract) await clearRsvp(id, userId);
         else await setRsvp(id, userId, status);
       } catch (err) {
-        setAttendees(prevAttendees);
+        // Roll back ONLY our own row via a functional update — restoring a
+        // whole-list snapshot would clobber a teammate's RSVP that arrived
+        // over realtime while this write was in flight.
+        setAttendees((prev) => {
+          const next = prev.filter((a) => a.userId !== userId);
+          if (prevStatus !== null) next.push({ userId, status: prevStatus });
+          return next;
+        });
         Alert.alert('Could not update RSVP', (err as Error)?.message ?? String(err));
       } finally {
         setRsvpBusy(false);
       }
     },
-    [id, userId, myStatus, rsvpBusy, attendees],
+    [id, userId, myStatus, rsvpBusy],
   );
 
   if (loading) {
