@@ -74,7 +74,7 @@ function unwrapSafelinks(field: string): string {
   // Almost no field is a Safe Links wrapper — a cheap substring check skips the
   // full regex sweep (over potentially long DESCRIPTION bodies) in the common
   // case.
-  if (!field.includes('safelinks')) return field;
+  if (!field.toLowerCase().includes('safelinks')) return field;
   return field.replace(SAFELINKS_RE, (match) => {
     const m = SAFELINKS_URL_PARAM_RE.exec(match);
     if (!m) return match;

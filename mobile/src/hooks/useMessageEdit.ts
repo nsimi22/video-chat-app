@@ -41,7 +41,12 @@ export function useMessageEdit(opts: {
       Alert.alert('Empty message', 'An edited message can’t be empty. Delete it instead to remove it.');
       return;
     }
-    if (body === (editing.body ?? '').trim()) {
+    // Compare against the message's *current* body, not the snapshot captured
+    // when editing began — if it changed underneath us (realtime UPDATE from
+    // another client) an unchanged composer is a real edit back to our text,
+    // not a no-op we should silently discard.
+    const current = messages.find((m) => m.id === editing.id) ?? editing;
+    if (body === (current.body ?? '').trim()) {
       cancelEditing();
       return;
     }
@@ -54,7 +59,7 @@ export function useMessageEdit(opts: {
     } finally {
       setSending(false);
     }
-  }, [editing, text, setSending, cancelEditing]);
+  }, [editing, text, messages, setSending, cancelEditing]);
 
   // Exit edit mode if the target message disappears from the list.
   useEffect(() => {

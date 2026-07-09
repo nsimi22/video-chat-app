@@ -18,7 +18,7 @@ import { Stack, router, useFocusEffect, useLocalSearchParams } from 'expo-router
 import { useHeaderHeight } from '@react-navigation/elements';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
-import { ChevronRight, MessageCircle, Pencil, Pin, Paperclip, Phone, Plus, Star } from 'lucide-react-native';
+import { ChevronRight, MessageCircle, Pin, Paperclip, Phone, Plus, Star } from 'lucide-react-native';
 import { MessageActionSheet } from '@/components/MessageActionSheet';
 import { PollCard } from '@/components/PollCard';
 import { CreatePollSheet } from '@/components/CreatePollSheet';
@@ -46,6 +46,7 @@ import {
 } from '@/lib/api';
 import { useMessageEdit } from '@/hooks/useMessageEdit';
 import { ReactionPills } from '@/components/ReactionPills';
+import { EditingBanner } from '@/components/EditingBanner';
 import { useAuth } from '@/context/AuthContext';
 import { useUnread } from '@/context/UnreadContext';
 import { useFavorites } from '@/context/FavoritesContext';
@@ -627,15 +628,7 @@ export default function ChannelScreen() {
           {typingNames.join(', ')} {typingNames.length === 1 ? 'is' : 'are'} typing…
         </Text>
       )}
-      {editing && (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space(2), paddingHorizontal: space(4), paddingTop: space(2), paddingBottom: 2 }}>
-          <Pencil size={13} color={colors.accent} />
-          <Text style={{ color: colors.textDim, fontSize: 12, flex: 1 }}>Editing message</Text>
-          <TouchableOpacity onPress={cancelEditing} hitSlop={8}>
-            <Text style={{ color: colors.accent, fontSize: 12, fontWeight: '600' }}>Cancel</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+      {editing && <EditingBanner onCancel={cancelEditing} />}
       <View style={{ flexDirection: 'row', alignItems: 'flex-end', padding: space(2.5), borderTopWidth: 1, borderTopColor: colors.border, gap: space(2) }}>
         {/* The attach menu (photos / GIF / poll) doesn't apply to an in-place
             edit, which is text-only — hide it while editing. */}

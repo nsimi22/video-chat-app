@@ -106,8 +106,13 @@ export default function EventDetailScreen() {
   const attendeesByStatus = useMemo(() => {
     const g: Record<AttendeeStatus, Attendee[]> = { going: [], maybe: [], declined: [] };
     // Guard against an unexpected status value from the DB — g[status] would
-    // be undefined and .push() would throw, blanking the whole screen.
-    for (const a of attendees) if (g[a.status]) g[a.status].push(a);
+    // be undefined and .push() would throw, blanking the whole screen. Such a
+    // row is dropped from the tallies rather than crashing; warn in dev so the
+    // omission isn't silent (e.g. a new RSVP status the UI doesn't handle yet).
+    for (const a of attendees) {
+      if (g[a.status]) g[a.status].push(a);
+      else if (__DEV__) console.warn(`[event] unhandled attendee status "${a.status}" — omitted from tallies`);
+    }
     return g;
   }, [attendees]);
 

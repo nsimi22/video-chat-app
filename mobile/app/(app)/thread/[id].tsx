@@ -36,6 +36,7 @@ import { MessageUnfurls } from '@/components/Unfurl';
 import { ImageLightbox } from '@/components/ImageLightbox';
 import { MessageActionSheet } from '@/components/MessageActionSheet';
 import { ReactionPills } from '@/components/ReactionPills';
+import { EditingBanner } from '@/components/EditingBanner';
 import { PollCard } from '@/components/PollCard';
 import { colors, radius, space } from '@/theme';
 
@@ -237,7 +238,10 @@ export default function ThreadScreen() {
               </TouchableOpacity>
             );
           })}
-          <ReactionPills message={m} userId={userId} />
+          {/* Long-press a pill opens the same action sheet as long-pressing
+              the message body — without an explicit handler the pill's own
+              TouchableOpacity swallows the gesture and just toggles on release. */}
+          <ReactionPills message={m} userId={userId} onLongPress={() => setSheetMessage(m)} />
         </View>
       </TouchableOpacity>
     );
@@ -286,14 +290,7 @@ export default function ThreadScreen() {
           renderItem={({ item }) => renderMessage(item, false)}
         />
       )}
-      {editing && (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space(2), paddingHorizontal: space(4), paddingTop: space(2), paddingBottom: 2 }}>
-          <Text style={{ color: colors.textDim, fontSize: 12, flex: 1 }}>Editing message</Text>
-          <TouchableOpacity onPress={cancelEditing} hitSlop={8}>
-            <Text style={{ color: colors.accent, fontSize: 12, fontWeight: '600' }}>Cancel</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+      {editing && <EditingBanner onCancel={cancelEditing} />}
       <View style={{ flexDirection: 'row', alignItems: 'flex-end', padding: space(2.5), borderTopWidth: 1, borderTopColor: colors.border, gap: space(2) }}>
         <TextInput
           ref={inputRef}
