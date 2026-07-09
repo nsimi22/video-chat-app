@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Entitlements for the HuddleIntents extension (SCAFFOLD).
+
+  The App Group lets the extension read the Supabase session the RN app writes.
+  Must match the group id in the main app's entitlements and
+  plugins/withSiriMessaging.js / SupabaseMessaging.swift.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>group.com.nicksimi.huddle</string>
+  </array>
+</dict>
+</plist>
