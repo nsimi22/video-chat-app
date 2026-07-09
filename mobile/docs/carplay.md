@@ -19,8 +19,8 @@ via the SiriKit path below).
 | React bridge — conversations, open-conversation, call, mute | `src/components/CarPlayBridge.tsx` |
 | Mount point (inside `<LiveKitRoom>`) | `app/(app)/_layout.tsx` |
 | Last-message-per-channel query | `src/lib/api.ts` → `fetchLatestMessagesByChannel` |
-| Native config (entitlement, scene manifest, scene delegate) | `plugins/withCarPlay.js` |
-| ObjC scene delegate source of truth | `ios-carplay/HuddleCarSceneDelegate.{h,m}` |
+| Native config (entitlement + CarPlay connector) | `plugins/withCarPlay.js` |
+| ObjC CarPlay connector source of truth | `ios-carplay/AppDelegate+HuddleCarPlay.m` |
 | Dependency | `react-native-carplay` in `package.json` |
 
 Three templates, driven by a small **stack reconciler** (the bridge computes a
@@ -58,8 +58,8 @@ approved the code is dormant** — the car simply won't show Huddle.
 
 ## Build & run
 
-CarPlay needs a native rebuild (the config plugin injects the scene delegate at
-prebuild time — Expo Go can't run it):
+CarPlay needs a native rebuild (the config plugin injects the CarPlay connector
+at prebuild time — Expo Go can't run it):
 
 ```bash
 cd mobile
@@ -76,9 +76,9 @@ npm run ios                   # dev client on a device/simulator
 3. Sign in and pick a team on the phone; the CarPlay screen shows the channel
    list. Tap a row to join its audio call, then use Mute / Leave.
 
-> If prebuild ever fails to add the delegate to the Xcode target, the plugin
-> logs a warning; add `HuddleCarSceneDelegate.m` manually under **Target → Build
-> Phases → Compile Sources**. The `.h`/`.m` live in `ios-carplay/` and are
+> If prebuild ever fails to add the connector to the Xcode target, the plugin
+> logs a warning; add `AppDelegate+HuddleCarPlay.m` manually under **Target →
+> Build Phases → Compile Sources**. The `.m` lives in `ios-carplay/` and is
 > copied into `ios/<project>/` on every prebuild.
 
 ## How the native wiring works
@@ -86,16 +86,21 @@ npm run ios                   # dev client on a device/simulator
 `expo prebuild` runs `plugins/withCarPlay.js`, which:
 
 1. adds the `com.apple.developer.carplay-communication` entitlement;
-2. writes a `UIApplicationSceneManifest` to `Info.plist` declaring a
-   `CPTemplateApplicationSceneSessionRoleApplication` scene whose delegate is
-   `HuddleCarSceneDelegate` (the phone keeps its normal AppDelegate window — we
-   don't declare a `UIWindowSceneSessionRoleApplication`);
-3. copies `HuddleCarSceneDelegate.{h,m}` into the iOS project and adds the `.m`
-   to Compile Sources.
+2. copies `AppDelegate+HuddleCarPlay.m` into the iOS project and adds it to
+   Compile Sources.
 
-On connect, the delegate calls `[RNCarPlay connectWithInterfaceController:window:]`,
-handing control to `react-native-carplay`, which the JS in `src/lib/carplay.ts`
-then drives.
+The connector is an ObjC category on the (Swift) `AppDelegate` that adopts
+`CPApplicationDelegate` — the AppDelegate connection method
+`react-native-carplay` documents. **We deliberately do NOT declare a
+`UIApplicationSceneManifest` / `UIApplicationSupportsMultipleScenes`.** In a
+prebuilt Expo SDK 54 / RN 0.81 app, enabling multiple scenes without a matching
+`UIWindowScene` delegate leaves the phone's AppDelegate-created window
+unattached and the **entire app renders black**. Keeping the app AppDelegate/
+window based avoids that; CarPlay attaches through the `CPWindow` instead.
+
+On connect, the category's `application:didConnectCarInterfaceController:toWindow:`
+calls `[RNCarPlay connectWithInterfaceController:window:]`, handing control to
+`react-native-carplay`, which the JS in `src/lib/carplay.ts` then drives.
 
 ## Siri voice messaging (iMessage-parity) — SCAFFOLD
 
