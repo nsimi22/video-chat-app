@@ -123,6 +123,16 @@ export default function ThreadScreen() {
     };
   }, [teamId, parentId, load]);
 
+  // Drop out of edit mode if the message being edited is deleted — locally or
+  // by another user over realtime — so Save can't fire editMessage() against a
+  // row that no longer exists.
+  useEffect(() => {
+    if (editing && !items.some((m) => m.id === editing.id)) {
+      setEditing(null);
+      setText('');
+    }
+  }, [editing, items]);
+
   const profileFor = useCallback((uid: string) => roster.find((p) => p.user_id === uid), [roster]);
   const mentionNames = useMemo(() => roster.map((p) => p.name).filter((n): n is string => !!n), [roster]);
 
@@ -152,8 +162,7 @@ export default function ThreadScreen() {
     setSending(true);
     try {
       await editMessage(editing.id, body);
-      setEditing(null);
-      setText('');
+      cancelEditing();
     } catch (e: any) {
       Alert.alert('Could not save edit', e?.message ?? String(e));
     } finally {

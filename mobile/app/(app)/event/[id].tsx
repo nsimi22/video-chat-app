@@ -115,26 +115,24 @@ export default function EventDetailScreen() {
     async (status: AttendeeStatus) => {
       if (!id || !userId || rsvpBusy) return;
       setRsvpBusy(true);
-      // Optimistic: reflect the tap immediately; the realtime echo reconciles.
       const retract = myStatus === status;
       const prevStatus = myStatus;
-      setAttendees((prev) => {
-        const next = prev.filter((a) => a.userId !== userId);
-        if (!retract) next.push({ userId, status });
-        return next;
-      });
+      // Set (or clear, when null) only our own row, leaving every other
+      // attendee's untouched — so a teammate's RSVP that arrives over realtime
+      // mid-write is never clobbered by an optimistic update or a rollback.
+      const setMyRow = (s: AttendeeStatus | null) =>
+        setAttendees((prev) => {
+          const next = prev.filter((a) => a.userId !== userId);
+          if (s) next.push({ userId, status: s });
+          return next;
+        });
+      // Optimistic: reflect the tap immediately; the realtime echo reconciles.
+      setMyRow(retract ? null : status);
       try {
         if (retract) await clearRsvp(id, userId);
         else await setRsvp(id, userId, status);
       } catch (err) {
-        // Roll back ONLY our own row via a functional update — restoring a
-        // whole-list snapshot would clobber a teammate's RSVP that arrived
-        // over realtime while this write was in flight.
-        setAttendees((prev) => {
-          const next = prev.filter((a) => a.userId !== userId);
-          if (prevStatus !== null) next.push({ userId, status: prevStatus });
-          return next;
-        });
+        setMyRow(prevStatus); // roll back just our row
         Alert.alert('Could not update RSVP', (err as Error)?.message ?? String(err));
       } finally {
         setRsvpBusy(false);

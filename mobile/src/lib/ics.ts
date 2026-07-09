@@ -65,19 +65,25 @@ const MEETING_PROVIDERS: { name: string; re: RegExp }[] = [
 // the real Teams/Zoom/etc link is percent-encoded inside the `url=` query
 // param and never matches a provider regex directly. Replace each wrapper with
 // its decoded target before scanning. Lockstep with renderer/ics.js.
+// Hoisted so they're compiled once, not re-allocated on every call
+// (unwrapSafelinks runs per-field per-VEVENT during a feed parse).
+const SAFELINKS_RE = /https?:\/\/[^\s"'<>]*safelinks\.protection\.outlook\.com\/[^\s"'<>]*/gi;
+const SAFELINKS_URL_PARAM_RE = /[?&]url=([^&\s"'<>]+)/i;
+
 function unwrapSafelinks(field: string): string {
-  return field.replace(
-    /https?:\/\/[^\s"'<>]*safelinks\.protection\.outlook\.com\/[^\s"'<>]*/gi,
-    (match) => {
-      const m = /[?&]url=([^&\s"'<>]+)/i.exec(match);
-      if (!m) return match;
-      try {
-        return decodeURIComponent(m[1]);
-      } catch {
-        return match;
-      }
-    },
-  );
+  // Almost no field is a Safe Links wrapper — a cheap substring check skips the
+  // full regex sweep (over potentially long DESCRIPTION bodies) in the common
+  // case.
+  if (!field.includes('safelinks')) return field;
+  return field.replace(SAFELINKS_RE, (match) => {
+    const m = SAFELINKS_URL_PARAM_RE.exec(match);
+    if (!m) return match;
+    try {
+      return decodeURIComponent(m[1]);
+    } catch {
+      return match;
+    }
+  });
 }
 
 // Pull a join link + provider label out of a parsed VEVENT. Teams exports a
