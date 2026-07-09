@@ -105,7 +105,14 @@ export default function EventDetailScreen() {
   // for every RSVP_OPTIONS row on every (realtime-driven) render.
   const attendeesByStatus = useMemo(() => {
     const g: Record<AttendeeStatus, Attendee[]> = { going: [], maybe: [], declined: [] };
-    for (const a of attendees) g[a.status].push(a);
+    // Guard against an unexpected status value from the DB — g[status] would
+    // be undefined and .push() would throw, blanking the whole screen. Such a
+    // row is dropped from the tallies rather than crashing; warn in dev so the
+    // omission isn't silent (e.g. a new RSVP status the UI doesn't handle yet).
+    for (const a of attendees) {
+      if (g[a.status]) g[a.status].push(a);
+      else if (__DEV__) console.warn(`[event] unhandled attendee status "${a.status}" — omitted from tallies`);
+    }
     return g;
   }, [attendees]);
 
@@ -113,29 +120,30 @@ export default function EventDetailScreen() {
     async (status: AttendeeStatus) => {
       if (!id || !userId || rsvpBusy) return;
       setRsvpBusy(true);
-      // Optimistic: reflect the tap immediately; the realtime echo reconciles.
       const retract = myStatus === status;
-      // Snapshot for rollback. A failed write must restore exactly what was
-      // shown — not a best-effort reload, since loadAttendees swallows its own
-      // errors and returns [], which would blank the whole list on a double
-      // failure (write fails AND reload fails).
-      const prevAttendees = attendees;
-      setAttendees((prev) => {
-        const next = prev.filter((a) => a.userId !== userId);
-        if (!retract) next.push({ userId, status });
-        return next;
-      });
+      const prevStatus = myStatus;
+      // Set (or clear, when null) only our own row, leaving every other
+      // attendee's untouched — so a teammate's RSVP that arrives over realtime
+      // mid-write is never clobbered by an optimistic update or a rollback.
+      const setMyRow = (s: AttendeeStatus | null) =>
+        setAttendees((prev) => {
+          const next = prev.filter((a) => a.userId !== userId);
+          if (s) next.push({ userId, status: s });
+          return next;
+        });
+      // Optimistic: reflect the tap immediately; the realtime echo reconciles.
+      setMyRow(retract ? null : status);
       try {
         if (retract) await clearRsvp(id, userId);
         else await setRsvp(id, userId, status);
       } catch (err) {
-        setAttendees(prevAttendees);
+        setMyRow(prevStatus); // roll back just our row
         Alert.alert('Could not update RSVP', (err as Error)?.message ?? String(err));
       } finally {
         setRsvpBusy(false);
       }
     },
-    [id, userId, myStatus, rsvpBusy, attendees],
+    [id, userId, myStatus, rsvpBusy],
   );
 
   if (loading) {

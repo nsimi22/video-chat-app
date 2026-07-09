@@ -17,12 +17,26 @@ import {
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { Paperclip } from 'lucide-react-native';
-import { fetchThread, listTeamProfiles, sendMessage, type Message, type Profile } from '@/lib/api';
+import * as Clipboard from 'expo-clipboard';
+import {
+  deleteMessage,
+  fetchThread,
+  listTeamProfiles,
+  sendMessage,
+  setPin,
+  toggleReaction,
+  type Message,
+  type Profile,
+} from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
+import { useMessageEdit } from '@/hooks/useMessageEdit';
 import { AiMessageCard, Avatar, Markdown } from '@/components/ui';
 import { MessageUnfurls } from '@/components/Unfurl';
 import { ImageLightbox } from '@/components/ImageLightbox';
+import { MessageActionSheet } from '@/components/MessageActionSheet';
+import { ReactionPills } from '@/components/ReactionPills';
+import { EditingBanner } from '@/components/EditingBanner';
 import { PollCard } from '@/components/PollCard';
 import { colors, radius, space } from '@/theme';
 
@@ -40,6 +54,11 @@ export default function ThreadScreen() {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [lightboxUri, setLightboxUri] = useState<string | null>(null);
+  // Long-pressed message → action sheet (react / copy / pin / edit / delete),
+  // same as the channel view. No "Reply in thread" here — you can't nest a
+  // thread inside a thread, so onOpenThread is intentionally not passed.
+  const [sheetMessage, setSheetMessage] = useState<Message | null>(null);
+  const inputRef = useRef<TextInput>(null);
   const listRef = useRef<FlatList<Message>>(null);
 
   useEffect(() => {
@@ -104,6 +123,14 @@ export default function ThreadScreen() {
     };
   }, [teamId, parentId, load]);
 
+  const { editing, startEditing, cancelEditing, saveEdit } = useMessageEdit({
+    messages: items,
+    text,
+    setText,
+    setSending,
+    inputRef,
+  });
+
   const profileFor = useCallback((uid: string) => roster.find((p) => p.user_id === uid), [roster]);
   const mentionNames = useMemo(() => roster.map((p) => p.name).filter((n): n is string => !!n), [roster]);
 
@@ -111,6 +138,7 @@ export default function ThreadScreen() {
   const replies = items.filter((m) => m.id !== String(parentId));
 
   const send = async () => {
+    if (editing) return saveEdit();
     const body = text.trim();
     if (!body || !userId || !channelId) return;
     setSending(true);
@@ -139,7 +167,10 @@ export default function ThreadScreen() {
     const p = profileFor(m.author_id);
     const isAi = !!m.ai_generated;
     return (
-      <View
+      <TouchableOpacity
+        activeOpacity={1}
+        onLongPress={() => setSheetMessage(m)}
+        delayLongPress={350}
         style={{
           flexDirection: 'row',
           paddingHorizontal: space(3.5),
@@ -207,8 +238,12 @@ export default function ThreadScreen() {
               </TouchableOpacity>
             );
           })}
+          {/* Long-press a pill opens the same action sheet as long-pressing
+              the message body — without an explicit handler the pill's own
+              TouchableOpacity swallows the gesture and just toggles on release. */}
+          <ReactionPills message={m} userId={userId} onLongPress={() => setSheetMessage(m)} />
         </View>
-      </View>
+      </TouchableOpacity>
     );
   };
 
@@ -255,11 +290,13 @@ export default function ThreadScreen() {
           renderItem={({ item }) => renderMessage(item, false)}
         />
       )}
+      {editing && <EditingBanner onCancel={cancelEditing} />}
       <View style={{ flexDirection: 'row', alignItems: 'flex-end', padding: space(2.5), borderTopWidth: 1, borderTopColor: colors.border, gap: space(2) }}>
         <TextInput
+          ref={inputRef}
           value={text}
           onChangeText={setText}
-          placeholder="Reply to thread…"
+          placeholder={editing ? 'Edit message' : 'Reply to thread…'}
           placeholderTextColor={colors.textDim}
           multiline
           style={{
@@ -268,7 +305,7 @@ export default function ThreadScreen() {
             backgroundColor: colors.surface,
             borderRadius: radius.md,
             borderWidth: 1,
-            borderColor: text ? colors.accent : colors.border,
+            borderColor: text || editing ? colors.accent : colors.border,
             paddingHorizontal: space(3),
             paddingVertical: space(2.5),
             maxHeight: 120,
@@ -276,9 +313,29 @@ export default function ThreadScreen() {
           }}
         />
         <TouchableOpacity onPress={send} disabled={sending || !text.trim()} style={{ paddingBottom: space(2.5), opacity: sending || !text.trim() ? 0.4 : 1 }}>
-          <Text style={{ color: colors.accentTx, fontWeight: '600', fontSize: 15 }}>Send</Text>
+          <Text style={{ color: colors.accentTx, fontWeight: '600', fontSize: 15 }}>{editing ? 'Save' : 'Send'}</Text>
         </TouchableOpacity>
       </View>
+      <MessageActionSheet
+        message={sheetMessage}
+        isMine={sheetMessage?.author_id === userId}
+        onClose={() => setSheetMessage(null)}
+        onReact={(emoji) => {
+          if (sheetMessage) toggleReaction(sheetMessage.id, emoji, userId!).catch(() => {});
+        }}
+        onCopy={() => {
+          if (sheetMessage?.body) Clipboard.setStringAsync(sheetMessage.body).catch(() => {});
+        }}
+        onTogglePin={() => {
+          if (sheetMessage) setPin(sheetMessage.id, !sheetMessage.pinned_at).catch(() => {});
+        }}
+        onEdit={() => {
+          if (sheetMessage) startEditing(sheetMessage);
+        }}
+        onDelete={() => {
+          if (sheetMessage) deleteMessage(sheetMessage.id).catch(() => {});
+        }}
+      />
       <ImageLightbox uri={lightboxUri} onClose={() => setLightboxUri(null)} />
     </KeyboardAvoidingView>
   );
