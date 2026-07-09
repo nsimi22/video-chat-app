@@ -487,10 +487,33 @@
   // reset between calls.
   const MEETING_PROVIDERS = [
     { name: 'Teams', re: /https?:\/\/[^\s"'<>]*teams\.(?:microsoft\.com|live\.com)\/[^\s"'<>]*/i },
+    // Outlook invites usually link the Teams meeting through the aka.ms
+    // redirector rather than a bare teams.microsoft.com URL.
+    { name: 'Teams', re: /https?:\/\/aka\.ms\/JoinTeamsMeeting[^\s"'<>]*/i },
     { name: 'Zoom',  re: /https?:\/\/[^\s"'<>]*zoom\.us\/[^\s"'<>]*/i },
     { name: 'Meet',  re: /https?:\/\/meet\.google\.com\/[^\s"'<>]*/i },
     { name: 'Webex', re: /https?:\/\/[^\s"'<>]*\.webex\.com\/[^\s"'<>]*/i },
   ];
+
+  // Microsoft Defender "Safe Links" rewrites URLs in received mail/invites to
+  // a tenant redirector (`*.safelinks.protection.outlook.com/?url=<encoded>`),
+  // so the real Teams/Zoom/etc link is percent-encoded inside the `url=` query
+  // param and never matches a provider regex directly. Replace each wrapper
+  // with its decoded target before scanning. Lockstep with mobile ics.ts.
+  function unwrapSafelinks(field) {
+    return field.replace(
+      /https?:\/\/[^\s"'<>]*safelinks\.protection\.outlook\.com\/[^\s"'<>]*/gi,
+      (match) => {
+        const m = /[?&]url=([^&\s"'<>]+)/i.exec(match);
+        if (!m) return match;
+        try {
+          return decodeURIComponent(m[1]);
+        } catch {
+          return match;
+        }
+      },
+    );
+  }
 
   // Pull a join link + provider label out of a parsed VEVENT. Teams
   // exports a dedicated X- property holding the canonical URL, so we trust
@@ -520,8 +543,9 @@
       .map((k) => raw[k]);
     for (const field of [ev.url, ev.location, ev.description, ...rest]) {
       if (!field) continue;
+      const scan = unwrapSafelinks(field);
       for (const { name, re } of MEETING_PROVIDERS) {
-        const m = re.exec(field);
+        const m = re.exec(scan);
         if (m) {
           // Trailing sentence punctuation can glue onto a body-buried URL;
           // strip it (real query strings don't end in these chars).
