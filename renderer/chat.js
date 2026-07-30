@@ -3232,6 +3232,7 @@ class ChatView {
     // the button's disabled state covers the whole refetch.
     const reload = this._buildReloadButton(async () => {
       this._ghCache.delete(cacheKey);
+      this._ghPrCache?.delete(cacheKey);
       this._paintGhLoading(el, ref);
       await this._lookupGhAndPaint(ref, el, gh);
     });
@@ -3245,6 +3246,86 @@ class ChatView {
     const assignee = issue.assignee?.login || (issue.assignees?.[0]?.login) || 'Unassigned';
     meta.textContent = `Author: ${issue.user?.login || '?'}  ·  Assignee: ${assignee}  ·  Comments: ${issue.comments ?? 0}`;
     el.append(top, sumRow, meta);
+    // PRs get a second status line — CI checks, mergeability, and whether a
+    // human review is still outstanding. Only open PRs are worth the extra
+    // API calls: a merged/closed PR's checks and review state are history,
+    // and the merge/review pills would just be noise.
+    if (isPr && statusKind === 'open') {
+      const checksRow = document.createElement('div');
+      checksRow.className = 'gh-row gh-checks';
+      const loading = document.createElement('span');
+      loading.className = 'gh-loading';
+      loading.textContent = 'Checking status…';
+      checksRow.appendChild(loading);
+      el.appendChild(checksRow);
+      this._lookupGhPrDetails(ref, checksRow, gh);
+    }
+  }
+
+  // Fetch + paint the PR-only pills (checks / mergeable / review). Kept out
+  // of the main paint path so the base card renders immediately and this
+  // heavier multi-call lookup fills in when ready. Cached separately from
+  // the issue so the ↻ button can bust both.
+  async _lookupGhPrDetails(ref, row, gh) {
+    const cacheKey = `${ref.owner}/${ref.repo}#${ref.number}`;
+    if (!this._ghPrCache) { this._ghPrCache = new Map(); this._ghPrInflight = new Map(); }
+    let summary = this._ghPrCache.get(cacheKey);
+    if (summary === undefined) {
+      let p = this._ghPrInflight.get(cacheKey);
+      if (!p) {
+        p = gh.getPullSummary(ref.owner, ref.repo, ref.number)
+          .then((data) => { this._ghPrCache.set(cacheKey, data); return data; })
+          .catch((err) => { this._ghPrCache.set(cacheKey, null); throw err; })
+          .finally(() => this._ghPrInflight.delete(cacheKey));
+        this._ghPrInflight.set(cacheKey, p);
+      }
+      try { summary = await p; }
+      catch { row.replaceChildren(); return; } // silent: the base card still stands
+    }
+    if (!summary) { row.replaceChildren(); return; }
+    this._paintGhPrDetails(row, summary);
+  }
+
+  _paintGhPrDetails(row, summary) {
+    row.replaceChildren();
+    const pill = (cls, text, title) => {
+      const s = document.createElement('span');
+      s.className = `gh-status ${cls}`;
+      s.textContent = text;
+      if (title) s.title = title;
+      row.appendChild(s);
+    };
+
+    // --- Checks ---
+    const c = summary.checks;
+    if (c.total > 0) {
+      if (c.rollup === 'failure') pill('checks-fail', `✕ ${c.passed}/${c.total} checks`, `${c.failed} failing`);
+      else if (c.rollup === 'pending') pill('checks-pending', `● ${c.passed}/${c.total} checks`, `${c.pending} pending`);
+      else pill('checks-pass', `✓ ${c.total} checks`, 'all checks passing');
+    }
+
+    // --- Mergeable ---
+    if (summary.draft) {
+      pill('neutral', 'draft', 'PR is a draft');
+    } else if (summary.mergeable === false || summary.mergeableState === 'dirty') {
+      pill('merge-conflict', 'conflicts', 'has merge conflicts — needs a rebase/merge');
+    } else if (summary.mergeableState === 'blocked') {
+      pill('merge-blocked', 'blocked', 'merge blocked by branch protection');
+    } else if (summary.mergeable === true) {
+      pill('merge-ok', 'mergeable', 'no conflicts with the base branch');
+    } else {
+      pill('neutral', 'merge: …', 'GitHub is still computing mergeability');
+    }
+
+    // --- Review ---
+    const r = summary.review;
+    if (r.decision === 'changes_requested') {
+      pill('review-changes', 'changes requested', `${r.changesRequested} reviewer(s) requested changes`);
+    } else if (r.decision === 'approved') {
+      pill('review-approved', `approved${r.approvals > 1 ? ` ×${r.approvals}` : ''}`, `${r.approvals} approval(s)`);
+    } else if (r.decision === 'review_required') {
+      pill('review-required', 'review required', 'a human review is still needed');
+    }
   }
 
   // --- Jira unfurl --------------------------------------------------------

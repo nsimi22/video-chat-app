@@ -52,6 +52,57 @@
       return this._request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${encodeURIComponent(number)}`);
     }
 
+    // /repos/.../pulls/{n} — the *pull* resource (distinct from the issue
+    // resource getIssueOrPull returns). Only this endpoint carries the
+    // review/merge fields we care about: `draft`, `mergeable` (true/false/
+    // null while GitHub computes it async), `mergeable_state`, `head.sha`,
+    // and `requested_reviewers` / `requested_teams`.
+    getPull(owner, repo, number) {
+      return this._request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${encodeURIComponent(number)}`);
+    }
+
+    // Combined CI signal for a commit. GitHub has two overlapping systems:
+    // the legacy commit *statuses* API (Travis-era, still used by many
+    // integrations) and the newer *check runs* (GitHub Actions, etc.). A PR
+    // can have either or both, so we fetch both and roll them together.
+    getCombinedStatus(owner, repo, ref) {
+      return this._request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(ref)}/status`);
+    }
+
+    getCheckRuns(owner, repo, ref) {
+      return this._request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(ref)}/check-runs`);
+    }
+
+    // One page (100) of reviews is plenty for an unfurl — a PR with >100
+    // review events is pathological, and we only need the latest verdict
+    // per reviewer anyway.
+    getPullReviews(owner, repo, number) {
+      return this._request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${encodeURIComponent(number)}/reviews?per_page=100`);
+    }
+
+    // Fetch everything the PR card needs beyond the issue shape — merge
+    // state, CI rollup, and review decision — and normalize it into one
+    // small object the renderer can paint without knowing GitHub's API
+    // quirks. Sub-fetches run in parallel off the pull's head SHA; any that
+    // fail (e.g. the token can't read checks) degrade to an 'unknown'
+    // sub-status rather than failing the whole card.
+    async getPullSummary(owner, repo, number) {
+      const pull = await this.getPull(owner, repo, number);
+      const sha = pull?.head?.sha;
+      const [status, checkRuns, reviews] = await Promise.all([
+        sha ? this.getCombinedStatus(owner, repo, sha).catch(() => null) : null,
+        sha ? this.getCheckRuns(owner, repo, sha).catch(() => null) : null,
+        this.getPullReviews(owner, repo, number).catch(() => null),
+      ]);
+      return {
+        draft: !!pull?.draft,
+        mergeable: pull?.mergeable ?? null,
+        mergeableState: pull?.mergeable_state || 'unknown',
+        checks: rollupChecks(status, checkRuns),
+        review: rollupReview(reviews, pull),
+      };
+    }
+
     createIssue(owner, repo, { title, body, labels }) {
       return this._request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues`, {
         method: 'POST',
@@ -185,6 +236,61 @@
     htmlUrl(owner, repo, number) {
       return `https://github.com/${owner}/${repo}/issues/${number}`;
     }
+  }
+
+  // Fold commit statuses + check runs into a single pass/fail/pending tally.
+  // A check counts as failed if it finished with a bad conclusion, pending
+  // if it hasn't finished, passed otherwise. `rollup` is failure > pending >
+  // success > none, matching how GitHub gates the merge button.
+  function rollupChecks(status, checkRuns) {
+    let passed = 0, failed = 0, pending = 0;
+    // Legacy commit statuses: each context reports success | pending |
+    // failure | error.
+    for (const s of status?.statuses || []) {
+      if (s.state === 'success') passed++;
+      else if (s.state === 'failure' || s.state === 'error') failed++;
+      else pending++; // 'pending'
+    }
+    // Check runs: `status` is queued | in_progress | completed; only when
+    // completed does `conclusion` mean anything. neutral/skipped don't
+    // block a merge, so they count as passed rather than failed.
+    for (const r of checkRuns?.check_runs || []) {
+      if (r.status !== 'completed') { pending++; continue; }
+      if (['success', 'neutral', 'skipped'].includes(r.conclusion)) passed++;
+      else failed++; // failure | timed_out | cancelled | action_required | stale
+    }
+    const total = passed + failed + pending;
+    const rollup = failed ? 'failure' : pending ? 'pending' : total ? 'success' : 'none';
+    return { rollup, passed, failed, pending, total };
+  }
+
+  // Reduce the review timeline to a single decision. GitHub only counts each
+  // reviewer's *latest* actionable verdict, so we walk the list (returned in
+  // chronological order) and keep the last APPROVED / CHANGES_REQUESTED per
+  // author; DISMISSED clears their prior verdict; COMMENTED never counts.
+  // "Review required" mirrors branch-protection intent: reviewers are
+  // requested (or none have weighed in) and nobody has approved.
+  function rollupReview(reviews, pull) {
+    const latest = new Map(); // author login -> APPROVED | CHANGES_REQUESTED
+    for (const rv of reviews || []) {
+      const login = rv.user?.login;
+      if (!login) continue;
+      if (rv.state === 'APPROVED' || rv.state === 'CHANGES_REQUESTED') latest.set(login, rv.state);
+      else if (rv.state === 'DISMISSED') latest.delete(login);
+      // COMMENTED / PENDING: ignored
+    }
+    let approvals = 0, changesRequested = 0;
+    for (const state of latest.values()) {
+      if (state === 'APPROVED') approvals++;
+      else changesRequested++;
+    }
+    const reviewersRequested = (pull?.requested_reviewers?.length || 0) + (pull?.requested_teams?.length || 0);
+    let decision;
+    if (changesRequested) decision = 'changes_requested';
+    else if (approvals) decision = 'approved';
+    else if (reviewersRequested || latest.size === 0) decision = 'review_required';
+    else decision = 'none';
+    return { decision, approvals, changesRequested, reviewersRequested };
   }
 
   function safeError(body) {

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Linking, Text, TouchableOpacity, View } from 'react-native';
 import { colors, radius, space } from '@/theme';
 import { extractJiraRefs, fetchJiraIssue, jiraIssueUrl, type JiraIssue } from '@/lib/jira';
-import { extractGithubRefs, fetchGithubIssueOrPull, type GithubIssue } from '@/lib/github';
+import { extractGithubRefs, fetchGithubIssueOrPull, fetchGithubPullSummary, type GithubIssue, type GithubPullSummary } from '@/lib/github';
 import { getJiraSettings, getGithubSettings } from '@/lib/integrations';
 
 // Tiny inline cards rendered below a chat body. The viewer uses *their own*
@@ -20,6 +20,9 @@ type JiraCache = { [k: string]: Promise<JiraIssue | null> };
 type GhCache = { [k: string]: Promise<GithubIssue | null> };
 const jiraCache: JiraCache = {};
 const ghCache: GhCache = {};
+// PR check/merge/review summaries, keyed the same way as ghCache (incl.
+// viewer id) so the extra lookup is shared across duplicate links.
+const ghPrCache: { [k: string]: Promise<GithubPullSummary | null> } = {};
 
 function jiraKey(viewerId: string, host: string | undefined, key: string) { return `${viewerId}::${host ?? '_'}::${key}`; }
 function ghKey(viewerId: string, owner: string, repo: string, number: string) { return `${viewerId}::${owner}/${repo}#${number}`; }
@@ -91,10 +94,64 @@ function ghStateLabel(issue: GithubIssue) {
   return issue.state;
 }
 
-function GitHubCard({ issue }: { issue: GithubIssue }) {
+// A tiny outlined pill matching the Jira/GitHub card status chips.
+function Pill({ text, color }: { text: string; color: string }) {
+  return (
+    <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 10, borderWidth: 1, borderColor: color, marginRight: 6, marginTop: 4 }}>
+      <Text style={{ color, fontSize: 11, fontWeight: '600' }}>{text}</Text>
+    </View>
+  );
+}
+
+const PILL_GREEN = '#34c759';
+const PILL_RED = '#ff5b5b';
+const PILL_AMBER = '#ff9f0a';
+
+// The PR detail pills (checks / mergeable / review), computed from a summary.
+function prPills(s: GithubPullSummary, viewerId: string): React.ReactElement[] {
+  const pills: React.ReactElement[] = [];
+  const c = s.checks;
+  if (c.total > 0) {
+    if (c.rollup === 'failure') pills.push(<Pill key="chk" text={`✕ ${c.passed}/${c.total} checks`} color={PILL_RED} />);
+    else if (c.rollup === 'pending') pills.push(<Pill key="chk" text={`● ${c.passed}/${c.total} checks`} color={PILL_AMBER} />);
+    else pills.push(<Pill key="chk" text={`✓ ${c.total} checks`} color={PILL_GREEN} />);
+  }
+  if (s.draft) pills.push(<Pill key="mrg" text="draft" color={colors.textDim} />);
+  else if (s.mergeable === false || s.mergeableState === 'dirty') pills.push(<Pill key="mrg" text="conflicts" color={PILL_RED} />);
+  else if (s.mergeableState === 'blocked') pills.push(<Pill key="mrg" text="blocked" color={PILL_AMBER} />);
+  else if (s.mergeable === true) pills.push(<Pill key="mrg" text="mergeable" color={PILL_GREEN} />);
+  const r = s.review;
+  if (r.decision === 'changes_requested') pills.push(<Pill key="rev" text="changes requested" color={PILL_RED} />);
+  else if (r.decision === 'approved') pills.push(<Pill key="rev" text={`approved${r.approvals > 1 ? ` ×${r.approvals}` : ''}`} color={PILL_GREEN} />);
+  else if (r.decision === 'review_required') pills.push(<Pill key="rev" text="review required" color={PILL_AMBER} />);
+  // viewerId is unused here but kept in the signature so a future
+  // "reviewed by you" nuance can key off it without a churny refactor.
+  void viewerId;
+  return pills;
+}
+
+function GitHubCard({ issue, viewerId }: { issue: GithubIssue; viewerId: string }) {
   const isPr = !!issue.pull_request;
   const state = ghStateLabel(issue);
   const stateColor = ghStateColor(issue.state, issue.pull_request?.merged_at ?? null);
+
+  // Only open PRs get the extra checks/merge/review lookup — a merged or
+  // closed PR's CI + review state is just history.
+  const wantDetails = isPr && issue.state === 'open';
+  const [summary, setSummary] = useState<GithubPullSummary | null>(null);
+  useEffect(() => {
+    if (!wantDetails) { setSummary(null); return; }
+    let active = true;
+    (async () => {
+      const s = await getGithubSettings(viewerId);
+      if (!s) return;
+      const key = ghKey(viewerId, issue.owner, issue.repo, String(issue.number));
+      const res = await cachedFetch(ghPrCache, key, () => fetchGithubPullSummary(s, issue.owner, issue.repo, issue.number));
+      if (active) setSummary(res);
+    })();
+    return () => { active = false; };
+  }, [wantDetails, viewerId, issue.owner, issue.repo, issue.number]);
+
   return (
     <TouchableOpacity
       onPress={() => Linking.openURL(issue.html_url).catch(() => {})}
@@ -124,6 +181,11 @@ function GitHubCard({ issue }: { issue: GithubIssue }) {
           <Text style={{ color: colors.textDim, fontSize: 12 }}>{issue.user.login}</Text>
         ) : null}
       </View>
+      {summary ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginTop: 1 }}>
+          {prPills(summary, viewerId)}
+        </View>
+      ) : null}
     </TouchableOpacity>
   );
 }
@@ -172,7 +234,7 @@ export function MessageUnfurls({ body, viewerId }: { body: string; viewerId: str
   return (
     <View>
       {jira.map((i) => <JiraCard key={`j-${i.host}::${i.key}`} issue={i} />)}
-      {gh.map((i) => <GitHubCard key={`g-${i.owner}/${i.repo}#${i.number}`} issue={i} />)}
+      {gh.map((i) => <GitHubCard key={`g-${i.owner}/${i.repo}#${i.number}`} issue={i} viewerId={viewerId!} />)}
     </View>
   );
 }
