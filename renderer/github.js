@@ -65,12 +65,16 @@
     // the legacy commit *statuses* API (Travis-era, still used by many
     // integrations) and the newer *check runs* (GitHub Actions, etc.). A PR
     // can have either or both, so we fetch both and roll them together.
+    // per_page=100: both endpoints default to 30. Beyond the counts, the
+    // combined-status response also carries an authoritative `state` that
+    // spans every page (see rollupChecks) — but we still want the fuller
+    // page so the passed/total tally shown on the pill is accurate.
     getCombinedStatus(owner, repo, ref) {
-      return this._request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(ref)}/status`);
+      return this._request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(ref)}/status?per_page=100`);
     }
 
     getCheckRuns(owner, repo, ref) {
-      return this._request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(ref)}/check-runs`);
+      return this._request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(ref)}/check-runs?per_page=100`);
     }
 
     // One page (100) of reviews is plenty for an unfurl — a PR with >100
@@ -260,7 +264,18 @@
       else failed++; // failure | timed_out | cancelled | action_required | stale
     }
     const total = passed + failed + pending;
-    const rollup = failed ? 'failure' : pending ? 'pending' : total ? 'success' : 'none';
+    // The combined-status endpoint returns an authoritative rollup across
+    // ALL legacy statuses — including any on pages we didn't fetch — so trust
+    // its `state` for the verdict rather than only our per-context tally.
+    // Guard on total_count: a commit with zero statuses reports state:
+    // 'pending' by default, which would wrongly stall a check-runs-only
+    // (GitHub Actions) PR whose runs all passed.
+    const hasStatuses = (status?.total_count || 0) > 0;
+    let rollup;
+    if (failed || (hasStatuses && status.state === 'failure')) rollup = 'failure';
+    else if (pending || (hasStatuses && status.state === 'pending')) rollup = 'pending';
+    else if (total) rollup = 'success';
+    else rollup = 'none';
     return { rollup, passed, failed, pending, total };
   }
 

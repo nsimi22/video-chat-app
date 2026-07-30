@@ -78,7 +78,16 @@ function rollupChecks(status: any, checkRuns: any): GithubPullSummary['checks'] 
     else failed++;
   }
   const total = passed + failed + pending;
-  const rollup = failed ? 'failure' : pending ? 'pending' : total ? 'success' : 'none';
+  // Trust the combined-status endpoint's authoritative `state` (spans every
+  // page) for the verdict, guarded on total_count: a commit with zero
+  // statuses defaults to state:'pending', which would wrongly stall a
+  // check-runs-only PR. Mirrors renderer/github.js rollupChecks.
+  const hasStatuses = (status?.total_count || 0) > 0;
+  let rollup: GithubPullSummary['checks']['rollup'];
+  if (failed || (hasStatuses && status.state === 'failure')) rollup = 'failure';
+  else if (pending || (hasStatuses && status.state === 'pending')) rollup = 'pending';
+  else if (total) rollup = 'success';
+  else rollup = 'none';
   return { rollup, passed, failed, pending, total };
 }
 
@@ -120,8 +129,8 @@ export async function fetchGithubPullSummary(
     const sha = pull?.head?.sha;
     const getJson = (url: string) => fetch(url, { headers: GH_HEADERS(s.token) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
     const [status, checkRuns, reviews] = await Promise.all([
-      sha ? getJson(`${base}/commits/${encodeURIComponent(sha)}/status`) : Promise.resolve(null),
-      sha ? getJson(`${base}/commits/${encodeURIComponent(sha)}/check-runs`) : Promise.resolve(null),
+      sha ? getJson(`${base}/commits/${encodeURIComponent(sha)}/status?per_page=100`) : Promise.resolve(null),
+      sha ? getJson(`${base}/commits/${encodeURIComponent(sha)}/check-runs?per_page=100`) : Promise.resolve(null),
       getJson(`${base}/pulls/${encodeURIComponent(String(number))}/reviews?per_page=100`),
     ]);
     return {

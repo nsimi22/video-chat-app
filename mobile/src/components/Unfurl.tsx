@@ -3,7 +3,7 @@ import { Linking, Text, TouchableOpacity, View } from 'react-native';
 import { colors, radius, space } from '@/theme';
 import { extractJiraRefs, fetchJiraIssue, jiraIssueUrl, type JiraIssue } from '@/lib/jira';
 import { extractGithubRefs, fetchGithubIssueOrPull, fetchGithubPullSummary, type GithubIssue, type GithubPullSummary } from '@/lib/github';
-import { getJiraSettings, getGithubSettings } from '@/lib/integrations';
+import { getJiraSettings, getGithubSettings, type GithubSettings } from '@/lib/integrations';
 
 // Tiny inline cards rendered below a chat body. The viewer uses *their own*
 // credentials to fetch metadata (same model as desktop renderer/chat.js: each
@@ -108,7 +108,7 @@ const PILL_RED = '#ff5b5b';
 const PILL_AMBER = '#ff9f0a';
 
 // The PR detail pills (checks / mergeable / review), computed from a summary.
-function prPills(s: GithubPullSummary, viewerId: string): React.ReactElement[] {
+function prPills(s: GithubPullSummary): React.ReactElement[] {
   const pills: React.ReactElement[] = [];
   const c = s.checks;
   if (c.total > 0) {
@@ -124,13 +124,12 @@ function prPills(s: GithubPullSummary, viewerId: string): React.ReactElement[] {
   if (r.decision === 'changes_requested') pills.push(<Pill key="rev" text="changes requested" color={PILL_RED} />);
   else if (r.decision === 'approved') pills.push(<Pill key="rev" text={`approved${r.approvals > 1 ? ` ×${r.approvals}` : ''}`} color={PILL_GREEN} />);
   else if (r.decision === 'review_required') pills.push(<Pill key="rev" text="review required" color={PILL_AMBER} />);
-  // viewerId is unused here but kept in the signature so a future
-  // "reviewed by you" nuance can key off it without a churny refactor.
-  void viewerId;
   return pills;
 }
 
-function GitHubCard({ issue, viewerId }: { issue: GithubIssue; viewerId: string }) {
+// ghSettings is passed down from MessageUnfurls (which already resolved it for
+// the base fetch) so we don't hit getGithubSettings a second time per card.
+function GitHubCard({ issue, viewerId, ghSettings }: { issue: GithubIssue; viewerId: string; ghSettings: GithubSettings | null }) {
   const isPr = !!issue.pull_request;
   const state = ghStateLabel(issue);
   const stateColor = ghStateColor(issue.state, issue.pull_request?.merged_at ?? null);
@@ -140,17 +139,15 @@ function GitHubCard({ issue, viewerId }: { issue: GithubIssue; viewerId: string 
   const wantDetails = isPr && issue.state === 'open';
   const [summary, setSummary] = useState<GithubPullSummary | null>(null);
   useEffect(() => {
-    if (!wantDetails) { setSummary(null); return; }
+    if (!wantDetails || !ghSettings) { setSummary(null); return; }
     let active = true;
     (async () => {
-      const s = await getGithubSettings(viewerId);
-      if (!s) return;
       const key = ghKey(viewerId, issue.owner, issue.repo, String(issue.number));
-      const res = await cachedFetch(ghPrCache, key, () => fetchGithubPullSummary(s, issue.owner, issue.repo, issue.number));
+      const res = await cachedFetch(ghPrCache, key, () => fetchGithubPullSummary(ghSettings, issue.owner, issue.repo, issue.number));
       if (active) setSummary(res);
     })();
     return () => { active = false; };
-  }, [wantDetails, viewerId, issue.owner, issue.repo, issue.number]);
+  }, [wantDetails, ghSettings, viewerId, issue.owner, issue.repo, issue.number]);
 
   return (
     <TouchableOpacity
@@ -183,7 +180,7 @@ function GitHubCard({ issue, viewerId }: { issue: GithubIssue; viewerId: string 
       </View>
       {summary ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginTop: 1 }}>
-          {prPills(summary, viewerId)}
+          {prPills(summary)}
         </View>
       ) : null}
     </TouchableOpacity>
@@ -196,25 +193,29 @@ function GitHubCard({ issue, viewerId }: { issue: GithubIssue; viewerId: string 
 export function MessageUnfurls({ body, viewerId }: { body: string; viewerId: string | null }) {
   const [jira, setJira] = useState<JiraIssue[]>([]);
   const [gh, setGh] = useState<GithubIssue[]>([]);
+  // Held so the PR cards can reuse it for their checks/merge/review lookup
+  // instead of each re-resolving getGithubSettings.
+  const [ghSettings, setGhSettings] = useState<GithubSettings | null>(null);
 
   useEffect(() => {
-    if (!viewerId || !body) { setJira([]); setGh([]); return; }
+    if (!viewerId || !body) { setJira([]); setGh([]); setGhSettings(null); return; }
     let active = true;
     const jiraRefs = extractJiraRefs(body);
     const ghRefs = extractGithubRefs(body);
-    if (!jiraRefs.length && !ghRefs.length) { setJira([]); setGh([]); return; }
+    if (!jiraRefs.length && !ghRefs.length) { setJira([]); setGh([]); setGhSettings(null); return; }
     (async () => {
       try {
         const jiraSettings = jiraRefs.length ? await getJiraSettings(viewerId) : null;
-        const ghSettings = ghRefs.length ? await getGithubSettings(viewerId) : null;
+        const ghs = ghRefs.length ? await getGithubSettings(viewerId) : null;
         const jiraPs = jiraSettings ? jiraRefs.map((r) =>
           cachedFetch(jiraCache, jiraKey(viewerId, r.host, r.key), () => fetchJiraIssue(jiraSettings, r.key, r.host)),
         ) : [];
-        const ghPs = ghSettings ? ghRefs.map((r) =>
-          cachedFetch(ghCache, ghKey(viewerId, r.owner, r.repo, r.number), () => fetchGithubIssueOrPull(ghSettings, r.owner, r.repo, r.number)),
+        const ghPs = ghs ? ghRefs.map((r) =>
+          cachedFetch(ghCache, ghKey(viewerId, r.owner, r.repo, r.number), () => fetchGithubIssueOrPull(ghs, r.owner, r.repo, r.number)),
         ) : [];
         const [jiraRes, ghRes] = await Promise.all([Promise.all(jiraPs), Promise.all(ghPs)]);
         if (!active) return;
+        setGhSettings(ghs);
         setJira(jiraRes.filter((x): x is JiraIssue => !!x));
         setGh(ghRes.filter((x): x is GithubIssue => !!x));
       } catch (e: any) {
@@ -234,7 +235,7 @@ export function MessageUnfurls({ body, viewerId }: { body: string; viewerId: str
   return (
     <View>
       {jira.map((i) => <JiraCard key={`j-${i.host}::${i.key}`} issue={i} />)}
-      {gh.map((i) => <GitHubCard key={`g-${i.owner}/${i.repo}#${i.number}`} issue={i} viewerId={viewerId!} />)}
+      {gh.map((i) => <GitHubCard key={`g-${i.owner}/${i.repo}#${i.number}`} issue={i} viewerId={viewerId!} ghSettings={ghSettings} />)}
     </View>
   );
 }

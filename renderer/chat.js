@@ -3233,6 +3233,9 @@ class ChatView {
     const reload = this._buildReloadButton(async () => {
       this._ghCache.delete(cacheKey);
       this._ghPrCache?.delete(cacheKey);
+      // Also drop any in-flight PR lookup, else a reload mid-fetch would
+      // re-await the stale promise instead of actually refetching.
+      this._ghPrInflight?.delete(cacheKey);
       this._paintGhLoading(el, ref);
       await this._lookupGhAndPaint(ref, el, gh);
     });
@@ -3275,7 +3278,10 @@ class ChatView {
       if (!p) {
         p = gh.getPullSummary(ref.owner, ref.repo, ref.number)
           .then((data) => { this._ghPrCache.set(cacheKey, data); return data; })
-          .catch((err) => { this._ghPrCache.set(cacheKey, null); throw err; })
+          // Don't pin failures: leave the key absent so a later re-paint
+          // retries, rather than permanently blanking the pills on a
+          // transient rate-limit/network blip. (Mirrors the mobile cache.)
+          .catch((err) => { this._ghPrCache.delete(cacheKey); throw err; })
           .finally(() => this._ghPrInflight.delete(cacheKey));
         this._ghPrInflight.set(cacheKey, p);
       }
