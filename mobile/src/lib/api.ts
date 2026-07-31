@@ -435,6 +435,34 @@ export async function fetchTeamMessagesSince(
   return (data ?? []) as Message[];
 }
 
+// Latest top-level message per channel across a team, for surfaces that show a
+// conversation list with a preview line (e.g. the CarPlay Messages surface).
+// One query — fetch the newest `scan` top-level messages team-wide, then reduce
+// to the first (newest) row seen per channel. Channels quieter than the scan
+// window simply won't have a preview, which the caller renders as "No messages
+// yet". `scan` caps the work; 400 comfortably covers an active team's recent
+// conversations without paging.
+export async function fetchLatestMessagesByChannel(
+  teamId: string,
+  scan = 400,
+): Promise<Map<string, Message>> {
+  const { data, error } = await supabase
+    .from('messages')
+    .select('*')
+    .eq('team_id', teamId)
+    .is('parent_id', null)
+    .order('ts', { ascending: false })
+    .limit(scan);
+  if (error) throw error;
+  const latest = new Map<string, Message>();
+  for (const m of (data ?? []) as Message[]) {
+    // Rows arrive newest-first, so the first time we see a channel is its
+    // latest message; later (older) rows for the same channel are skipped.
+    if (!latest.has(m.channel_id)) latest.set(m.channel_id, m);
+  }
+  return latest;
+}
+
 export async function fetchThread(messageId: string): Promise<Message[]> {
   const { data, error } = await supabase
     .from('messages')

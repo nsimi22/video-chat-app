@@ -10,6 +10,7 @@ import { MutedChannelsProvider } from '@/context/MutedChannelsContext';
 import { FavoritesProvider } from '@/context/FavoritesContext';
 import { PresenceProvider } from '@/context/PresenceContext';
 import { BiometricLockScreen } from '@/components/BiometricLockScreen';
+import { CarPlayBridge } from '@/components/CarPlayBridge';
 import { FloatingCall } from '@/components/FloatingCall';
 import { registerForPush } from '@/lib/push';
 import { colors } from '@/theme';
@@ -152,6 +153,9 @@ function CallRoomShell({ children }: { children: React.ReactNode }) {
       onDisconnected={endCall}
     >
       <PlatformMetadataPublisher />
+      {/* Mirrors the channel list + active call to CarPlay. Inside <LiveKitRoom>
+          so it can read/toggle the mic; inert on non-CarPlay builds. */}
+      <CarPlayBridge />
       {children}
     </LiveKitRoom>
   );
