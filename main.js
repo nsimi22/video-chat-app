@@ -216,6 +216,11 @@ function createWindow() {
   // Default display picker uses the first screen; user picks via our own UI.
   session.defaultSession.setDisplayMediaRequestHandler(async (_req, callback) => {
     const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] });
+    // getSources() comes back empty when macOS Screen Recording (TCC) isn't
+    // granted — which a major-version bump can reset. Cancel the request
+    // rather than passing `video: undefined` (a black/opaque failure); the
+    // renderer's get-screen-access check routes the user to re-grant.
+    if (!sources.length) { callback({}); return; }
     callback({ video: sources[0], audio: 'loopback' });
   }, { useSystemPicker: false });
 

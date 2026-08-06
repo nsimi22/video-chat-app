@@ -17,6 +17,9 @@
     "email": "nick.simi@sunpower.com"
   },
   "license": "MIT",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
     "@mediapipe/selfie_segmentation": "^0.1.0",
     "@supabase/supabase-js": "^2.45.0",
@@ -67,6 +70,7 @@
     "afterSign": "build/notarize.js",
     "mac": {
       "category": "public.app-category.productivity",
+      "minimumSystemVersion": "12.0.0",
       "target": [
         {
           "target": "dmg",
