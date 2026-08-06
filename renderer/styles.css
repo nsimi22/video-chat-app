@@ -1532,6 +1532,15 @@ button.ctrl.denoise-off:not([disabled]):hover { color: #ff5c52; }
 .tile:not(.screen):not(.whiteboard) {
   aspect-ratio: 16 / 9;
   min-height: 0;
+  /* width:100% + height:auto is load-bearing, not cosmetic. The grid column
+     is definite, but a bare aspect-ratio item defaults to align/justify
+     stretch and derives its size from the auto ROW instead — an empty
+     <video> reports ~0 min-content, so the row collapses to ~2px and the
+     tile shrinks to a 4x2 dot (still 16:9, so it "looks" right in numbers).
+     Pinning width to the column makes aspect-ratio derive HEIGHT from a real
+     width, which then sizes the row. Verified in chrome-devtools. */
+  width: 100%;
+  height: auto;
   /* With 1-2 participants a tile gets the full stage width, and 16:9 of that
      is taller than --tiles-max-h — the grid would overflow and scroll. Cap
      the WIDTH (not the height: capping height just breaks the ratio and
