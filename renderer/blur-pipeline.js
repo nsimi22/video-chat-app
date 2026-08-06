@@ -58,11 +58,13 @@
 
       // Match canvas resolution to the live video so the captureStream
       // we hand back to WebRTC keeps the camera's aspect ratio. Falls
-      // back to 640×480 if track settings don't carry width/height
-      // yet (some platforms surface them late).
+      // back to 1280×720 if track settings don't carry width/height
+      // yet (some platforms surface them late) — 16:9 to match the
+      // videoCaptureDefaults in livekit.js, since a 4:3 fallback here
+      // would hand WebRTC a 4:3 stream that the 16:9 tile CSS then crops.
       const settings = rawStream.getVideoTracks()[0]?.getSettings?.() || {};
-      this._canvas.width = settings.width || video.videoWidth || 640;
-      this._canvas.height = settings.height || video.videoHeight || 480;
+      this._canvas.width = settings.width || video.videoWidth || 1280;
+      this._canvas.height = settings.height || video.videoHeight || 720;
 
       this._seg = new window.SelfieSegmentation({
         locateFile: (file) => VENDOR_PATH + file,

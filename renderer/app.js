@@ -8414,6 +8414,79 @@ function collectAppearanceFromForm() {
   return { density, accentHue };
 }
 
+// Fill the Settings > Video panel from the stored camera prefs
+// (window.HuddleCameraPrefs, backed by localStorage in livekit.js).
+//
+// Device labels are only exposed by enumerateDevices() once camera
+// permission has been granted, so before a first call the list comes back
+// as unlabeled entries. We still list them — a positional "Camera 1" is
+// more useful than an empty dropdown — and explain why via the hint.
+async function populateVideoSettings() {
+  const prefs = window.HuddleCameraPrefs;
+  const modal = document.getElementById('settings-modal');
+  if (!prefs || !modal) return;
+
+  const quality = prefs.getQuality();
+  modal.querySelectorAll('input[name="set-camera-quality"]').forEach((r) => {
+    r.checked = r.value === quality;
+  });
+
+  const select = modal.querySelector('#set-camera-device');
+  const hint = modal.querySelector('#set-camera-device-hint');
+  if (!select) return;
+  const saved = prefs.getDeviceId();
+
+  let cams = [];
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    cams = devices.filter((d) => d.kind === 'videoinput');
+  } catch (err) {
+    console.warn('[settings] enumerateDevices failed', err);
+  }
+
+  // Rebuild from scratch each open so a camera plugged in mid-session shows
+  // up, keeping the "System default" option that is authored in index.html.
+  select.textContent = '';
+  const dflt = document.createElement('option');
+  dflt.value = '';
+  dflt.textContent = 'System default';
+  select.appendChild(dflt);
+  cams.forEach((cam, i) => {
+    const opt = document.createElement('option');
+    opt.value = cam.deviceId;
+    opt.textContent = cam.label || `Camera ${i + 1}`;
+    select.appendChild(opt);
+  });
+
+  // A camera that has since been unplugged would otherwise leave the select
+  // showing "System default" while localStorage still holds the stale id.
+  // Surface that mismatch rather than silently resetting the preference —
+  // cameraCaptureOptions() already degrades to the default at capture time.
+  const savedStillPresent = !saved || cams.some((c) => c.deviceId === saved);
+  select.value = savedStillPresent ? saved : '';
+  if (hint) {
+    if (!cams.length) hint.textContent = 'No cameras detected.';
+    else if (!savedStillPresent) hint.textContent = 'Your previously selected camera is not connected. Using the system default.';
+    else if (cams.some((c) => !c.label)) hint.textContent = 'Camera names appear after you have joined a call once and granted camera access.';
+    else hint.textContent = '';
+  }
+}
+
+// Commit the Settings > Video panel to localStorage. Called by saveSettings().
+// Capture options are read once per Room construction (see connect() in
+// livekit.js), so a change here lands on the next call join — deliberately
+// NOT applied to a live track, which would invalidate the blur pipeline's
+// clone of the original capture track.
+function commitVideoSettingsFromForm() {
+  const prefs = window.HuddleCameraPrefs;
+  const modal = document.getElementById('settings-modal');
+  if (!prefs || !modal) return;
+  const quality = modal.querySelector('input[name="set-camera-quality"]:checked');
+  if (quality) prefs.setQuality(quality.value);
+  const select = modal.querySelector('#set-camera-device');
+  if (select) prefs.setDeviceId(select.value);
+}
+
 // Read the Working Hours form into the { enabled, start, end, tz } shape
 // stored under state.settings.presence.workingHours. Outside these hours
 // the presence client reports DND (see HuddleClient._outsideWorkingHours).
@@ -8811,6 +8884,11 @@ async function openSettings() {
   els.settingsModal.querySelectorAll('.settings-accent-swatch').forEach((sw) => {
     sw.classList.toggle('is-active', Number(sw.dataset.hue) === activeHue);
   });
+  // Video tab. Unlike appearance these prefs are device-local (localStorage
+  // via HuddleCameraPrefs), so they are read straight from there rather than
+  // from state.settings. Awaited so the camera list is populated before the
+  // modal is shown — an empty select that fills in a beat later reads as a bug.
+  await populateVideoSettings();
   // Default to the Integrations tab whenever the modal opens — the
   // most common destination. openSettingsToProfile() overrides this.
   activateSettingsTab('integrations');
@@ -8955,6 +9033,10 @@ async function saveSettings() {
       workingHours: collectWorkingHoursFromForm(),
     },
   };
+  // Camera prefs are device-local (localStorage), so they are committed
+  // outside the try: a failed Supabase round-trip for `next` shouldn't
+  // discard them, and a localStorage failure shouldn't abort the save.
+  commitVideoSettingsFromForm();
   try {
     // Upload pending avatar first so the URL is included in the
     // profile patch. Failing the upload aborts the whole save.

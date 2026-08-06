@@ -43,6 +43,80 @@
   // can never throw in the hot track-subscribe path.
   const AUDIO_KIND = LK.Track?.Kind?.Audio || 'audio';
 
+  // ── Camera capture preference ──────────────────────────────────────
+  // Which camera, and at what widescreen resolution. Device-local, so it
+  // lives in localStorage exactly like the blur and noise-suppression
+  // preferences (see app.js) rather than in the Supabase settings blob.
+  //
+  // These live here rather than in app.js because connect() below needs
+  // them at Room construction time, and livekit.js loads before app.js.
+  const CAMERA_QUALITY_PREF_KEY = 'huddle.cameraQuality';
+  const CAMERA_DEVICE_PREF_KEY = 'huddle.cameraDeviceId';
+
+  // 720p is the default because it is what LiveKit's own videoCaptureDefaults
+  // already produced implicitly — so declaring capture options costs no extra
+  // bandwidth until someone deliberately opts up to 1080p.
+  const CAMERA_QUALITIES = ['720p', '1080p'];
+  const DEFAULT_CAMERA_QUALITY = '720p';
+
+  function getCameraQuality() {
+    try {
+      const raw = localStorage.getItem(CAMERA_QUALITY_PREF_KEY);
+      return CAMERA_QUALITIES.includes(raw) ? raw : DEFAULT_CAMERA_QUALITY;
+    } catch { return DEFAULT_CAMERA_QUALITY; }
+  }
+
+  function setCameraQuality(quality) {
+    const next = CAMERA_QUALITIES.includes(quality) ? quality : DEFAULT_CAMERA_QUALITY;
+    try { localStorage.setItem(CAMERA_QUALITY_PREF_KEY, next); } catch { /* private mode */ }
+    return next;
+  }
+
+  // '' (not null) means "system default camera" — an absent key and an
+  // explicit default choice are the same thing here.
+  function getCameraDeviceId() {
+    try { return localStorage.getItem(CAMERA_DEVICE_PREF_KEY) || ''; } catch { return ''; }
+  }
+
+  function setCameraDeviceId(deviceId) {
+    try {
+      if (deviceId) localStorage.setItem(CAMERA_DEVICE_PREF_KEY, deviceId);
+      else localStorage.removeItem(CAMERA_DEVICE_PREF_KEY);
+    } catch { /* private mode */ }
+    return deviceId || '';
+  }
+
+  // Translate the stored preference into LiveKit VideoCaptureOptions.
+  // The SDK's presets already carry aspectRatio 16/9 alongside width and
+  // height (h720 = 1280x720 @ 1.778), and it merges `resolution` into the
+  // getUserMedia video constraints, so requesting a preset IS the widescreen
+  // request. The fallback literals restate the ratio because they bypass the
+  // presets entirely.
+  //
+  // Every preset lookup is optional-chained: vendor/livekit.js is a pinned
+  // bundle and a renamed or missing export must degrade to "camera still
+  // works", never throw in the connect path. Same defensiveness as the
+  // ScreenSharePresets lookup in _publishScreen below.
+  //
+  // Note these are `ideal` constraints, not `exact` — a 4:3-only webcam
+  // still captures rather than failing, and the 16:9 tile CSS crops it.
+  // That is the intended trade: a working camera beats a perfect ratio.
+  function cameraCaptureOptions() {
+    const preset = getCameraQuality() === '1080p'
+      ? (LK.VideoPresets?.h1080 || { resolution: { width: 1920, height: 1080, aspectRatio: 16 / 9 } })
+      : (LK.VideoPresets?.h720 || { resolution: { width: 1280, height: 720, aspectRatio: 16 / 9 } });
+    const opts = {
+      resolution: preset.resolution || preset,
+      facingMode: 'user',
+    };
+    const deviceId = getCameraDeviceId();
+    // Deliberately NOT { exact: deviceId }: a camera that has been
+    // unplugged since the preference was saved must degrade to the system
+    // default, not fail the whole camera enable with OverconstrainedError.
+    if (deviceId) opts.deviceId = deviceId;
+    return opts;
+  }
+
   // Per-participant synthesized MediaStream cache. LiveKit gives us
   // individual MediaStreamTracks per `trackSubscribed`; the renderer's
   // onTrack handler in app.js keys tiles off stream.id, so we keep one
@@ -551,9 +625,17 @@
       if (error) throw new Error(`livekit-token failed: ${error.message || error}`);
       if (!data?.token || !data?.url) throw new Error('livekit-token returned no token');
 
+      // videoCaptureDefaults is the single point that makes the camera
+      // widescreen: it applies to every setCameraEnabled call — join,
+      // toggleCam, the call popout — so no call site needs to thread
+      // capture options through, and no live track ever gets restarted.
+      // That last part matters: _rawTrack in setBlurBackground holds a clone
+      // of the ORIGINAL capture track, so a mid-call restartTrack would
+      // silently break background blur (see the comment there).
       const room = new LK.Room({
         adaptiveStream: true,
         dynacast: true,
+        videoCaptureDefaults: cameraCaptureOptions(),
       });
       this.room = room;
       this._wireRoomEvents(room);
@@ -1006,4 +1088,15 @@
 
   window.LivekitCallClient = LivekitCallClient;
   window.MAX_CONCURRENT_SCREENS = MAX_CONCURRENT_SCREENS;
+  // Camera preference accessors for the Settings > Video panel in app.js.
+  // Grouped on one object rather than four window globals; the panel reads
+  // and writes, connect() above is the only consumer of the result.
+  window.HuddleCameraPrefs = {
+    QUALITIES: CAMERA_QUALITIES,
+    DEFAULT_QUALITY: DEFAULT_CAMERA_QUALITY,
+    getQuality: getCameraQuality,
+    setQuality: setCameraQuality,
+    getDeviceId: getCameraDeviceId,
+    setDeviceId: setCameraDeviceId,
+  };
 })();
