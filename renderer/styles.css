@@ -1715,6 +1715,14 @@ body.popout-screen .tile-action-annotate { display: none; }
      unbounded (and re-rendered-from-scratch) canvas. */
   min-height: 360px;
   max-height: 70vh;
+  /* A spotlighted CAMERA tile inherits the 16:9 width-cap from
+     `.tile:not(.screen):not(.whiteboard)`, which would size it off the
+     stage-column width and stop it filling the tall stage (under-fills a
+     short stage, overflows a wide one). The stage is a placement, not a
+     shape — let it fill, exactly as `.mini-focus` opts out. Screen tiles
+     are already excluded from the ratio rule, so this only affects cameras. */
+  aspect-ratio: auto;
+  max-width: none;
 }
 
 /* Fullscreen-in-window for screen-share tiles. Lifts one tile out of
@@ -7929,9 +7937,17 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   grid-template-rows: repeat(auto-fill, 104px);
   grid-auto-rows: 104px;
 }
-/* Spotlighted tile spans all filmstrip rows so col 1 is one tall cell. */
+/* Spotlighted tile spans all filmstrip rows so col 1 is one tall cell.
+   Drop the 16:9 width-cap a spotlighted CAMERA tile inherits from
+   `.tile:not(.screen):not(.whiteboard)` — the stage is a placement, not a
+   shape, so it must fill this tall cell (grid-row 1 / -1 is a definite area,
+   so height:100% resolves against it) rather than being sized off the
+   stage-column width. Screen tiles are already excluded from the ratio rule. */
 [data-ui="v2"] .tiles.has-spotlight .tile.spotlighted {
   grid-row: 1 / -1;
+  aspect-ratio: auto;
+  max-width: none;
+  height: 100%;
 }
 /* Same 16:9 lock for the spotlight rail's filmstrip tiles
    (excluding the spotlighted tile itself, which fills the stage).
@@ -7943,6 +7959,19 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   grid-column: 2;
   min-height: 0;
   aspect-ratio: 16 / 9;
+}
+/* Mobile peers stay portrait in the rail too. The base
+   `.tile[data-platform="mobile"]…` rule (specificity 0,4,0) loses to the
+   0,5,0 rule above, so restate it here at higher specificity. A true 9:16
+   tile at the 184px column width is 327px tall and won't fit the 104px row
+   slot — so pin it to the slot height and let width derive (≈58px),
+   centered, instead of letterboxing a 16:9 box with black side bars. */
+[data-ui="v2"] .tiles.has-spotlight .tile[data-platform="mobile"]:not(.spotlighted):not(.screen):not(.whiteboard) {
+  aspect-ratio: 9 / 16;
+  height: 104px;
+  width: auto;
+  max-width: 100%;
+  margin-inline: auto;
 }
 
 /* Two-part screen-tile label spans (setScreenTileLabel in app.js).

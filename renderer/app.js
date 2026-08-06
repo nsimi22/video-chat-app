@@ -8444,25 +8444,45 @@ async function populateVideoSettings() {
     console.warn('[settings] enumerateDevices failed', err);
   }
 
+  // Before camera permission is granted, Chromium returns a videoinput whose
+  // deviceId AND label are both empty. An empty-id entry is unselectable — it
+  // collides with "System default" — so only list cameras carrying a real id.
+  // `hasBlind` (an empty-id placeholder, or a real device with no label yet)
+  // still drives the explanatory hint below.
+  const usable = cams.filter((c) => c.deviceId);
+  const hasBlind = cams.length > usable.length || usable.some((c) => !c.label);
+
   // Rebuilt from scratch on each open so a camera plugged in mid-session
   // shows up. JS owns the whole list including "System default", so the
   // markup ships an empty <select>.
   select.replaceChildren(
     new Option('System default', ''),
-    ...cams.map((cam, i) => new Option(cam.label || `Camera ${i + 1}`, cam.deviceId)),
+    ...usable.map((cam, i) => new Option(cam.label || `Camera ${i + 1}`, cam.deviceId)),
   );
 
   // A camera that has since been unplugged would otherwise leave the select
   // showing "System default" while localStorage still holds the stale id.
   // Surface that mismatch rather than silently resetting the preference —
   // cameraCaptureOptions() already degrades to the default at capture time.
-  const savedStillPresent = !saved || cams.some((c) => c.deviceId === saved);
+  const savedStillPresent = !saved || usable.some((c) => c.deviceId === saved);
   select.value = savedStillPresent ? saved : '';
+
+  // Only a deliberate change to the dropdown may rewrite the stored id. Reset
+  // the flag on each open and wire the listener exactly once; commitVideo-
+  // SettingsFromForm() reads it. Without this, opening Settings for something
+  // else while the saved camera is unplugged (select falls back to '') and
+  // hitting Save would silently erase a still-valid preference.
+  select.dataset.userPicked = '';
+  if (!select.dataset.changeWired) {
+    select.dataset.changeWired = '1';
+    select.addEventListener('change', () => { select.dataset.userPicked = '1'; });
+  }
+
   if (hint) {
     if (!cams.length) hint.textContent = 'No cameras detected.';
     else if (!savedStillPresent) hint.textContent = 'Your previously selected camera is not connected. Using the system default.';
-    else if (cams.some((c) => !c.label)) hint.textContent = 'Camera names appear after you have joined a call once and granted camera access.';
-    else hint.textContent = '';
+    else if (hasBlind) hint.textContent = 'Camera names appear after you have joined a call once and granted camera access.';
+    else hint.textContent = 'Camera changes take effect the next time you join a call.';
   }
 }
 
@@ -8478,7 +8498,10 @@ function commitVideoSettingsFromForm() {
   const quality = modal.querySelector('input[name="set-camera-quality"]:checked');
   if (quality) prefs.setQuality(quality.value);
   const select = modal.querySelector('#set-camera-device');
-  if (select) prefs.setDeviceId(select.value);
+  // Only persist the device when the user actually changed the dropdown this
+  // session (see populateVideoSettings) — otherwise an unplugged-camera
+  // fallback to '' would wipe a still-valid stored preference on Save.
+  if (select && select.dataset.userPicked === '1') prefs.setDeviceId(select.value);
 }
 
 // Read the Working Hours form into the { enabled, start, end, tz } shape
