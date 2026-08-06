@@ -906,9 +906,9 @@
               <summary>Camera</summary>
               <div class="settings-section-body">
                 <p class="hint">Which camera to use in calls. Stored on this device only.</p>
-                <select id="set-camera-device" aria-label="Camera">
-                  <option value="">System default</option>
-                </select>
+                <!-- Options are built by populateVideoSettings() on each
+                     settings open, including the "System default" entry. -->
+                <select id="set-camera-device" aria-label="Camera"></select>
                 <p class="hint" id="set-camera-device-hint"></p>
               </div>
             </details>

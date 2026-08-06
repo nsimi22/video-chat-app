@@ -48,8 +48,10 @@
   // lives in localStorage exactly like the blur and noise-suppression
   // preferences (see app.js) rather than in the Supabase settings blob.
   //
-  // These live here rather than in app.js because connect() below needs
-  // them at Room construction time, and livekit.js loads before app.js.
+  // These live here rather than in app.js to keep the dependency pointing
+  // one way: connect() below reads them, and the Settings panel in app.js
+  // writes them through window.HuddleCameraPrefs. Putting them in app.js
+  // would make the transport module depend on the UI module.
   const CAMERA_QUALITY_PREF_KEY = 'huddle.cameraQuality';
   const CAMERA_DEVICE_PREF_KEY = 'huddle.cameraDeviceId';
 
@@ -69,7 +71,6 @@
   function setCameraQuality(quality) {
     const next = CAMERA_QUALITIES.includes(quality) ? quality : DEFAULT_CAMERA_QUALITY;
     try { localStorage.setItem(CAMERA_QUALITY_PREF_KEY, next); } catch { /* private mode */ }
-    return next;
   }
 
   // '' (not null) means "system default camera" — an absent key and an
@@ -83,7 +84,6 @@
       if (deviceId) localStorage.setItem(CAMERA_DEVICE_PREF_KEY, deviceId);
       else localStorage.removeItem(CAMERA_DEVICE_PREF_KEY);
     } catch { /* private mode */ }
-    return deviceId || '';
   }
 
   // Translate the stored preference into LiveKit VideoCaptureOptions.
@@ -106,7 +106,7 @@
       ? (LK.VideoPresets?.h1080 || { resolution: { width: 1920, height: 1080, aspectRatio: 16 / 9 } })
       : (LK.VideoPresets?.h720 || { resolution: { width: 1280, height: 720, aspectRatio: 16 / 9 } });
     const opts = {
-      resolution: preset.resolution || preset,
+      resolution: preset.resolution,
       facingMode: 'user',
     };
     const deviceId = getCameraDeviceId();
@@ -1092,8 +1092,6 @@
   // Grouped on one object rather than four window globals; the panel reads
   // and writes, connect() above is the only consumer of the result.
   window.HuddleCameraPrefs = {
-    QUALITIES: CAMERA_QUALITIES,
-    DEFAULT_QUALITY: DEFAULT_CAMERA_QUALITY,
     getQuality: getCameraQuality,
     setQuality: setCameraQuality,
     getDeviceId: getCameraDeviceId,

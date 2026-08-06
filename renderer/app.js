@@ -8444,19 +8444,13 @@ async function populateVideoSettings() {
     console.warn('[settings] enumerateDevices failed', err);
   }
 
-  // Rebuild from scratch each open so a camera plugged in mid-session shows
-  // up, keeping the "System default" option that is authored in index.html.
-  select.textContent = '';
-  const dflt = document.createElement('option');
-  dflt.value = '';
-  dflt.textContent = 'System default';
-  select.appendChild(dflt);
-  cams.forEach((cam, i) => {
-    const opt = document.createElement('option');
-    opt.value = cam.deviceId;
-    opt.textContent = cam.label || `Camera ${i + 1}`;
-    select.appendChild(opt);
-  });
+  // Rebuilt from scratch on each open so a camera plugged in mid-session
+  // shows up. JS owns the whole list including "System default", so the
+  // markup ships an empty <select>.
+  select.replaceChildren(
+    new Option('System default', ''),
+    ...cams.map((cam, i) => new Option(cam.label || `Camera ${i + 1}`, cam.deviceId)),
+  );
 
   // A camera that has since been unplugged would otherwise leave the select
   // showing "System default" while localStorage still holds the stale id.
