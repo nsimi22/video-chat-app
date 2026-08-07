@@ -39,13 +39,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 22: electron@43 and its install deps (@electron/get,
+      # @electron-internal/extract-zip) declare engines.node >= 22.12.0 and
+      # are pure ESM loaded via require() — Node 20 can hit ERR_REQUIRE_ESM
+      # when the binary downloads on first launch.
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
+      # No `|| npm install` fallback: a hard `npm ci` failure (e.g. an engine
+      # constraint) must fail the release, not silently build shipped
+      # installers from a non-lockfile tree.
       - name: Install dependencies
-        run: npm ci || npm install
+        run: npm ci
 
       # Signing + notarization secrets, injected ONLY on the mac runner.
       # Done via a gated step (not inline env) so the vars are genuinely
