@@ -32,12 +32,14 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
-      # --omit=dev skips Electron's binary download (a devDependency) while
-      # still validating the lockfile and running the copy-vendor postinstall
-      # against the runtime deps the renderer vendors.
+      # --omit=dev skips Electron (a devDependency) entirely while still
+      # validating the lockfile and running the copy-vendor postinstall
+      # against the runtime deps the renderer vendors. (Electron 43 has no
+      # install script — the binary downloads lazily on first launch, not at
+      # install time — so there is no separate "binary download" to skip.)
       - name: Install dependencies
         run: npm ci --omit=dev
 
@@ -59,7 +61,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: mobile/package-lock.json
 

@@ -1,4 +1,5 @@
-// Rebuilds native addons (node-pty) against Electron's ABI. Runs from
+// Rebuilds native addons (node-pty) against Electron's ABI, and ensures the
+// Electron binary itself is downloaded at install time. Runs from
 // `npm postinstall`, after copy-vendor.
 //
 // Skips gracefully when the rebuild toolchain isn't installed. The
@@ -27,6 +28,21 @@ if (!resolvable('@electron/rebuild') || !resolvable('electron/package.json')) {
   console.log('[rebuild-native] @electron/rebuild or electron absent (e.g. --omit=dev) — skipping node-pty rebuild.');
   process.exit(0);
 }
+
+// Electron 43 dropped its npm install script — the ~100 MB binary now
+// downloads lazily on the first `require('electron')` instead of at install
+// time. Trigger that download here so a failure (offline / behind a proxy)
+// surfaces during install rather than mid-launch, and so `npm ci --omit=dev`
+// (which skips Electron entirely, above) stays the only path that doesn't
+// fetch it. install.js is idempotent — a no-op when the binary already exists.
+const electronDir = path.dirname(require.resolve('electron/package.json'));
+console.log('[rebuild-native] ensuring Electron binary is downloaded…');
+const dl = spawnSync(process.execPath, [path.join(electronDir, 'install.js')], { stdio: 'inherit' });
+if (dl.error) {
+  console.error('[rebuild-native] failed to launch Electron install:', dl.error.message);
+  process.exit(1);
+}
+if (dl.status) process.exit(dl.status);
 
 // Resolve the CLI's JS entry from the package's own `bin` field and run it
 // with the current node binary in an argv array — no `.bin/*.cmd` shim and
