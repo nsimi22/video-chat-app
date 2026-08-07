@@ -1469,6 +1469,7 @@ async function startPopoutCall(channelId) {
   // there for the full reasoning.
   state.mesh = mesh;
   mesh.addEventListener('peer-joined', (e) => onCallPeerJoined(e.detail));
+  mesh.addEventListener('peer-platform', (e) => onCallPeerPlatform(e.detail));
   mesh.addEventListener('peer-left', (e) => onCallPeerLeft(e.detail));
   mesh.addEventListener('track', (e) => onTrack(e.detail));
   mesh.addEventListener('screen-announce', (e) => onScreenAnnounce(e.detail));
@@ -2290,6 +2291,7 @@ async function startCall(channelId, opts = {}) {
   // the "late joiner can only see themselves" race.
   state.mesh = mesh;
   mesh.addEventListener('peer-joined', (e) => onCallPeerJoined(e.detail));
+  mesh.addEventListener('peer-platform', (e) => onCallPeerPlatform(e.detail));
   mesh.addEventListener('peer-left', (e) => onCallPeerLeft(e.detail));
   mesh.addEventListener('track', (e) => onTrack(e.detail));
   mesh.addEventListener('screen-announce', (e) => onScreenAnnounce(e.detail));
@@ -3509,6 +3511,20 @@ function onCallPeerJoined(peer) {
   // Call-channel presence has registered this peer; re-label any tile
   // we stamped 'guest' before their name was known.
   if (peer?.id) refreshTileLabelForPeer(peer.id);
+}
+
+// A peer's platform metadata resolved (or changed) after they joined —
+// mobile clients set it via a post-connect round-trip, so onCallPeerJoined
+// often saw an empty value. Update the cache and re-stamp the live tile so
+// its aspect-ratio flips (mobile → portrait) without waiting for a rejoin.
+function onCallPeerPlatform({ id, platform } = {}) {
+  if (!id) return;
+  if (platform) state.peerPlatforms.set(id, platform);
+  else state.peerPlatforms.delete(id);
+  const tile = state.tilesByKey.get(`peer:${id}`);
+  if (!tile) return;
+  if (platform) tile.dataset.platform = platform;
+  else delete tile.dataset.platform;
 }
 
 function onCallPeerLeft(peerId) {
@@ -8414,6 +8430,96 @@ function collectAppearanceFromForm() {
   return { density, accentHue };
 }
 
+// Fill the Settings > Video panel from the stored camera prefs
+// (window.HuddleCameraPrefs, backed by localStorage in livekit.js).
+//
+// Device labels are only exposed by enumerateDevices() once camera
+// permission has been granted, so before a first call the list comes back
+// as unlabeled entries. We still list them — a positional "Camera 1" is
+// more useful than an empty dropdown — and explain why via the hint.
+async function populateVideoSettings() {
+  const prefs = window.HuddleCameraPrefs;
+  const modal = document.getElementById('settings-modal');
+  if (!prefs || !modal) return;
+
+  const quality = prefs.getQuality();
+  modal.querySelectorAll('input[name="set-camera-quality"]').forEach((r) => {
+    r.checked = r.value === quality;
+  });
+
+  const select = modal.querySelector('#set-camera-device');
+  const hint = modal.querySelector('#set-camera-device-hint');
+  if (!select) return;
+  const saved = prefs.getDeviceId();
+
+  let cams = [];
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    cams = devices.filter((d) => d.kind === 'videoinput');
+  } catch (err) {
+    console.warn('[settings] enumerateDevices failed', err);
+  }
+
+  // Before camera permission is granted, Chromium returns a videoinput whose
+  // deviceId AND label are both empty. An empty-id entry is unselectable — it
+  // collides with "System default" — so only list cameras carrying a real id.
+  // `hasBlind` (an empty-id placeholder, or a real device with no label yet)
+  // still drives the explanatory hint below.
+  const usable = cams.filter((c) => c.deviceId);
+  const hasBlind = cams.length > usable.length || usable.some((c) => !c.label);
+
+  // Rebuilt from scratch on each open so a camera plugged in mid-session
+  // shows up. JS owns the whole list including "System default", so the
+  // markup ships an empty <select>.
+  select.replaceChildren(
+    new Option('System default', ''),
+    ...usable.map((cam, i) => new Option(cam.label || `Camera ${i + 1}`, cam.deviceId)),
+  );
+
+  // A camera that has since been unplugged would otherwise leave the select
+  // showing "System default" while localStorage still holds the stale id.
+  // Surface that mismatch rather than silently resetting the preference —
+  // cameraCaptureOptions() already degrades to the default at capture time.
+  const savedStillPresent = !saved || usable.some((c) => c.deviceId === saved);
+  select.value = savedStillPresent ? saved : '';
+
+  // Only a deliberate change to the dropdown may rewrite the stored id. Reset
+  // the flag on each open and wire the listener exactly once; commitVideo-
+  // SettingsFromForm() reads it. Without this, opening Settings for something
+  // else while the saved camera is unplugged (select falls back to '') and
+  // hitting Save would silently erase a still-valid preference.
+  select.dataset.userPicked = '';
+  if (!select.dataset.changeWired) {
+    select.dataset.changeWired = '1';
+    select.addEventListener('change', () => { select.dataset.userPicked = '1'; });
+  }
+
+  if (hint) {
+    if (!cams.length) hint.textContent = 'No cameras detected.';
+    else if (!savedStillPresent) hint.textContent = 'Your previously selected camera is not connected. Using the system default.';
+    else if (hasBlind) hint.textContent = 'Camera names appear after you have joined a call once and granted camera access.';
+    else hint.textContent = 'Camera changes take effect the next time you join a call.';
+  }
+}
+
+// Commit the Settings > Video panel to localStorage. Called by saveSettings().
+// Capture options are read once per Room construction (see connect() in
+// livekit.js), so a change here lands on the next call join — deliberately
+// NOT applied to a live track, which would invalidate the blur pipeline's
+// clone of the original capture track.
+function commitVideoSettingsFromForm() {
+  const prefs = window.HuddleCameraPrefs;
+  const modal = document.getElementById('settings-modal');
+  if (!prefs || !modal) return;
+  const quality = modal.querySelector('input[name="set-camera-quality"]:checked');
+  if (quality) prefs.setQuality(quality.value);
+  const select = modal.querySelector('#set-camera-device');
+  // Only persist the device when the user actually changed the dropdown this
+  // session (see populateVideoSettings) — otherwise an unplugged-camera
+  // fallback to '' would wipe a still-valid stored preference on Save.
+  if (select && select.dataset.userPicked === '1') prefs.setDeviceId(select.value);
+}
+
 // Read the Working Hours form into the { enabled, start, end, tz } shape
 // stored under state.settings.presence.workingHours. Outside these hours
 // the presence client reports DND (see HuddleClient._outsideWorkingHours).
@@ -8811,6 +8917,11 @@ async function openSettings() {
   els.settingsModal.querySelectorAll('.settings-accent-swatch').forEach((sw) => {
     sw.classList.toggle('is-active', Number(sw.dataset.hue) === activeHue);
   });
+  // Video tab. Unlike appearance these prefs are device-local (localStorage
+  // via HuddleCameraPrefs), so they are read straight from there rather than
+  // from state.settings. Awaited so the camera list is populated before the
+  // modal is shown — an empty select that fills in a beat later reads as a bug.
+  await populateVideoSettings();
   // Default to the Integrations tab whenever the modal opens — the
   // most common destination. openSettingsToProfile() overrides this.
   activateSettingsTab('integrations');
@@ -8955,6 +9066,10 @@ async function saveSettings() {
       workingHours: collectWorkingHoursFromForm(),
     },
   };
+  // Camera prefs are device-local (localStorage), so they are committed
+  // outside the try: a failed Supabase round-trip for `next` shouldn't
+  // discard them, and a localStorage failure shouldn't abort the save.
+  commitVideoSettingsFromForm();
   try {
     // Upload pending avatar first so the URL is included in the
     // profile patch. Failing the upload aborts the whole save.

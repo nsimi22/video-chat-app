@@ -1483,11 +1483,22 @@ button.ctrl.denoise-off:not([disabled]):hover { color: #ff5c52; }
 .tiles.hidden { display: none !important; }
 
 .tiles {
-  /* Cap the tile-grid height so the message stream stays visible underneath it. */
-  flex: 0 0 auto; max-height: 55vh; padding: 14px; overflow: auto;
+  /* Cap the tile-grid height so the message stream stays visible underneath it.
+     Exposed as a custom property because the 16:9 tile rule below derives its
+     max-width from it — the two MUST agree or a sparsely-populated grid
+     overflows and grows a scrollbar. Contexts with more vertical room (the
+     call popout) raise the var rather than only overriding max-height. */
+  --tiles-max-h: 55vh;
+  flex: 0 0 auto; max-height: var(--tiles-max-h); padding: 14px; overflow: auto;
   display: grid; gap: 14px;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  grid-auto-rows: minmax(200px, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  /* `auto` (not minmax(200px, 1fr)) so each row is sized by its tiles'
+     own aspect-ratio — see `.tile:not(.screen):not(.whiteboard)` below.
+     With a fixed row height the 16:9 ratio loses and camera tiles get
+     center-cropped into a portrait sliver, which is the bug this fixes.
+     The 55vh cap + overflow: auto means a crowded call scrolls rather
+     than squashing every tile. */
+  grid-auto-rows: auto;
   /* Anchor for the absolutely-positioned speaker-queue panel. The
      minimized-panel mode overrides this with position: fixed. */
   position: relative;
@@ -1512,6 +1523,40 @@ button.ctrl.denoise-off:not([disabled]):hover { color: #ff5c52; }
 @container tile (max-width: 340px) {
   .tile-actions button span { display: none; }
   .tile-actions button { padding: 5px 7px; }
+}
+/* Camera tiles are widescreen. Webcams capture 16:9 (see
+   videoCaptureDefaults in livekit.js), so declaring the same ratio on the
+   cell makes `object-fit: cover` a no-op crop instead of a portrait
+   center-crop. Screen and whiteboard tiles opt out — they set their own
+   size via `grid-column: span 2` + min-height below. */
+.tile:not(.screen):not(.whiteboard) {
+  aspect-ratio: 16 / 9;
+  min-height: 0;
+  /* width:100% + height:auto is load-bearing, not cosmetic. The grid column
+     is definite, but a bare aspect-ratio item defaults to align/justify
+     stretch and derives its size from the auto ROW instead — an empty
+     <video> reports ~0 min-content, so the row collapses to ~2px and the
+     tile shrinks to a 4x2 dot (still 16:9, so it "looks" right in numbers).
+     Pinning width to the column makes aspect-ratio derive HEIGHT from a real
+     width, which then sizes the row. Verified in chrome-devtools. */
+  width: 100%;
+  height: auto;
+  /* With 1-2 participants a tile gets the full stage width, and 16:9 of that
+     is taller than --tiles-max-h — the grid would overflow and scroll. Cap
+     the WIDTH (not the height: capping height just breaks the ratio and
+     re-introduces the crop) and center what's left of the cell. 28px is
+     .tiles' vertical padding. */
+  max-width: calc((var(--tiles-max-h, 55vh) - 28px) * 16 / 9);
+  margin-inline: auto;
+}
+/* Mobile peers really are portrait (9:19.5 phones, stamped
+   data-platform="mobile" in commitStreamAsCamera). Letting them keep their
+   own ratio gives them a narrower cell in the same grid rather than fat
+   black side bars or a cropped-off head. */
+.tile[data-platform="mobile"]:not(.screen):not(.whiteboard) {
+  aspect-ratio: 9 / 16;
+  /* Same width cap, re-derived for the portrait ratio. */
+  max-width: calc((var(--tiles-max-h, 55vh) - 28px) * 9 / 16);
 }
 .tile.screen { grid-column: span 2; min-height: 360px; }
 .tile.whiteboard {
@@ -1670,6 +1715,14 @@ body.popout-screen .tile-action-annotate { display: none; }
      unbounded (and re-rendered-from-scratch) canvas. */
   min-height: 360px;
   max-height: 70vh;
+  /* A spotlighted CAMERA tile inherits the 16:9 width-cap from
+     `.tile:not(.screen):not(.whiteboard)`, which would size it off the
+     stage-column width and stop it filling the tall stage (under-fills a
+     short stage, overflows a wide one). The stage is a placement, not a
+     shape — let it fill, exactly as `.mini-focus` opts out. Screen tiles
+     are already excluded from the ratio rule, so this only affects cameras. */
+  aspect-ratio: auto;
+  max-width: none;
 }
 
 /* Fullscreen-in-window for screen-share tiles. Lifts one tile out of
@@ -1796,8 +1849,10 @@ body.huddle-call-minimized #tiles .tile:not(.mini-focus) {
 /* Force the shown tile to fill the single panel cell. Needed because in
    a screen share .tiles becomes the spotlight grid and a non-spotlighted
    camera tile (which the panel often focuses) inherits grid-column: 2 +
-   aspect-ratio: 16/10 from the filmstrip rule — that mis-placed the tile
-   and broke the panel layout during a share. */
+   aspect-ratio: 16/9 from the filmstrip rule — that mis-placed the tile
+   and broke the panel layout during a share. The same !important reset
+   also defeats the base `.tile:not(.screen):not(.whiteboard)` 16:9 lock,
+   which would otherwise letterbox inside the 260x184 panel. */
 body.huddle-call-minimized #tiles .tile.mini-focus {
   grid-column: 1 / -1 !important;
   grid-row: 1 !important;
@@ -3513,9 +3568,14 @@ body.popout {
 }
 .popout-call .popout-tiles {
   flex: 1; min-height: 0;
-  /* Override .tiles' max-height: 55vh from the main-window grid —
-     the popout has nothing else competing for vertical space. */
+  /* Override .tiles' max-height from the main-window grid — the popout has
+     nothing else competing for vertical space. --tiles-max-h still has to be
+     a real number: the 16:9 tile rule derives its max-width from it, so
+     `none` here would leave tiles capped at the 55vh default and waste the
+     window. 78vh leaves room for the .popout-call-bar. */
+  --tiles-max-h: 78vh;
   max-height: none;
+  align-content: center;
 }
 .popout-call-bar {
   display: flex; gap: 8px; justify-content: center;
@@ -7428,6 +7488,14 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 [data-ui="v2"] body.huddle-in-call.huddle-on-call-channel .tiles {
   flex: 1 1 auto;
   max-height: none;
+  /* The grid owns the whole stage here, so re-point --tiles-max-h at the
+     real available height (stage minus the 76px header and 96px dock) —
+     the 16:9 tile max-width is derived from it. Leaving it at the 55vh
+     default would cap tiles well short of the space they have.
+     align-content centers the 16:9 rows in the leftover vertical space
+     instead of leaving them stuck at the top. */
+  --tiles-max-h: calc(100vh - 172px);
+  align-content: center;
   padding-bottom: 96px; /* leave room for the dock */
   /* The ONE right-side reservation. The leading 14px matches the base
      .tiles padding-left so the grid stays symmetric when no dock is open
@@ -7858,19 +7926,30 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
    in a 184px right filmstrip per the v2 design. */
 [data-ui="v2"] .tiles.has-spotlight {
   grid-template-columns: minmax(0, 1fr) 184px;
-  /* 115px row slots in the filmstrip column so each non-spotlighted
+  /* 104px row slots in the filmstrip column so each non-spotlighted
      tile lives in its own row. Without explicit row-slot height,
      row 1 inherits the spotlighted tile's 360px min-height and the
      first filmstrip tile sits at the top with a 245px gap below —
-     subsequent tiles end up "stacked in the top corner" visually. */
-  grid-template-rows: repeat(auto-fill, 115px);
-  grid-auto-rows: 115px;
+     subsequent tiles end up "stacked in the top corner" visually.
+     104px = 184px / (16/9) — it MUST stay in sync with the column
+     width and the tiles' 16:9 aspect-ratio below, or the rail
+     letterboxes. */
+  grid-template-rows: repeat(auto-fill, 104px);
+  grid-auto-rows: 104px;
 }
-/* Spotlighted tile spans all filmstrip rows so col 1 is one tall cell. */
+/* Spotlighted tile spans all filmstrip rows so col 1 is one tall cell.
+   Drop the 16:9 width-cap a spotlighted CAMERA tile inherits from
+   `.tile:not(.screen):not(.whiteboard)` — the stage is a placement, not a
+   shape, so it must fill this tall cell (grid-row 1 / -1 is a definite area,
+   so height:100% resolves against it) rather than being sized off the
+   stage-column width. Screen tiles are already excluded from the ratio rule. */
 [data-ui="v2"] .tiles.has-spotlight .tile.spotlighted {
   grid-row: 1 / -1;
+  aspect-ratio: auto;
+  max-width: none;
+  height: 100%;
 }
-/* Same 16:10 lock for the spotlight rail's filmstrip tiles
+/* Same 16:9 lock for the spotlight rail's filmstrip tiles
    (excluding the spotlighted tile itself, which fills the stage).
    grid-column MUST be restated: this v2 rule outranks the legacy
    `.tiles.has-spotlight .tile { grid-column: 2 }`, and without it the
@@ -7879,7 +7958,20 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 [data-ui="v2"] .tiles.has-spotlight .tile:not(.spotlighted) {
   grid-column: 2;
   min-height: 0;
-  aspect-ratio: 16 / 10;
+  aspect-ratio: 16 / 9;
+}
+/* Mobile peers stay portrait in the rail too. The base
+   `.tile[data-platform="mobile"]…` rule (specificity 0,4,0) loses to the
+   0,5,0 rule above, so restate it here at higher specificity. A true 9:16
+   tile at the 184px column width is 327px tall and won't fit the 104px row
+   slot — so pin it to the slot height and let width derive (≈58px),
+   centered, instead of letterboxing a 16:9 box with black side bars. */
+[data-ui="v2"] .tiles.has-spotlight .tile[data-platform="mobile"]:not(.spotlighted):not(.screen):not(.whiteboard) {
+  aspect-ratio: 9 / 16;
+  height: 104px;
+  width: auto;
+  max-width: 100%;
+  margin-inline: auto;
 }
 
 /* Two-part screen-tile label spans (setScreenTileLabel in app.js).

@@ -682,6 +682,7 @@
           <button class="settings-tab" data-tab="profile" type="button">Profile</button>
           <button class="settings-tab" data-tab="notifications" type="button">Notifications</button>
           <button class="settings-tab" data-tab="appearance" type="button">Appearance</button>
+          <button class="settings-tab" data-tab="video" type="button">Video</button>
         </nav>
         <div class="settings-content">
           <h2>Settings</h2>
@@ -895,6 +896,30 @@
                   <button type="button" class="settings-accent-swatch" data-hue="155" aria-label="Green" title="Green" style="--swatch-h:155"></button>
                   <button type="button" class="settings-accent-swatch" data-hue="300" aria-label="Violet" title="Violet" style="--swatch-h:300"></button>
                   <button type="button" class="settings-accent-swatch" data-hue="200" aria-label="Cyan" title="Cyan" style="--swatch-h:200"></button>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <div class="settings-tab-panel" data-tab-panel="video">
+            <details class="settings-section" open>
+              <summary>Camera</summary>
+              <div class="settings-section-body">
+                <p class="hint">Which camera to use in calls. Stored on this device only.</p>
+                <!-- Options are built by populateVideoSettings() on each
+                     settings open, including the "System default" entry. -->
+                <select id="set-camera-device" aria-label="Camera"></select>
+                <p class="hint" id="set-camera-device-hint"></p>
+              </div>
+            </details>
+
+            <details class="settings-section" open>
+              <summary>Capture quality</summary>
+              <div class="settings-section-body">
+                <p class="hint">Cameras are captured in widescreen 16:9. 1080p is sharper on a large screen and costs more upload bandwidth. Takes effect the next time you join a call.</p>
+                <div class="settings-radio-row" role="radiogroup" aria-label="Capture quality">
+                  <label><input type="radio" name="set-camera-quality" value="720p" /> 720p</label>
+                  <label><input type="radio" name="set-camera-quality" value="1080p" /> 1080p</label>
                 </div>
               </div>
             </details>
