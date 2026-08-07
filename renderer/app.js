@@ -1469,6 +1469,7 @@ async function startPopoutCall(channelId) {
   // there for the full reasoning.
   state.mesh = mesh;
   mesh.addEventListener('peer-joined', (e) => onCallPeerJoined(e.detail));
+  mesh.addEventListener('peer-platform', (e) => onCallPeerPlatform(e.detail));
   mesh.addEventListener('peer-left', (e) => onCallPeerLeft(e.detail));
   mesh.addEventListener('track', (e) => onTrack(e.detail));
   mesh.addEventListener('screen-announce', (e) => onScreenAnnounce(e.detail));
@@ -2290,6 +2291,7 @@ async function startCall(channelId, opts = {}) {
   // the "late joiner can only see themselves" race.
   state.mesh = mesh;
   mesh.addEventListener('peer-joined', (e) => onCallPeerJoined(e.detail));
+  mesh.addEventListener('peer-platform', (e) => onCallPeerPlatform(e.detail));
   mesh.addEventListener('peer-left', (e) => onCallPeerLeft(e.detail));
   mesh.addEventListener('track', (e) => onTrack(e.detail));
   mesh.addEventListener('screen-announce', (e) => onScreenAnnounce(e.detail));
@@ -3509,6 +3511,20 @@ function onCallPeerJoined(peer) {
   // Call-channel presence has registered this peer; re-label any tile
   // we stamped 'guest' before their name was known.
   if (peer?.id) refreshTileLabelForPeer(peer.id);
+}
+
+// A peer's platform metadata resolved (or changed) after they joined —
+// mobile clients set it via a post-connect round-trip, so onCallPeerJoined
+// often saw an empty value. Update the cache and re-stamp the live tile so
+// its aspect-ratio flips (mobile → portrait) without waiting for a rejoin.
+function onCallPeerPlatform({ id, platform } = {}) {
+  if (!id) return;
+  if (platform) state.peerPlatforms.set(id, platform);
+  else state.peerPlatforms.delete(id);
+  const tile = state.tilesByKey.get(`peer:${id}`);
+  if (!tile) return;
+  if (platform) tile.dataset.platform = platform;
+  else delete tile.dataset.platform;
 }
 
 function onCallPeerLeft(peerId) {

@@ -676,6 +676,11 @@
       const RE = LK.RoomEvent;
       room.on(RE.ParticipantConnected, (p) => this._onParticipantConnected(p));
       room.on(RE.ParticipantDisconnected, (p) => this._onParticipantDisconnected(p));
+      // Mobile clients call setMetadata({platform:'mobile'}) AFTER connect
+      // (a signal-server round-trip), so the metadata is usually still empty
+      // when ParticipantConnected fires and the tile renders landscape. Listen
+      // for the later change and re-emit so the tile can flip to portrait.
+      room.on(RE.ParticipantMetadataChanged, (_prev, p) => this._onParticipantMetadata(p));
       room.on(RE.TrackSubscribed, (track, pub, participant) => this._onTrackSubscribed(track, pub, participant));
       room.on(RE.TrackUnsubscribed, (track, pub, participant) => this._onTrackUnsubscribed(track, pub, participant));
       // Local mute state changes — keep _micOn/_camOn truthful and
@@ -777,6 +782,15 @@
       if (this.huddle.raisedHands.has(this.huddle.peerId)) {
         this.huddle.sendRaiseHand(true);
       }
+    }
+
+    // Metadata arrived or changed after connect — surface the (possibly
+    // now-known) platform so the renderer can re-stamp the existing tile.
+    _onParticipantMetadata(p) {
+      if (this._isPopoutIdentity(p.identity)) return;
+      this.dispatchEvent(new CustomEvent('peer-platform', {
+        detail: { id: p.identity, platform: this._parsePlatform(p.metadata) },
+      }));
     }
 
     _onParticipantDisconnected(p) {
