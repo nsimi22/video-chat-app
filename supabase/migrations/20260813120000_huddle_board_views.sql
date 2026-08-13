@@ -34,6 +34,8 @@ create table public.board_views (
   -- Jira-derived board. Shape (all keys optional, see renderer/jira-board.js):
   --   { v: 1,
   --     view: 'kanban' | 'timeline' | 'feed',
+  --     -- `color` is a bare design-token NAME ('good', 'warn', …), never
+  --     -- raw CSS; the renderer wraps it as var(--<name>).
   --     columns: [{ name, statuses: [..], hidden, wip, color, cat }],
   --     hideUnmapped: bool,   -- drop statuses no column claims
   --     filter: 'all' | 'mine' | '<jira accountId>',

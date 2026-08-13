@@ -1838,10 +1838,13 @@
     //
     // Rows are decorated for the renderer: `mine` (the owner is us — only
     // then is the view editable) and `owner_name` from the roster, so the
-    // picker can say who published a shared view without a second query.
-    // In the board popout the roster is empty (that window builds a client
-    // without start()), so a teammate's name degrades to "A teammate";
-    // `mine` still resolves correctly, since peerId comes from the session.
+    // picker can attribute a shared view without a second query. Like the
+    // other marshallers here it passes the roster's value through rather
+    // than inventing display copy — `owner_name` is null when the roster
+    // doesn't know the owner (the board popout builds a client without
+    // start(), so it has no roster at all) and the renderer words that
+    // case. `mine` resolves correctly everywhere, since peerId comes from
+    // the session rather than the roster.
     async listBoardViews(projectKey) {
       if (!projectKey) return [];
       const { data, error } = await this.supabase
@@ -1852,7 +1855,7 @@
       return (data || []).map((row) => ({
         ...row,
         mine: row.owner_id === this.peerId,
-        owner_name: row.owner_id === this.peerId ? 'You' : (this.roster.get(row.owner_id)?.name || 'A teammate'),
+        owner_name: this.roster.get(row.owner_id)?.name || null,
       }));
     }
     // Insert (no id) or update (id). owner_id is filled by the column
@@ -1866,7 +1869,7 @@
       const { data, error } = await this.supabase
         .from('board_views').upsert(row, { onConflict: 'id' }).select().single();
       if (error) throw error;
-      return { ...data, mine: true, owner_name: 'You' };
+      return { ...data, mine: true, owner_name: this.name };
     }
     async deleteBoardView(id) {
       const { error } = await this.supabase
