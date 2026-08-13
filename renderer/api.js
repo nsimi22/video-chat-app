@@ -1079,6 +1079,20 @@
       ch.on('postgres_changes', { event: '*', schema: 'public', table: 'team_roadmap_items', filter: teamFilter },
         (p) => this.dispatchEvent(new CustomEvent('team-roadmap-changed',
           { detail: { eventType: p.eventType, row: p.new || p.old || null } })));
+      // Saved board views. RLS filters these per subscriber, so we only see
+      // our own rows plus the team's *shared* ones — which is exactly the
+      // set the board's view picker lists. Consumers refetch the list (a
+      // handful of rows) rather than patch by row. DELETE matches the team
+      // filter because the table has replica identity full (see migration).
+      //
+      // One gap by design: an UPDATE is authorized against the NEW row, so a
+      // view that stops being shared becomes invisible to teammates and its
+      // update is never delivered to them — they get no "it was unshared"
+      // event. The board's picker re-reads the list when it's opened, which
+      // is what actually closes that window.
+      ch.on('postgres_changes', { event: '*', schema: 'public', table: 'board_views', filter: teamFilter },
+        (p) => this.dispatchEvent(new CustomEvent('board-views-changed',
+          { detail: { eventType: p.eventType, row: p.new || p.old || null } })));
       ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'channels', filter: teamFilter },
         (p) => this.dispatchEvent(new CustomEvent('chat-channel-added', { detail: { channel: this._marshalChannel(p.new) } })));
       ch.on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'channels', filter: teamFilter },
@@ -1817,6 +1831,58 @@
     async deleteTeamRoadmapItem(id) {
       const { error } = await this.supabase
         .from('team_roadmap_items').delete().eq('id', id).eq('team_id', this.team.id);
+      if (error) throw error;
+    }
+
+    // ----- Saved board views (per-user board layouts) --------------------
+    //
+    // Rows in public.board_views: one person's saved layout over the team's
+    // shared board — their columns, card fields, grouping, sorting and
+    // filters. Private by default; the owner may share one read-only with
+    // the team. RLS already scopes reads to "mine + the team's shared ones",
+    // so the query only narrows by project.
+    //
+    // Rows are decorated for the renderer: `mine` (the owner is us — only
+    // then is the view editable) and `owner_name` from the roster, so the
+    // picker can attribute a shared view without a second query. Like the
+    // other marshallers here it passes the roster's value through rather
+    // than inventing display copy — `owner_name` is null when the roster
+    // doesn't know the owner (the board popout builds a client without
+    // start(), so it has no roster at all) and the renderer words that
+    // case. `mine` resolves correctly everywhere, since peerId comes from
+    // the session rather than the roster.
+    async listBoardViews(projectKey) {
+      if (!projectKey) return [];
+      const { data, error } = await this.supabase
+        .from('board_views').select('*')
+        .eq('team_id', this.team.id).eq('project_key', projectKey)
+        .order('name', { ascending: true });
+      // Throws rather than returning [] — the renderer has to be able to tell
+      // "you have no saved views" from "the fetch failed", or a blip reads as
+      // an empty list and forgets the layout the user was on.
+      if (error) throw error;
+      return (data || []).map((row) => ({
+        ...row,
+        mine: row.owner_id === this.peerId,
+        owner_name: this.roster.get(row.owner_id)?.name || null,
+      }));
+    }
+    // Insert (no id) or update (id). owner_id is filled by the column
+    // default from auth.uid() and pinned by the touch trigger, so it's
+    // never sent — an update by a non-owner is rejected by RLS instead.
+    async saveBoardView({ id, name, projectKey, shared, config }) {
+      const row = { team_id: this.team.id, name, project_key: projectKey };
+      if (id) row.id = id;
+      if (shared !== undefined) row.shared = !!shared;
+      if (config !== undefined) row.config = config || {};
+      const { data, error } = await this.supabase
+        .from('board_views').upsert(row, { onConflict: 'id' }).select().single();
+      if (error) throw error;
+      return { ...data, mine: true, owner_name: this.name };
+    }
+    async deleteBoardView(id) {
+      const { error } = await this.supabase
+        .from('board_views').delete().eq('id', id).eq('team_id', this.team.id);
       if (error) throw error;
     }
 

@@ -9565,6 +9565,35 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .jb-dd-item:hover { background: var(--bg-3); }
 .jb-dd-active { background: var(--bg-3); }
 
+/* saved-view picker */
+.jb-toolbar-sep { width: 1px; height: 20px; background: var(--line); flex: 0 0 auto; }
+.jb-viewpick .jb-dd-btn { max-width: 220px; }
+.jb-viewpick .jb-dd-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jb-viewpick-menu { min-width: 292px; max-height: 400px; }
+.jb-viewpick-sect {
+  padding: 9px 9px 5px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-faint);
+}
+/* Rows carry .jb-dd-item too — this only adds what a picker row needs on
+   top of a plain menu row. */
+.jb-viewpick-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jb-viewpick-sub { font-size: 11px; font-weight: 500; color: var(--text-faint); }
+/* Row actions stay out of the way until the row is hovered or focused. */
+.jb-viewpick-act { display: flex; align-items: center; gap: 2px; opacity: 0; transition: opacity var(--t-fast); }
+.jb-viewpick-item:hover .jb-viewpick-act,
+.jb-viewpick-item:focus-within .jb-viewpick-act { opacity: 1; }
+.jb-viewpick-foot { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 6px; }
+.jb-iconbtn.jb-danger { color: var(--bad); opacity: 1; }
+/* Unsaved layout edits on one of my views. */
+.jb-view-dirty { display: inline-flex; align-items: center; gap: 4px; }
+.jb-view-save, .jb-view-reset {
+  display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px;
+  border-radius: var(--r-sm); border: 1px solid var(--accent-soft); background: var(--accent-dim, transparent);
+  color: var(--accent-2); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.jb-view-reset { padding: 0 7px; color: var(--text-faint); border-color: var(--line-strong); background: var(--bg-2); }
+.jb-view-save:hover, .jb-view-reset:hover { filter: brightness(1.12); }
+
 /* board + columns */
 .jb-board { flex: 1; min-height: 0; display: flex; gap: 18px; padding: 16px 18px; overflow-x: auto; overflow-y: hidden; position: relative; }
 .jb-col { width: 296px; flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; }
@@ -9583,6 +9612,22 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
   border: 1.5px dashed var(--line); border-radius: var(--r-md); color: var(--text-faint); font-size: 12px; font-weight: 600;
 }
 .jb-col-empty-sub { font-size: 11px; font-weight: 400; color: var(--text-faint); }
+/* WIP limit exceeded — advisory only, the drop still goes through. */
+.jb-col-over-wip .jb-col-count { color: var(--bad); }
+.jb-col-over-wip .jb-col-name { color: var(--bad); }
+
+/* swimlanes: the column spine repeats under each lane header */
+.jb-board-laned { flex-direction: column; gap: 0; overflow-x: hidden; overflow-y: auto; }
+.jb-lane { display: flex; flex-direction: column; padding-bottom: 14px; }
+.jb-lane + .jb-lane { border-top: 1px solid var(--line); padding-top: 14px; }
+.jb-lane-head {
+  display: flex; align-items: center; gap: 8px; padding: 2px 4px 10px; position: sticky; left: 0;
+  font-size: 12.5px; font-weight: 700; color: var(--text);
+}
+.jb-lane-name { letter-spacing: 0.01em; }
+.jb-lane-count { font-size: 11.5px; font-weight: 600; color: var(--text-faint); }
+.jb-lane-cols { display: flex; gap: 18px; overflow-x: auto; padding-bottom: 4px; }
+.jb-board-laned .jb-col { max-height: 52vh; }
 
 /* card */
 .jb-card {
@@ -9604,16 +9649,75 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .jb-card-summary { font-size: 13.4px; font-weight: 500; color: var(--text); line-height: 1.4; margin-bottom: 11px; }
 .jb-card-foot { display: flex; align-items: center; gap: 6px; }
 .jb-card-labels { display: flex; gap: 5px; flex-wrap: wrap; flex: 1; }
+/* Optional status pill — earns its place when a column groups statuses. */
+.jb-card-status { display: flex; margin-bottom: 9px; }
+
+/* customize panel — docks to the same edge as the card detail, so it shares
+   that panel's geometry; the two width/padding overrides live next to the
+   shared rules below, where they can actually win the cascade. */
+.jb-custom-title { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
+.jb-cs { padding: 16px 0; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 9px; }
+.jb-cs:last-child { border-bottom: none; }
+.jb-cs-sub { font-size: 12px; color: var(--text-dim); line-height: 1.45; }
+.jb-cs-lbl { font-size: 11.5px; font-weight: 700; color: var(--text-dim); }
+.jb-cs-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.jb-cs-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.jb-cs-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.jb-cs-actions button { display: inline-flex; align-items: center; gap: 6px; }
+.jb-csel {
+  height: 30px; padding: 0 8px; border-radius: var(--r-sm); background: var(--bg-2);
+  border: 1px solid var(--line-strong); color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.jb-ctoggle {
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px;
+  background: transparent; border: 1px solid transparent; color: var(--text-dim);
+  font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; text-align: left;
+}
+.jb-ctoggle:hover { background: var(--bg-2); }
+.jb-ctoggle-box {
+  width: 16px; height: 16px; flex: 0 0 auto; border-radius: 5px; border: 1.5px solid var(--line-strong);
+  display: inline-flex; align-items: center; justify-content: center; color: #fff;
+}
+.jb-ctoggle-on { color: var(--text); }
+.jb-ctoggle-on .jb-ctoggle-box { background: var(--accent); border-color: var(--accent); }
+/* column editor */
+.jb-ccols { display: flex; flex-direction: column; gap: 10px; }
+.jb-ccol { border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px; background: var(--bg-2); }
+.jb-ccol-hidden { opacity: 0.5; }
+.jb-ccol-top { display: flex; align-items: center; gap: 6px; }
+.jb-ccol-move { display: flex; align-items: center; gap: 1px; }
+.jb-ccol-move .jb-iconbtn:disabled { opacity: 0.3; cursor: default; }
+.jb-ccol-name { flex: 1; height: 28px; }
+.jb-ccol-statuses { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+.jb-ccol-status {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 8px; border-radius: 6px;
+  background: var(--bg-3); font-size: 11.5px; font-weight: 600; color: var(--text-dim);
+}
+.jb-ccol-x { background: none; border: none; padding: 0; display: inline-flex; color: var(--text-faint); cursor: pointer; }
+.jb-ccol-x:hover { color: var(--bad); }
+.jb-ccol-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.jb-cwip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 700; color: var(--text-faint); }
+.jb-cwip-in { width: 56px; height: 30px; }
+/* filter chips */
+.jb-cchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.jb-cchip {
+  padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line-strong); background: var(--bg-2);
+  color: var(--text-dim); font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer;
+}
+.jb-cchip:hover { background: var(--bg-3); }
+.jb-cchip-on { background: color-mix(in srgb, var(--accent) 22%, transparent); border-color: var(--accent); color: var(--text); }
 
 /* card detail */
-.jb-detail {
+.jb-detail, .jb-custom {
   position: absolute; top: 0; right: 0; bottom: 0; width: 468px; max-width: 92%; z-index: 6;
   background: var(--bg); border-left: 1px solid var(--line-strong);
   box-shadow: -18px 0 48px -20px rgba(0, 0, 0, 0.6); display: flex; flex-direction: column;
   animation: jb-slide-in 0.18s ease;
 }
-.jb-detail-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
-.jb-detail-body { flex: 1; overflow-y: auto; padding: 18px 18px 24px; }
+.jb-detail-head, .jb-custom-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.jb-detail-body, .jb-custom-body { flex: 1; overflow-y: auto; padding: 18px 18px 24px; }
+.jb-custom { width: 428px; max-width: 94%; }
+.jb-custom-body { padding: 4px 16px 28px; }
 .jb-detail-title { margin: 0 0 16px; font-size: 19px; font-weight: 700; line-height: 1.3; letter-spacing: -0.01em; }
 .jb-detail-grid { display: grid; grid-template-columns: 84px 1fr; row-gap: 13px; column-gap: 12px; align-items: center; margin-bottom: 22px; }
 .jb-detail-lbl { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-faint); }
@@ -9811,11 +9915,13 @@ body:not(.huddle-in-call) .huddle-call-dock-divider { display: none; }
 .jb-rf-head { display: flex; align-items: center; gap: 8px; }
 .jb-rf-title { font-size: 13px; font-weight: 700; }
 .jb-rf-esc { border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; font-size: 10.5px; color: var(--text-faint); }
-.jb-rf-input {
+.jb-rf-input, .jb-cinput {
   width: 100%; box-sizing: border-box; background: var(--bg-2); border: 1px solid var(--line-strong);
   border-radius: 7px; color: var(--text); font: inherit; font-size: 13px; padding: 7px 9px;
 }
-.jb-rf-input:focus { outline: none; border-color: var(--accent-2); }
+.jb-rf-input:focus, .jb-cinput:focus { outline: none; border-color: var(--accent-2); }
+/* The customize panel's inputs are the same control, sized for its rows. */
+.jb-cinput { height: 32px; padding: 0 10px; }
 .jb-rf-dates { display: flex; align-items: center; gap: 7px; }
 .jb-rf-date { flex: 1; min-width: 0; font-size: 12px; }
 .jb-rf-arrow { color: var(--text-faint); flex: 0 0 auto; }

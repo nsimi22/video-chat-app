@@ -2108,6 +2108,12 @@ async function joinTeamAndStart(teamId) {
   // A teammate added/edited/removed an ad-hoc roadmap bar — refresh the
   // board's roadmap/feed views if one is showing (no-op on kanban/closed).
   huddle.addEventListener('team-roadmap-changed', () => window.HuddleJiraBoard?.onRoadmapItemsChanged?.());
+  // A saved board view was added/edited/removed — ours from another window,
+  // or a teammate publishing a shared one. Refresh the board's view picker if
+  // it's open. Note an *un*publish never arrives here (realtime authorizes an
+  // UPDATE against the new row, which we can no longer see); the picker
+  // re-reads its list on open to catch that case.
+  huddle.addEventListener('board-views-changed', () => window.HuddleJiraBoard?.onBoardViewsChanged?.());
   // Surface incoming messages to the meeting Notes panel. The handler
   // filters by parent_id so non-meeting-thread messages are no-ops;
   // gating it here (rather than only while in-call) is fine because
@@ -8592,6 +8598,12 @@ function initJiraBoard() {
       const row = await state.huddle?.saveTeamJiraBoard(payload);
       if (row) state.teamBoard = row;
     },
+    // Saved board views (public.board_views): each person's own layout over
+    // the shared board — private by default, optionally shared read-only
+    // with the team. Live via 'board-views-changed'.
+    listBoardViews: async (projectKey) => (await state.huddle?.listBoardViews?.(projectKey)) || [],
+    saveBoardView: async (payload) => state.huddle?.saveBoardView(payload),
+    deleteBoardView: async (id) => state.huddle?.deleteBoardView(id),
     // Ad-hoc roadmap bars (public.team_roadmap_items) for the board's
     // roadmap/feed views — team-shared, live via 'team-roadmap-changed'.
     listRoadmapItems: async () => (await state.huddle?.listTeamRoadmapItems?.()) || [],

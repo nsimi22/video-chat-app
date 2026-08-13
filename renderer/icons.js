@@ -74,7 +74,13 @@
     videoOff: `<svg ${A}><path d="M15.5 10.5l5-3v9l-3.2-1.9"/><rect x="2.5" y="6.5" width="13" height="11" rx="2.5"/><line x1="2" y1="2" x2="22" y2="22"/></svg>`,
     board: `<svg ${A}><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M12 17v3M8.5 20h7"/><path d="M7 9.5l3 3 6.5-6"/></svg>`,
     sparkles: `<svg ${A}><path d="M12 3l1.8 4.9L18.7 9.7 13.8 11.5 12 16.4 10.2 11.5 5.3 9.7 10.2 7.9z"/><path d="M18.5 14.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/></svg>`,
-    settings: `<svg ${A}><circle cx="12" cy="12" r="3.2"/><path d="M19.4 13a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1v.2a2 2 0 0 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7H4a2 2 0 0 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H10a1.6 1.6 0 0 0 1-1.5V4a2 2 0 0 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V10a1.6 1.6 0 0 0 1.5 1h.2a2 2 0 0 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>`,
+    // 6-tooth gear, generated on a circle so every tooth is identical and
+    // the outline stays symmetric. Replaced a hand-rounded copy of the
+    // Feather cog whose arc coordinates had been flattened to one decimal:
+    // at 16px that read as lopsided, with teeth of visibly different sizes.
+    // Six teeth (rather than the usual eight) keeps them distinct at 16px,
+    // where eight merge into a ring at this stroke weight.
+    settings: `<svg ${A}><circle cx="12" cy="12" r="3.1"/><path d="M 9.27 5.88 L 9.59 3.02 A 9.3 9.3 0 0 1 14.41 3.02 L 14.73 5.88 A 6.7 6.7 0 0 1 15.94 6.58 L 18.58 5.42 A 9.3 9.3 0 0 1 20.98 9.59 L 18.66 11.3 A 6.7 6.7 0 0 1 18.66 12.7 L 20.98 14.41 A 9.3 9.3 0 0 1 18.58 18.58 L 15.94 17.42 A 6.7 6.7 0 0 1 14.73 18.12 L 14.41 20.98 A 9.3 9.3 0 0 1 9.59 20.98 L 9.27 18.12 A 6.7 6.7 0 0 1 8.06 17.42 L 5.42 18.58 A 9.3 9.3 0 0 1 3.02 14.41 L 5.34 12.7 A 6.7 6.7 0 0 1 5.34 11.3 L 3.02 9.59 A 9.3 9.3 0 0 1 5.42 5.42 L 8.06 6.58 A 6.7 6.7 0 0 1 9.27 5.88 Z"/></svg>`,
     search: `<svg ${A}><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>`,
     plus: `<svg ${A}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
     chevronDown: `<svg ${A}><polyline points="6 9 12 15 18 9"/></svg>`,

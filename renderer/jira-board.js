@@ -29,6 +29,9 @@
     aiRewrite: async (text) => text, // (current, instruction) -> rewritten text
     popOut: () => {},               // open the board in its own window
     copyText: async () => false,    // (text) -> robust copy-to-clipboard, returns ok
+    listBoardViews: async () => [],     // (projectKey) -> board_views rows (mine + team-shared)
+    saveBoardView: async () => null,    // ({id?, name, projectKey, shared, config}) -> saved row
+    deleteBoardView: async () => {},    // (id) -> delete a saved view
     listRoadmapItems: async () => [],   // () -> team_roadmap_items rows
     saveRoadmapItem: async () => null,  // ({id?, title, startDate, endDate, notes}) -> saved row
     deleteRoadmapItem: async () => {},  // (id) -> delete a row
@@ -146,6 +149,24 @@
   // that the config doesn't cover are appended so no card is orphaned.
   // Without a config, fall back to one column per status in play, ordered
   // To Do → In Progress → Done.
+  // "No ticket is ever invisible": every status in play that `covered`
+  // doesn't already account for gets its own trailing column, in category
+  // order so an unmapped new-category status doesn't land right of Done.
+  // Shared by the Jira-derived board and by a saved view's custom columns
+  // (applyViewColumns) — one rule, one place. Appends in place; the caller
+  // stamps accents, since it knows whether the column carries an override.
+  function appendUnmapped(cols, issues, covered) {
+    const extras = [];
+    for (const t of issues) {
+      if (covered.has(t.status.toLowerCase())) continue;
+      covered.add(t.status.toLowerCase());
+      extras.push({ id: t.status, name: t.status, statuses: [t.status], cat: t.cat });
+    }
+    extras.sort((a, b) => (CAT_ORDER[a.cat] ?? 1) - (CAT_ORDER[b.cat] ?? 1));
+    cols.push(...extras);
+    return cols;
+  }
+
   function deriveColumns(issues, boardCols) {
     if (boardCols && boardCols.length) {
       // id carries the index — Jira permits two columns with the same display
@@ -158,18 +179,7 @@
         // columns that's the "most done" state, matching Jira's tinting.
         cat: c.statuses[c.statuses.length - 1]?.cat || 'new',
       }));
-      const covered = new Set(cols.flatMap((c) => c.statuses.map((s) => s.toLowerCase())));
-      // Statuses in play that the board config doesn't cover get their own
-      // trailing columns, kept in category order so e.g. an unmapped
-      // new-category status doesn't render to the right of Done.
-      const extras = [];
-      for (const t of issues) {
-        if (covered.has(t.status.toLowerCase())) continue;
-        covered.add(t.status.toLowerCase());
-        extras.push({ id: t.status, name: t.status, statuses: [t.status], cat: t.cat });
-      }
-      extras.sort((a, b) => (CAT_ORDER[a.cat] ?? 1) - (CAT_ORDER[b.cat] ?? 1));
-      cols.push(...extras);
+      appendUnmapped(cols, issues, new Set(cols.flatMap((c) => c.statuses.map((s) => s.toLowerCase()))));
       for (const c of cols) c.accent = statusColor(c.cat, c.name);
       return cols;
     }
@@ -190,6 +200,305 @@
       ];
     }
     return cols;
+  }
+
+  /* ═══════════════ saved board views (per-user layouts) ═══════════════
+     A "view" is one person's saved layout over the team's shared board:
+     which columns exist and which statuses each holds, what a card shows,
+     how cards are grouped and sorted, and which tickets are in play. Rows
+     live in public.board_views — private to their owner until they share
+     one, which publishes it to the team read-only.
+
+     The built-in "Default board" (board.viewId === null) is not a row: it
+     is the behavior that existed before saved views — columns straight
+     from Jira's board config, every card field on, no extra filters. Every
+     knob below is a no-op at its default value, so the default board
+     renders byte-for-byte what it used to. */
+
+  // Card chips the user can turn off. `summary` is deliberately not in the
+  // list — a card with no summary isn't a card.
+  const CARD_FIELDS = [
+    ['type', 'Type icon'], ['key', 'Issue key'], ['priority', 'Priority'],
+    ['labels', 'Labels'], ['assignees', 'Assignees'], ['status', 'Status pill'],
+  ];
+  const DEFAULT_CARD = { type: true, key: true, priority: true, labels: true, assignees: true, status: false };
+  const SWIMLANES = [
+    ['none', 'No swimlanes'], ['assignee', 'By assignee'],
+    ['priority', 'By priority'], ['type', 'By issue type'],
+  ];
+  const SORTS = [
+    ['default', 'Jira order (recently updated)'], ['priority', 'Priority'],
+    ['key', 'Issue key'], ['summary', 'Summary A–Z'], ['assignee', 'Assignee'],
+  ];
+  // Column accents offered in the customize panel. Stored as bare design
+  // token NAMES (like ADHOC_COLORS for the roadmap's bars) and wrapped into
+  // var(--…) at render time — never raw CSS text, which would put renderer
+  // syntax in the database and strand saved rows if a token is renamed.
+  // '' = derive from the status category, i.e. what the board does with
+  // no view at all.
+  const COL_COLORS = [
+    ['', 'Auto'], ['text-faint', 'Grey'], ['warn', 'Amber'],
+    ['accent-2', 'Cyan'], ['good', 'Green'], ['bad', 'Red'], ['accent', 'Accent'],
+  ];
+  const CATS = ['new', 'indeterminate', 'done'];
+  // Sort rank for the four-step severity prioMeta() normalizes onto.
+  const PRIO_RANK = { Urgent: 0, High: 1, Low: 3, Lowest: 4 };
+  // prioMeta() lowercases and pattern-matches its way to a label; with
+  // swimlanes on, the lane test alone would run it once per ticket per
+  // lane on every render. A board has a handful of distinct priorities,
+  // so memoize by name.
+  const prioLabels = new Map();
+  function prioLabel(name) {
+    let l = prioLabels.get(name);
+    if (l === undefined) prioLabels.set(name, (l = prioMeta(name).label));
+    return l;
+  }
+  function prioRank(name) { return PRIO_RANK[prioLabel(name)] ?? 2; }
+
+  function defaultCfg() {
+    return {
+      v: 1,
+      view: null,          // preferred sub-view (kanban/timeline/feed); null = whatever's current
+      columns: [],         // [] = derive from Jira, exactly as before
+      hideUnmapped: false, // drop statuses no column claims (default: show them)
+      filter: 'all', types: [], priorities: [], labels: [], query: '',
+      swimlane: 'none', sort: 'default',
+      card: { ...DEFAULT_CARD },
+    };
+  }
+
+  // 0 = no WIP limit. Anything non-numeric or below 1 means "no limit".
+  function clampWip(n) {
+    return Number.isFinite(+n) && +n >= 1 ? Math.min(999, Math.floor(+n)) : 0;
+  }
+
+  // Coerce a stored config (arbitrary JSONB — could be from a newer build,
+  // a teammate, or hand-edited SQL) into the shape the renderer expects.
+  // Anything unrecognized falls back to its default rather than throwing.
+  function normalizeCfg(raw) {
+    const cfg = defaultCfg();
+    if (!raw || typeof raw !== 'object') return cfg;
+    const strs = (x) => (Array.isArray(x) ? x.filter((s) => typeof s === 'string' && s).slice(0, 60) : []);
+    if (Array.isArray(raw.columns)) {
+      cfg.columns = raw.columns.slice(0, 30).map((c) => ({
+        name: String(c?.name || 'Column').slice(0, 40),
+        statuses: strs(c?.statuses),
+        hidden: !!c?.hidden,
+        wip: clampWip(c?.wip),
+        color: COL_COLORS.some(([v]) => v && v === c?.color) ? c.color : '',
+        cat: CATS.includes(c?.cat) ? c.cat : 'new',
+      }));
+    }
+    cfg.hideUnmapped = !!raw.hideUnmapped;
+    if (typeof raw.filter === 'string') cfg.filter = raw.filter;
+    cfg.types = strs(raw.types); cfg.priorities = strs(raw.priorities); cfg.labels = strs(raw.labels);
+    if (typeof raw.query === 'string') cfg.query = raw.query.slice(0, 200);
+    if (SWIMLANES.some(([v]) => v === raw.swimlane)) cfg.swimlane = raw.swimlane;
+    if (SORTS.some(([v]) => v === raw.sort)) cfg.sort = raw.sort;
+    if (VIEWS.some(([v]) => v === raw.view)) cfg.view = raw.view;
+    if (raw.card && typeof raw.card === 'object') {
+      for (const [k] of CARD_FIELDS) if (typeof raw.card[k] === 'boolean') cfg.card[k] = raw.card[k];
+    }
+    return cfg;
+  }
+
+  // The config as it stands right now: the saved knobs plus the three the
+  // toolbar edits live. `filter`, `query` and `view` deliberately live on
+  // `board`, not in `board.cfg` — `query` and `view` are read by the
+  // roadmap/feed renderers and the exporter too, so they outlive any one
+  // kanban layout. Their copies inside `board.cfg` are write-only: assemble
+  // them here, never read them back.
+  function currentCfg() {
+    return { ...board.cfg, filter: board.filter, query: board.query, view: board.view };
+  }
+  function activeViewRow() { return board.views.find((v) => v.id === board.viewId) || null; }
+  // Only a saved view of ours can be dirty — the default board has nothing
+  // to be dirty against, and someone else's shared view is read-only.
+  // Compared against the row itself rather than a snapshot taken at apply
+  // time, so a row refreshed underneath us (our own save echoing back over
+  // realtime, or an edit from the popout window) settles to "clean" instead
+  // of leaving a Save button that would write back what's already stored.
+  // Both sides run through normalizeCfg, so the key order matches.
+  function isDirty() {
+    const row = activeViewRow();
+    if (!row?.mine) return false;
+    // Both sides go through normalizeCfg so the comparison is canonical-vs-
+    // canonical. Without it any value the normalizer rewrites on the way back
+    // in — an emptied column name becoming 'Column', an over-long query, a
+    // 31st column — would read as a permanent unsaved change, leaving the
+    // Save chip stuck on forever however many times you saved.
+    const now = normalizeCfg(currentCfg());
+    const saved = normalizeCfg(row.config);
+    // A row that never pinned a sub-view (hand-written SQL, or an older
+    // build) shouldn't read as dirty the moment you browse to Timeline —
+    // only a view that pins one can drift from it. Every view the UI
+    // creates pins one, so this is a no-op on ordinary rows.
+    return JSON.stringify(now) !== JSON.stringify({ ...saved, view: saved.view || now.view });
+  }
+
+  // Switch the board to a saved view (or the default board when row is
+  // null) and re-sync the live toolbar state from it.
+  function applyViewRow(row) {
+    board.viewId = row?.id || null;
+    const cfg = normalizeCfg(row?.config);
+    board.cfg = cfg;
+    if (cfg.view) board.view = cfg.view;
+    board.filter = cfg.filter;
+    board.query = cfg.query;
+    board.detailKey = null;
+    recomputeColumns();
+    rememberView();
+  }
+  // Sticky per project + per machine, like the sub-view choice: reopening
+  // the board lands you back on the layout you were using.
+  function rememberView() {
+    try {
+      const k = 'huddle.jb.savedview.' + activeProject();
+      if (board.viewId) localStorage.setItem(k, board.viewId);
+      else localStorage.removeItem(k);
+    } catch { /* private mode / no storage — the default board is fine */ }
+  }
+  function rememberedViewId() {
+    try { return localStorage.getItem('huddle.jb.savedview.' + activeProject()) || null; } catch { return null; }
+  }
+
+  // Returns false when the fetch failed, leaving board.views untouched. That
+  // distinction matters: treating a network blip as "you have no views" would
+  // fall the board back to the default AND make rememberView() forget the
+  // sticky id, losing the user's layout for good over a transient error.
+  async function loadViews() {
+    const project = activeProject();
+    if (!project) { board.views = []; return true; }
+    let rows;
+    try { rows = await ctx.listBoardViews(project); }
+    catch (err) { console.warn('board views load failed', err); return false; }
+    board.views = Array.isArray(rows) ? rows : [];
+    // A view that vanished (deleted here, or unshared by its owner) must not
+    // leave the board rendering a layout the picker no longer lists. Only
+    // reachable on a successful fetch, so it can't fire on an outage.
+    if (board.viewId && !activeViewRow()) applyViewRow(null);
+    return true;
+  }
+  // Fetch this project's views and re-select the one this machine was last
+  // using — the pair every entry point (drawer open, project change) needs.
+  async function loadAndRestoreViews() {
+    if (!await loadViews()) return; // fetch failed: keep the sticky id for the next try
+    const id = rememberedViewId();
+    applyViewRow(board.views.find((v) => v.id === id) || null);
+  }
+  // Re-read the list and repaint whatever it affects. Shared by the realtime
+  // handler and the picker's own open (see viewPicker) — an unshare can't
+  // reach us over realtime, so opening the menu re-checks.
+  async function refreshViews(onQuiet) {
+    const prev = board.viewId;
+    if (!await loadViews()) return;
+    // Only a view that vanished under us changes what's on screen; anything
+    // else just refreshes the picker.
+    if (board.viewId !== prev) rerenderBoardUi();
+    else onQuiet?.();
+  }
+
+  // Every status the board knows about → its category. Sourced from Jira's
+  // own column config first (so statuses with no tickets right now still
+  // show up in the customize panel) and topped up from the issues in play.
+  function statusCatalog() {
+    const map = new Map();
+    for (const c of board.rawColumns) {
+      for (const s of c.statuses) if (!map.has(s)) map.set(s, c.cat);
+    }
+    for (const t of board.issues) if (!map.has(t.status)) map.set(t.status, t.cat);
+    return map;
+  }
+
+  // Resolve the active view's columns against the live board. With no
+  // custom columns this returns deriveColumns()' output untouched.
+  function applyViewColumns(raw, issues, cfg) {
+    // Only a view with no column list at all defers to Jira. A view that
+    // defines columns and hides every one of them means it — falling back
+    // to Jira's board there would quietly ignore what the user set up.
+    if (!cfg.columns.length) return raw;
+    const cols = cfg.columns.filter((c) => !c.hidden && c.statuses.length).map((c, i) => ({
+      // The index keeps ids unique — two columns may share a name, and a
+      // duplicate id would send a drop to the wrong one.
+      id: `v${i}:${c.name}`,
+      name: c.name,
+      statuses: c.statuses.slice(),
+      cat: c.cat,
+      wip: c.wip,
+      accent: c.color ? `var(--${c.color})` : statusColor(c.cat, c.name),
+    }));
+    if (cfg.hideUnmapped) return cols;
+    // A status the user hid on purpose counts as accounted for, so it isn't
+    // handed straight back as an unmapped column. Everything else in play
+    // that no column claims gets one, same as the Jira-derived board.
+    const covered = new Set(cfg.columns.flatMap((c) => c.statuses.map((s) => s.toLowerCase())));
+    const before = cols.length;
+    appendUnmapped(cols, issues, covered);
+    for (let i = before; i < cols.length; i++) cols[i].accent = statusColor(cols[i].cat, cols[i].name);
+    return cols;
+  }
+
+  // board.rawColumns is what Jira says; board.columns is what we draw.
+  // Recomputed by rerenderBoardUi() before every paint, so a layout edit
+  // never needs a refetch and board.columns can't go stale.
+  function recomputeColumns() {
+    board.columns = applyViewColumns(board.rawColumns, board.issues, board.cfg);
+  }
+
+  // Seed an editable column list from whatever the board is drawing now,
+  // so "Customize" starts from Jira's real columns instead of a blank slate.
+  function seedColumnsFromBoard() {
+    const src = board.rawColumns.length ? board.rawColumns : deriveColumns(board.issues, null);
+    return src.map((c) => ({
+      name: c.name, statuses: c.statuses.slice(), hidden: false, wip: 0, color: '', cat: c.cat,
+    }));
+  }
+
+  function sortTickets(list, cfg) {
+    const s = cfg.sort;
+    if (!s || s === 'default') return list; // Jira's own order (updated DESC)
+    // Unassigned sorts last. Expressed as a comparator rather than a
+    // high-codepoint sentinel name — a U+FFFF in the source makes grep
+    // treat this whole file as binary.
+    const byName = (a, b) => {
+      const x = a.assignees[0]?.name || '', y = b.assignees[0]?.name || '';
+      if (!x || !y) return (x ? 0 : 1) - (y ? 0 : 1);
+      return x.localeCompare(y);
+    };
+    const cmp = {
+      priority: (a, b) => prioRank(a.priority) - prioRank(b.priority),
+      key: (a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }),
+      summary: (a, b) => a.summary.localeCompare(b.summary),
+      assignee: byName,
+    }[s];
+    return cmp ? list.slice().sort(cmp) : list;
+  }
+
+  // Which lane a ticket belongs to, per grouping mode. One rule, used both
+  // to enumerate the lanes and to bucket tickets into them — deriving the
+  // key in two places is how the two drift apart.
+  const LANE_KEY = {
+    assignee: (t) => t.assignees[0]?.id || ' none',
+    priority: (t) => prioLabel(t.priority),
+    type: (t) => t.type,
+  };
+  // Swimlane descriptors for the tickets in play: { key, label, user?, keyOf }.
+  // Null when the view isn't grouped.
+  function swimlanes(tickets, cfg) {
+    const keyOf = LANE_KEY[cfg.swimlane];
+    if (!keyOf) return null;
+    const lanes = new Map();
+    for (const t of tickets) {
+      const key = keyOf(t);
+      if (lanes.has(key)) continue;
+      const a = t.assignees[0];
+      lanes.set(key, cfg.swimlane === 'assignee'
+        ? { key, keyOf, label: a?.name || 'Unassigned', user: a || null, rank: a ? 0 : 1 }
+        : { key, keyOf, label: key, rank: cfg.swimlane === 'priority' ? prioRank(t.priority) : 0 });
+    }
+    const out = [...lanes.values()];
+    out.sort((a, b) => (a.rank - b.rank) || a.label.localeCompare(b.label));
+    return out;
   }
 
   /* ───────────────────────── avatars ───────────────────────── */
@@ -423,6 +732,11 @@
     issues: [], columns: [], loading: false, dragKey: null, overCol: null,
     confirming: null, detailKey: null, filter: 'all', query: '', focusKey: null,
     view: 'kanban',           // 'kanban' | 'timeline' | 'feed' — sticky via localStorage
+    views: [],                // saved board_views rows (mine + team-shared)
+    viewId: null,             // active saved view id; null = the default board
+    cfg: defaultCfg(),        // the active layout — all defaults = today's board
+    customizing: false,       // the customize panel is open
+    rawColumns: [],           // columns as Jira defines them, pre-view
     epics: [],                // mapEpic() results for the roadmap/feed views
     roadmapItems: [],         // team_roadmap_items rows (ad-hoc bars)
     roadmapLoading: false,
@@ -500,21 +814,32 @@
       card.draggable = false;
     }
 
-    card.append(
-      h('div.jb-card-top',
-        null,
-        typeIcon(t.type, 17),
-        h('span.mono.jb-key-dim', null, t.key),
-        h('div', { style: { flex: '1' } }),
-        priorityIcon(t.priority, 15),
-      ),
-      h('div.jb-card-summary', null, t.summary),
-      h('div.jb-card-foot',
-        null,
-        h('div.jb-card-labels', null, ...t.labels.slice(0, 4).map(label)),
-        avatarStack(t.assignees, 22),
-      ),
+    // Which chips a card carries is per-view; the defaults are the full set
+    // the board has always drawn (everything but the status pill, which is
+    // redundant when the column already names the status — unless the view
+    // groups several statuses into one column, where it earns its place).
+    const f = board.cfg.card;
+    const top = (f.type || f.key || f.priority) && h('div.jb-card-top',
+      null,
+      f.type && typeIcon(t.type, 17),
+      f.key && h('span.mono.jb-key-dim', null, t.key),
+      h('div', { style: { flex: '1' } }),
+      f.priority && priorityIcon(t.priority, 15),
     );
+    const labels = f.labels ? t.labels.slice(0, 4).map(label) : [];
+    const foot = (labels.length || f.assignees) && h('div.jb-card-foot',
+      null,
+      h('div.jb-card-labels', null, ...labels),
+      f.assignees && avatarStack(t.assignees, 22),
+    );
+    // Native append(), unlike h(), stringifies a `false` child into a
+    // literal "false" text node — so drop the switched-off rows first.
+    card.append(...[
+      top,
+      h('div.jb-card-summary', null, t.summary),
+      f.status && h('div.jb-card-status', null, statusPill({ name: t.status, cat: t.cat }, true)),
+      foot,
+    ].filter(Boolean));
     return card;
   }
 
@@ -530,6 +855,13 @@
     // now reads directly.
     if (f === 'mine' && (!myEmail || !t.assignees.some((a) => (a.email || '').toLowerCase() === myEmail))) return false;
     if (f !== 'all' && f !== 'mine' && !t.assignees.some((a) => a.id === f)) return false;
+    // Saved-view filters. Each is "match ANY of the selected values", and
+    // an empty list means the filter isn't in play at all — so the default
+    // board (all three empty) short-circuits to the search below.
+    const cfg = board.cfg;
+    if (cfg.types.length && !cfg.types.includes(t.type)) return false;
+    if (cfg.priorities.length && !cfg.priorities.includes(prioLabel(t.priority))) return false;
+    if (cfg.labels.length && !t.labels.some((l) => cfg.labels.includes(l))) return false;
     if (board.query) {
       const hay = (t.key + ' ' + t.summary + ' ' + t.labels.join(' ')).toLowerCase();
       if (!hay.includes(board.query.toLowerCase())) return false;
@@ -537,28 +869,50 @@
     return true;
   }
 
-  function kanbanColumn(col) {
+  // Renders one column. `tickets` is the already-filtered, already-sorted
+  // slice for this cell and `colTotal` the column's count across every lane
+  // — both computed once per render by renderColumns() rather than rescanned
+  // here, since a grouped board draws this function lanes x columns times.
+  // `lane` is only needed for the wording of the count tooltip.
+  function kanbanColumn(col, tickets, colTotal, lane) {
     const colEl = h('div.jb-col');
+    const list = h('div.jb-col-list');
+    // One entry per rendered column INSTANCE — the same column appears once
+    // per lane, and each instance highlights on its own. Identity is the
+    // entry object itself, so no composite key format has to be invented
+    // (or kept in sync between here and highlightCol).
+    const cell = { accent: col.accent, listEl: list };
+    board._cols.push(cell);
     // dragover must NOT trigger a full re-render — that would rebuild the
     // card DOM mid-drag and kill the drag source. Update the highlight
     // in place instead.
     colEl.addEventListener('dragover', (e) => {
       if (!board.dragKey) return;
       e.preventDefault();
-      highlightCol(col.id);
+      highlightCol(cell);
     });
     colEl.addEventListener('drop', (e) => { e.preventDefault(); onDrop(col.id); });
 
-    const tickets = board.issues.filter((t) => colHasStatus(col, t.status) && matches(t));
+    // A WIP limit belongs to the column as a whole, so with swimlanes on it
+    // is judged against every lane's tickets — not just this slice, which
+    // would read as "1/1, plenty of room" while the column really holds
+    // three. The count stays the lane's own; the tooltip spells out both.
+    // Advisory only: it colors the head, it never blocks a drop (Jira is
+    // the authority on what transitions are allowed).
+    const over = col.wip > 0 && colTotal > col.wip;
     const dot = h('span.jb-col-dot'); dot.style.background = col.accent;
-    colEl.append(h('div.jb-col-head',
+    colEl.append(h('div.jb-col-head' + (over ? '.jb-col-over-wip' : ''),
       null,
       dot,
       h('span.jb-col-name', null, col.name),
-      h('span.mono.jb-col-count', null, String(tickets.length)),
+      h('span.mono.jb-col-count', {
+        title: !col.wip ? null
+          : lane ? `${tickets.length} in this lane \u00b7 ${colTotal} of a ${col.wip}-ticket limit across all lanes`
+            : `${tickets.length} of a ${col.wip}-ticket limit`,
+      }, col.wip && !lane ? `${tickets.length}/${col.wip}` : String(tickets.length)),
+      over && icon('block', 13, 'var(--bad)'),
     ));
 
-    const list = h('div.jb-col-list');
     list.dataset.accent = col.accent;
     if (!tickets.length) {
       list.append(h('div.jb-col-empty', null, icon('kanban', 20), h('span', null, 'No tickets'), h('span.jb-col-empty-sub', null, 'Drag a card here')));
@@ -566,16 +920,16 @@
       tickets.forEach((t) => list.append(kanbanCard(t)));
     }
     colEl.append(list);
-    board._cols.push({ id: col.id, accent: col.accent, listEl: list });
     return colEl;
   }
 
-  // Move the drop highlight to a single column without rebuilding cards.
-  function highlightCol(colId) {
-    if (board.overCol === colId) return;
-    board.overCol = colId;
+  // Move the drop highlight to a single rendered column without rebuilding
+  // cards. Takes the board._cols entry kanbanColumn created for that cell.
+  function highlightCol(cell) {
+    if (board.overCol === cell) return;
+    board.overCol = cell;
     for (const c of board._cols) {
-      const on = c.id === colId;
+      const on = c === cell;
       c.listEl.classList.toggle('jb-col-over', on);
       c.listEl.style.borderColor = on ? c.accent : '';
       c.listEl.style.background = on ? `color-mix(in srgb, ${c.accent} 12%, var(--bg-2))` : '';
@@ -633,6 +987,9 @@
   // ── card detail ──
   async function openDetail(key) {
     board.detailKey = key;
+    // Both panels dock to the same right-hand edge — a ticket wins over the
+    // customize panel, which the toolbar gear reopens.
+    closeCustomize();
     // Fresh open starts the Edit-with-AI flow clean — never resurrect a
     // stale 'review'/'done' phase (or a stale Undo target) from a prior open.
     delete ewaStore[key];
@@ -1313,6 +1670,21 @@
 
     return h('div.jb-toolbar',
       null,
+      viewPicker(),
+      board.view === 'kanban' && iconBtn('settings', 16,
+        board.viewId ? 'Customize this view' : 'Customize the board',
+        () => toggleCustomize()),
+      // Unsaved layout edits on one of my views: keep or discard.
+      isDirty() && h('div.jb-view-dirty',
+        null,
+        h('button.jb-view-save', { title: 'Save these changes to the view', onclick: () => saveActiveView() },
+          icon('check', 13), h('span', null, 'Save')),
+        h('button.jb-view-reset', {
+          title: 'Discard unsaved changes',
+          onclick: () => { applyViewRow(activeViewRow()); rerenderBoardUi(); },
+        }, icon('undo', 13)),
+      ),
+      h('span.jb-toolbar-sep'),
       viewSwitch(),
       // How-it-works hover, timeline/feed only (replaces the old in-canvas hint).
       board.view !== 'kanban' && roadmapInfoButton(),
@@ -1342,31 +1714,516 @@
     );
   }
 
+  // The anchored-menu shell every toolbar dropdown shares: trigger button,
+  // hidden menu, and the open/close/click-outside plumbing. Callers fill
+  // `menu` — with plain option rows (dropdown) or richer ones (viewPicker) —
+  // so dismissal behavior is defined once instead of per menu.
+  // `onClose` runs whenever the menu closes, for per-menu transient state.
+  function menuShell({ cls = '', menuCls = '', title, triggerKids, onOpen, onClose } = {}) {
+    const wrap = h('div.jb-dd' + cls);
+    const btn = h('button.jb-dd-btn', title ? { title } : null, ...triggerKids);
+    const menu = h('div.jb-dd-menu.hidden' + menuCls, { role: 'menu' });
+    function open() { menu.classList.remove('hidden'); document.addEventListener('mousedown', outside); onOpen?.(); }
+    function close() {
+      menu.classList.add('hidden');
+      document.removeEventListener('mousedown', outside);
+      onClose?.();
+    }
+    function outside(e) { if (!wrap.contains(e.target)) close(); }
+    btn.addEventListener('click', () => (menu.classList.contains('hidden') ? open() : close()));
+    wrap.append(btn, menu);
+    return { wrap, btn, menu, open, close };
+  }
+
   function dropdown(iconName, labelText, options, value, onSelect) {
-    const wrap = h('div.jb-dd');
-    const btn = h('button.jb-dd-btn',
-      null,
-      iconName && icon(iconName, 15, 'var(--text-faint)'),
-      h('span.jb-dd-label', null, labelText),
-      icon('chevronDown', 14, 'var(--text-faint)'),
-    );
-    const menu = h('div.jb-dd-menu.hidden');
+    const { wrap, menu, close } = menuShell({
+      triggerKids: [
+        iconName && icon(iconName, 15, 'var(--text-faint)'),
+        h('span.jb-dd-label', null, labelText),
+        icon('chevronDown', 14, 'var(--text-faint)'),
+      ],
+    });
     options.forEach((o) => {
-      const row = h('button.jb-dd-item' + (value === o.value ? '.jb-dd-active' : ''), {
+      menu.append(h('button.jb-dd-item' + (value === o.value ? '.jb-dd-active' : ''), {
         onclick: () => { close(); onSelect(o.value); },
       },
         o.user ? avatar(o.user, 20) : o.icon ? icon(o.icon, 15, 'var(--text-faint)') : h('span', { style: { width: '20px' } }),
         h('span', { style: { flex: '1' } }, o.label),
         value === o.value && icon('check', 14, 'var(--accent-2)'),
-      );
-      menu.append(row);
+      ));
     });
-    function open() { menu.classList.remove('hidden'); document.addEventListener('mousedown', outside); }
-    function close() { menu.classList.add('hidden'); document.removeEventListener('mousedown', outside); }
-    function outside(e) { if (!wrap.contains(e.target)) close(); }
-    btn.addEventListener('click', () => menu.classList.contains('hidden') ? open() : close());
-    wrap.append(btn, menu);
     return wrap;
+  }
+
+  /* ─────────────── view picker ─────────────── */
+  // Private views wear a lock, shared ones the team glyph, the built-in
+  // default board the board glyph.
+  function viewIcon(row) { return !row ? 'kanban' : row.mine && !row.shared ? 'lock' : 'users'; }
+
+  function selectView(row) { applyViewRow(row); rerenderBoardUi(); }
+  // The one repaint entry point for anything that touches the layout: the
+  // columns are re-derived from (rawColumns, issues, cfg) first, so
+  // board.columns can never be left describing a previous config, then the
+  // toolbar (view name, dirty state), the active view, and the panel.
+  // `repaintPanel` is false while typing in one of the panel's own inputs —
+  // rebuilding it mid-keystroke would drop focus.
+  function rerenderBoardUi(repaintPanel = true) {
+    recomputeColumns();
+    rerenderToolbar();
+    renderActiveView();
+    if (repaintPanel) renderCustomize();
+  }
+  // board_views.name is `check (length(name) between 1 and 60)`, so every
+  // generated name is clipped to fit — including room for the " 2" suffix.
+  // "<a 58-char name> (copy)" would otherwise be rejected by Postgres and
+  // surface as a raw constraint error.
+  const NAME_MAX = 60;
+  function uniqueViewName(base) {
+    const taken = new Set(board.views.filter((v) => v.mine).map((v) => v.name));
+    const clip = (s, room = 0) => s.slice(0, NAME_MAX - room).trim() || 'Board view';
+    const first = clip(base);
+    if (!taken.has(first)) return first;
+    for (let i = 2; i < 99; i++) {
+      const suffix = ` ${i}`;
+      const candidate = clip(base, suffix.length) + suffix;
+      if (!taken.has(candidate)) return candidate;
+    }
+    return first;
+  }
+
+  function viewPicker() {
+    const row = activeViewRow();
+    // Per-menu transient state: which row's delete button is armed. Lives
+    // here, not on `board`, so it can't outlive the menu that owns it.
+    let confirmDelete = null;
+    const { wrap, menu, close } = menuShell({
+      cls: '.jb-viewpick',
+      menuCls: '.jb-viewpick-menu',
+      title: row ? (row.mine ? (row.shared ? 'Shared with the team' : 'Private to you') : `Shared by ${row.owner_name || 'a teammate'}`) : "Jira's own columns",
+      triggerKids: [
+        icon(viewIcon(row), 15, 'var(--text-faint)'),
+        h('span.jb-dd-label', null, row ? row.name : 'Default board'),
+        icon('chevronDown', 14, 'var(--text-faint)'),
+      ],
+      // Realtime can't tell us about an unshare: postgres_changes evaluates
+      // RLS against the NEW row, and a view that stops being shared is no
+      // longer visible to us, so no event is delivered. Re-reading the list
+      // on open keeps the menu honest — one small query per open.
+      onOpen: () => { refreshViews(paint); },
+      onClose: () => { confirmDelete = null; },
+    });
+
+    // The menu repaints itself in place (arming a delete must not close it),
+    // so it's built by a function rather than inline.
+    function paint() {
+      menu.innerHTML = '';
+      const mine = board.views.filter((v) => v.mine);
+      const theirs = board.views.filter((v) => !v.mine);
+
+      menu.append(h('button.jb-dd-item' + (board.viewId ? '' : '.jb-dd-active'), {
+        role: 'menuitemradio',
+        'aria-checked': board.viewId ? 'false' : 'true',
+        onclick: () => { close(); selectView(null); },
+      },
+        icon('kanban', 15, 'var(--text-faint)'),
+        h('div', { style: { flex: '1' } },
+          h('div', null, 'Default board'),
+          h('div.jb-viewpick-sub', null, "Jira's columns, everything shown"),
+        ),
+        !board.viewId && icon('check', 14, 'var(--accent-2)'),
+      ));
+
+      const section = (title) => menu.append(h('div.jb-viewpick-sect', null, title));
+      const item = (v) => {
+        const active = board.viewId === v.id;
+        // A div rather than a button because it hosts the action buttons
+        // below (a button can't nest one), so it has to carry the semantics
+        // a button would give for free: a role, the selected state, and
+        // Enter/Space activation. Clicks and keys both ignore the actions.
+        const choose = (e) => {
+          if (e.target.closest('.jb-viewpick-act')) return;
+          close();
+          selectView(v);
+        };
+        const el = h('div.jb-dd-item.jb-viewpick-item' + (active ? '.jb-dd-active' : ''), {
+          role: 'menuitemradio',
+          'aria-checked': active ? 'true' : 'false',
+          tabindex: '0',
+          onclick: choose,
+          onkeydown: (e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault(); // Space would scroll the menu
+            choose(e);
+          },
+        },
+          icon(viewIcon(v), 15, 'var(--text-faint)'),
+          h('div', { style: { flex: '1', minWidth: '0' } },
+            h('div.jb-viewpick-name', null, v.name),
+            h('div.jb-viewpick-sub', null, v.mine
+              ? (v.shared ? 'Shared with the team' : 'Private to you')
+              : (v.owner_name ? `Shared by ${v.owner_name}` : 'Shared with the team')),
+          ),
+          active && icon('check', 14, 'var(--accent-2)'),
+        );
+        // iconBtn() rather than a bare button: it sets aria-label alongside
+        // title, and a title alone is not an accessible name for an
+        // icon-only control. Each label names the view it acts on, so the
+        // three-per-row buttons aren't all "Delete view" to a screen reader.
+        const acts = h('div.jb-viewpick-act');
+        if (v.mine) {
+          // The share write closes the menu: it echoes back over realtime and
+          // re-renders the toolbar (menu included), so keeping it open would
+          // only make it flicker. The toast carries the confirmation.
+          acts.append(iconBtn(v.shared ? 'users' : 'lock', 14,
+            v.shared ? `Stop sharing “${v.name}” with the team` : `Share “${v.name}” with the team`,
+            () => { close(); setViewShared(v, !v.shared); }));
+          // Delete is two-click: the first arms it (menu stays put — no
+          // network yet), the second commits.
+          const armed = confirmDelete === v.id;
+          const del = iconBtn('trash', 14,
+            armed ? `Delete “${v.name}” — click again to confirm` : `Delete “${v.name}”`,
+            () => {
+              if (!armed) { confirmDelete = v.id; paint(); return; }
+              close();
+              deleteView(v);
+            });
+          if (armed) del.classList.add('jb-danger');
+          acts.append(del);
+        } else {
+          acts.append(iconBtn('copy', 14, `Duplicate “${v.name}” into my views`,
+            () => { close(); duplicateView(v); }));
+        }
+        el.append(acts);
+        return el;
+      };
+
+      if (mine.length) { section('My views'); mine.forEach((v) => menu.append(item(v))); }
+      if (theirs.length) { section('Shared with the team'); theirs.forEach((v) => menu.append(item(v))); }
+
+      menu.append(h('div.jb-viewpick-foot',
+        null,
+        h('button.jb-dd-item', { onclick: () => { close(); createView(); } },
+          icon('plus', 15, 'var(--text-faint)'),
+          h('span', { style: { flex: '1' } }, board.viewId ? 'Save as a new view…' : 'New view from this board…'),
+        ),
+      ));
+    }
+    paint();
+    return wrap;
+  }
+
+  /* ─────────────── view persistence ─────────────── */
+  // Every write goes through here: one try/catch, one toast on failure, one
+  // place that folds the saved row back into the list. Returns null when the
+  // write failed, so callers can bail without repeating the handling.
+  async function writeView(payload, what) {
+    let saved;
+    try { saved = await ctx.saveBoardView(payload); }
+    catch (err) { toast('error', String(err?.message || err).slice(0, 160), null, `Couldn't ${what}`); return null; }
+    if (!saved) return null;
+    board.views = board.views.filter((v) => v.id !== saved.id).concat(saved)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return saved;
+  }
+  // A brand-new view of mine, always private, name de-duped against my own.
+  const newView = (name, config) => writeView(
+    { name: uniqueViewName(name), projectKey: activeProject(), shared: false, config }, 'create that view');
+  // Change one field of an existing row. `config` defaults to what the
+  // server already holds, so a rename or a share flip deliberately does NOT
+  // fold in unsaved layout edits — Save stays the only thing that commits a
+  // layout.
+  const patchView = (row, patch) => writeView(
+    { id: row.id, name: row.name, projectKey: row.project_key, shared: row.shared, config: row.config, ...patch },
+    'update that view');
+
+  // Seeded from whatever the board is showing right now, so "customize"
+  // always starts from something real rather than a blank board.
+  async function createView() {
+    const cfg = currentCfg();
+    if (!cfg.columns.length) cfg.columns = seedColumnsFromBoard();
+    Object.assign(cfg, normalizeCfg(cfg));
+    const from = activeViewRow();
+    const saved = await newView(from ? `${from.name} (copy)` : 'My board', cfg);
+    if (!saved) return;
+    applyViewRow(saved);
+    openCustomize();
+  }
+  async function saveActiveView() {
+    const row = activeViewRow();
+    if (!row?.mine) return;
+    // Store the canonical form, so what comes back matches what isDirty()
+    // compares and the row can't hold a value the renderer would rewrite.
+    const saved = await patchView(row, { config: normalizeCfg(currentCfg()) });
+    if (!saved) return;
+    toast('success', `“${saved.name}” is up to date.`, null, 'View saved');
+    rerenderBoardUi();
+  }
+  async function setViewShared(row, shared) {
+    const saved = await patchView(row, { shared });
+    if (!saved) return;
+    toast('success', shared
+      ? `“${saved.name}” is visible to the team — they can select it, but only you can edit it.`
+      : `“${saved.name}” is private to you again.`, null, 'View updated');
+    rerenderBoardUi();
+  }
+  async function renameView(row, name) {
+    const clean = String(name || '').trim().slice(0, 60);
+    if (!clean || clean === row.name) return;
+    if (await patchView(row, { name: clean })) rerenderBoardUi();
+  }
+  async function duplicateView(row) {
+    const saved = await newView(`${row.name} (copy)`, row.config);
+    if (!saved) return;
+    applyViewRow(saved);
+    rerenderBoardUi();
+  }
+  async function deleteView(row) {
+    try { await ctx.deleteBoardView(row.id); }
+    catch (err) { toast('error', String(err?.message || err).slice(0, 160), null, "Couldn't delete that view"); return; }
+    board.views = board.views.filter((v) => v.id !== row.id);
+    if (board.viewId === row.id) applyViewRow(null); // fall back to the default board
+    rerenderBoardUi();
+  }
+
+  /* ─────────────── customize panel ─────────────── */
+  // The customize panel and the ticket detail dock to the same right-hand
+  // edge, so opening one closes the other. These three own that invariant —
+  // callers just say which panel they want rather than each remembering to
+  // clear the other and repaint both.
+  function openCustomize() {
+    board.customizing = true;
+    board.detailKey = null;
+    renderDetail();
+    rerenderToolbar();
+    renderCustomize();
+  }
+  function closeCustomize() {
+    if (!board.customizing) return;
+    board.customizing = false;
+    rerenderToolbar();
+    renderCustomize();
+  }
+  function toggleCustomize() { if (board.customizing) closeCustomize(); else openCustomize(); }
+
+  function cSection(title, sub, ...kids) {
+    return h('section.jb-cs',
+      null,
+      // Same uppercase micro-label the ticket detail uses, via its helper —
+      // one typographic token, not a second spelling of it.
+      detailLabel(title),
+      sub && h('div.jb-cs-sub', null, sub),
+      ...kids,
+    );
+  }
+  // Checkbox-ish toggle row.
+  function cToggle(labelText, on, onChange) {
+    return h('button.jb-ctoggle' + (on ? '.jb-ctoggle-on' : ''), { onclick: () => onChange(!on) },
+      h('span.jb-ctoggle-box', null, on ? icon('check', 12) : null),
+      h('span', null, labelText),
+    );
+  }
+  function cSelect(value, options, onChange) {
+    const sel = h('select.jb-csel', { onchange: (e) => onChange(e.target.value) });
+    for (const [v, lbl] of options) {
+      sel.append(h('option', { value: v, selected: v === value }, lbl));
+    }
+    return sel;
+  }
+  // Toggleable filter chip (issue types / priorities / labels).
+  function cChip(text, on, onToggle) {
+    return h('button.jb-cchip' + (on ? '.jb-cchip-on' : ''), { onclick: onToggle }, text);
+  }
+
+  // ── the panel's five sections, one builder each ──
+
+  // Who owns this view, what it's called, and whether the team can see it.
+  function csViewSection(row) {
+    if (!row?.mine) {
+      return cSection(row ? `${row.name} — shared by ${row.owner_name || 'a teammate'}` : 'Default board',
+        row
+          ? 'You can try changes here, but only the owner can save them. Duplicate it to keep your own copy.'
+          : "Jira's own columns. Changes here apply for this session — save them as a view to keep them.",
+        h('div.jb-cs-actions', null,
+          h('button.primary', { onclick: () => createView() }, h('span', null, row ? 'Duplicate into my views' : 'Save as my view')),
+        ));
+    }
+    const dirty = isDirty();
+    return cSection('View', null,
+      h('input.jb-cinput', {
+        type: 'text', value: row.name, maxlength: '60', 'aria-label': 'View name',
+        // onchange (not oninput): the rename repaints this panel, which
+        // would yank focus out of the field on every keystroke.
+        onchange: (e) => renameView(row, e.target.value),
+      }),
+      h('div.jb-cs-row', null,
+        cToggle('Share with the team', !!row.shared, (on) => setViewShared(row, on))),
+      h('div.jb-cs-sub', null, row.shared
+        ? 'Teammates can select this view and duplicate it. Only you can edit it.'
+        : 'Only you can see this view.'),
+      h('div.jb-cs-actions', null,
+        h('button.primary', { disabled: !dirty, onclick: () => saveActiveView() }, h('span', null, dirty ? 'Save changes' : 'Saved')),
+        h('button.ghost', { onclick: () => createView() }, h('span', null, 'Duplicate')),
+      ),
+    );
+  }
+
+  // One column's editor: order, name, visibility, its statuses, accent, WIP.
+  // `assigned` maps a lowercased status to the column index that claims it.
+  function csColumnEditor(c, i, cfg, catalog, assigned) {
+    const swap = (j) => {
+      if (j < 0 || j >= cfg.columns.length) return;
+      const [moved] = cfg.columns.splice(i, 1);
+      cfg.columns.splice(j, 0, moved);
+      rerenderBoardUi();
+    };
+    // A status belongs to exactly one column — a ticket has to land somewhere
+    // definite — so the picker offers only what this column doesn't hold, and
+    // choosing one takes it off whichever column had it.
+    const free = [...catalog.keys()].filter((s) => assigned.get(s.toLowerCase()) !== i);
+    return h('div.jb-ccol' + (c.hidden ? '.jb-ccol-hidden' : ''),
+      null,
+      h('div.jb-ccol-top',
+        null,
+        h('div.jb-ccol-move',
+          null,
+          h('button.jb-iconbtn', { title: 'Move left', disabled: i === 0, onclick: () => swap(i - 1) }, icon('chevronLeft', 14)),
+          h('button.jb-iconbtn', { title: 'Move right', disabled: i === cfg.columns.length - 1, onclick: () => swap(i + 1) }, icon('chevronRight', 14)),
+        ),
+        h('input.jb-cinput.jb-ccol-name', {
+          type: 'text', value: c.name, maxlength: '40', 'aria-label': 'Column name',
+          // Repaint the board but not this panel — see the rename note above.
+          oninput: (e) => { c.name = e.target.value; rerenderBoardUi(false); },
+          // On blur, settle an emptied field to what normalizeCfg would store
+          // anyway, so the field, the column header and the saved row agree.
+          onchange: (e) => {
+            if (e.target.value.trim()) return;
+            c.name = 'Column';
+            rerenderBoardUi();
+          },
+        }),
+        h('button.jb-iconbtn', {
+          title: c.hidden ? 'Show this column' : 'Hide this column',
+          onclick: () => { c.hidden = !c.hidden; rerenderBoardUi(); },
+        }, icon(c.hidden ? 'block' : 'check', 14)),
+        h('button.jb-iconbtn', {
+          title: 'Remove this column',
+          onclick: () => { cfg.columns.splice(i, 1); rerenderBoardUi(); },
+        }, icon('trash', 14)),
+      ),
+      h('div.jb-ccol-statuses', null, ...c.statuses.map((st) => h('span.jb-ccol-status',
+        null,
+        h('span', null, st),
+        h('button.jb-ccol-x', {
+          title: 'Remove this status from the column',
+          onclick: () => { c.statuses = c.statuses.filter((x) => x !== st); rerenderBoardUi(); },
+        }, icon('x', 11)),
+      ))),
+      h('div.jb-ccol-foot',
+        null,
+        free.length ? cSelect('', [['', '+ status…'], ...free.map((st) => [st, st])], (v) => {
+          if (!v) return;
+          for (const other of cfg.columns) other.statuses = other.statuses.filter((x) => x.toLowerCase() !== v.toLowerCase());
+          c.statuses.push(v);
+          c.cat = catalog.get(v) || c.cat;
+          rerenderBoardUi();
+        }) : null,
+        cSelect(c.color, COL_COLORS, (v) => { c.color = v; rerenderBoardUi(); }),
+        h('label.jb-cwip',
+          null,
+          h('span', null, 'WIP'),
+          h('input.jb-cinput.jb-cwip-in', {
+            type: 'number', min: '0', max: '999', value: String(c.wip || ''), placeholder: '—',
+            title: 'Warn when this column holds more than N tickets (0 = no limit)',
+            onchange: (e) => { c.wip = clampWip(e.target.value); rerenderBoardUi(); },
+          }),
+        ),
+      ),
+    );
+  }
+
+  function csColumnsSection(cfg, catalog) {
+    const box = h('div.jb-ccols');
+    if (!cfg.columns.length) {
+      box.append(
+        h('p.jb-cs-sub', null, "This board mirrors Jira's columns. Take a copy to reorder, rename, merge or hide them."),
+        h('button.solid', { onclick: () => { cfg.columns = seedColumnsFromBoard(); rerenderBoardUi(); } },
+          icon('kanban', 14), h('span', null, "Start from Jira's columns")),
+      );
+    } else {
+      const assigned = new Map(); // lowercased status -> owning column index
+      cfg.columns.forEach((c, i) => c.statuses.forEach((st) => assigned.set(st.toLowerCase(), i)));
+      cfg.columns.forEach((c, i) => box.append(csColumnEditor(c, i, cfg, catalog, assigned)));
+      box.append(h('div.jb-cs-actions',
+        null,
+        h('button.solid', {
+          onclick: () => { cfg.columns.push({ name: 'New column', statuses: [], hidden: false, wip: 0, color: '', cat: 'new' }); rerenderBoardUi(); },
+        }, icon('plus', 14), h('span', null, 'Add column')),
+        h('button.ghost', { onclick: () => { cfg.columns = []; rerenderBoardUi(); } },
+          icon('undo', 14), h('span', null, "Back to Jira's columns")),
+      ));
+      box.append(cToggle('Hide statuses I haven\u2019t mapped', cfg.hideUnmapped,
+        (on) => { cfg.hideUnmapped = on; rerenderBoardUi(); }));
+    }
+    return cSection('Columns', 'Drag-and-drop still transitions the ticket in Jira — a column can hold several statuses.', box);
+  }
+
+  function csCardsSection(cfg) {
+    return cSection('Cards', 'What each ticket shows.',
+      h('div.jb-cs-grid', null, ...CARD_FIELDS.map(([k, lbl]) =>
+        cToggle(lbl, cfg.card[k], (on) => { cfg.card[k] = on; rerenderBoardUi(); }))));
+  }
+
+  function csGroupingSection(cfg) {
+    const pick = (lbl, key, options) => h('div.jb-cs-row', null,
+      h('span.jb-cs-lbl', null, lbl),
+      cSelect(cfg[key], options, (v) => { cfg[key] = v; rerenderBoardUi(); }));
+    return cSection('Grouping & sorting', null,
+      pick('Swimlanes', 'swimlane', SWIMLANES),
+      pick('Sort cards', 'sort', SORTS));
+  }
+
+  // Type / priority / label chips, offered from what's actually on the board.
+  function csFiltersSection(cfg) {
+    const uniq = (list) => [...new Set(list)].sort();
+    const chipRow = (values, key) => h('div.jb-cchips', null, ...values.map((v) =>
+      cChip(v, cfg[key].includes(v), () => {
+        cfg[key] = cfg[key].includes(v) ? cfg[key].filter((x) => x !== v) : cfg[key].concat(v);
+        rerenderBoardUi();
+      })));
+    const labels = uniq(board.issues.flatMap((t) => t.labels)).slice(0, 40);
+    return cSection('Filters', 'Nothing selected means everything is in play. Saved with the view.',
+      h('div.jb-cs-lbl', null, 'Issue type'), chipRow(uniq(board.issues.map((t) => t.type)), 'types'),
+      h('div.jb-cs-lbl', null, 'Priority'), chipRow(uniq(board.issues.map((t) => prioLabel(t.priority))), 'priorities'),
+      labels.length ? h('div.jb-cs-lbl', null, 'Labels') : null,
+      labels.length ? chipRow(labels, 'labels') : null,
+    );
+  }
+
+  function renderCustomize() {
+    if (!drawer) return;
+    drawer.panel.querySelector('.jb-custom')?.remove();
+    if (!board.customizing) return;
+    const cfg = board.cfg;
+    const catalog = statusCatalog();
+    const panel = h('aside.jb-custom', { 'aria-label': 'Customize board' });
+    panel.append(
+      h('div.jb-custom-head',
+        null,
+        icon('settings', 16, 'var(--accent-2)'),
+        h('span.jb-custom-title', null, 'Customize'),
+        h('div', { style: { flex: '1' } }),
+        iconBtn('x', 16, 'Close', () => closeCustomize()),
+      ),
+      h('div.jb-custom-body',
+        null,
+        csViewSection(activeViewRow()),
+        csColumnsSection(cfg, catalog),
+        csCardsSection(cfg),
+        csGroupingSection(cfg),
+        csFiltersSection(cfg),
+      ),
+    );
+    drawer.panel.append(panel);
   }
 
   // ── first-run picker ──
@@ -1432,13 +2289,93 @@
     if (!board$) return;
     board$.innerHTML = '';
     board._cols = [];
+    board$.classList.toggle('jb-board-laned', false);
     if (board.loading) {
       for (const col of (board.columns.length ? board.columns : deriveColumns([]))) {
         board$.append(skeletonColumn());
       }
       return;
     }
-    for (const col of board.columns) board$.append(kanbanColumn(col));
+    // A view can legitimately end up with nothing to draw — every column
+    // hidden, or filters that match no ticket. Say so instead of leaving
+    // an empty canvas that reads as a failed load.
+    if (!board.columns.length) {
+      board$.append(h('div.jb-empty', { style: { margin: 'auto' } },
+        h('span.jb-empty-ic', null, icon('kanban', 28)),
+        h('div.jb-empty-title', null, 'This view has no columns'),
+        h('p.jb-empty-sub', null, 'Every column is hidden. Open Customize to bring some back, or switch to the default board.'),
+        h('button.primary', { onclick: () => openCustomize() }, h('span', null, 'Customize')),
+      ));
+      renderDetail();
+      return;
+    }
+    // One pass over the issues for the whole grid. A grouped board draws
+    // columns x lanes cells, and the old shape re-filtered all 500 issues
+    // inside every one of them (three times over, counting the WIP total
+    // and the lane header) — this bucket-once pass makes a render O(n) in
+    // the issues instead of O(n x cells), which matters because it reruns
+    // on every search keystroke, drag end and customize-panel edit.
+    // status (lowercased) -> index of the column that claims it. Built from
+    // the same colHasStatus() grouping the columns declare, so a column
+    // holding several statuses collects all of them.
+    const colOf = new Map();
+    board.columns.forEach((col, i) => {
+      for (const st of (col.statuses || [col.id])) {
+        const key = String(st).toLowerCase();
+        if (!colOf.has(key)) colOf.set(key, i);
+      }
+    });
+    // Only tickets that land in a drawn column count. Enumerating lanes from
+    // everything that merely passes the filters would mint lanes for statuses
+    // the view hides — a header reading "Ada · 0" over a row of empty columns.
+    const visible = board.issues.filter((t) => matches(t) && colOf.has(String(t.status).toLowerCase()));
+    const lanes = swimlanes(visible, board.cfg);
+    // cells[colIndex] is the column's tickets when ungrouped, or a
+    // Map(laneKey -> tickets) when grouped. colTotals[colIndex] is the
+    // column's count across every lane, for the WIP check.
+    const grouped = !!lanes;
+    const cells = board.columns.map(() => (grouped ? new Map() : []));
+    const colTotals = board.columns.map(() => 0);
+    const laneTotals = new Map();
+    for (const t of visible) {
+      const ci = colOf.get(String(t.status).toLowerCase());
+      colTotals[ci]++;
+      if (!grouped) { cells[ci].push(t); continue; }
+      const lk = lanes[0].keyOf(t);
+      laneTotals.set(lk, (laneTotals.get(lk) || 0) + 1);
+      const bucket = cells[ci];
+      if (bucket.has(lk)) bucket.get(lk).push(t);
+      else bucket.set(lk, [t]);
+    }
+    const cellFor = (ci, lane) => sortTickets(
+      (grouped ? cells[ci].get(lane.key) : cells[ci]) || [], board.cfg);
+
+    if (!grouped) {
+      board.columns.forEach((col, ci) => board$.append(kanbanColumn(col, cellFor(ci), colTotals[ci], null)));
+    } else if (!lanes.length) {
+      board$.append(h('div.jb-empty', { style: { margin: 'auto' } },
+        h('span.jb-empty-ic', null, icon('kanban', 28)),
+        h('div.jb-empty-title', null, 'Nothing matches this view'),
+        h('p.jb-empty-sub', null, 'Loosen the filters in Customize, or switch back to the default board.'),
+      ));
+    } else {
+      // Grouped: the same column spine repeats under each lane header.
+      board$.classList.add('jb-board-laned');
+      for (const lane of lanes) {
+        const cols = h('div.jb-lane-cols');
+        board.columns.forEach((col, ci) => cols.append(kanbanColumn(col, cellFor(ci, lane), colTotals[ci], lane)));
+        board$.append(h('div.jb-lane',
+          null,
+          h('div.jb-lane-head',
+            null,
+            lane.user !== undefined ? avatar(lane.user, 20) : icon('filter', 14, 'var(--text-faint)'),
+            h('span.jb-lane-name', null, lane.label),
+            h('span.mono.jb-lane-count', null, String(laneTotals.get(lane.key) || 0)),
+          ),
+          cols,
+        ));
+      }
+    }
     renderDetail();
   }
   function skeletonColumn() {
@@ -1536,6 +2473,8 @@
     // shared settings row: zero network writes per toggle, and it works in
     // the popout window without extra plumbing.
     try { localStorage.setItem('huddle.jb.view', v); } catch {}
+    // The customize panel only has meaning over the kanban columns.
+    if (v !== 'kanban') closeCustomize();
     board.detailKey = null; renderDetail();
     closeRoadmapForm();
     rerenderToolbar();
@@ -1548,16 +2487,26 @@
     const host = drawer.panel.querySelector('.jb-view-host');
     if (!host) return;
     host.innerHTML = '';
+    host.append(h('div.' + VIEW_HOST_CLASS[board.view]));
     if (board.view === 'kanban') {
-      host.append(h('div.jb-board'));
       if (!fresh && board.issues.length && !board.loading) renderColumns();
       else loadBoard();
     } else {
-      host.append(h('div.' + (board.view === 'timeline' ? 'jb-roadmap' : 'jb-feed')));
       loadRoadmapData(fresh);
     }
   }
+  const VIEW_HOST_CLASS = { kanban: 'jb-board', timeline: 'jb-roadmap', feed: 'jb-feed' };
   function renderActiveView() {
+    // Applying a saved view can change board.view (it pins a sub-view), and
+    // so can Discard and Duplicate. Each sub-view renders into its own
+    // container, so repaint into a stale one silently does nothing — the old
+    // kanban DOM just sits there and the roadmap never loads. Remount first
+    // whenever the mounted container isn't the one this view draws into.
+    const host = drawer?.panel.querySelector('.jb-view-host');
+    if (host && !host.firstElementChild?.classList.contains(VIEW_HOST_CLASS[board.view])) {
+      renderBody(false); // reuses the session caches, like a toolbar view switch
+      return;
+    }
     if (board.view === 'kanban') renderColumns();
     else if (board.view === 'timeline') renderRoadmap();
     else renderFeed();
@@ -1620,7 +2569,11 @@
       // BRIEF omits), minus `description` (too heavy across the board).
       const res = await client.searchIssuesAll(jql, 500, { fields: BOARD_FIELDS });
       board.issues = (res?.issues || []).map(mapIssue);
-      board.columns = deriveColumns(board.issues, await cfgPromise);
+      // Keep Jira's own columns around: the active view is layered on top
+      // of them (and the customize panel seeds itself from them), so a
+      // layout edit re-renders without a refetch.
+      board.rawColumns = deriveColumns(board.issues, await cfgPromise);
+      recomputeColumns();
     } catch (err) {
       board.loading = false;
       if (isRefresh) rerenderToolbar();
@@ -2666,9 +3619,10 @@ ${rows}
     if (!drawer) buildDrawer();
     board.detailKey = null;
     board._pickProject = false;
-    board.query = ''; board.filter = 'all';
-    // The view choice is a sticky preference (unlike query/filter, which
-    // reset per open) — restore the last-used one, and the timeline zoom.
+    board.customizing = false;
+    // The sub-view and timeline zoom are sticky per machine; the saved view
+    // restored below sets the filter and search (to '' / 'all' on the
+    // default board, which is what a fresh open used to reset them to).
     try {
       const v = localStorage.getItem('huddle.jb.view');
       if (v === 'kanban' || v === 'timeline' || v === 'feed') board.view = v;
@@ -2682,6 +3636,10 @@ ${rows}
     drawer.panel.innerHTML = '';
     // Pull the shared team selection before deciding first-run vs. board.
     await ctx.refreshTeamBoard?.();
+    // …then this person's saved layouts for that project. Both run before
+    // the first paint so the board loads once, with the right columns and
+    // filters already applied.
+    await loadAndRestoreViews();
     renderDrawer();
     if (focusKey) openDetail(focusKey);
   }
@@ -2702,6 +3660,7 @@ ${rows}
     if (drawer && !drawer.root.classList.contains('hidden')) {
       if (board.roadmapForm) { closeRoadmapForm(); }
       else if (board.detailKey) { board.detailKey = null; renderDetail(); }
+      else if (board.customizing) { closeCustomize(); }
       else closeDrawer();
     } else if (inCall?.open) {
       hideInCall();
@@ -2717,8 +3676,25 @@ ${rows}
     // exposed for app.js to refresh the in-call panel when settings change
     refreshInCall: () => { if (inCall?.open) renderInCall(); },
     // Re-render the drawer if it's open (e.g. a teammate changed the shared
-    // board project via realtime) — picks up the new active project.
-    reloadDrawer: () => { if (drawer && !drawer.root.classList.contains('hidden')) renderDrawer(); },
+    // board project via realtime) — picks up the new active project. Saved
+    // views are per project, so the list is re-fetched for the new one.
+    reloadDrawer: async () => {
+      if (!drawer || drawer.root.classList.contains('hidden')) return;
+      board.customizing = false;
+      await loadAndRestoreViews();
+      renderDrawer();
+    },
+    // A saved view changed — ours from another window (or the popout), or a
+    // teammate sharing/unsharing one. Refresh the list without disturbing
+    // the layout being edited; only a view that disappeared forces a switch
+    // (loadViews falls back to the default board in that case).
+    onBoardViewsChanged: async () => {
+      if (!drawer || drawer.root.classList.contains('hidden')) return;
+      // A rename or a teammate's new share just refreshes the picker, leaving
+      // an open roadmap view's scroll position alone; refreshViews() escalates
+      // to a full repaint only if the active view vanished under us.
+      await refreshViews(() => { rerenderToolbar(); renderCustomize(); });
+    },
     // A teammate added/edited/removed an ad-hoc roadmap bar (realtime).
     // Refetch the whole list (dozens of rows at most — simpler than
     // reconciling per-row events) and re-render if a roadmap view is up.
