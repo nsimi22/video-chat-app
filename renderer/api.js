@@ -1084,6 +1084,12 @@
       // set the board's view picker lists. Consumers refetch the list (a
       // handful of rows) rather than patch by row. DELETE matches the team
       // filter because the table has replica identity full (see migration).
+      //
+      // One gap by design: an UPDATE is authorized against the NEW row, so a
+      // view that stops being shared becomes invisible to teammates and its
+      // update is never delivered to them — they get no "it was unshared"
+      // event. The board's picker re-reads the list when it's opened, which
+      // is what actually closes that window.
       ch.on('postgres_changes', { event: '*', schema: 'public', table: 'board_views', filter: teamFilter },
         (p) => this.dispatchEvent(new CustomEvent('board-views-changed',
           { detail: { eventType: p.eventType, row: p.new || p.old || null } })));
@@ -1851,7 +1857,10 @@
         .from('board_views').select('*')
         .eq('team_id', this.team.id).eq('project_key', projectKey)
         .order('name', { ascending: true });
-      if (error) { console.warn('listBoardViews failed', error); return []; }
+      // Throws rather than returning [] — the renderer has to be able to tell
+      // "you have no saved views" from "the fetch failed", or a blip reads as
+      // an empty list and forgets the layout the user was on.
+      if (error) throw error;
       return (data || []).map((row) => ({
         ...row,
         mine: row.owner_id === this.peerId,

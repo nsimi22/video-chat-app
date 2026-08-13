@@ -2109,8 +2109,10 @@ async function joinTeamAndStart(teamId) {
   // board's roadmap/feed views if one is showing (no-op on kanban/closed).
   huddle.addEventListener('team-roadmap-changed', () => window.HuddleJiraBoard?.onRoadmapItemsChanged?.());
   // A saved board view was added/edited/removed — ours from another window,
-  // or a teammate publishing (or unpublishing) a shared one. Refresh the
-  // board's view picker if it's open.
+  // or a teammate publishing a shared one. Refresh the board's view picker if
+  // it's open. Note an *un*publish never arrives here (realtime authorizes an
+  // UPDATE against the new row, which we can no longer see); the picker
+  // re-reads its list on open to catch that case.
   huddle.addEventListener('board-views-changed', () => window.HuddleJiraBoard?.onBoardViewsChanged?.());
   // Surface incoming messages to the meeting Notes panel. The handler
   // filters by parent_id so non-meeting-thread messages are no-ops;

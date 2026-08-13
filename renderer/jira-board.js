@@ -322,7 +322,12 @@
   function isDirty() {
     const row = activeViewRow();
     if (!row?.mine) return false;
-    const now = currentCfg();
+    // Both sides go through normalizeCfg so the comparison is canonical-vs-
+    // canonical. Without it any value the normalizer rewrites on the way back
+    // in — an emptied column name becoming 'Column', an over-long query, a
+    // 31st column — would read as a permanent unsaved change, leaving the
+    // Save chip stuck on forever however many times you saved.
+    const now = normalizeCfg(currentCfg());
     const saved = normalizeCfg(row.config);
     // A row that never pinned a sub-view (hand-written SQL, or an older
     // build) shouldn't read as dirty the moment you browse to Timeline —
@@ -357,22 +362,40 @@
     try { return localStorage.getItem('huddle.jb.savedview.' + activeProject()) || null; } catch { return null; }
   }
 
+  // Returns false when the fetch failed, leaving board.views untouched. That
+  // distinction matters: treating a network blip as "you have no views" would
+  // fall the board back to the default AND make rememberView() forget the
+  // sticky id, losing the user's layout for good over a transient error.
   async function loadViews() {
     const project = activeProject();
-    if (!project) { board.views = []; return; }
-    let rows = [];
-    try { rows = await ctx.listBoardViews(project); } catch (err) { console.warn('board views load failed', err); }
+    if (!project) { board.views = []; return true; }
+    let rows;
+    try { rows = await ctx.listBoardViews(project); }
+    catch (err) { console.warn('board views load failed', err); return false; }
     board.views = Array.isArray(rows) ? rows : [];
-    // A view that vanished (deleted here or unshared by its owner) must not
-    // leave the board rendering a layout the picker no longer lists.
+    // A view that vanished (deleted here, or unshared by its owner) must not
+    // leave the board rendering a layout the picker no longer lists. Only
+    // reachable on a successful fetch, so it can't fire on an outage.
     if (board.viewId && !activeViewRow()) applyViewRow(null);
+    return true;
   }
   // Fetch this project's views and re-select the one this machine was last
   // using — the pair every entry point (drawer open, project change) needs.
   async function loadAndRestoreViews() {
-    await loadViews();
+    if (!await loadViews()) return; // fetch failed: keep the sticky id for the next try
     const id = rememberedViewId();
     applyViewRow(board.views.find((v) => v.id === id) || null);
+  }
+  // Re-read the list and repaint whatever it affects. Shared by the realtime
+  // handler and the picker's own open (see viewPicker) — an unshare can't
+  // reach us over realtime, so opening the menu re-checks.
+  async function refreshViews(onQuiet) {
+    const prev = board.viewId;
+    if (!await loadViews()) return;
+    // Only a view that vanished under us changes what's on screen; anything
+    // else just refreshes the picker.
+    if (board.viewId !== prev) rerenderBoardUi();
+    else onQuiet?.();
   }
 
   // Every status the board knows about → its category. Sourced from Jira's
@@ -1696,11 +1719,11 @@
   // `menu` — with plain option rows (dropdown) or richer ones (viewPicker) —
   // so dismissal behavior is defined once instead of per menu.
   // `onClose` runs whenever the menu closes, for per-menu transient state.
-  function menuShell({ cls = '', menuCls = '', title, triggerKids, onClose } = {}) {
+  function menuShell({ cls = '', menuCls = '', title, triggerKids, onOpen, onClose } = {}) {
     const wrap = h('div.jb-dd' + cls);
     const btn = h('button.jb-dd-btn', title ? { title } : null, ...triggerKids);
-    const menu = h('div.jb-dd-menu.hidden' + menuCls);
-    function open() { menu.classList.remove('hidden'); document.addEventListener('mousedown', outside); }
+    const menu = h('div.jb-dd-menu.hidden' + menuCls, { role: 'menu' });
+    function open() { menu.classList.remove('hidden'); document.addEventListener('mousedown', outside); onOpen?.(); }
     function close() {
       menu.classList.add('hidden');
       document.removeEventListener('mousedown', outside);
@@ -1750,11 +1773,22 @@
     renderActiveView();
     if (repaintPanel) renderCustomize();
   }
+  // board_views.name is `check (length(name) between 1 and 60)`, so every
+  // generated name is clipped to fit — including room for the " 2" suffix.
+  // "<a 58-char name> (copy)" would otherwise be rejected by Postgres and
+  // surface as a raw constraint error.
+  const NAME_MAX = 60;
   function uniqueViewName(base) {
     const taken = new Set(board.views.filter((v) => v.mine).map((v) => v.name));
-    if (!taken.has(base)) return base;
-    for (let i = 2; i < 99; i++) if (!taken.has(`${base} ${i}`)) return `${base} ${i}`;
-    return base;
+    const clip = (s, room = 0) => s.slice(0, NAME_MAX - room).trim() || 'Board view';
+    const first = clip(base);
+    if (!taken.has(first)) return first;
+    for (let i = 2; i < 99; i++) {
+      const suffix = ` ${i}`;
+      const candidate = clip(base, suffix.length) + suffix;
+      if (!taken.has(candidate)) return candidate;
+    }
+    return first;
   }
 
   function viewPicker() {
@@ -1771,6 +1805,11 @@
         h('span.jb-dd-label', null, row ? row.name : 'Default board'),
         icon('chevronDown', 14, 'var(--text-faint)'),
       ],
+      // Realtime can't tell us about an unshare: postgres_changes evaluates
+      // RLS against the NEW row, and a view that stops being shared is no
+      // longer visible to us, so no event is delivered. Re-reading the list
+      // on open keeps the menu honest — one small query per open.
+      onOpen: () => { refreshViews(paint); },
       onClose: () => { confirmDelete = null; },
     });
 
@@ -1782,6 +1821,8 @@
       const theirs = board.views.filter((v) => !v.mine);
 
       menu.append(h('button.jb-dd-item' + (board.viewId ? '' : '.jb-dd-active'), {
+        role: 'menuitemradio',
+        'aria-checked': board.viewId ? 'false' : 'true',
         onclick: () => { close(); selectView(null); },
       },
         icon('kanban', 15, 'var(--text-faint)'),
@@ -1795,9 +1836,25 @@
       const section = (title) => menu.append(h('div.jb-viewpick-sect', null, title));
       const item = (v) => {
         const active = board.viewId === v.id;
+        // A div rather than a button because it hosts the action buttons
+        // below (a button can't nest one), so it has to carry the semantics
+        // a button would give for free: a role, the selected state, and
+        // Enter/Space activation. Clicks and keys both ignore the actions.
+        const choose = (e) => {
+          if (e.target.closest('.jb-viewpick-act')) return;
+          close();
+          selectView(v);
+        };
         const el = h('div.jb-dd-item.jb-viewpick-item' + (active ? '.jb-dd-active' : ''), {
+          role: 'menuitemradio',
+          'aria-checked': active ? 'true' : 'false',
           tabindex: '0',
-          onclick: (e) => { if (e.target.closest('.jb-viewpick-act')) return; close(); selectView(v); },
+          onclick: choose,
+          onkeydown: (e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault(); // Space would scroll the menu
+            choose(e);
+          },
         },
           icon(viewIcon(v), 15, 'var(--text-faint)'),
           h('div', { style: { flex: '1', minWidth: '0' } },
@@ -1808,31 +1865,33 @@
           ),
           active && icon('check', 14, 'var(--accent-2)'),
         );
+        // iconBtn() rather than a bare button: it sets aria-label alongside
+        // title, and a title alone is not an accessible name for an
+        // icon-only control. Each label names the view it acts on, so the
+        // three-per-row buttons aren't all "Delete view" to a screen reader.
         const acts = h('div.jb-viewpick-act');
         if (v.mine) {
           // The share write closes the menu: it echoes back over realtime and
           // re-renders the toolbar (menu included), so keeping it open would
           // only make it flicker. The toast carries the confirmation.
-          acts.append(h('button.jb-iconbtn', {
-            title: v.shared ? 'Stop sharing with the team' : 'Share with the team',
-            onclick: () => { close(); setViewShared(v, !v.shared); },
-          }, icon(v.shared ? 'users' : 'lock', 14)));
+          acts.append(iconBtn(v.shared ? 'users' : 'lock', 14,
+            v.shared ? `Stop sharing “${v.name}” with the team` : `Share “${v.name}” with the team`,
+            () => { close(); setViewShared(v, !v.shared); }));
           // Delete is two-click: the first arms it (menu stays put — no
           // network yet), the second commits.
           const armed = confirmDelete === v.id;
-          acts.append(h('button.jb-iconbtn' + (armed ? '.jb-danger' : ''), {
-            title: armed ? 'Click again to delete' : 'Delete view',
-            onclick: () => {
+          const del = iconBtn('trash', 14,
+            armed ? `Delete “${v.name}” — click again to confirm` : `Delete “${v.name}”`,
+            () => {
               if (!armed) { confirmDelete = v.id; paint(); return; }
               close();
               deleteView(v);
-            },
-          }, icon('trash', 14)));
+            });
+          if (armed) del.classList.add('jb-danger');
+          acts.append(del);
         } else {
-          acts.append(h('button.jb-iconbtn', {
-            title: 'Duplicate into my views',
-            onclick: () => { close(); duplicateView(v); },
-          }, icon('copy', 14)));
+          acts.append(iconBtn('copy', 14, `Duplicate “${v.name}” into my views`,
+            () => { close(); duplicateView(v); }));
         }
         el.append(acts);
         return el;
@@ -1882,6 +1941,7 @@
   async function createView() {
     const cfg = currentCfg();
     if (!cfg.columns.length) cfg.columns = seedColumnsFromBoard();
+    Object.assign(cfg, normalizeCfg(cfg));
     const from = activeViewRow();
     const saved = await newView(from ? `${from.name} (copy)` : 'My board', cfg);
     if (!saved) return;
@@ -1891,7 +1951,9 @@
   async function saveActiveView() {
     const row = activeViewRow();
     if (!row?.mine) return;
-    const saved = await patchView(row, { config: currentCfg() });
+    // Store the canonical form, so what comes back matches what isDirty()
+    // compares and the row can't hold a value the renderer would rewrite.
+    const saved = await patchView(row, { config: normalizeCfg(currentCfg()) });
     if (!saved) return;
     toast('success', `“${saved.name}” is up to date.`, null, 'View saved');
     rerenderBoardUi();
@@ -2031,6 +2093,13 @@
           type: 'text', value: c.name, maxlength: '40', 'aria-label': 'Column name',
           // Repaint the board but not this panel — see the rename note above.
           oninput: (e) => { c.name = e.target.value; rerenderBoardUi(false); },
+          // On blur, settle an emptied field to what normalizeCfg would store
+          // anyway, so the field, the column header and the saved row agree.
+          onchange: (e) => {
+            if (e.target.value.trim()) return;
+            c.name = 'Column';
+            rerenderBoardUi();
+          },
         }),
         h('button.jb-iconbtn', {
           title: c.hidden ? 'Show this column' : 'Hide this column',
@@ -2246,8 +2315,6 @@
     // and the lane header) — this bucket-once pass makes a render O(n) in
     // the issues instead of O(n x cells), which matters because it reruns
     // on every search keystroke, drag end and customize-panel edit.
-    const visible = board.issues.filter(matches);
-    const lanes = swimlanes(visible, board.cfg);
     // status (lowercased) -> index of the column that claims it. Built from
     // the same colHasStatus() grouping the columns declare, so a column
     // holding several statuses collects all of them.
@@ -2258,6 +2325,11 @@
         if (!colOf.has(key)) colOf.set(key, i);
       }
     });
+    // Only tickets that land in a drawn column count. Enumerating lanes from
+    // everything that merely passes the filters would mint lanes for statuses
+    // the view hides — a header reading "Ada · 0" over a row of empty columns.
+    const visible = board.issues.filter((t) => matches(t) && colOf.has(String(t.status).toLowerCase()));
+    const lanes = swimlanes(visible, board.cfg);
     // cells[colIndex] is the column's tickets when ungrouped, or a
     // Map(laneKey -> tickets) when grouped. colTotals[colIndex] is the
     // column's count across every lane, for the WIP check.
@@ -2267,7 +2339,6 @@
     const laneTotals = new Map();
     for (const t of visible) {
       const ci = colOf.get(String(t.status).toLowerCase());
-      if (ci === undefined) continue; // a hidden status — deliberately not drawn
       colTotals[ci]++;
       if (!grouped) { cells[ci].push(t); continue; }
       const lk = lanes[0].keyOf(t);
@@ -2416,16 +2487,26 @@
     const host = drawer.panel.querySelector('.jb-view-host');
     if (!host) return;
     host.innerHTML = '';
+    host.append(h('div.' + VIEW_HOST_CLASS[board.view]));
     if (board.view === 'kanban') {
-      host.append(h('div.jb-board'));
       if (!fresh && board.issues.length && !board.loading) renderColumns();
       else loadBoard();
     } else {
-      host.append(h('div.' + (board.view === 'timeline' ? 'jb-roadmap' : 'jb-feed')));
       loadRoadmapData(fresh);
     }
   }
+  const VIEW_HOST_CLASS = { kanban: 'jb-board', timeline: 'jb-roadmap', feed: 'jb-feed' };
   function renderActiveView() {
+    // Applying a saved view can change board.view (it pins a sub-view), and
+    // so can Discard and Duplicate. Each sub-view renders into its own
+    // container, so repaint into a stale one silently does nothing — the old
+    // kanban DOM just sits there and the roadmap never loads. Remount first
+    // whenever the mounted container isn't the one this view draws into.
+    const host = drawer?.panel.querySelector('.jb-view-host');
+    if (host && !host.firstElementChild?.classList.contains(VIEW_HOST_CLASS[board.view])) {
+      renderBody(false); // reuses the session caches, like a toolbar view switch
+      return;
+    }
     if (board.view === 'kanban') renderColumns();
     else if (board.view === 'timeline') renderRoadmap();
     else renderFeed();
@@ -3609,13 +3690,10 @@ ${rows}
     // (loadViews falls back to the default board in that case).
     onBoardViewsChanged: async () => {
       if (!drawer || drawer.root.classList.contains('hidden')) return;
-      const prev = board.viewId;
-      await loadViews();
-      // Only a view that vanished under us changes what's on screen; a
-      // rename or a teammate's new share just refreshes the picker (and
-      // leaves an open roadmap view's scroll position alone).
-      if (board.viewId !== prev) rerenderBoardUi();
-      else { rerenderToolbar(); renderCustomize(); }
+      // A rename or a teammate's new share just refreshes the picker, leaving
+      // an open roadmap view's scroll position alone; refreshViews() escalates
+      // to a full repaint only if the active view vanished under us.
+      await refreshViews(() => { rerenderToolbar(); renderCustomize(); });
     },
     // A teammate added/edited/removed an ad-hoc roadmap bar (realtime).
     // Refetch the whole list (dozens of rows at most — simpler than

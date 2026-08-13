@@ -66,23 +66,30 @@ create policy board_views_read on public.board_views
 
 -- Write: only for yourself, and only inside a team you belong to. The
 -- owner_id predicate is what keeps one member from planting a view in
--- someone else's list.
+-- someone else's list; the membership predicate keeps it inside the team.
+--
+-- The membership check is repeated on UPDATE deliberately. Without it an
+-- owner could edit their own row, move it to a team_id they don't belong
+-- to, and flip `shared` — the read policy would then expose it to that
+-- team, laundering the insert-time membership check. (team_id is also
+-- pinned by the touch trigger below, so this is two independent locks on
+-- the same door: the policy would still hold if the trigger were dropped.)
 create policy board_views_insert on public.board_views
   for insert to authenticated
   with check (owner_id = auth.uid() and public.is_team_member(team_id));
 create policy board_views_update on public.board_views
   for update to authenticated
-  using (owner_id = auth.uid())
-  with check (owner_id = auth.uid());
+  using (owner_id = auth.uid() and public.is_team_member(team_id))
+  with check (owner_id = auth.uid() and public.is_team_member(team_id));
 create policy board_views_delete on public.board_views
   for delete to authenticated
   using (owner_id = auth.uid());
 
--- Stamp updated_at on every write, and pin the ownership/creation audit
--- columns on UPDATE so a view can't be re-homed to another user (or have
--- its created_at rewritten) by sending different values. auth.uid() is
--- null under the service role / server contexts — leave the supplied
--- values untouched there.
+-- Stamp updated_at on every write, and pin the identity columns on UPDATE
+-- so a view can't be re-homed to another user or another team (or have its
+-- created_at rewritten) by sending different values. A view describes one
+-- team's board, so its team_id is immutable by construction: to have a
+-- layout on another team's board you create one there.
 create or replace function public.touch_board_views()
 returns trigger language plpgsql
 set search_path = public as $$
@@ -90,6 +97,7 @@ begin
   new.updated_at = now();
   if tg_op = 'UPDATE' then
     new.owner_id = old.owner_id;
+    new.team_id = old.team_id;
     new.created_at = old.created_at;
   end if;
   return new;
