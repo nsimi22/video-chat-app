@@ -76,6 +76,18 @@ shared with teammates.
     call controls opens a Create-ticket modal you can fire mid-meeting.
     Picks project, issue type, summary, description; optionally posts
     the new ticket back to the channel.
+  - **Ticket board** — the rail's board opens a full kanban (drag a card
+    to transition it in Jira), plus Timeline and Feed views of the same
+    epics. The *project* is a team-wide pin, so everyone tracks the same
+    work.
+  - **Your own board layouts** — the picker at the top-left of the board
+    saves as many personal views over that shared project as you like:
+    reorder, rename, merge, hide or colour the columns, set WIP limits,
+    choose what a card shows, group into swimlanes (assignee / priority
+    / type), sort, and pin filters. Views are **private by default**;
+    share one and the team can select it or duplicate it, while only you
+    can edit it. *Default board* is always there, unchanged — Jira's own
+    columns with nothing filtered.
 - **AI assistant** (Claude, OpenRouter, or your local Claude Code)
   - **`/ai <prompt>`** is the general-purpose assistant — ask it
     anything. It posts an answer from your chosen provider (default
