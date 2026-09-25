@@ -3359,11 +3359,11 @@ class ChatView {
   _renderJiraUnfurls(text) {
     const jira = this.hooks.getJira?.();
     if (!jira || !jira.isConfigured()) return [];
-    // Warms the project-key filter; once loaded, extractKeys drops
-    // non-project tokens like PR-483 before any card is built.
-    jira.loadProjectKeys?.();
-    const matches = window.jiraExtractKeys(text, jira.host);
+    const matches = window.jiraExtractKeys(text, jira.host, jira.projectKeys);
     if (!matches.length) return [];
+    // Warm the project-key filter so later renders drop non-project
+    // tokens like PR-483 before any card is built.
+    jira.loadProjectKeys?.();
     const out = [];
     for (const { key } of matches) {
       const el = document.createElement('div');
