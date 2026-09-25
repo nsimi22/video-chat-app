@@ -3516,13 +3516,11 @@ function onCallPeerJoined(peer) {
   // (commitStreamAsCamera) left quiet peers invisible until they spoke
   // (#354). commitStreamAsCamera reuses this tile via makeTile's key.
   if (peer?.id && !state.tilesByKey.has(`peer:${peer.id}`)) {
-    makeTile({ key: `peer:${peer.id}`, label: resolveTileLabel(peer.id), kind: 'remote', userId: peer.id });
-    const tile = state.tilesByKey.get(`peer:${peer.id}`);
-    if (tile && peer.platform) tile.dataset.platform = peer.platform;
-    const media = state.huddle?.peerMediaState.get(peer.id);
-    setPeerMicOn(peer.id, !!media?.micOn);
-    setPeerCamOn(peer.id, !!media?.camOn);
-    if (state.raisedHands.has(peer.id)) setHandRaised(peer.id, true);
+    // No track yet, so without a mute-state broadcast show them muted + cam-off.
+    if (!mountPeerTile(peer.id).media) {
+      setPeerMicOn(peer.id, false);
+      setPeerCamOn(peer.id, false);
+    }
   }
   // Avatar stack in the chat header tracks the live participant set
   // (not the channel roster) while a call is in progress here.
@@ -7402,12 +7400,30 @@ function onTrack({ stream, track, fromId }) {
   state.pendingStreams.set(stream.id, { stream, fromId, timer });
 }
 
+// Mount (or reuse) a remote peer's tile and catch it up on state that can
+// arrive before the tile exists: platform pip, raised hand, and mic/cam
+// from the mute-state broadcast. Returns the tile and that media state
+// (undefined when the peer hasn't broadcast one). Shared by the join path
+// (onCallPeerJoined) and the first-track path (commitStreamAsCamera).
+function mountPeerTile(peerId) {
+  const tile = makeTile({ key: `peer:${peerId}`, label: resolveTileLabel(peerId), kind: 'remote', userId: peerId });
+  // Mobile pip — sourced from LiveKit participant.metadata via peer-joined.
+  const platform = state.peerPlatforms.get(peerId);
+  if (platform) tile.dataset.platform = platform;
+  if (state.raisedHands.has(peerId)) setHandRaised(peerId, true);
+  const media = state.huddle?.peerMediaState.get(peerId);
+  if (media) {
+    setPeerMicOn(peerId, media.micOn);
+    setPeerCamOn(peerId, media.camOn);
+  }
+  return { tile, media };
+}
+
 function commitStreamAsCamera(streamId) {
   const pending = state.pendingStreams.get(streamId);
   if (!pending) return;
   state.pendingStreams.delete(streamId);
   clearTimeout(pending.timer);
-  const key = `peer:${pending.fromId}`;
   // Fall-through name lookup: peerInfo is the team-wide presence cache
   // and lags slightly behind LK joins; callPeerInfo is the call-channel
   // presence cache (populated when the peer .tracks the call channel,
@@ -7417,7 +7433,7 @@ function commitStreamAsCamera(streamId) {
   // the tile "guest" with no recovery path. resolveTileLabel handles
   // both the initial label here and later refreshes when presence
   // catches up.
-  const tile = makeTile({ key, label: resolveTileLabel(pending.fromId), kind: 'remote', userId: pending.fromId });
+  const { tile, media } = mountPeerTile(pending.fromId);
   const video = tile.querySelector('video');
   video.srcObject = pending.stream;
   // Late remote tiles can land in a `paused: true` state under
@@ -7431,20 +7447,7 @@ function commitStreamAsCamera(streamId) {
   pending.stream.addEventListener('addtrack', () => {
     video.play().catch(() => {});
   });
-  // Apply platform marker (Mobile pip) if this peer is on the mobile
-  // app. Sourced from LiveKit participant.metadata via peer-joined.
-  const platform = state.peerPlatforms.get(pending.fromId);
-  if (platform) tile.dataset.platform = platform;
-  // Catch up on hand-raised state in case the broadcast arrived before the tile.
-  if (state.raisedHands.has(pending.fromId)) setHandRaised(pending.fromId, true);
-  // Catch up on mute / cam state too — same race: the mute-state
-  // broadcast can land before the WebRTC track does, and the tile we'd
-  // have toggled didn't exist yet.
-  const media = state.huddle?.peerMediaState.get(pending.fromId);
-  if (media) {
-    setPeerMicOn(pending.fromId, media.micOn);
-    setPeerCamOn(pending.fromId, media.camOn);
-  } else {
+  if (!media) {
     // No mute-state yet — the peer might be on an older build that
     // doesn't broadcast it. Start the dark-frame fallback so a
     // cammed-off peer still gets an avatar overlay instead of a
