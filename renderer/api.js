@@ -2024,6 +2024,17 @@
       if (error) { console.warn('pinMessage failed', error); throw error; }
     }
 
+    // One message by id, read through messages RLS — null when it was
+    // deleted or the viewer can't see it; throws on a query failure so
+    // callers can tell "gone" from "couldn't check". Used for quote-reply
+    // previews whose original isn't in the loaded history.
+    async getMessageById(messageId) {
+      const { data, error } = await this.supabase
+        .from('messages').select('*').eq('id', messageId).maybeSingle();
+      if (error) throw error;
+      return data ? this._marshalMessage(data) : null;
+    }
+
     async loadPinnedMessages(channelId) {
       const { data, error } = await this.supabase
         .from('messages').select('*')
@@ -3204,6 +3215,7 @@
         id: row.id,
         channelId: row.channel_id,
         parentId: row.parent_id,
+        quotedMessageId: row.quoted_message_id || null,
         authorId: row.author_id,
         authorName: row.author_name,
         authorColor: row.author_color,
