@@ -3511,6 +3511,19 @@ function onCallPeerJoined(peer) {
   if (peer?.id && peer.platform) {
     state.peerPlatforms.set(peer.id, peer.platform);
   }
+  // Mount the peer's tile now, as an avatar. Everyone joins muted with
+  // the camera off, so a tile built only on first track arrival
+  // (commitStreamAsCamera) left quiet peers invisible until they spoke
+  // (#354). commitStreamAsCamera reuses this tile via makeTile's key.
+  if (peer?.id && !state.tilesByKey.has(`peer:${peer.id}`)) {
+    makeTile({ key: `peer:${peer.id}`, label: resolveTileLabel(peer.id), kind: 'remote', userId: peer.id });
+    const tile = state.tilesByKey.get(`peer:${peer.id}`);
+    if (tile && peer.platform) tile.dataset.platform = peer.platform;
+    const media = state.huddle?.peerMediaState.get(peer.id);
+    setPeerMicOn(peer.id, !!media?.micOn);
+    setPeerCamOn(peer.id, !!media?.camOn);
+    if (state.raisedHands.has(peer.id)) setHandRaised(peer.id, true);
+  }
   // Avatar stack in the chat header tracks the live participant set
   // (not the channel roster) while a call is in progress here.
   refreshHeaderMembersForCurrent();
