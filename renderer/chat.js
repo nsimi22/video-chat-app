@@ -3359,8 +3359,11 @@ class ChatView {
   _renderJiraUnfurls(text) {
     const jira = this.hooks.getJira?.();
     if (!jira || !jira.isConfigured()) return [];
-    const matches = window.jiraExtractKeys(text, jira.host);
+    const matches = window.jiraExtractKeys(text, jira.host, jira.projectKeys);
     if (!matches.length) return [];
+    // Warm the project-key filter so later renders drop non-project
+    // tokens like PR-483 before any card is built.
+    jira.loadProjectKeys?.();
     const out = [];
     for (const { key } of matches) {
       const el = document.createElement('div');
@@ -3381,18 +3384,20 @@ class ChatView {
     el.appendChild(loading);
   }
 
+  // Collapse a card that turned out not to be a ticket. Hidden rather
+  // than removed — the card may not be attached to the message yet.
+  _hideJiraUnfurl(el) {
+    el.replaceChildren();
+    el.classList.add('hidden');
+  }
+
   async _lookupAndPaint(key, el, jira) {
     try {
+      // Rendered before the project list loaded — re-check now it has.
+      const known = await jira.loadProjectKeys?.();
+      if (known && !known.has(window.jiraProjectOf(key))) { this._hideJiraUnfurl(el); return; }
       const issue = await this._lookupJira(key, jira);
-      if (!issue) {
-        el.classList.add('error');
-        el.replaceChildren();
-        const err = document.createElement('div');
-        err.className = 'jira-loading';
-        err.textContent = `${key}: not found or no access`;
-        el.appendChild(err);
-        return;
-      }
+      if (!issue) { this._hideJiraUnfurl(el); return; }
       const fields = issue.fields || {};
       const status = fields.status?.name || '';
       const statusKind = (fields.status?.statusCategory?.key || '').toLowerCase(); // 'new'|'indeterminate'|'done'
@@ -3433,6 +3438,10 @@ class ChatView {
 
       el.append(top, sumRow, meta);
     } catch (err) {
+      // Not found / no access: the key-shaped token isn't a ticket this
+      // user can see, so show nothing. Other failures (auth, network)
+      // keep the error card — those are worth surfacing.
+      if (err?.status === 404 || err?.status === 403) { this._hideJiraUnfurl(el); return; }
       el.classList.add('error');
       el.replaceChildren();
       const errEl = document.createElement('div');
@@ -3451,7 +3460,10 @@ class ChatView {
         this._jiraCache.set(key, issue);
         return issue;
       } catch (err) {
-        this._jiraCache.set(key, null);
+        // Cache only a definite miss. Auth / network failures stay
+        // uncached so the next render retries (and shows the error)
+        // instead of silently hiding the card for the session.
+        if (err?.status === 404 || err?.status === 403) this._jiraCache.set(key, null);
         throw err;
       } finally {
         this._jiraInflight.delete(key);
