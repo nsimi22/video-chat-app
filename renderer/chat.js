@@ -180,6 +180,12 @@ class ChatView {
     // null = lookup failed but completed (don't retry within session).
     this._jiraCache = new Map();
     this._jiraInflight = new Map();
+    // Quote reply: the message the composer is quoting ({ id, authorName,
+    // text, attachments }) or null. Cleared on channel/thread switch.
+    this.quotingMessage = null;
+    // Originals fetched for quote previews that aren't in loaded history:
+    // id -> message | null (deleted / not visible) | Promise (in flight).
+    this._quoteCache = new Map();
     // GIF picker state: monotonic sequence to drop stale Giphy responses.
     this._gifFetchSeq = 0;
     this._gifSearchTimer = null;
@@ -255,6 +261,7 @@ class ChatView {
     this.editingMessageId = null;
     this.composerAttachments = [];
     this._renderAttachmentChips();
+    this._clearQuote();
     const label = displayLabel || ('#' + channelId);
     this._currentLabel = label;
     this.els.chatChannelName.textContent = label;
@@ -312,6 +319,7 @@ class ChatView {
   }
 
   openThread(messageId) {
+    this._clearQuote();
     this.threadParentId = messageId;
     this.els.threadBack.classList.remove('hidden');
     this.els.chatChannelName.textContent = 'Thread';
@@ -324,6 +332,7 @@ class ChatView {
   }
 
   closeThread() {
+    this._clearQuote();
     this.threadParentId = null;
     this.els.threadBack.classList.add('hidden');
     const label = this._currentLabel || ('#' + this.currentChannel);
@@ -1043,6 +1052,8 @@ class ChatView {
     const channelId = this.currentChannel;
     const parentId = this.threadParentId;
     const restoreAttachments = this.composerAttachments;
+    const quote = this.quotingMessage;
+    this._clearQuote();
     this._clearDraft(channelId);
     this.els.composer.value = '';
     this.els.composer.style.height = 'auto';
@@ -1057,6 +1068,7 @@ class ChatView {
         parentId,
         text: window.replaceShortcodes(text),
         attachments,
+        extra: quote ? { quoted_message_id: quote.id } : undefined,
       });
     } catch (err) {
       // Re-stash the text as that channel's draft either way; only put it
@@ -1067,6 +1079,7 @@ class ChatView {
         this._autoResizeComposer();
         this.composerAttachments = restoreAttachments;
         this._renderAttachmentChips();
+        if (quote && this.threadParentId === parentId) this._startQuote(quote);
       }
       alert("Couldn't send your message: " + (err?.message || err));
     }
@@ -1205,6 +1218,7 @@ class ChatView {
     // same click. Opening after it settles keeps the picker up.
     items.push({ label: 'Add reaction', icon: 'smile', onClick: () => setTimeout(() => this._openReactionPicker(at, m.id), 0) });
     if (!m.parentId && !inThread) items.push({ label: 'Reply in thread', icon: 'reply', onClick: () => this.openThread(m.id) });
+    items.push({ label: 'Quote reply', icon: 'quote', onClick: () => this._startQuote(m) });
     items.push({ type: 'divider' });
     if (m.text) items.push({ label: 'Copy text', icon: 'text', onClick: () => this._copyText(m.text) });
     items.push({ label: 'Copy link to message', icon: 'link', onClick: () => this._copyMessageLink(m.id) });
@@ -1333,6 +1347,119 @@ class ChatView {
         }
       }, 100);
     });
+  }
+
+  // --- Quote reply ------------------------------------------------------
+
+  // One-line plain-text preview of a message for quote chips/blocks. CSS
+  // clamps it to two lines; the slice just bounds the DOM text.
+  _quoteSnippet(msg) {
+    const text = String(msg?.text || '')
+      .replace(/```[\s\S]*?```/g, ' [code] ')
+      .replace(/[*_`>#~]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (text) return text.slice(0, 240);
+    return msg?.attachments?.length ? '📎 Attachment' : '';
+  }
+
+  _startQuote(m) {
+    if (!m?.id) return;
+    this.quotingMessage = { id: m.id, authorName: m.authorName, text: m.text, attachments: m.attachments };
+    this._renderQuotePreview();
+    this.els.composer.focus();
+  }
+
+  _clearQuote() {
+    if (!this.quotingMessage && !this._quotePreviewEl) return;
+    this.quotingMessage = null;
+    this._renderQuotePreview();
+  }
+
+  // Composer-side chip: "Quoting <author>" + snippet + ✕. Built lazily
+  // and parked just above the attachment chips.
+  _renderQuotePreview() {
+    if (!this._quotePreviewEl) {
+      if (!this.quotingMessage) return;
+      const el = document.createElement('div');
+      el.className = 'quote-preview hidden';
+      this.els.attachmentChips.parentNode.insertBefore(el, this.els.attachmentChips);
+      this._quotePreviewEl = el;
+    }
+    const el = this._quotePreviewEl;
+    const q = this.quotingMessage;
+    el.classList.toggle('hidden', !q);
+    el.replaceChildren();
+    if (!q) return;
+    const body = document.createElement('div');
+    body.className = 'quote-preview-body';
+    const who = document.createElement('div');
+    who.className = 'quote-author';
+    who.textContent = `Quoting ${q.authorName || 'message'}`;
+    const snip = document.createElement('div');
+    snip.className = 'quote-snippet';
+    snip.textContent = this._quoteSnippet(q);
+    body.append(who, snip);
+    const x = document.createElement('button');
+    x.className = 'quote-preview-cancel';
+    x.title = 'Cancel quote'; x.setAttribute('aria-label', 'Cancel quote');
+    x.innerHTML = window.HuddleIcons.x;
+    x.onclick = () => { this._clearQuote(); this.els.composer.focus(); };
+    el.append(body, x);
+  }
+
+  _findLoadedMessage(id) {
+    for (const list of this.byChannel.values()) {
+      const hit = list.find((x) => x.id === id);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  // Message-side block: condensed preview of the quoted original. Clicking
+  // jumps to it. The original comes from loaded history when possible,
+  // else one RLS-gated fetch (cached) — deleted or not-visible originals
+  // read "Original message unavailable".
+  _buildQuoteBlock(quotedId) {
+    const el = document.createElement('div');
+    el.className = 'msg-quote';
+    el.tabIndex = 0;
+    el.setAttribute('role', 'button');
+    const paint = (orig) => {
+      el.replaceChildren();
+      el.classList.toggle('unavailable', !orig);
+      if (!orig) { el.textContent = 'Original message unavailable'; return; }
+      const who = document.createElement('div');
+      who.className = 'quote-author';
+      who.textContent = orig.authorName || '';
+      const snip = document.createElement('div');
+      snip.className = 'quote-snippet';
+      snip.textContent = this._quoteSnippet(orig);
+      el.append(who, snip);
+    };
+    const jump = async () => {
+      if (el.classList.contains('unavailable')) return;
+      const found = await this.scrollToMessage(quotedId, { timeoutMs: 0 });
+      if (!found) this.hooks.toast?.("That message is further back — scroll up to load it");
+    };
+    el.onclick = jump;
+    el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); jump(); } };
+
+    const local = this._findLoadedMessage(quotedId);
+    if (local) { paint(local); return el; }
+    const cached = this._quoteCache.get(quotedId);
+    if (cached !== undefined && !(cached instanceof Promise)) { paint(cached); return el; }
+    el.classList.add('loading');
+    el.textContent = 'Loading quote…';
+    let p = cached;
+    if (!p) {
+      p = Promise.resolve(this.mesh.getMessageById?.(quotedId) ?? null)
+        .catch(() => null)
+        .then((orig) => { this._quoteCache.set(quotedId, orig); return orig; });
+      this._quoteCache.set(quotedId, p);
+    }
+    p.then((orig) => { el.classList.remove('loading'); paint(orig); });
+    return el;
   }
 
   async openPinnedDrawer() {
@@ -2016,6 +2143,15 @@ class ChatView {
       thread.onclick = () => this.openThread(m.id);
       actions.appendChild(thread);
     }
+    // Quote reply: posts where you are (main channel, or this thread)
+    // with a short preview of this message attached.
+    const quoteBtn = document.createElement('button');
+    quoteBtn.className = 'msg-action';
+    quoteBtn.innerHTML = window.HuddleIcons.quote;
+    quoteBtn.title = 'Quote reply';
+    quoteBtn.setAttribute('aria-label', 'Quote reply');
+    quoteBtn.onclick = () => this._startQuote(m);
+    actions.appendChild(quoteBtn);
     // Pin / unpin: any channel member can toggle. The RPC enforces
     // channel membership; the realtime UPDATE re-renders the row with
     // (or without) the pinned class on every viewer's screen.
@@ -2078,7 +2214,9 @@ class ChatView {
     const jiraEls = this._renderJiraUnfurls(m.text || '');
     const ghEls = this._renderGitHubUnfurls(m.text || '');
 
-    const children = [head, body];
+    const children = [head];
+    if (m.quotedMessageId) children.push(this._buildQuoteBlock(m.quotedMessageId));
+    children.push(body);
     if (attachmentsEl) children.push(attachmentsEl);
     // Action-items widget: one "Create ticket" row per parsed item, sitting
     // directly under the recap text. Each row's button reuses the existing
