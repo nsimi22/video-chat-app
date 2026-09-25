@@ -2025,12 +2025,13 @@
     }
 
     // One message by id, read through messages RLS — null when it was
-    // deleted or the viewer can't see it. Used for quote-reply previews
-    // whose original isn't in the loaded history.
+    // deleted or the viewer can't see it; throws on a query failure so
+    // callers can tell "gone" from "couldn't check". Used for quote-reply
+    // previews whose original isn't in the loaded history.
     async getMessageById(messageId) {
       const { data, error } = await this.supabase
         .from('messages').select('*').eq('id', messageId).maybeSingle();
-      if (error) { console.warn('getMessageById failed', error); return null; }
+      if (error) throw error;
       return data ? this._marshalMessage(data) : null;
     }
 

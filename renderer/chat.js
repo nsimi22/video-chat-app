@@ -483,6 +483,7 @@ class ChatView {
       const prev = idx >= 0 ? arr[idx] : null;
       if (idx >= 0) arr[idx] = m;
       if (m.channelId === this.currentChannel) this._replaceNode(m);
+      this._refreshQuotesOf(m.id, m.channelId);
       // Pin/unpin updates flow through the standard chat-update channel
       // (the RPC writes pinned_at + pinned_by, which the realtime
       // subscription broadcasts as a row UPDATE). Surface a hook so
@@ -496,6 +497,8 @@ class ChatView {
       const arr = this.byChannel.get(channelId) || [];
       const idx = arr.findIndex((x) => x.id === messageId);
       if (idx >= 0) arr.splice(idx, 1);
+      // Quotes of it now read "unavailable" (the full _render below repaints them).
+      this._quoteCache.set(messageId, Promise.resolve(null));
       if (channelId === this.currentChannel) {
         const node = this.nodeById.get(messageId);
         if (node) node.remove();
@@ -1037,6 +1040,7 @@ class ChatView {
           this.els.composer.style.height = 'auto';
           this.composerAttachments = [];
           this._renderAttachmentChips();
+          this._clearQuote();
         }
         return;
       }
@@ -1053,7 +1057,7 @@ class ChatView {
     const parentId = this.threadParentId;
     const restoreAttachments = this.composerAttachments;
     const quote = this.quotingMessage;
-    this._clearQuote();
+    const quoteExtra = this._takeQuoteExtra(channelId, parentId);
     this._clearDraft(channelId);
     this.els.composer.value = '';
     this.els.composer.style.height = 'auto';
@@ -1068,7 +1072,7 @@ class ChatView {
         parentId,
         text: window.replaceShortcodes(text),
         attachments,
-        extra: quote ? { quoted_message_id: quote.id } : undefined,
+        extra: quoteExtra,
       });
     } catch (err) {
       // Re-stash the text as that channel's draft either way; only put it
@@ -1079,7 +1083,7 @@ class ChatView {
         this._autoResizeComposer();
         this.composerAttachments = restoreAttachments;
         this._renderAttachmentChips();
-        if (quote && this.threadParentId === parentId) this._startQuote(quote);
+        if (quoteExtra && this.threadParentId === parentId) this._startQuote(quote);
       }
       alert("Couldn't send your message: " + (err?.message || err));
     }
@@ -1303,6 +1307,12 @@ class ChatView {
       this.composerAttachments = [];
       this._renderAttachmentChips();
       this._autoResizeComposer();
+      // Scheduled messages can't carry a quote yet; say so rather than
+      // letting the chip ride onto the next unrelated send.
+      if (this.quotingMessage) {
+        this._clearQuote();
+        this.hooks.toast?.('Scheduled without the quote — scheduled messages can’t include one yet.');
+      }
       this.hooks.toast?.(`Message scheduled for ${new Date(sendAt).toLocaleString([], { hour: 'numeric', minute: '2-digit', weekday: 'short' })}`);
     } catch (err) {
       console.warn('scheduleSend failed', err);
@@ -1354,9 +1364,14 @@ class ChatView {
   // One-line plain-text preview of a message for quote chips/blocks. CSS
   // clamps it to two lines; the slice just bounds the DOM text.
   _quoteSnippet(msg) {
+    // Strip markdown *markers* only (fences, inline code ticks, heading /
+    // quote prefixes, paired bold/strike) — never bare * _ # ~ >, which
+    // appear in identifiers, channel refs, paths and arrows.
     const text = String(msg?.text || '')
       .replace(/```[\s\S]*?```/g, ' [code] ')
-      .replace(/[*_`>#~]/g, '')
+      .replace(/`([^`\n]*)`/g, '$1')
+      .replace(/^[ \t]{0,3}(#{1,6}|>)[ \t]?/gm, '')
+      .replace(/(\*\*|__|~~)(\S(?:.*?\S)?)\1/g, '$2')
       .replace(/\s+/g, ' ')
       .trim();
     if (text) return text.slice(0, 240);
@@ -1376,9 +1391,29 @@ class ChatView {
 
   _startQuote(m) {
     if (!m?.id) return;
-    this.quotingMessage = { id: m.id, authorName: m.authorName, text: m.text, attachments: m.attachments };
+    this.quotingMessage = {
+      id: m.id, authorName: m.authorName, text: m.text, attachments: m.attachments,
+      channelId: this.currentChannel, parentId: this.threadParentId,
+    };
     this._renderQuotePreview();
     this.els.composer.focus();
+  }
+
+  // Insert `extra` for a send to (channelId, parentId): the pending quote
+  // if it was made there, consumed so it rides on exactly one message.
+  _takeQuoteExtra(channelId, parentId) {
+    const q = this.quotingMessage;
+    if (!q || q.channelId !== channelId || (q.parentId || null) !== (parentId || null)) return undefined;
+    this._clearQuote();
+    return { quoted_message_id: q.id };
+  }
+
+  // An original was edited: drop its cached copy and repaint loaded
+  // messages quoting it so the preview isn't stale.
+  _refreshQuotesOf(messageId, channelId) {
+    this._quoteCache.delete(messageId);
+    if (channelId !== this.currentChannel) return;
+    for (const x of this._messages()) if (x.quotedMessageId === messageId) this._replaceNode(x);
   }
 
   _clearQuote() {
@@ -1426,6 +1461,9 @@ class ChatView {
     const paint = (orig) => {
       el.replaceChildren();
       el.classList.toggle('unavailable', !orig);
+      // undefined = lookup failed (not cached, retried next render);
+      // null = deleted or not visible.
+      if (orig === undefined) { el.textContent = 'Couldn’t load quote'; return; }
       if (!orig) { el.textContent = 'Original message unavailable'; return; }
       el.append(...this._quoteLines(orig, orig.authorName || ''));
     };
@@ -1444,7 +1482,11 @@ class ChatView {
     el.textContent = 'Loading quote…';
     let p = this._quoteCache.get(quotedId);
     if (!p) {
-      p = Promise.resolve(this.mesh.getMessageById?.(quotedId) ?? null).catch(() => null);
+      p = Promise.resolve(this.mesh.getMessageById?.(quotedId) ?? null).catch((err) => {
+        console.warn('quote lookup failed', err);
+        this._quoteCache.delete(quotedId);
+        return undefined;
+      });
       this._quoteCache.set(quotedId, p);
     }
     p.then((orig) => { el.classList.remove('loading'); paint(orig); });
@@ -2569,6 +2611,7 @@ class ChatView {
         parentId,
         text: '',
         attachments: [info],
+        extra: this._takeQuoteExtra(channelId, parentId),
       });
     } catch (err) {
       console.warn('clip post failed', err);
@@ -2624,6 +2667,7 @@ class ChatView {
         parentId,
         text: '',
         attachments: [info],
+        extra: this._takeQuoteExtra(channelId, parentId),
       });
     } catch (err) {
       console.warn('voice note post failed', err);
@@ -3607,6 +3651,7 @@ class ChatView {
         channelId: this.currentChannel,
         parentId: this.threadParentId,
         text: '',
+        extra: this._takeQuoteExtra(this.currentChannel, this.threadParentId),
         attachments: [{
           url,
           name: (result?.title || 'giphy.gif').slice(0, 80),
