@@ -184,7 +184,7 @@ class ChatView {
     // text, attachments }) or null. Cleared on channel/thread switch.
     this.quotingMessage = null;
     // Originals fetched for quote previews that aren't in loaded history:
-    // id -> message | null (deleted / not visible) | Promise (in flight).
+    // id -> Promise<message | null> (null = deleted / not visible).
     this._quoteCache = new Map();
     // GIF picker state: monotonic sequence to drop stale Giphy responses.
     this._gifFetchSeq = 0;
@@ -1363,6 +1363,17 @@ class ChatView {
     return msg?.attachments?.length ? '📎 Attachment' : '';
   }
 
+  // [author, snippet] nodes shared by the composer chip and the message block.
+  _quoteLines(msg, authorLabel) {
+    const who = document.createElement('div');
+    who.className = 'quote-author';
+    who.textContent = authorLabel;
+    const snip = document.createElement('div');
+    snip.className = 'quote-snippet';
+    snip.textContent = this._quoteSnippet(msg);
+    return [who, snip];
+  }
+
   _startQuote(m) {
     if (!m?.id) return;
     this.quotingMessage = { id: m.id, authorName: m.authorName, text: m.text, attachments: m.attachments };
@@ -1393,13 +1404,7 @@ class ChatView {
     if (!q) return;
     const body = document.createElement('div');
     body.className = 'quote-preview-body';
-    const who = document.createElement('div');
-    who.className = 'quote-author';
-    who.textContent = `Quoting ${q.authorName || 'message'}`;
-    const snip = document.createElement('div');
-    snip.className = 'quote-snippet';
-    snip.textContent = this._quoteSnippet(q);
-    body.append(who, snip);
+    body.append(...this._quoteLines(q, `Quoting ${q.authorName || 'message'}`));
     const x = document.createElement('button');
     x.className = 'quote-preview-cancel';
     x.title = 'Cancel quote'; x.setAttribute('aria-label', 'Cancel quote');
@@ -1408,19 +1413,12 @@ class ChatView {
     el.append(body, x);
   }
 
-  _findLoadedMessage(id) {
-    for (const list of this.byChannel.values()) {
-      const hit = list.find((x) => x.id === id);
-      if (hit) return hit;
-    }
-    return null;
-  }
 
   // Message-side block: condensed preview of the quoted original. Clicking
   // jumps to it. The original comes from loaded history when possible,
   // else one RLS-gated fetch (cached) — deleted or not-visible originals
   // read "Original message unavailable".
-  _buildQuoteBlock(quotedId) {
+  _buildQuoteBlock(quotedId, channelId) {
     const el = document.createElement('div');
     el.className = 'msg-quote';
     el.tabIndex = 0;
@@ -1429,13 +1427,7 @@ class ChatView {
       el.replaceChildren();
       el.classList.toggle('unavailable', !orig);
       if (!orig) { el.textContent = 'Original message unavailable'; return; }
-      const who = document.createElement('div');
-      who.className = 'quote-author';
-      who.textContent = orig.authorName || '';
-      const snip = document.createElement('div');
-      snip.className = 'quote-snippet';
-      snip.textContent = this._quoteSnippet(orig);
-      el.append(who, snip);
+      el.append(...this._quoteLines(orig, orig.authorName || ''));
     };
     const jump = async () => {
       if (el.classList.contains('unavailable')) return;
@@ -1445,17 +1437,14 @@ class ChatView {
     el.onclick = jump;
     el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); jump(); } };
 
-    const local = this._findLoadedMessage(quotedId);
+    // Quotes post where you are, so the original is in the same channel.
+    const local = (this.byChannel.get(channelId) || []).find((x) => x.id === quotedId);
     if (local) { paint(local); return el; }
-    const cached = this._quoteCache.get(quotedId);
-    if (cached !== undefined && !(cached instanceof Promise)) { paint(cached); return el; }
     el.classList.add('loading');
     el.textContent = 'Loading quote…';
-    let p = cached;
+    let p = this._quoteCache.get(quotedId);
     if (!p) {
-      p = Promise.resolve(this.mesh.getMessageById?.(quotedId) ?? null)
-        .catch(() => null)
-        .then((orig) => { this._quoteCache.set(quotedId, orig); return orig; });
+      p = Promise.resolve(this.mesh.getMessageById?.(quotedId) ?? null).catch(() => null);
       this._quoteCache.set(quotedId, p);
     }
     p.then((orig) => { el.classList.remove('loading'); paint(orig); });
@@ -2215,7 +2204,7 @@ class ChatView {
     const ghEls = this._renderGitHubUnfurls(m.text || '');
 
     const children = [head];
-    if (m.quotedMessageId) children.push(this._buildQuoteBlock(m.quotedMessageId));
+    if (m.quotedMessageId) children.push(this._buildQuoteBlock(m.quotedMessageId, m.channelId));
     children.push(body);
     if (attachmentsEl) children.push(attachmentsEl);
     // Action-items widget: one "Create ticket" row per parsed item, sitting
