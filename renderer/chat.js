@@ -3460,7 +3460,10 @@ class ChatView {
         this._jiraCache.set(key, issue);
         return issue;
       } catch (err) {
-        this._jiraCache.set(key, null);
+        // Cache only a definite miss. Auth / network failures stay
+        // uncached so the next render retries (and shows the error)
+        // instead of silently hiding the card for the session.
+        if (err?.status === 404 || err?.status === 403) this._jiraCache.set(key, null);
         throw err;
       } finally {
         this._jiraInflight.delete(key);

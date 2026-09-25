@@ -520,7 +520,9 @@
   function extractKeys(text, defaultHost, projectKeys = null) {
     if (!text) return [];
     const out = new Map(); // key -> host (or null for default)
-    text.replace(URL_RE, (_, host, key) => { out.set(key, host); return _; });
+    // URL_RE is case-insensitive; Jira keys are uppercase, and the
+    // project filter compares against uppercase keys.
+    text.replace(URL_RE, (_, host, key) => { out.set(key.toUpperCase(), host); return _; });
     text.replace(KEY_RE, (_, key) => {
       if (out.has(key)) return _;
       if (KEY_BLOCKLIST.has(key)) return _;
