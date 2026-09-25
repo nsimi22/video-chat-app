@@ -53,7 +53,9 @@
       });
       if (!res || !res.ok) {
         const detail = res?.body ? safeParseError(res.body) : (res?.error || 'request failed');
-        throw new Error(`Jira ${method} ${pathAndQuery}: ${res?.status || 0} ${detail}`);
+        const err = new Error(`Jira ${method} ${pathAndQuery}: ${res?.status || 0} ${detail}`);
+        err.status = res?.status || 0;
+        throw err;
       }
       try { return JSON.parse(res.body); } catch { return null; }
     }
@@ -100,6 +102,33 @@
     }
     listProjects() {
       return this._request(`/rest/api/3/project/search?maxResults=100`).then((r) => r.values || []);
+    }
+    // Every project key this user can see, paged. Memoized per client so
+    // chat unfurls share one fetch; a failure resolves null (callers fall
+    // back to unfiltered) and is retried after a minute rather than on
+    // every message render. The result also feeds extractKeys, so
+    // `PR-483` and other non-project tokens stop unfurling as tickets.
+    loadProjectKeys() {
+      if (this._projectKeysPromise) return this._projectKeysPromise;
+      if (this._projectKeysFailedAt && Date.now() - this._projectKeysFailedAt < 60_000) return Promise.resolve(null);
+      this._projectKeysPromise = (async () => {
+        try {
+          const keys = new Set();
+          for (let startAt = 0; startAt < 2000; startAt += 100) {
+            const page = await this._request(`/rest/api/3/project/search?maxResults=100&startAt=${startAt}`);
+            for (const p of page?.values || []) if (p.key) keys.add(p.key);
+            if (page?.isLast !== false || !page?.values?.length) break;
+          }
+          knownProjectKeys = keys;
+          return keys;
+        } catch (err) {
+          console.warn('[jira] project list failed; unfurls unfiltered', err);
+          this._projectKeysFailedAt = Date.now();
+          this._projectKeysPromise = null;
+          return null;
+        }
+      })();
+      return this._projectKeysPromise;
     }
     listIssueTypes(projectKey) {
       // Cheap-and-cheerful: pull the project's `issueTypes` directly.
@@ -482,6 +511,11 @@
     'AES-256', 'SHA-1', 'SHA-256', 'HTTP-2', 'HTTP-1', 'HTTPS-1',
   ]);
 
+  // Project keys from the configured Jira (set by loadProjectKeys). Null
+  // until loaded — bare keys are unfiltered until then.
+  let knownProjectKeys = null;
+  const projectOf = (key) => key.slice(0, key.lastIndexOf('-'));
+
   function extractKeys(text, defaultHost) {
     if (!text) return [];
     const out = new Map(); // key -> host (or null for default)
@@ -489,6 +523,7 @@
     text.replace(KEY_RE, (_, key) => {
       if (out.has(key)) return _;
       if (KEY_BLOCKLIST.has(key)) return _;
+      if (knownProjectKeys && !knownProjectKeys.has(projectOf(key))) return _;
       out.set(key, defaultHost || null);
       return _;
     });
@@ -497,5 +532,6 @@
 
   window.JiraClient = JiraClient;
   window.jiraExtractKeys = extractKeys;
+  window.jiraProjectOf = projectOf;
   window.jiraAdfToText = adfToText;
 })();
