@@ -342,7 +342,7 @@
         // Joining dropped this channel's lurker, so this sync is the only
         // live count source — without it the sidebar huddle chip froze at
         // the pre-join count for the whole call (#354).
-        this.dispatchEvent(new CustomEvent('call-presence', { detail: { channelId, count: seen.size } }));
+        this.dispatchEvent(new CustomEvent('call-presence', { detail: { channelId, count: seen.size, inCall: true } }));
       });
 
       ch.on('broadcast', { event: 'raise-hand' }, ({ payload }) => {

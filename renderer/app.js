@@ -3516,11 +3516,11 @@ function onCallPeerJoined(peer) {
   // (commitStreamAsCamera) left quiet peers invisible until they spoke
   // (#354). commitStreamAsCamera reuses this tile via makeTile's key.
   if (peer?.id && !state.tilesByKey.has(`peer:${peer.id}`)) {
-    // No track yet, so without a mute-state broadcast show them muted + cam-off.
-    if (!mountPeerTile(peer.id).media) {
-      setPeerMicOn(peer.id, false);
-      setPeerCamOn(peer.id, false);
-    }
+    // No video track yet, so show the avatar. Mic is left alone: peers
+    // that don't rebroadcast mute-state to late joiners (mobile) would
+    // otherwise read as muted while talking — unknown means "on"
+    // (api.js peerMediaState default).
+    if (!mountPeerTile(peer.id).media) setPeerCamOn(peer.id, false);
   }
   // Avatar stack in the chat header tracks the live participant set
   // (not the channel roster) while a call is in progress here.
@@ -3584,7 +3584,7 @@ function onMemberOffline(peerId) {
   refreshHeaderStatus();
 }
 
-function onCallPresence({ channelId, count }) {
+function onCallPresence({ channelId, count, inCall = false }) {
   // Track the previous count so we can spot a call going from nobody to
   // somebody. The first event we see for a channel is its initial
   // presence sync (or a post-leaveCall re-sync) — not a transition — so
@@ -3598,7 +3598,11 @@ function onCallPresence({ channelId, count }) {
   for (const li of sidebarRowsFor(channelId)) syncHuddleChip(li, count);
   const justStarted = known && prev === 0 && count > 0;
   const active = state.chat?.currentChannel === channelId && windowFocused;
+  // inCall: our own call channel's presence — it fires during joinCall,
+  // before state.inCallChannelId is set, so don't mistake our own join
+  // for someone else starting a call.
   if (justStarted
+      && !inCall
       && channelId !== state.inCallChannelId
       && !state.poppedOutCalls.has(channelId)
       && !isChannelMuted(channelId)
