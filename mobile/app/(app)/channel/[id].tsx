@@ -19,6 +19,7 @@ import { useHeaderHeight } from '@react-navigation/elements';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
 import { ChevronRight, MessageCircle, Pin, Paperclip, Phone, Plus, Star } from 'lucide-react-native';
+import { HeaderBack } from '@/components/HeaderBack';
 import { MessageActionSheet } from '@/components/MessageActionSheet';
 import { PollCard } from '@/components/PollCard';
 import { CreatePollSheet } from '@/components/CreatePollSheet';
@@ -381,8 +382,9 @@ export default function ChannelScreen() {
   const screenOptions = useMemo(
     () => ({
       title: headerTitle,
-      headerBackButtonDisplayMode: 'minimal' as const,
-      headerBackTitle: '',
+      // Explicit chevron — the native iOS 26 back button was unresponsive
+      // here (see HeaderBack).
+      headerLeft: () => <HeaderBack fallback="/(app)/(tabs)/channels" />,
       headerRight: () => (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
           {/* Star — favorite/unfavorite the open conversation (design

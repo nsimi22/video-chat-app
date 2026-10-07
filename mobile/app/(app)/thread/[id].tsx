@@ -31,6 +31,7 @@ import {
 import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { useMessageEdit } from '@/hooks/useMessageEdit';
+import { HeaderBack } from '@/components/HeaderBack';
 import { AiMessageCard, Avatar, Markdown } from '@/components/ui';
 import { MessageUnfurls } from '@/components/Unfurl';
 import { ImageLightbox } from '@/components/ImageLightbox';
@@ -256,8 +257,9 @@ export default function ThreadScreen() {
       <Stack.Screen
         options={{
           title: 'Thread',
-          headerBackButtonDisplayMode: 'minimal' as const,
-          headerBackTitle: '',
+          // Explicit chevron — the native iOS 26 back button was unresponsive
+          // (see HeaderBack).
+          headerLeft: () => <HeaderBack fallback="/(app)/(tabs)/channels" />,
         }}
       />
       {loading ? (

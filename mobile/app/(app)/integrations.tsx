@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, ScrollView, Text, TouchableOpacity, View } from 'react-native';
-import { Stack, router } from 'expo-router';
-import { ChevronLeft, GitBranch, Smile, Sparkles, Ticket } from 'lucide-react-native';
+import { Stack } from 'expo-router';
+import { GitBranch, Smile, Sparkles, Ticket } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
 import { useAuth } from '@/context/AuthContext';
 import { loadAllIntegrationSettings, updateIntegrationSettings } from '@/lib/integrations';
 import type { AiProvider, StoredAiProvider } from '@/lib/ai';
 import { Button, Field } from '@/components/ui';
+import { HeaderBack } from '@/components/HeaderBack';
 import { colors, radius, space } from '@/theme';
 
 // Editable mirror of the desktop Settings panel's per-user integration keys
@@ -101,16 +102,6 @@ export default function IntegrationsScreen() {
     setForm((prev) => ({ ...prev, aiProvider: p }));
   }, []);
 
-  // Explicit back handler + headerLeft. The default native-stack back chevron
-  // rendered but was unresponsive here (tap did nothing); driving the pop
-  // ourselves — with a canGoBack() fallback so it can never be a dead no-op —
-  // guarantees a working way out. Falls back to the You tab if the history is
-  // somehow empty (e.g. deep-linked straight to this screen).
-  const goBack = useCallback(() => {
-    if (router.canGoBack()) router.back();
-    else router.replace('/(app)/(tabs)/you');
-  }, []);
-
   const load = useCallback(async () => {
     if (!userId) return;
     const myReq = ++reqIdRef.current;
@@ -197,11 +188,7 @@ export default function IntegrationsScreen() {
       <Stack.Screen
         options={{
           title: 'Integrations',
-          headerLeft: () => (
-            <TouchableOpacity onPress={goBack} hitSlop={16} style={{ paddingRight: space(3) }}>
-              <ChevronLeft size={26} color={colors.text} />
-            </TouchableOpacity>
-          ),
+          headerLeft: () => <HeaderBack fallback="/(app)/(tabs)/you" />,
         }}
       />
       {loading ? (
