@@ -62,7 +62,8 @@
       "expo-notifications",
       "@livekit/react-native-expo-plugin",
       "@react-native-community/datetimepicker",
-      "./plugins/withForegroundService.js"
+      "./plugins/withForegroundService.js",
+      "./plugins/withCarPlay.js"
     ],
     "extra": {
       "supabaseUrl": "https://jwqvrdgjpftjiwvgdrck.supabase.co",
