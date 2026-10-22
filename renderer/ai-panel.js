@@ -109,7 +109,7 @@
       // uses for unfurls — otherwise tokens that match the key shape but
       // aren't tickets (GPT-4, UTF-8, SHA-256, HTTP-2, …) get surfaced as
       // bogus "What's the latest on GPT-4?" Jira suggestions.
-      const keys = window.jiraExtractKeys ? window.jiraExtractKeys(txt) : null;
+      const keys = window.jiraExtractKeys ? window.jiraExtractKeys(txt, null, window.huddleApp?.getJira?.()?.projectKeys) : null;
       if (keys && keys.length) return keys[0].key;
     }
     return null;

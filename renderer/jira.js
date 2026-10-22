@@ -53,7 +53,9 @@
       });
       if (!res || !res.ok) {
         const detail = res?.body ? safeParseError(res.body) : (res?.error || 'request failed');
-        throw new Error(`Jira ${method} ${pathAndQuery}: ${res?.status || 0} ${detail}`);
+        const err = new Error(`Jira ${method} ${pathAndQuery}: ${res?.status || 0} ${detail}`);
+        err.status = res?.status || 0;
+        throw err;
       }
       try { return JSON.parse(res.body); } catch { return null; }
     }
@@ -98,8 +100,37 @@
       return this._request(`/rest/api/3/search/approximate-count`, { method: 'POST', body: { jql } })
         .then((r) => (typeof r?.count === 'number' ? r.count : null));
     }
-    listProjects() {
-      return this._request(`/rest/api/3/project/search?maxResults=100`).then((r) => r.values || []);
+    // `all: true` pages past the first 100 (capped at 2000).
+    async listProjects({ all = false } = {}) {
+      const out = [];
+      for (let startAt = 0; startAt < 2000; startAt += 100) {
+        const page = await this._request(`/rest/api/3/project/search?maxResults=100&startAt=${startAt}`);
+        out.push(...(page?.values || []));
+        if (!all || page?.isLast !== false || !page?.values?.length) break;
+      }
+      return out;
+    }
+    // Every project key this user can see, paged. Memoized per client so
+    // chat unfurls share one fetch; a failure resolves null (callers fall
+    // back to unfiltered) and is retried after a minute rather than on
+    // every message render. Pass `projectKeys` to extractKeys so `PR-483`
+    // and other non-project tokens stop unfurling as tickets.
+    loadProjectKeys() {
+      if (this._projectKeysPromise) return this._projectKeysPromise;
+      if (this._projectKeysFailedAt && Date.now() - this._projectKeysFailedAt < 60_000) return Promise.resolve(null);
+      this._projectKeysPromise = (async () => {
+        try {
+          const projects = await this.listProjects({ all: true });
+          this.projectKeys = new Set(projects.map((p) => p.key).filter(Boolean));
+          return this.projectKeys;
+        } catch (err) {
+          console.warn('[jira] project list failed; unfurls unfiltered', err);
+          this._projectKeysFailedAt = Date.now();
+          this._projectKeysPromise = null;
+          return null;
+        }
+      })();
+      return this._projectKeysPromise;
     }
     listIssueTypes(projectKey) {
       // Cheap-and-cheerful: pull the project's `issueTypes` directly.
@@ -482,13 +513,20 @@
     'AES-256', 'SHA-1', 'SHA-256', 'HTTP-2', 'HTTP-1', 'HTTPS-1',
   ]);
 
-  function extractKeys(text, defaultHost) {
+  const projectOf = (key) => key.slice(0, key.lastIndexOf('-'));
+
+  // `projectKeys` (a JiraClient's loaded Set, or null) drops bare keys whose
+  // project doesn't exist; null leaves them unfiltered.
+  function extractKeys(text, defaultHost, projectKeys = null) {
     if (!text) return [];
     const out = new Map(); // key -> host (or null for default)
-    text.replace(URL_RE, (_, host, key) => { out.set(key, host); return _; });
+    // URL_RE is case-insensitive; Jira keys are uppercase, and the
+    // project filter compares against uppercase keys.
+    text.replace(URL_RE, (_, host, key) => { out.set(key.toUpperCase(), host); return _; });
     text.replace(KEY_RE, (_, key) => {
       if (out.has(key)) return _;
       if (KEY_BLOCKLIST.has(key)) return _;
+      if (projectKeys && !projectKeys.has(projectOf(key))) return _;
       out.set(key, defaultHost || null);
       return _;
     });
@@ -497,5 +535,6 @@
 
   window.JiraClient = JiraClient;
   window.jiraExtractKeys = extractKeys;
+  window.jiraProjectOf = projectOf;
   window.jiraAdfToText = adfToText;
 })();
