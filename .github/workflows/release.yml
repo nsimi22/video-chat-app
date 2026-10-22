@@ -1,7 +1,9 @@
 # Builds Huddle installers for macOS, Windows, and Linux on every tagged
 # release (e.g. `git tag v0.3.0 && git push --tags`) and uploads the
 # artifacts to a GitHub Release of the same tag. Can also be triggered
-# manually via the Actions tab (workflow_dispatch).
+# manually via the Actions tab (workflow_dispatch); pick publish=never
+# there to run the full signed build on a branch without touching any
+# release (a dry run for build-tooling changes).
 #
 # macOS builds are Developer ID signed + notarized when the signing
 # secrets below are populated (CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID,
@@ -17,7 +19,13 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Upload to the GitHub Release (never = dry-run build only)'
+        type: choice
+        options: [always, never]
+        default: always
 
 permissions:
   contents: write
@@ -72,7 +80,18 @@ jobs:
 
       # electron-builder reads GH_TOKEN to publish to the matching tag's
       # release; if it doesn't exist yet, it creates a draft release.
+      # Tag pushes have no inputs, so they always publish.
       - name: Build & publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run dist -- --publish always
+        run: npm run dist -- --publish ${{ inputs.publish || 'always' }}
+
+      # Fail the job if the shipped .app isn't Developer ID signed and
+      # notarized — an unsigned or unstapled build breaks auto-update.
+      - name: Verify macOS signature + notarization
+        if: matrix.os == 'macos-latest'
+        run: |
+          APP=dist/mac-arm64/Huddle.app
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          xcrun stapler validate "$APP"
+          spctl --assess --type execute --verbose=4 "$APP"
