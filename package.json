@@ -35,7 +35,7 @@
     "@electron/rebuild": "^3.6.0",
     "@jitsi/rnnoise-wasm": "^0.2.1",
     "electron": "^43.3.0",
-    "electron-builder": "^24.13.3",
+    "electron-builder": "^26.18.0",
     "unicode-emoji-json": "^0.9.0"
   },
   "build": {
