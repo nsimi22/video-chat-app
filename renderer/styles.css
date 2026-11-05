@@ -814,6 +814,35 @@ input:focus, textarea:focus {
   min-width: 30px; text-align: right;
 }
 
+/* Quote reply (#351): composer chip + in-message preview block. Both
+   clamp the snippet to two lines so long originals never break layout. */
+.quote-preview {
+  display: flex; align-items: flex-start; gap: 8px; padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+}
+.quote-preview-body, .msg-quote { border-left: 3px solid var(--accent); padding-left: 8px; min-width: 0; }
+.quote-preview-body { flex: 1; }
+.quote-preview-cancel {
+  background: transparent; border: none; color: var(--text-dim); cursor: pointer; padding: 2px;
+}
+.quote-preview-cancel:hover { color: var(--text); }
+.quote-author { font-size: 12px; font-weight: 600; color: var(--text-dim); }
+.quote-snippet {
+  font-size: 13px; color: var(--text-dim);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; overflow-wrap: anywhere;
+}
+.msg-quote {
+  margin: 4px 0 6px; padding-top: 4px; padding-bottom: 4px; padding-right: 8px;
+  max-width: 560px; border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: rgba(255, 255, 255, 0.03); cursor: pointer;
+}
+.msg-quote:hover, .msg-quote:focus-visible { background: rgba(255, 255, 255, 0.06); outline: none; }
+.msg-quote.loading, .msg-quote.unavailable {
+  font-size: 12px; font-style: italic; color: var(--text-faint); cursor: default; border-left-color: var(--line-strong);
+}
+
 /* Composer attachment chips (pending uploads) */
 .attachment-chips {
   display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px;
